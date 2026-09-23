@@ -408,6 +408,7 @@ pub fn convert_partitioned(
         module_geo: full_scan.module_geo.clone(),
         crs: full_scan.crs.clone(),
         crs_diagnostic: full_scan.crs_diagnostic.clone(),
+        bloom_attributes: full_scan.bloom_attributes.clone(),
     };
     drop(full);
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / "benchmark" / "manifest.toml"
-FAMILIES = ("sizes", "formats", "codec", "rowgroup", "databases")
+FAMILIES = ("sizes", "formats", "codec", "rowgroup", "bloom", "databases")
 DEFAULT_DATA_ROOT = REPO / "benchmark" / "runs"
 # Relative spread below which the database family's cross-system count
 # check publishes an EXPLAINED deviation (status=ok-deviation, with the
@@ -68,6 +68,9 @@ def dataset_selection(manifest: dict, families: list[str], requested: str, smoke
             result.extend(key for key, entry in datasets.items() if entry["role"] == "corpus")
             result.append(manifest["suite"]["largest_scaling_dataset"])
         if any(family in {"codec", "rowgroup"} for family in families):
+            result.extend(key for key, entry in datasets.items() if entry["role"] in {"scaling", "largest-scaling"})
+        if "bloom" in families:
+            result.extend(key for key, entry in datasets.items() if entry["role"] == "corpus")
             result.extend(key for key, entry in datasets.items() if entry["role"] in {"scaling", "largest-scaling"})
         if "databases" in families:
             result.append(manifest["suite"]["largest_scaling_dataset"])
@@ -216,7 +219,7 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
             any(family in {"sizes", "formats"} for family in families)
             and (smoke or entry["role"] in {"corpus", "largest-scaling"})
         )
-        just("readbench-prepare", str(input_path), str(locations["prepared"]), "" if full_formats else "cityparquet")
+        just("readbench-prepare", str(input_path), str(locations["prepared"]), "" if full_formats else "cityparquet,cityjsonseq")
 
 
     if "databases" in families:
@@ -243,7 +246,7 @@ def stage(locations: dict[str, Path], name: str, inputs: list[Path]) -> Path:
 
 def result_dir(locations: dict[str, Path], family: str, smoke: bool) -> Path:
     root = locations["formats"] / "smoke" if smoke else locations["formats"]
-    names = {"formats": "results", "sizes": "results", "codec": "scaling_codec_results", "rowgroup": "scaling_rowgroup_results"}
+    names = {"formats": "results", "sizes": "results", "codec": "scaling_codec_results", "rowgroup": "scaling_rowgroup_results", "bloom": "scaling_bloom_results"}
     return root / names[family]
 
 
@@ -299,6 +302,14 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         just(recipe, str(stage(locations, family, scaling_inputs)), str(output), str(locations["prepared"]), "1" if smoke else "7", "1" if smoke else "3")
         for input_path in scaling_inputs:
             write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family=family, repeat=1 if smoke else 7, write_repeat=1 if smoke else 3, smoke=smoke, fixed_configuration="codec/default-row-groups" if family == "codec" else "row-groups/zstd-3")
+    if "bloom" in families:
+        bloom_inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in {"corpus", "scaling", "largest-scaling"}]
+        if not bloom_inputs:
+            raise SystemExit("bloom needs a corpus dataset or a 3DBAG scaling slice")
+        output = result_dir(locations, "bloom", smoke)
+        just("bloom-bench", str(stage(locations, "bloom", bloom_inputs)), str(output), str(locations["prepared"]), "1" if smoke else "7", "1" if smoke else "3")
+        for input_path in bloom_inputs:
+            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=1 if smoke else 7, write_repeat=1 if smoke else 3, smoke=smoke, fixed_configuration="bloom/zstd-3/default-row-groups")
     if "databases" in families:
         database_input = scaling_inputs[0] if smoke and scaling_inputs else source(manifest["datasets"][manifest["suite"]["largest_scaling_dataset"]], locations)
         if not database_input.is_file():
@@ -318,7 +329,7 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("command", choices=("prep", "run", "summary"))
-    result.add_argument("--families", default="all")
+    result.add_argument("--families", default="all", help=f"comma-separated families from {','.join(FAMILIES)}, or all")
     result.add_argument("--datasets", default="")
     result.add_argument("--smoke", action="store_true")
     result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")

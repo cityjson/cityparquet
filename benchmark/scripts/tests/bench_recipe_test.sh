@@ -327,6 +327,45 @@ case_rowgroup_bench_list() {
   pass "$name"
 }
 
+case_bloom_bench_list() {
+  local name="bloom-bench passes the one bloom pair and the lookup scenarios"
+  local expected="cityparquet,cityparquet+nobloom"
+  local actual line
+  actual="$(recipe_variants bloom-bench)"
+  if [[ "$actual" != "$expected" ]]; then
+    fail "$name" "bloom-bench passes '$actual'"
+    return
+  fi
+  line="$(sed -n '/^bloom-bench /,/^$/p' "$JUSTFILE" | grep 'just variant-bench')"
+  if [[ "$line" != *'"id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"'* ]]; then
+    fail "$name" "bloom-bench does not pass the lookup scenarios and probes: $line"
+    return
+  fi
+  pass "$name"
+}
+
+case_bloom_http_matches_the_local_pair() {
+  local name="bloom-bench-http reads the same pair, scenarios and probes as bloom-bench, over HTTP"
+  local actual line
+  actual="$(recipe_variants bloom-bench-http)"
+  if [[ "$actual" != "cityparquet,cityparquet+nobloom" ]]; then
+    fail "$name" "bloom-bench-http passes '$actual'"
+    return
+  fi
+  line="$(sed -n '/^bloom-bench-http /,/^$/p' "$JUSTFILE" | grep 'just variant-bench')"
+  if [[ "$line" != *'"id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"'* ]]; then
+    fail "$name" "bloom-bench-http does not pass the lookups and its BASE_URL: $line"
+    return
+  fi
+  # The recipe body has blank lines of its own: range to the next unindented
+  # line, which is where the recipe ends.
+  if ! sed -n '/^variant-bench /,/^[^[:space:]]/p' "$JUSTFILE" | grep -q -- '--transport http --base-url "{{BASE_URL}}"'; then
+    fail "$name" "variant-bench does not turn BASE_URL into --transport http"
+    return
+  fi
+  pass "$name"
+}
+
 case_block_is_extractable
 case_bare_run_omits_the_baseline
 case_naming_the_baseline_appends_it
@@ -336,6 +375,8 @@ case_prepare_list_invariants
 case_baseline_invocation_is_guarded
 case_codec_bench_list
 case_rowgroup_bench_list
+case_bloom_bench_list
+case_bloom_http_matches_the_local_pair
 
 echo "bench_recipe_test: $PASSED passed, $FAILED failed"
 [[ "$FAILED" -eq 0 ]]

@@ -112,7 +112,7 @@ impl Row {
     }
 }
 
-const CSV_COLUMNS: [&str; 13] = [
+const CSV_COLUMNS: [&str; 16] = [
     "dataset",
     "format",
     "scenario",
@@ -126,10 +126,14 @@ const CSV_COLUMNS: [&str; 13] = [
     "notes",
     "bytes_read",
     "http_requests",
+    "row_groups_total",
+    "bloom_pruned",
+    "filter_bytes",
 ];
 
 const EXPECTED_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,\
-time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests";
+time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,\
+row_groups_total,bloom_pruned,filter_bytes";
 
 #[test]
 fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from_real_data() {
@@ -1035,4 +1039,74 @@ fn the_run_writes_a_resolved_params_sidecar_beside_the_csv() {
             window["tag"]
         );
     }
+}
+
+/// `feature-lookup` is CityParquet's alone: a named non-CityParquet format is
+/// skipped and told so, and the CityParquet rows are the middle feature (a
+/// Building and its part) and a verified miss, each with its lookup counters.
+#[test]
+fn feature_lookup_measures_cityparquet_only_with_lookup_counters() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    convert(&ConvertOptions::new(
+        input.clone(),
+        prepared.path().join("delft.parquet"),
+    ))
+    .unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let out_csv = prepared.path().join("out.csv");
+    let output = run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "feature-lookup",
+        "--formats",
+        "cityparquet,cityjsonseq",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("skipping scenario 'feature-lookup' for format 'cityjsonseq'"),
+        "{stderr}"
+    );
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    assert_eq!(csv_text.lines().next().unwrap(), EXPECTED_HEADER);
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(rows.len(), 2, "{csv_text}");
+    for row in &rows {
+        assert_eq!(row.field("format"), "cityparquet");
+        assert_eq!(row.field("scenario"), "feature-lookup");
+        assert_eq!(row.field("row_groups_total"), "1", "delft is one row group");
+        assert!(!row.field("filter_bytes").is_empty());
+    }
+    let hit = rows
+        .iter()
+        .find(|r| r.field("notes").starts_with("feature-50pct"))
+        .unwrap();
+    assert!(
+        ["2", "3"].contains(&hit.field("result_count")),
+        "a delft feature is a Building and its parts"
+    );
+    assert_eq!(
+        hit.field("bloom_pruned"),
+        "0",
+        "a hit cannot prune the group that holds it"
+    );
+    let miss = rows
+        .iter()
+        .find(|r| r.field("notes").starts_with("feature-miss"))
+        .unwrap();
+    assert_eq!(miss.field("result_count"), "0");
+    assert_eq!(
+        miss.field("bloom_pruned"),
+        "1",
+        "the `feature_id` filter rules out delft's single row group"
+    );
 }

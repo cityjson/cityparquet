@@ -187,7 +187,7 @@ fetch-tools:
 # CityJSONSeq prefixes with a fixed number of CityObjects each: one
 # DEST/3dbag_n<SIZE>.city.jsonl per SIZE, every slice a strict prefix of
 # the next larger one, in source feature order. This is the input for the
-# CONFIGURATION-axis benchmarks (`codec-bench`, `rowgroup-bench`,
+# CONFIGURATION-axis benchmarks (`codec-bench`, `rowgroup-bench`, `bloom-bench`,
 # `ordering-bench`): one dataset at several cardinalities shows the trend
 # over size with the data held constant, where a corpus of unrelated city
 # models would entangle every configuration delta with a data delta.
@@ -500,27 +500,32 @@ write-bench FOLDER OUT=(BENCH / "results"):
     fi
     echo "write-bench: ${found} file(s) benchmarked into {{OUT}}"
 
-# The configuration-axis runner behind `codec-bench` and `rowgroup-bench`:
+# The configuration-axis runner behind `codec-bench`, `rowgroup-bench` and
+# `bloom-bench`:
 # for every CityJSON/CityJSONSeq file under FOLDER (recursive), build the
 # `cityparquet` artefact the query parameters derive from (and the
 # CityJSONSeq the writes convert from), then run the coordinator's
 # `--variants` path: per variant a timed write in a child process (peak RSS,
 # median of 3 warm repeats after a warmup), the package kept as
 # `PREPARED/<name>.<variant>.parquet`, then `full-read` and the three bbox
-# windows against it. One OUT/<name>.csv per input in the read run's exact
+# windows against it (the default SCENARIOS/ID_PROBES; the bloom axis passes
+# the lookups instead). One OUT/<name>.csv per input in the read run's exact
 # CSV shape (a `write` row per variant, the variant id in the `format`
 # column), package bytes in OUT/sizes.csv, and the host in OUT/MACHINE.md.
 # Each OUT/<name>.csv is removed first; OUT/sizes.csv is removed once at the
-# start, and each input's run then appends its own rows. Local transport
-# only. Network-independent given already-fetched inputs; multi-hour at the
-# 1M-object slice; kept OUT of `just check`/CI.
+# start, and each input's run then appends its own rows. Network-independent
+# given already-fetched inputs; multi-hour at the 1M-object slice; kept OUT
+# of `just check`/CI.
+# With BASE_URL the run is read-only over HTTP: it reads the variant
+# packages a local run left in PREPARED, uploaded to BASE_URL, and
+# WRITE_REPEAT is unused.
 #
-# VARIANTS is the whole benchmark: the two public recipes below pass their
+# VARIANTS is the whole benchmark: the three public recipes below pass their
 # lists here and nowhere else, and benchmark/scripts/tests/bench_recipe_test.sh
 # reads those lists back out of this file.
 [private]
 [doc("Configuration-axis run: timed writes + two reads per variant, over every input under FOLDER")]
-variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3':
+variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3' SCENARIOS='full-read,bbox-query,id-lookup' ID_PROBES='id-50pct' FEATURE_PROBES='' BASE_URL='':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -540,14 +545,24 @@ variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEA
             exit 1
         fi
 
+        feature_args=()
+        if [[ -n "{{FEATURE_PROBES}}" ]]; then
+            feature_args=(--feature-probes "{{FEATURE_PROBES}}")
+        fi
+        transport_args=()
+        if [[ -n "{{BASE_URL}}" ]]; then
+            transport_args=(--transport http --base-url "{{BASE_URL}}")
+        fi
         cargo run --release {{READBENCH_CARGO}} -- run \
             --input "$f" \
             --prepared-dir "{{PREPARED}}" \
             --out "$out" \
             --repeat {{REPEAT}} \
             --write-repeat {{WRITE_REPEAT}} \
-            --scenarios full-read,bbox-query,id-lookup \
-            --id-probes id-50pct \
+            --scenarios "{{SCENARIOS}}" \
+            --id-probes "{{ID_PROBES}}" \
+            ${feature_args[@]+"${feature_args[@]}"} \
+            ${transport_args[@]+"${transport_args[@]}"} \
             --variants "{{VARIANTS}}"
 
         found=$((found + 1))
@@ -577,6 +592,24 @@ codec-bench FOLDER OUT=(BENCH / "runs/formats/scaling_codec_results") PREPARED=(
 [doc("Row-group axis over the scaling slices: 65536 (default), 32768, 8192, 2048, 512")]
 rowgroup-bench FOLDER OUT=(BENCH / "runs/formats/scaling_rowgroup_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3':
     just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+rg32768,cityparquet+rg8192,cityparquet+rg2048,cityparquet+rg512" "{{PREPARED}}" "{{REPEAT}}" "{{WRITE_REPEAT}}"
+
+# The BLOOM axis: the default package, which carries bloom filters, against
+# the same package without them. Identifier lookups only — what the filters
+# exist for — by `id` and by `feature_id`, each at the middle position and a
+# verified miss. Every variant at the default codec and row-group size.
+[private]
+[doc("Bloom axis over the scaling slices and corpus: cityparquet vs cityparquet+nobloom")]
+bloom-bench FOLDER OUT=(BENCH / "runs/formats/scaling_bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{WRITE_REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"
+
+# The bloom axis over HTTP: reads (never writes) the two packages a local
+# `bloom-bench` run left in PREPARED, after PREPARED was uploaded to BASE_URL
+# (benchmark/scripts/readbench_upload.md). Not part of `bench-run`: it needs a
+# real bucket, and its timings are a snapshot of one network path.
+[private]
+[doc("Bloom axis over HTTP, against uploaded bloom-bench packages")]
+bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/scaling_bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "1" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"
 
 # ---------------------------------------------------------------------------
 # The harness's own test suites

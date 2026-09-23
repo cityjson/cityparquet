@@ -16,7 +16,7 @@ what is committed. Absolute times are therefore not comparable across a
 directory that has a machine record and one that does not; what the figures
 cite is the ratios within a single directory. Nothing in this document quotes
 a number, so the methodology here cannot go stale against a re-run; the CSVs
-themselves can, and one caveat already applies.
+themselves can, and two caveats already apply.
 
 **The committed `results/` and `scaling_write_results/` CSVs predate the
 typed appearance columns.** They were measured while `material_lod*` /
@@ -24,17 +24,24 @@ typed appearance columns.** They were measured while `material_lod*` /
 `MAP`s, which the writer leaves at parquet's own defaults for dictionary
 encoding and statistics, so neither the committed bytes nor the committed
 write times describe the current writer until both families are re-run. The
-codec and row-group runs are measured on the current writer: each directory's
-`MACHINE.md` names the commit, and the 3DBAG slices carry no appearance data,
-so those columns are empty in every package they measured.
+codec and row-group runs postdate that change: each directory's `MACHINE.md`
+names the commit, and the 3DBAG slices carry no appearance data, so those
+columns are empty in every package they measured.
+
+**The committed codec and row-group CSVs predate bloom filters, and so do the
+format and size ones.** Both disclosures are
+[`READ_BENCHMARK.md`](READ_BENCHMARK.md)'s fairness caveats 30 and 31, which is
+where every family's caveats are kept: `benchviz` renders that one numbered
+list onto the summary page, so a caveat written only here would never reach a
+reader of the figures.
 
 ## Running the suite
 
 Use the root entry points:
 
 ```sh
-just bench-prep --families formats,codec,rowgroup
-just bench-run --families formats,codec,rowgroup
+just bench-prep --families formats,codec,rowgroup,bloom
+just bench-run --families formats,codec,rowgroup,bloom
 just bench-summary
 ```
 
@@ -81,13 +88,13 @@ The `formats` family's `write` rows come from
 from the **same already-prepared canonical CityJSONSeq stream** and measures
 one thing: parsing that stream and serialising it into the row's own format.
 
-| Row                   | What is timed                                                              |
-| --------------------- | -------------------------------------------------------------------------- |
-| `cityjson`            | `cjseq collect`                                                              |
+| Row                   | What is timed                                                                    |
+| --------------------- | -------------------------------------------------------------------------------- |
+| `cityjson`            | `cjseq collect`                                                                  |
 | `citygml`             | `cjseq collect`, then `citygml-tools from-cityjson` — **two** sequential writers |
-| `cityjsonseq`         | `cityparquet-readbench write-cityjsonseq`                                    |
-| `flatcitybuf`         | `fcb ser -A`                                                                 |
-| `cityparquet-hilbert` | `cityparquet convert --ordering hilbert`                                     |
+| `cityjsonseq`         | `cityparquet-readbench write-cityjsonseq`                                        |
+| `flatcitybuf`         | `fcb ser -A`                                                                     |
+| `cityparquet-hilbert` | `cityparquet convert --ordering hilbert`                                         |
 
 The CityGML row is the only two-stage one: its time is the sum of both stages
 and its RSS the maximum of the two active processes, never an invented combined
@@ -202,11 +209,39 @@ rows (deleting data from a measurement artefact is worse than disclosing it),
 and draw no cross-encoder byte or time comparison from them without saying
 which geometry each side actually wrote.
 
+## The bloom family
+
+`just bloom-bench` (via `just bench-run --families bloom`) writes each input
+twice — `cityparquet`, which carries bloom filters, and `cityparquet+nobloom`,
+which carries none — and times `id-lookup` (`id-50pct`, `id-miss`) and
+`feature-lookup` (`feature-50pct`, `feature-miss`) against both. Package bytes
+go to `sizes.csv`; the write rows carry write time and peak RSS, where the
+filters' memory shows (every filter is held until its file is closed). Every
+lookup row carries `row_groups_total`, `bloom_pruned` and `filter_bytes` (the
+bitset bytes of the filters examined). The scaling curves are drawn from the
+nested 3DBAG slices alone; the corpus datasets are other city models, not
+larger slices, and are drawn apart, per dataset, in `bloom-corpus`.
+
+Over HTTP, `just bloom-bench-http FOLDER BASE_URL` reads — never writes — the
+two packages a local `bloom-bench` run left in the prepared directory, once that
+directory is uploaded to `BASE_URL` (`benchmark/scripts/readbench_upload.md`).
+Its rows add `bytes_read` and `http_requests`; the results go to
+`scaling_bloom_http_results/` and are not part of `bench-run` or the rendered
+summary. They are a snapshot of one network path at one time.
+
+The caveats that travel with every one of its numbers are
+[`READ_BENCHMARK.md`](READ_BENCHMARK.md)'s fairness caveats **24 to 29** —
+the row-group scale a slice has to reach before its pruning means anything, a
+positive not being a match, the twice-read footer, the single-table
+restriction, what the `feature-*` probes are, and requests being logical. They
+live there, not here, because that numbered list is the one `benchviz` renders
+onto the summary page beside the figures.
+
 ## Reproduce
 
 ```sh
-just bench-prep --families codec,rowgroup
-just bench-run --families codec,rowgroup
+just bench-prep --families codec,rowgroup,bloom
+just bench-run --families codec,rowgroup,bloom
 just bench-summary
 ```
 

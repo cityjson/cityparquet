@@ -273,6 +273,7 @@ fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -
             let id = require(&params.target_id, "target-id", scenario)?;
             Ok(doc.city_objects.contains_key(id) as u64)
         }
+        Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
         Scenario::Project => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
             Ok(document
@@ -327,6 +328,7 @@ async fn run_http(
             bytes: stats.bytes,
             requests: stats.requests,
         }),
+        lookup: None,
     })
 }
 
@@ -350,6 +352,7 @@ impl FormatRunner for CityJsonRunner {
                 return Ok(RunOutcome {
                     result_count,
                     io: None,
+                    lookup: None,
                 });
             }
             TransportSource::Http { base_url, key } => (base_url, key),

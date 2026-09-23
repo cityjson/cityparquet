@@ -34,7 +34,13 @@ import argparse, csv, os, shutil, statistics, subprocess, tempfile, time
 from pathlib import Path
 
 ALL_FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet-hilbert")
-HEADER = ["dataset","format","scenario","selectivity","result_count","time_s","time_mad_s","peak_heap_bytes","peak_rss_bytes","repeat","notes","bytes_read","http_requests"]
+# Must stay identical to the coordinator's own `CSV_HEADER`
+# (`benchmark/readbench/src/coordinator.rs`), the single authority on this
+# contract: this script appends `write` rows to CSVs the coordinator wrote, and
+# refuses outright (below) to append to one whose header differs.
+# `benchmark/plot/tests/test_csv_contract.py` asserts the two literals and
+# `benchmark/scripts/readbench_duckdb.sh`'s third copy agree.
+HEADER = ["dataset","format","scenario","selectivity","result_count","time_s","time_mad_s","peak_heap_bytes","peak_rss_bytes","repeat","notes","bytes_read","http_requests","row_groups_total","bloom_pruned","filter_bytes"]
 SAMPLES_HEADER = ["dataset","format","scenario","sample","time_s","peak_rss_bytes"]
 
 
@@ -177,7 +183,7 @@ def main() -> None:
         warm = values[1:]
         times = [value[0] for value in warm]
         centre = median(times)
-        aggregates.append([dataset, fmt, "write", "", "0", f"{centre:.6f}", f"{mad(times, centre):.6f}", "", str(max(value[1] for value in warm)), str(args.repeat), "canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml", "", ""])
+        aggregates.append([dataset, fmt, "write", "", "0", f"{centre:.6f}", f"{mad(times, centre):.6f}", "", str(max(value[1] for value in warm)), str(args.repeat), "canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml", "", "", "", "", ""])
         raw.extend([dataset, fmt, "write", str(index + 1), f"{elapsed:.6f}", str(rss)] for index, (elapsed, rss) in enumerate(warm))
     existing = []
     if args.out.exists():

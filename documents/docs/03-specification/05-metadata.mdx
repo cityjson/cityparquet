@@ -193,3 +193,18 @@ The package-level `metadata.json` **MUST** be a valid **STAC Item** describing t
 ## Recommended writer defaults (informative)
 
 As implementation guidance, not a format requirement: **zstd level 3** compression and **65 536-row** row groups for the object table tend to balance size against spatial-pruning selectivity; smaller row groups prune better at some size cost (see [appearance & shared resources](/design-decisions/appearance-shared-resources) and the [metadata layout decision](/design-decisions/files-crs-metadata)). A conforming file may use any Parquet-legal compression and row-group sizing.
+
+Bloom filters, at a false-positive probability of **0.01**: on every object
+table's `id` and `feature_id`, and on each scalar `VARCHAR` attribute column
+(not JSON) that holds at least one non-null value and whose estimated distinct
+count — a HyperLogLog estimate is ample — reaches at least **0.2 ×** its
+non-null count across the dataset. An all-null column carries none. The rule
+is decided once for the whole dataset, before the first row group is written,
+so every file of a package — and every partition of a partitioned dataset —
+carries the same column set. All filters sit
+together after the last row group, before the page indexes and footer, with
+`bloom_filter_length` set, so a reader can ask for every filter of a column in
+one batched range read, which object storage coalesces into few requests. A
+filter whose column chunk declares no `bloom_filter_length` is not in that
+batch and is fetched separately. Low-cardinality strings, numeric, list, JSON
+and geometry columns, and the sidecars, carry none.

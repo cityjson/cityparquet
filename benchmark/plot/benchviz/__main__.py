@@ -72,7 +72,7 @@ def _cmd_prep(args: argparse.Namespace) -> None:
             payload["read"] = []
         if "sizes" not in families:
             payload["sizes"] = []
-        for name in ("codec", "rowgroup"):
+        for name in ("codec", "rowgroup", "bloom"):
             if name not in families:
                 payload["scaling"][name] = {"records": [], "sizes": [], "gaps": [], "variants": []}
         if "databases" not in families:
@@ -98,6 +98,12 @@ def _cmd_prep(args: argparse.Namespace) -> None:
                 "present": bool(payload["scaling"]["rowgroup"]["records"]),
                 "metrics": sorted(
                     {r.get("measure") for r in payload["scaling"]["rowgroup"]["records"]}
+                ),
+            },
+            "bloom": {
+                "present": bool(payload["scaling"]["bloom"]["records"]),
+                "metrics": sorted(
+                    {r.get("measure") for r in payload["scaling"]["bloom"]["records"]}
                 ),
             },
             "databases": {
@@ -168,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--families",
         metavar="CSV",
-        help="selected families: sizes,formats,codec,rowgroup,databases",
+        help="selected families: sizes,formats,codec,rowgroup,bloom,databases",
     )
     common.add_argument("--datasets", metavar="CSV", help="selected dataset IDs")
 
@@ -181,6 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Build the CityParquet benchmark visualisations from the result CSVs "
             "an earlier `just bench` / `just codec-bench` / `just rowgroup-bench` / "
+            "`just bloom-bench` / "
             "`just sizes` run left in benchmark/formats/. Runs no benchmark of its own."
         ),
     )

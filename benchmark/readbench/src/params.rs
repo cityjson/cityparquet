@@ -450,6 +450,32 @@ pub fn id_probes(
     probes
 }
 
+/// The feature-lookup probe tags: the feature at the 50 % position of the
+/// canonical order, and a `feature_id` verified absent.
+pub const FEATURE_50PCT_TAG: &str = "feature-50pct";
+pub const FEATURE_MISS_TAG: &str = "feature-miss";
+
+/// The two feature-lookup probes, taken from the id probes: a CityJSONSeq
+/// feature's own id IS the `feature_id` of every row it contributes, so the
+/// `id-50pct` probe names the middle feature and the verified `id-miss` is
+/// absent from `feature_id` too (it is checked against every feature id).
+pub fn feature_probes(id_probes: &[IdProbe]) -> Vec<IdProbe> {
+    id_probes
+        .iter()
+        .filter_map(|probe| {
+            let tag = match probe.tag.as_str() {
+                "id-50pct" => FEATURE_50PCT_TAG,
+                ID_MISS_TAG => FEATURE_MISS_TAG,
+                _ => return None,
+            };
+            Some(IdProbe {
+                tag: tag.to_string(),
+                ..probe.clone()
+            })
+        })
+        .collect()
+}
+
 /// `array`'s Utf8 values as `Option<String>` per row (`None` for a null
 /// cell) — handles both a plain `Utf8` array and a `Dictionary<Int32,
 /// Utf8>` array, because a string ATTRIBUTE column may be written as
@@ -1016,6 +1042,9 @@ pub struct ResolvedParams {
     /// predicate from — `attr-filter` is then skipped and the caller says
     /// so, never fabricated.
     pub attr_filter: Option<AttrFilterSpec>,
+    /// `feature-50pct` and `feature-miss`, from [`feature_probes`]; EMPTY
+    /// exactly when `id_probes` is.
+    pub feature_probes: Vec<IdProbe>,
     /// The alphabetically-first Int64/Float64 attribute column, or `None`
     /// when the dataset has no numeric attribute at all. Never fabricated:
     /// `attr-stats` and `project` are skipped when this is `None`.
@@ -1076,6 +1105,7 @@ pub fn resolve(
         }
     };
 
+    let feature_probes = feature_probes(&id_probes);
     let meta = open_metadata(cp_table)?;
     let schema = open_arrow_schema(cp_table)?;
     let attr_filter = pick_attr_filter(dataset, &meta, &schema, cp_table)?;
@@ -1092,6 +1122,7 @@ pub fn resolve(
         windows,
         id_probes,
         attr_filter,
+        feature_probes,
         numeric_attr,
         cp_object_total,
     })
@@ -1426,5 +1457,20 @@ mod tests {
             assert_eq!(w.window[2], FIELD[2], "{tag} must keep the dataset zmin");
             assert_eq!(w.window[5], FIELD[5], "{tag} must keep the dataset zmax");
         }
+    }
+
+    #[test]
+    fn feature_probes_reuse_the_middle_feature_and_the_verified_miss() {
+        let seq = ids(10);
+        let verifiable: HashSet<String> = seq.iter().cloned().collect();
+        let id_probes = id_probes(&seq, &verifiable);
+        let features = feature_probes(&id_probes);
+        let tags: Vec<&str> = features.iter().map(|p| p.tag.as_str()).collect();
+        assert_eq!(tags, vec![FEATURE_50PCT_TAG, FEATURE_MISS_TAG]);
+        let middle = id_probes.iter().find(|p| p.tag == "id-50pct").unwrap();
+        assert_eq!(features[0].id, middle.id);
+        assert!(features[0].present);
+        assert!(!features[1].present);
+        assert!(!seq.contains(&features[1].id));
     }
 }

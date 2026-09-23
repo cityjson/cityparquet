@@ -22,6 +22,9 @@ benchmark/runs/data/readbench/
   <name>-hilbert.parquet/
     metadata.json
     ...
+  <name>.<variant>.parquet/ # a local `--variants` run's packages
+    ...                     #   (e.g. `<name>.cityparquet+nobloom.parquet/`),
+                            #   read by the same run over HTTP
   <name>.fcb
   <name>.city.jsonl
   <name>.jsonl.gz

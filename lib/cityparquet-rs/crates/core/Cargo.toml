@@ -21,6 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 geo = { workspace = true }
 city3d-stac-types = { workspace = true }
+cardinality-estimator = { workspace = true }
 object_store = { workspace = true, optional = true }
 futures = { version = "0.3", optional = true }
 futures-util = { version = "0.3", optional = true }
@@ -36,6 +37,7 @@ jsonschema = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
+bytes = { workspace = true }
 
 [features]
 object-store = [

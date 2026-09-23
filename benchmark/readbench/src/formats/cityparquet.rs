@@ -28,13 +28,13 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::async_reader::ParquetObjectReader;
 
 use cityparquet::counting_store::CountingObjectStore;
-use cityparquet::query::{self, AttrPredicate};
+use cityparquet::query::{self, AttrPredicate, LookupStats};
 use cityparquet::query_async;
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::stac::properties::{PackageTables, table_names_from_manifest_bytes};
 use cityparquet_schema::CityMetadata;
 
-use super::{FormatRunner, IoStats, RunOutcome, Source};
+use super::{FormatRunner, IoStats, LookupCounters, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// Locates the main CityObject table inside a CityParquet package:
@@ -117,6 +117,14 @@ fn to_query_predicate(pred: &AttrPred) -> AttrPredicate {
     }
 }
 
+fn counters(stats: LookupStats) -> LookupCounters {
+    LookupCounters {
+        row_groups_total: stats.row_groups_total as u64,
+        bloom_pruned: stats.bloom_pruned as u64,
+        filter_bytes: stats.filter_bytes,
+    }
+}
+
 /// One scenario's fully-resolved parameters — the single place the
 /// `--bbox`/`--attr-column`/`--target-id` requirements are checked and the
 /// CLI predicate is converted, shared by the local (sync) and HTTP (async)
@@ -135,6 +143,9 @@ enum ScenarioPlan<'a> {
     },
     IdLookup {
         id: &'a str,
+    },
+    FeatureLookup {
+        feature_id: &'a str,
     },
     Project {
         column: &'a str,
@@ -160,6 +171,10 @@ impl<'a> ScenarioPlan<'a> {
             },
             Scenario::IdLookup => Self::IdLookup {
                 id: require(&params.target_id, "target-id", scenario)?.as_str(),
+            },
+            Scenario::FeatureLookup => Self::FeatureLookup {
+                feature_id: require(&params.target_feature_id, "target-feature-id", scenario)?
+                    .as_str(),
             },
             Scenario::Project => Self::Project {
                 column: require(&params.attr_column, "attr-column", scenario)?.as_str(),
@@ -239,37 +254,54 @@ async fn run_http(
     let dyn_store = || Arc::clone(&store) as Arc<dyn ObjectStore>;
 
     let plan = ScenarioPlan::resolve(scenario, params)?;
-    let result_count = match plan {
-        ScenarioPlan::Count => query_async::count_async(dyn_store(), &table_path).await?,
+    let (result_count, lookup) = match plan {
+        ScenarioPlan::Count => (
+            query_async::count_async(dyn_store(), &table_path).await?,
+            None,
+        ),
         ScenarioPlan::FullRead => {
             let meta = open_metadata_http(dyn_store(), &table_path).await?;
-            query_async::full_read_async(dyn_store(), &table_path, &meta)
-                .await?
-                .feature_count
+            let result = query_async::full_read_async(dyn_store(), &table_path, &meta).await?;
+            (result.feature_count, None)
         }
         ScenarioPlan::BBoxQuery(bbox) => {
-            query_async::bbox_query_async(dyn_store(), &table_path, bbox)
-                .await?
-                .ids
-                .len() as u64
+            let result = query_async::bbox_query_async(dyn_store(), &table_path, bbox).await?;
+            (result.ids.len() as u64, None)
         }
-        ScenarioPlan::AttrFilter { column, pred } => {
-            query_async::attr_filter_async(dyn_store(), &table_path, column, &pred).await?
-        }
-        ScenarioPlan::AttrStats { column } => {
+        ScenarioPlan::AttrFilter { column, pred } => (
+            query_async::attr_filter_async(dyn_store(), &table_path, column, &pred).await?,
+            None,
+        ),
+        ScenarioPlan::AttrStats { column } => (
             query_async::attr_stats_async(dyn_store(), &table_path, column)
                 .await?
-                .count
-        }
+                .count,
+            None,
+        ),
+        // The footer is read twice — here for the decode metadata, and again
+        // inside the lookup — equally for every variant (disclosed caveat).
         ScenarioPlan::IdLookup { id } => {
             let meta = open_metadata_http(dyn_store(), &table_path).await?;
-            query_async::id_lookup_async(dyn_store(), &table_path, &meta, id)
-                .await?
-                .is_some() as u64
+            let (object, stats) =
+                query_async::id_lookup_async_with_stats(dyn_store(), &table_path, &meta, id)
+                    .await?;
+            (object.is_some() as u64, Some(counters(stats)))
         }
-        ScenarioPlan::Project { column } => {
-            query_async::project_column_async(dyn_store(), &table_path, column).await?
+        ScenarioPlan::FeatureLookup { feature_id } => {
+            let meta = open_metadata_http(dyn_store(), &table_path).await?;
+            let (objects, stats) = query_async::feature_lookup_async_with_stats(
+                dyn_store(),
+                &table_path,
+                &meta,
+                feature_id,
+            )
+            .await?;
+            (objects.len() as u64, Some(counters(stats)))
         }
+        ScenarioPlan::Project { column } => (
+            query_async::project_column_async(dyn_store(), &table_path, column).await?,
+            None,
+        ),
     };
 
     let stats = store.tally();
@@ -279,6 +311,7 @@ async fn run_http(
             bytes: stats.bytes,
             requests: stats.requests,
         }),
+        lookup,
     })
 }
 
@@ -295,28 +328,40 @@ impl FormatRunner for CityParquetRunner {
             Source::Local(path) => {
                 let table = locate_main_table(path)?;
                 let plan = ScenarioPlan::resolve(scenario, params)?;
-                let result_count = match plan {
-                    ScenarioPlan::Count => query::count(&table)?,
+                let (result_count, lookup) = match plan {
+                    ScenarioPlan::Count => (query::count(&table)?, None),
                     ScenarioPlan::FullRead => {
                         let meta = open_metadata(&table)?;
-                        query::full_read(&table, &meta)?.feature_count
+                        (query::full_read(&table, &meta)?.feature_count, None)
                     }
                     ScenarioPlan::BBoxQuery(bbox) => {
-                        query::bbox_query(&table, bbox)?.ids.len() as u64
+                        (query::bbox_query(&table, bbox)?.ids.len() as u64, None)
                     }
                     ScenarioPlan::AttrFilter { column, pred } => {
-                        query::attr_filter(&table, column, &pred)?
+                        (query::attr_filter(&table, column, &pred)?, None)
                     }
-                    ScenarioPlan::AttrStats { column } => query::attr_stats(&table, column)?.count,
+                    ScenarioPlan::AttrStats { column } => {
+                        (query::attr_stats(&table, column)?.count, None)
+                    }
                     ScenarioPlan::IdLookup { id } => {
                         let meta = open_metadata(&table)?;
-                        query::id_lookup(&table, &meta, id)?.is_some() as u64
+                        let (object, stats) = query::id_lookup_with_stats(&table, &meta, id)?;
+                        (object.is_some() as u64, Some(counters(stats)))
                     }
-                    ScenarioPlan::Project { column } => query::project_column(&table, column)?,
+                    ScenarioPlan::FeatureLookup { feature_id } => {
+                        let meta = open_metadata(&table)?;
+                        let (objects, stats) =
+                            query::feature_lookup_with_stats(&table, &meta, feature_id)?;
+                        (objects.len() as u64, Some(counters(stats)))
+                    }
+                    ScenarioPlan::Project { column } => {
+                        (query::project_column(&table, column)?, None)
+                    }
                 };
                 return Ok(RunOutcome {
                     result_count,
                     io: None,
+                    lookup,
                 });
             }
             Source::Http { base_url, key } => (base_url, key),

@@ -1,6 +1,11 @@
 # CityParquet read-benchmark methodology
 
-The format family's query definitions and fairness caveats live here. The
+The format family's query definitions live here, and so does the **one
+numbered fairness-caveat list for every family** — the format family's own,
+the configuration families' and the `bloom` family's. It is single because
+`benchviz` renders exactly this list onto the summary page (`prep.read_caveats`
+extracts it verbatim, `html.py` prints it under "Measurement caveats"), so a
+caveat kept anywhere else never reaches a reader of the figures. The
 suite entry points, dataset selection and figure layout are described in
 [`../README.md`](../README.md). Run `just bench-prep --families formats`,
 `just bench-run --families formats`, then `just bench-summary` from the
@@ -39,7 +44,7 @@ today" through "what we propose" to "a different engine over the same file":
 | `cityjson`            | plain, whole-document CityJSON (`.city.json`): one JSON document, one `CityObjects` map, one shared document-level `vertices` array                                                                                                                                                                | **none** — the document must be parsed in one piece before any object is readable, so every scenario is a full parse (see Caveat 13)                 |
 | `cityjsonseq`         | CityJSONSeq, one self-contained JSON feature per line, feature-local vertices. Read from the PREPARED `<base>.city.jsonl` — `readbench_prepare.sh` always materialises one (copied from a `.city.jsonl` input, `cjseq cat` from anything else), and the runner refuses a CityGML document outright | **none** — every scenario is a full parse                                                                                                            |
 | `cityjsonseq-gz`      | the same stream, `gzip -9`'d                                                                                                                                                                                                                                                                       | **none** — full parse, plus gzip inflate                                                                                                             |
-| `flatcitybuf`         | FlatCityBuf, written `fcb ser -A` and NOTHING else — every other index knob at its `fcb ser` default (attribute B+-tree branching factor 256, R-tree node size 16). One configuration, measured once, not a swept axis; see Caveat 25                                                                | R-tree spatial index (**2D only**, see Caveat 4) + B+-tree index over **every** attribute (`-A`)                                                     |
+| `flatcitybuf`         | FlatCityBuf, written `fcb ser -A` and NOTHING else — every other index knob at its `fcb ser` default (attribute B+-tree branching factor 256, R-tree node size 16). One configuration, measured once, not a swept axis; see Caveat 33                                                              | R-tree spatial index (**2D only**, see Caveat 4) + B+-tree index over **every** attribute (`-A`)                                                     |
 | `cityparquet`         | our CityParquet package, **source row order** (`cityparquet convert --overwrite`)                                                                                                                                                                                                                  | Parquet row-group min/max statistics + column projection                                                                                             |
 | `cityparquet-hilbert` | the same package, rows written in Hilbert-curve order (`--ordering hilbert`)                                                                                                                                                                                                                       | the same Parquet statistics, but tighter per-row-group bboxes from spatial clustering                                                                |
 | `duckdb-parquet`      | DuckDB (v1.5.x) SQL, `read_parquet()` directly over our `cityparquet` package's own table                                                                                                                                                                                                          | whatever Parquet statistics DuckDB's own scan uses — same file as `cityparquet`, different engine                                                    |
@@ -178,15 +183,15 @@ a successful conversion alone does not prove equivalent content.
 Every format implements every scenario via its own natural mechanism —
 never a hand-tuned shortcut, never an artificial common code path:
 
-| scenario                         | common target                                                      | `citygml` mechanism                                                                                                                                                                                                     | `cityjson` mechanism                                                                                                                                                 | `cityjsonseq`(+gz) mechanism                                | `flatcitybuf` mechanism                                          | `cityparquet`(+`-hilbert`) mechanism                                                               | `duckdb-parquet` mechanism                                                                                                                              |
-| -------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `full-read`                      | decode every feature's geometry; `(feature_count, boundary_count)` | stream every `cityObjectMember` (quick-xml), decoding every `gml:pos`/`posList`, resolving every `xlink:href` surface reference and rebuilding a feature-local vertex pool, then walk each geometry's `boundaries` tree | parse the whole document, then **resolve every boundary leaf** through the shared `vertices` + `transform` — _not_ the same operation as `cityjsonseq`'s (Caveat 13) | parse every line, walk each feature's own `boundaries` tree | `select_all` + a RAW `CityFeature` walk (`cur_feature`): every geometry's five flattened index arrays and its semantics indices, every template instance's boundaries, every vertex — no CityJSON conversion (Caveat 24) | scan all row groups, decode WKB                                                                    | `SELECT sum(hash(COLUMNS(*)))` — forces every column decoded                                                                                            |
-| `count`                          | total feature/object count                                         | count `cityObjectMember`s (full parse)                                                                                                                                                                                  | size of the `CityObjects` map (full parse)                                                                                                                           | count parsed lines (full parse)                             | `features_count()` header field (O(1))                           | Parquet file metadata `num_rows` (O(1), no scan)                                                   | `SELECT count(*)`                                                                                                                                       |
-| `bbox-query` (1%/5%/25% of rows) | ids/count of objects whose bbox intersects a query window          | parse all, test each member's own unioned bbox                                                                                                                                                                          | parse all, test each CityObject's bbox (min/max over the vertices its geometries reference, resolved through `transform`)                                            | parse all, test each feature's own unioned bbox             | `select_query(Query::BBox)` — R-tree, **2D only** (see Caveat 4) | row-group prune (`with_bbox_row_groups`) + row-level bbox test — **exact**                         | `WHERE bbox.xmax>=.. AND bbox.xmin<=.. AND bbox.ymax>=.. AND bbox.ymin<=..` (full z window, so no z clause needed)                                      |
-| `attr-filter`                    | count of objects matching an ATTRIBUTE predicate — `attr == v`, or `attr >= q` (see "Which attribute the predicate runs on") | parse all, test each CityObject's `attributes`                                                                                                                                                                          | parse all, test each CityObject's `attributes`                                                                                                                       | parse all, test each CityObject's `attributes`              | B+-tree attribute index (`select_attr_query`) when the column is in the CityJSON `attributes` map; otherwise a raw `select_all` walk that decodes only that one column (Caveats 11, 19, 24) | `RowFilter` (`ArrowPredicateFn`) + row-group statistics prune                                      | `WHERE "<attr>" = '<v>'` / `WHERE "<attr>" >= <q>`, read from the sidecar                                                                                |
-| `attr-stats`                     | `(min, max, sum, count)` of a numeric attribute                    | parse all, aggregate                                                                                                                                                                                                    | parse all, aggregate                                                                                                                                                 | parse all, aggregate                                        | full walk decoding only that one attribute column, no geometry, then aggregate (no numeric-range index) | min/max from Parquet column-chunk statistics (near-free); sum/count from a 1-column projected scan | `SELECT min(c), max(c), sum(c), count(c)`                                                                                                               |
-| `id-lookup` (x4)                 | the single object with a given id, materialised                    | parse until found (early exit); a miss drains to EOF                                                                                                                                                                    | parse the whole document, then one map lookup                                                                                                                        | parse until found (early exit)                              | the B+-tree is tried and never has the field, so in practice a raw `select_all` walk comparing each CityObject's borrowed `id()`, exiting at the hit (Caveats 19, 24) | `RowFilter` on `id` + decode of the one surviving row                                              | not run (id lookup is not a distinct DuckDB SQL pattern worth timing separately from `attr-filter`'s `WHERE` plan; the coordinator's own rows carry it) |
-| `project`                        | one attribute column read across every row; non-null count         | parse all, read that attribute                                                                                                                                                                                          | parse all, read that attribute                                                                                                                                       | parse all, read that attribute                              | full walk decoding only that one attribute column, no geometry   | single-column `ProjectionMask`                                                                     | `SELECT count(<that same numeric column>)`                                                                                                              |
+| scenario                         | common target                                                                                                                | `citygml` mechanism                                                                                                                                                                                                     | `cityjson` mechanism                                                                                                                                                 | `cityjsonseq`(+gz) mechanism                                | `flatcitybuf` mechanism                                                                                                                                                                                                  | `cityparquet`(+`-hilbert`) mechanism                                                               | `duckdb-parquet` mechanism                                                                                                                              |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `full-read`                      | decode every feature's geometry; `(feature_count, boundary_count)`                                                           | stream every `cityObjectMember` (quick-xml), decoding every `gml:pos`/`posList`, resolving every `xlink:href` surface reference and rebuilding a feature-local vertex pool, then walk each geometry's `boundaries` tree | parse the whole document, then **resolve every boundary leaf** through the shared `vertices` + `transform` — _not_ the same operation as `cityjsonseq`'s (Caveat 13) | parse every line, walk each feature's own `boundaries` tree | `select_all` + a RAW `CityFeature` walk (`cur_feature`): every geometry's five flattened index arrays and its semantics indices, every template instance's boundaries, every vertex — no CityJSON conversion (Caveat 32) | scan all row groups, decode WKB                                                                    | `SELECT sum(hash(COLUMNS(*)))` — forces every column decoded                                                                                            |
+| `count`                          | total feature/object count                                                                                                   | count `cityObjectMember`s (full parse)                                                                                                                                                                                  | size of the `CityObjects` map (full parse)                                                                                                                           | count parsed lines (full parse)                             | `features_count()` header field (O(1))                                                                                                                                                                                   | Parquet file metadata `num_rows` (O(1), no scan)                                                   | `SELECT count(*)`                                                                                                                                       |
+| `bbox-query` (1%/5%/25% of rows) | ids/count of objects whose bbox intersects a query window                                                                    | parse all, test each member's own unioned bbox                                                                                                                                                                          | parse all, test each CityObject's bbox (min/max over the vertices its geometries reference, resolved through `transform`)                                            | parse all, test each feature's own unioned bbox             | `select_query(Query::BBox)` — R-tree, **2D only** (see Caveat 4)                                                                                                                                                         | row-group prune (`with_bbox_row_groups`) + row-level bbox test — **exact**                         | `WHERE bbox.xmax>=.. AND bbox.xmin<=.. AND bbox.ymax>=.. AND bbox.ymin<=..` (full z window, so no z clause needed)                                      |
+| `attr-filter`                    | count of objects matching an ATTRIBUTE predicate — `attr == v`, or `attr >= q` (see "Which attribute the predicate runs on") | parse all, test each CityObject's `attributes`                                                                                                                                                                          | parse all, test each CityObject's `attributes`                                                                                                                       | parse all, test each CityObject's `attributes`              | B+-tree attribute index (`select_attr_query`) when the column is in the CityJSON `attributes` map; otherwise a raw `select_all` walk that decodes only that one column (Caveats 11, 19, 24)                              | `RowFilter` (`ArrowPredicateFn`) + row-group statistics prune                                      | `WHERE "<attr>" = '<v>'` / `WHERE "<attr>" >= <q>`, read from the sidecar                                                                               |
+| `attr-stats`                     | `(min, max, sum, count)` of a numeric attribute                                                                              | parse all, aggregate                                                                                                                                                                                                    | parse all, aggregate                                                                                                                                                 | parse all, aggregate                                        | full walk decoding only that one attribute column, no geometry, then aggregate (no numeric-range index)                                                                                                                  | min/max from Parquet column-chunk statistics (near-free); sum/count from a 1-column projected scan | `SELECT min(c), max(c), sum(c), count(c)`                                                                                                               |
+| `id-lookup` (x4)                 | the single object with a given id, materialised                                                                              | parse until found (early exit); a miss drains to EOF                                                                                                                                                                    | parse the whole document, then one map lookup                                                                                                                        | parse until found (early exit)                              | the B+-tree is tried and never has the field, so in practice a raw `select_all` walk comparing each CityObject's borrowed `id()`, exiting at the hit (Caveats 19, 24)                                                    | `RowFilter` on `id` + decode of the one surviving row                                              | not run (id lookup is not a distinct DuckDB SQL pattern worth timing separately from `attr-filter`'s `WHERE` plan; the coordinator's own rows carry it) |
+| `project`                        | one attribute column read across every row; non-null count                                                                   | parse all, read that attribute                                                                                                                                                                                          | parse all, read that attribute                                                                                                                                       | parse all, read that attribute                              | full walk decoding only that one attribute column, no geometry                                                                                                                                                           | single-column `ProjectionMask`                                                                     | `SELECT count(<that same numeric column>)`                                                                                                              |
 
 `cityparquet` and `cityparquet-hilbert` share one runner and one column here:
 a Hilbert-ordered package is still a plain CityParquet package on disk, and
@@ -261,13 +266,18 @@ whose target was not reachable on the data carries `approx` in `notes`
 alongside its tag; the achieved fraction is always what the `selectivity`
 column records, so target against achieved is checkable per row.
 
+`feature-lookup` (CityParquet only, run by name — the `bloom` family) returns
+every object of one `feature_id`, probed at `feature-50pct` (the `id-50pct`
+feature) and `feature-miss`; it is not one of the seven comparison scenarios,
+because no other format stores the column.
+
 ## Metrics and the CSV contract
 
 `benchmark/formats/read_results/*.csv`, one row per (dataset, format, scenario
 [, selectivity target]):
 
 ```
-dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests
+dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
 ```
 
 - `time_s` / `time_mad_s` — **warm-cache** median and median-absolute-
@@ -288,7 +298,7 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
   `rss_to_bytes` in `benchmark/readbench/src/main.rs` (`ru_maxrss` is
   natively KiB on Linux per `getrusage(2)`, bytes on macOS/BSD). The column
   is bytes throughout. **Every CSV committed before the `VmHWM` change is
-  floored at the coordinator's own RSS** — see Caveat 26 — so its small
+  floored at the coordinator's own RSS** — see Caveat 34 — so its small
   values are not the child's.
 - `selectivity` = `result_count / total_object_count`, empty where N/A
   (`count`, `full-read`). See Caveat 2 for what `total_object_count` means
@@ -310,6 +320,14 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
   row** (no HTTP concept locally); for a `--transport http` row, the total
   bytes transferred and HTTP request count that scenario's own
   transport-agnostic reader made (see "HTTP transport" below).
+- `row_groups_total` / `bloom_pruned` / `filter_bytes` — **empty on every
+  row but a CityParquet `id-lookup` or `feature-lookup`**: the table's row
+  groups, those its bloom filters ruled out, and the bitset bytes of every
+  filter examined (32 per block; header bytes and transport overhead are not
+  counted — `bytes_read` carries the latter over HTTP). The kept row groups are
+  read by one reader, as without filters; an `id-lookup` hit stops at its
+  first match. Deterministic across repeats; the first warm sample's values
+  are recorded.
 
 ## Warm vs cold protocol
 
@@ -357,7 +375,7 @@ each cold number stands alone, one per format, one `full-read` only.
    attribute index naturally returns per entry: `fcb_core` indexes every
    value of a feature's `city_objects` map, not only the root object, so on
    Vienna an indexed `attr-filter` returns 600 entries from 307 features,
-   and the raw-accessor walks of Caveat 24 count the same way; the two
+   and the raw-accessor walks of Caveat 32 count the same way; the two
    parsing formats by explicit choice, to match) — so these four are directly, honestly
    comparable across every format; `count`/`full-read`/`bbox-query` are not.
    Empirically: `lod3_railway.city.json` is 121 CityObjects / 38 top-level
@@ -535,7 +553,7 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     index-vs-scan measurement is never silently mislabelled. It used to say
     so on stderr only, which meant a fallback was invisible to everyone
     reading the artefact. That fallback is a raw-flatbuffer walk, not a
-    CityJSON conversion — see Caveat 24. The `cityjsonseq-gz` runner fully supports
+    CityJSON conversion — see Caveat 32. The `cityjsonseq-gz` runner fully supports
     CityJSONSeq and single-line whole-document `.city.json.gz` (the form the
     committed fixtures use); a _pretty-printed_ multi-line whole-document
     `.city.json.gz` is not yet handled (it needs the fuller sniff
@@ -883,7 +901,65 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     cross-format cost is measured properly in `read_results/`, on six real
     published datasets, which is what that family is for.
 
-24. **FlatCityBuf is read through the raw FlatBuffers accessors, not
+24. **The `bloom` family's larger slices show pruning across many row
+    groups.** At the default 65 536-row groups the small slices are one row
+    group, which a filter can still prune on a miss but which says nothing
+    about how pruning scales; the slices from `3dbag_n100000` upward, at two
+    or more groups, are the informative ones.
+
+25. **In the `bloom` family, a filter's positive is not a match.** At FPP 0.01
+    a miss can still keep a row group; `row_groups_total − bloom_pruned` on
+    the `*-miss` rows is how many the reader still scanned.
+
+26. **The `bloom` family reads the footer twice per lookup** — once for the
+    decode metadata, once inside the lookup — equally for both variants.
+
+27. **The `bloom` family measures single-table packages only.** The runner
+    queries one object table; a multi-table corpus package is refused, never
+    partially read.
+
+28. **In the `bloom` family, `feature-50pct` is the `id-50pct` feature**, and
+    `feature-miss` the same verified-absent string as `id-miss` (absent from
+    both columns).
+
+29. **The `bloom` family's requests are logical.** Over `--transport http`,
+    `CountingObjectStore` counts the requests the reader made after
+    object_store coalesced nearby ranges — not raw wire traffic, retries or
+    connection reuse.
+
+30. **The committed codec and row-group CSVs predate bloom filters.** Every
+    package they measured, the `cityparquet` baseline included, carries none,
+    and their `id-50pct` rows read the `id` column without bloom pruning. The
+    current writer puts filters on `id`, `feature_id` and high-cardinality
+    string attributes by default, so its packages are larger and its lookups
+    prune: re-run both families before comparing them with the `bloom`
+    family, or with each other across that change.
+
+31. **Every other committed CSV predates bloom filters too.** Caveat 30 names
+    the configuration families; the rest are in the same position, and nothing
+    committed was measured with filters on. Specifically:
+
+    - The read CSVs of `read_results/`, `scaling_read_results/`,
+      `ordering_results/` and `scaling_ordering_results/` are all in the
+      13-column shape that predates the three lookup counters
+      (`row_groups_total`, `bloom_pruned`, `filter_bytes`) — which is the
+      shape's own evidence of their age. So **every** `cityparquet` /
+      `cityparquet-hilbert` `id-lookup` row in them, `id-miss` included, read
+      the `id` column with no filter to prune with.
+    - Every `sizes.csv` beside them, and the `total_bytes` column of the
+      12-column writer matrices in `results/` and `scaling_write_results/`,
+      measures packages that carry no filter bytes. (Neither writer-matrix
+      directory has a `sizes.csv` of its own; its bytes are in the matrix.)
+
+    So the cross-format id-lookup times and the cross-format byte counts the
+    paper cites describe a package with no filters: **re-run the `formats` and
+    `sizes` families before comparing either against a package the current
+    writer produced, or against the `bloom` family.** A partial re-run of a
+    read CSV is not available: `benchmark/scripts/format_write.py` refuses to
+    append to a results CSV whose header is not the current 16-column one, so
+    an incremental re-run needs the 13-column file removed first.
+
+32. **FlatCityBuf is read through the raw FlatBuffers accessors, not
     `cur_cj_feature`.** Every FCB walk — `full-read`, the `attr-filter`
     fallback, `id-lookup`, `attr-stats`, `project` — reads
     `FeatureIter::cur_feature()`, the zero-copy `CityFeature` table, and
@@ -919,17 +995,16 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     attribute-, id- and full-read costs and must not be mixed with figures
     produced after it.
 
-25. **One FlatCityBuf configuration, chosen by measurement.** The `.fcb`
+33. **One FlatCityBuf configuration, chosen by measurement.** The `.fcb`
     artefacts are written `fcb ser -A` with every other index knob left at
-    its default — attribute B+-tree branching factor 256, R-tree node size
-    16. That is a decision, not an oversight, and it is not a swept axis:
+    its default — attribute B+-tree branching factor 256, R-tree node size 16. That is a decision, not an oversight, and it is not a swept axis:
     the paper's configuration axes are CityParquet's own.
 
     `3dbag_n100000` was written at attribute branching factors 16, 64, 128
     and 256 and read back with the benchmark's own child (3 repeats,
     medians): `count` 0.1 ms, `bbox-1pct` 0.3 ms, `bbox-5pct` 1.0 ms,
     `bbox-25pct` 3.4-4.0 ms, the indexed `attr-filter` (`b3_dak_type ==
-    slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
+slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     scenario within noise of every other factor, with identical
     `result_count`s and file sizes inside 0.5%. `zurich_building_lod2`
     agrees at 16/128/256, including on an indexed `attr-filter` that really
@@ -944,7 +1019,7 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     written `fcb ser -A --index-node-size 64` panics with a capacity
     overflow on every `bbox-query`. Reproduced here, not inferred.
 
-26. **`peak_rss_bytes` in every CSV committed before 2026-09-22 is floored
+34. **`peak_rss_bytes` in every CSV committed before 2026-09-22 is floored
     at the coordinator's own RSS, and the floor hides every format that
     used less.** The child used to report `getrusage(RUSAGE_SELF).ru_maxrss`.
     Linux's `exec_mmap` folds the high-water mark of the address space a
@@ -1035,7 +1110,7 @@ cat benchmark/formats/tools/tool_versions.txt      # the pinned conversion chain
 in kB from `/proc/self/status`; `rss_to_bytes` in
 `benchmark/readbench/src/main.rs` normalises the `ru_maxrss` other
 platforms report), so a Linux run and a macOS run are directly comparable in
-that column, subject to Caveat 26 for runs made before the `VmHWM` change.
+that column, subject to Caveat 34 for runs made before the `VmHWM` change.
 
 ## Reproduce
 

@@ -37,12 +37,33 @@ pub struct IoStats {
 }
 
 /// A [`FormatRunner::run`] call's result: the scenario's natural result
-/// cardinality, plus [`IoStats`] when `source` was [`Source::Http`].
+/// cardinality, plus [`IoStats`] when `source` was [`Source::Http`], plus
+/// [`LookupCounters`] for a CityParquet identifier lookup.
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
     pub result_count: u64,
     pub io: Option<IoStats>,
+    pub lookup: Option<LookupCounters>,
 }
+
+/// What the bloom filters did for one CityParquet identifier lookup —
+/// `cityparquet::query::LookupStats` as the child reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LookupCounters {
+    pub row_groups_total: u64,
+    pub bloom_pruned: u64,
+    /// Bitset bytes of every filter examined (`LookupStats::filter_bytes`).
+    pub filter_bytes: u64,
+}
+
+/// A child reports its [`LookupCounters`] on stderr, after its timed stdout
+/// line, as `<marker> <row_groups_total> <bloom_pruned> <filter_bytes>`, so
+/// the timed stdout protocol keeps its shape.
+pub const LOOKUP_STATS_MARKER: &str = "cityparquet-readbench: lookup-stats";
+
+/// Every non-CityParquet runner's answer to [`Scenario::FeatureLookup`].
+pub const FEATURE_LOOKUP_CITYPARQUET_ONLY: &str =
+    "scenario 'feature-lookup' is measured for CityParquet only";
 
 /// One format's read-benchmark backend: runs exactly one [`Scenario`]
 /// against `source` (a format-specific location — a CityParquet package

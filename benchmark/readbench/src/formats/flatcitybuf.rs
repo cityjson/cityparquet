@@ -1177,6 +1177,7 @@ async fn run_http(
             let id = require(&params.target_id, "target-id", scenario)?;
             id_lookup_http(&url, tally.clone(), id).await?
         }
+        Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
         Scenario::Project => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
             project_http(&url, tally.clone(), column).await?
@@ -1187,6 +1188,7 @@ async fn run_http(
     Ok(RunOutcome {
         result_count,
         io: Some(IoStats { bytes, requests }),
+        lookup: None,
     })
 }
 
@@ -1228,6 +1230,7 @@ impl FormatRunner for FlatCityBufRunner {
                         let id = require(&params.target_id, "target-id", scenario)?;
                         id_lookup(input, id)?
                     }
+                    Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
                     Scenario::Project => {
                         let column = require(&params.attr_column, "attr-column", scenario)?;
                         project(input, column)?
@@ -1236,6 +1239,7 @@ impl FormatRunner for FlatCityBufRunner {
                 return Ok(RunOutcome {
                     result_count,
                     io: None,
+                    lookup: None,
                 });
             }
             Source::Http { base_url, key } => (base_url, key),

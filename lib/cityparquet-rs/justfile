@@ -25,11 +25,13 @@ curl_retry := "--retry 3 --retry-delay 2 --retry-all-errors"
 default:
     @just --list
 
+# `--all-features`: the object-store transport (`query_async`,
+# `counting_store`) is a feature, and its tests only run with it on.
 test:
-    cargo test --workspace
+    cargo test --workspace --all-features
 
 lint:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Prettier is pinned exactly — a floating minor changes Markdown output and
 # would churn files nobody edited. Keep in step with .githooks/pre-commit.
