@@ -58,3 +58,54 @@ are the hubs. Tests are `test/sql` (70 files, ~1.3k SQLLogic records),
 `test/cpp` (9) and `test/wasm`.
 
 _Detailed findings follow in the per-module sections._
+
+## 3. Part 1 — tests to delete, merge or modify
+
+### 3.0 Inventory and measured cost
+
+`lib/cityparquet-rs` has 801 test functions. None is property-based or a
+snapshot test.
+
+| Crate                | Inline unit (`src/`) | Integration (`tests/`)                      | Measured                              |
+| -------------------- | -------------------- | ------------------------------------------- | ------------------------------------- |
+| `cityparquet-schema` | 100                  | 2 (1 file)                                  | 25 s CPU                              |
+| `cityparquet` (core) | 381                  | 279 (45 files; 6 `#[ignore]`, bloom/DuckDB) | 355 s unit + ~2,700 s integration CPU |
+| `cityparquet-cli`    | 3                    | 36 (`cli.rs`, `bench_smoke.rs`)             | 469 s CPU                             |
+
+This comes from a single run of `cargo nextest run --workspace --all-features`
+on a 128-core host: 795 passed, 6 skipped, **2 min 46 s wall-clock** and
+**3,318 s summed test time**. The wall-clock figure is set by one test:
+`bench_smoke::bench_run_produces_the_default_nine_variant_matrix_for_delft`
+takes 129 s. Most of the summed cost is full convert → export → compare
+round trips on the `delft` and `lod3_railway` fixtures, at 15–60 s each.
+
+Slowest tests:
+
+| s   | Test                                                                                        |
+| --- | ------------------------------------------------------------------------------------------- |
+| 129 | `cli::bench_smoke::bench_run_produces_the_default_nine_variant_matrix_for_delft`            |
+| 63  | `core::roundtrip_real_data::every_recipe_preset_round_trips_delft_losslessly`               |
+| 51  | `cli::bench_smoke::bench_run_compression_variants_differ_in_total_bytes`                    |
+| 42  | `cli::bench_smoke::bench_run_accepts_a_zstd_level_suffix_and_the_levels_differ_in_bytes`    |
+| 36  | `core::citygml_buildingparts::delft_building_parts_round_trip`                              |
+| 34  | `cli::cli::convert_with_compression_override_changes_output_size_and_round_trips`           |
+| 32  | `core::bloom_real_data::partitions_share_the_dataset_wide_attribute_decision`               |
+| 30  | `core::bloom_real_data::attr_filter_prunes_filtered_string_columns_and_counts_exactly`      |
+| 28  | `core::compare::tests::compare_detects_a_mutated_geometry_instance_template_material`       |
+| 27  | `core::compare::tests::compare_detects_an_added_geometry_instance_template_semantics_block` |
+
+Summed test time by binary (top): core inline units 356 s, `export_real_data`
+312 s, `convert_real_data` 281 s, `roundtrip_real_data` 255 s,
+`bloom_real_data` 240 s, `bench_smoke` 239 s, `cli` 230 s,
+`partition_real_data` 151 s.
+
+On flakiness: nothing has a retry marker. The only skips are six `#[ignore]`
+tests in `bloom_corpus.rs` and `bloom_duckdb_interop.rs`, which need an external
+corpus or DuckDB. Fixture downloads retry in the `justfile`
+(`--retry-all-errors`), which points to network flakiness in CI setup rather
+than in the tests.
+
+`lib/duckdb-3d` has 18 kernel C++ test files (`test/cpp`) and 33 SQLLogic
+files (~400 records). `lib/duckdb-cityjson` has 70 SQLLogic files (~1.3k
+records), 9 C++ files and a WASM suite. Their timings are in their own
+sections.
