@@ -38,6 +38,17 @@ just bench-summary --data-root benchmark/runs
 ```
 
 The family names are `sizes`, `formats`, `codec`, `rowgroup`, `bloom` and
+
+Three run profiles decide which slice stands in for the large dataset, how
+many repetitions are measured and where results land, so a test run can
+never overwrite the paper's evidence: `--profile full` (the default; the
+largest 3DBAG slice, seven read and three write repetitions, each family's
+own results directory), `--profile short` (the manifest's
+`short_scaling_dataset`, currently `3dbag_n100000`, the same repetitions,
+results under `<family>/short/`; for iterating on the harness in about an
+hour rather than a day) and `--profile smoke` (`--smoke`: the 1000-object
+slice and Rotterdam, one repetition, `<family>/smoke/`; a pipeline check,
+not a measurement). Every run manifest records its profile.
 `databases`. With no selection, the suite includes all six. Use each command's `--help`
 for its selection and output options. Smoke runs validate the pipeline with
 small inputs and fewer repetitions; their results are not publication runs.
