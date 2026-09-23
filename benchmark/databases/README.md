@@ -80,15 +80,15 @@ before citing a number. In brief:
 
 ## Systems
 
-| tag                            | what it is                                                                                                                                                                           | runs                                                                       | index support                                                            |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `duckdb-cityparquet`           | DuckDB (Python client) `read_parquet()` over the **Hilbert** CityParquet package `<prepared>/<dataset>-hilbert.parquet`; no separate ingest                                          | every scenario                                                             | Parquet statistics used by DuckDB's own scan                             |
-| `duckdb-cityparquet-source`    | the same, over the **source-order** package `<prepared>/<dataset>.parquet`                                                                                                           | `bbox-query` only — the one scenario whose answer depends on row order     | the same statistics, with row groups in source order                     |
-| `duckdb-cityparquet-writeback` | the same as `duckdb-cityparquet`, with `cityparquet_write` inside the timed window                                                                                                   | the write tier only                                                        | —                                                                        |
-| `cjdb`                         | cjdb 2.2.0, **patched (Caveat 2)**, imported into PostgreSQL/PostGIS. Full geometry is JSONB (`city_object.geometry`); only a 2D footprint is a PostGIS geometry (`ground_geometry`) | every scenario                                                             | cjdb's own defaults plus one added btree(`object_id`) — see "Index sets" |
-| `3dcitydb`                     | 3DCityDB v5.1.2, imported with `citydb-tool` 1.3.2 into PostgreSQL/PostGIS. Generic `feature`/`property`/`geometry_data` schema: CityGML classes are rows, attributes are EAV rows   | every scenario                                                             | the indexes `citydb-tool import cityjson` creates; none added            |
-| `cityparquet`                  | the native Rust reader over the source-order package, driven per sample as `cityparquet-readbench --child`                                                                           | `count`, `bbox-query`, `attr-filter`, `attr-stats`, `id-lookup` (Caveat 7) | Parquet row-group min/max statistics and column projection               |
-| `cityparquet-hilbert`          | the same reader over `<prepared>/<dataset>-hilbert.parquet`, rows in Hilbert-curve order                                                                                             | the same five                                                              | the same statistics, with tighter per-row-group bounding boxes           |
+| tag                            | what it is                                                                                                                                                                           | runs                                                                       | index support                                                                                                                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `duckdb-cityparquet`           | DuckDB (Python client) `read_parquet()` over the **Hilbert** CityParquet package `<prepared>/<dataset>-hilbert.parquet`; no separate ingest                                          | every scenario                                                             | Parquet statistics used by DuckDB's own scan, and the package's bloom filters on `id`, `feature_id` and high-cardinality string attributes for equality predicates (Caveat 21) |
+| `duckdb-cityparquet-source`    | the same, over the **source-order** package `<prepared>/<dataset>.parquet`                                                                                                           | `bbox-query` only — the one scenario whose answer depends on row order     | the same statistics, with row groups in source order                                                                                                                           |
+| `duckdb-cityparquet-writeback` | the same as `duckdb-cityparquet`, with `cityparquet_write` inside the timed window                                                                                                   | the write tier only                                                        | —                                                                                                                                                                              |
+| `cjdb`                         | cjdb 2.2.0, **patched (Caveat 2)**, imported into PostgreSQL/PostGIS. Full geometry is JSONB (`city_object.geometry`); only a 2D footprint is a PostGIS geometry (`ground_geometry`) | every scenario                                                             | cjdb's own defaults plus one added btree(`object_id`) — see "Index sets"                                                                                                       |
+| `3dcitydb`                     | 3DCityDB v5.1.2, imported with `citydb-tool` 1.3.2 into PostgreSQL/PostGIS. Generic `feature`/`property`/`geometry_data` schema: CityGML classes are rows, attributes are EAV rows   | every scenario                                                             | the indexes `citydb-tool import cityjson` creates; none added                                                                                                                  |
+| `cityparquet`                  | the native Rust reader over the source-order package, driven per sample as `cityparquet-readbench --child`                                                                           | `count`, `bbox-query`, `attr-filter`, `attr-stats`, `id-lookup` (Caveat 7) | Parquet row-group min/max statistics and column projection                                                                                                                     |
+| `cityparquet-hilbert`          | the same reader over `<prepared>/<dataset>-hilbert.parquet`, rows in Hilbert-curve order                                                                                             | the same five                                                              | the same statistics, with tighter per-row-group bounding boxes                                                                                                                 |
 
 `citybench run` uses the three `duckdb-cityparquet*` tags plus `cjdb` and
 `3dcitydb` by default. The native readers run only when named in
@@ -1042,6 +1042,21 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     neither DuckDB row does — relevant to cache state between samples, and
     to wall-clock planning of a full run. Write rows are exempt, because
     there the re-run would apply the mutation twice (see "The write tier").
+
+21. **The CityParquet package carries bloom filters, and DuckDB consults
+    them.** Since the writer's 2026-09-23 default, `cityparquet convert`
+    writes Parquet bloom filters on `id`, `feature_id` and every string
+    attribute whose estimated distinct count reaches a fifth of its
+    non-null count (FPP 0.01, filters after the last row group). DuckDB
+    reads them for equality predicates, so `id-lookup` and `attr-filter`
+    on `duckdb-cityparquet` can skip row groups a min/max statistic could
+    not. cjdb and 3DCityDB answer the same probes through their btree
+    indexes, so this is an index-versus-index comparison, not a scan
+    against an index as it was in the 12 September run, whose package
+    carried no filters. A figure that puts the two runs side by side must
+    say so. `parquet_metadata(...)` on the package shows
+    `bloom_filter_offset` non-null on the filtered columns; the format
+    family's `bloom` family measures the effect in isolation.
 
 ## Running the benchmark
 
