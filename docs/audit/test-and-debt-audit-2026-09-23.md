@@ -113,6 +113,18 @@ Slowest tests:
 | 28  | `core::compare::tests::compare_detects_a_mutated_geometry_instance_template_material`       |
 | 27  | `core::compare::tests::compare_detects_an_added_geometry_instance_template_semantics_block` |
 
+**Wall-clock depends on the runner.** The gate is `just test`, which runs
+`cargo test --workspace --all-features`. It runs the test **binaries one after
+another**, each with its own threads, and took **10 min 10 s** wall-clock in
+the same session: 606 s of per-binary time, plus about 4 min of compiling and
+linking 50 test binaries. Per binary: `bench_smoke` 127 s, `roundtrip_real_data`
+64 s, `cli` 31 s, `citygml_buildingparts` 29 s, `module_schema_real_data` 22 s,
+`bloom_real_data` 22 s, `lod0_synthesis` 22 s, and the whole core inline-unit
+binary (381 tests) **20 s**. So under the gate, removing slow integration
+binaries and whole-binary costs (`bench_smoke`, the recipe-matrix round trip)
+saves wall-clock. Unit-test merges mainly save CPU, and nextest time. Both
+figures are given below where they differ.
+
 Summed test time by binary (top): core inline units 356 s, `export_real_data`
 312 s, `convert_real_data` 281 s, `roundtrip_real_data` 255 s,
 `bloom_real_data` 240 s, `bench_smoke` 239 s, `cli` 230 s,
