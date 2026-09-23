@@ -609,7 +609,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                          predicate can be derived from (never fabricated)"
                     ),
                 },
-                Scenario::AttrStats | Scenario::Project => match &resolved.numeric_attr {
+                Scenario::AttrStats => match &resolved.numeric_attr {
                     Some(column) => {
                         let params = QueryParams {
                             attr_column: Some(column.clone()),
@@ -1205,7 +1205,7 @@ fn spawn_child(
 /// total is the correct SELECTIVITY denominator only for [`Scenario::BBoxQuery`]
 /// (feature-level numerator over a feature-level denominator, for every
 /// format). For the CityObject-level scenarios (`AttrFilter`/`AttrStats`/
-/// `Project`/`IdLookup`), [`run`] instead uses the dataset-global CityObject
+/// `IdLookup`), [`run`] instead uses the dataset-global CityObject
 /// total — this same function called once against the `cityparquet` package
 /// — as a SHARED denominator across every format, so those scenarios'
 /// selectivity is directly comparable and always in `(0, 1]` (see this

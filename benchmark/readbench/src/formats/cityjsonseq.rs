@@ -17,13 +17,13 @@
 //!   delft fixture has 1115 features (one per `Building`), vs. CityParquet's
 //!   own 2231 (one row per CityObject, parents AND children). This mirrors
 //!   FlatCityBuf's own feature-level counting.
-//! - [`Scenario::AttrFilter`], [`Scenario::AttrStats`], [`Scenario::Project`],
-//!   and [`Scenario::IdLookup`] instead iterate over CityOBJECTS — flattening
+//! - [`Scenario::AttrFilter`], [`Scenario::AttrStats`] and
+//!   [`Scenario::IdLookup`] instead iterate over CityOBJECTS — flattening
 //!   every feature's `CityObjects` map (parents AND children) — so their
 //!   `result_count` matches CityParquet's own object-level count EXACTLY on
 //!   the same data (delft: `object_type == "BuildingPart"` -> 1116;
-//!   `oorspronkelijkbouwjaar` present -> 1115). This is what makes these four
-//!   scenarios meaningfully comparable across formats at all.
+//!   `oorspronkelijkbouwjaar` numeric -> 1115). This is what makes these
+//!   three scenarios meaningfully comparable across formats at all.
 //! - [`Scenario::BBoxQuery`] is feature-level: each feature's bbox is the
 //!   min/max over ALL of its (feature-local, transform-encoded) vertices,
 //!   decoded via the stream header's `transform` — i.e. the union of every
@@ -458,19 +458,6 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
             Ok(0)
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
-        Scenario::Project => {
-            let column = require(&params.attr_column, "attr-column", scenario)?;
-            let mut count = 0u64;
-            for feature in backend.features()? {
-                let feature = feature?;
-                for co in feature.city_objects.values() {
-                    if column_value(co, column).is_some() {
-                        count += 1;
-                    }
-                }
-            }
-            Ok(count)
-        }
     }
 }
 

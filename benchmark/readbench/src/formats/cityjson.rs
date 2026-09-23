@@ -32,8 +32,8 @@
 //!   same file reports its 38 top-level FEATURES. Both are honest answers to
 //!   different questions. This runner's grain matches
 //!   [`super::cityparquet`]'s own one-row-per-CityObject grain.
-//! - [`Scenario::AttrFilter`], [`Scenario::AttrStats`],
-//!   [`Scenario::Project`] and [`Scenario::IdLookup`] are CityObject-level
+//! - [`Scenario::AttrFilter`], [`Scenario::AttrStats`] and
+//!   [`Scenario::IdLookup`] are CityObject-level
 //!   too, and reuse [`super::cityjsonseq`]'s own attribute helpers verbatim,
 //!   so the two JSON runners agree exactly on the same document by
 //!   construction rather than by coincidence.
@@ -64,8 +64,8 @@
 //! - [`Scenario::AttrStats`] aggregates NUMERIC values only, so a
 //!   string-typed column (the railway fixture's numeric-LOOKING `function`
 //!   codes, e.g. `"1070"`) counts 0 — identical to
-//!   [`super::cityjsonseq`]'s own behaviour on the same data, and the reason
-//!   `attr-stats` and `project` can legitimately disagree.
+//!   [`super::cityjsonseq`]'s own behaviour on the same data. A column that
+//!   is present is therefore not necessarily a column `attr-stats` counts.
 //!
 //! None of this is silently normalised to match another format; the
 //! methodology doc is responsible for disclosing it alongside the numbers.
@@ -274,13 +274,6 @@ fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -
             Ok(doc.city_objects.contains_key(id) as u64)
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
-        Scenario::Project => {
-            let column = require(&params.attr_column, "attr-column", scenario)?;
-            Ok(document
-                .objects()
-                .filter(|co| column_value(co, column).is_some())
-                .count() as u64)
-        }
     }
 }
 

@@ -293,6 +293,14 @@ fn variants_and_formats_are_exclusive_and_the_list_is_validated() {
         ),
         "unknown scenario 'write'",
     );
+    // `project` was retired from the format family, with no alias left.
+    expect_rejection(
+        &with(
+            &base,
+            &["--variants", "cityparquet", "--scenarios", "project"],
+        ),
+        "unknown scenario 'project'",
+    );
     assert!(!out.exists(), "a rejected run writes no CSV");
 }
 

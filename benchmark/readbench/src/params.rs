@@ -1047,7 +1047,7 @@ pub struct ResolvedParams {
     pub feature_probes: Vec<IdProbe>,
     /// The alphabetically-first Int64/Float64 attribute column, or `None`
     /// when the dataset has no numeric attribute at all. Never fabricated:
-    /// `attr-stats` and `project` are skipped when this is `None`.
+    /// `attr-stats` is skipped when this is `None`.
     pub numeric_attr: Option<String>,
     /// The dataset-global CityObject total — the SHARED selectivity
     /// denominator for every CityObject-level scenario.

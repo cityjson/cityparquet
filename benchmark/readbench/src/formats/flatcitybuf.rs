@@ -40,20 +40,20 @@
 //!   (the fixture only has 38 features total; empirically confirmed in
 //!   this module's own tests, not merely asserted). A feature with two
 //!   matching CityObjects contributes its offset TWICE to the result.
-//! - [`Scenario::AttrStats`]/[`Scenario::Project`] have no B+-tree fallback
+//! - [`Scenario::AttrStats`] has no B+-tree fallback
 //!   in FCB at all regardless of indexing (see below) — this runner's own
 //!   `select_all` walk deliberately flattens to CityObject level too (one
 //!   count per CityObject carrying the attribute, not one per feature),
 //!   matching [`Scenario::AttrFilter`]'s own now-established granularity
-//!   and [`super::cityjsonseq`]'s convention for these same four
+//!   and [`super::cityjsonseq`]'s convention for these same three
 //!   scenarios.
 //!
 //! Net effect: [`Scenario::Count`]/[`Scenario::FullRead`]/
 //! [`Scenario::BBoxQuery`] are feature-level (their own genuinely-native
 //! FCB mechanism); [`Scenario::AttrFilter`]/[`Scenario::AttrStats`]/
-//! [`Scenario::Project`]/[`Scenario::IdLookup`] are CityObject-level (either
+//! [`Scenario::IdLookup`] are CityObject-level (either
 //! because that's what FCB's own B+-tree naturally returns, or — for the
-//! two scenarios with no index at all — this runner's own deliberate
+//! scenario with no index at all — this runner's own deliberate
 //! choice to match that same granularity). This still does NOT reproduce
 //! CityParquet's own CityObject-row counts (2231 on delft, vs. FCB's own
 //! 1115 features) — the milestone's methodology doc is responsible for
@@ -70,7 +70,7 @@
 //! CityObject — to answer questions that need one enum comparison, one
 //! borrowed `&str` comparison or one column. Measured on `3dbag_n10000`, a
 //! type walk cost 0.389 s that way against 0.033 s through the raw
-//! accessors, which made FCB's `attr-filter`/`attr-stats`/`project`/
+//! accessors, which made FCB's `attr-filter`/`attr-stats`/
 //! `id-lookup` rows cost the same as its `full-read` row and measured the
 //! conversion, not the format. So:
 //!
@@ -91,7 +91,7 @@
 //!   of the CityObject's packed attribute blob.
 //! - [`Scenario::IdLookup`]'s fallback compares `co.id()`, a borrowed
 //!   `&str`, and exits at the first hit.
-//! - [`Scenario::AttrStats`]/[`Scenario::Project`] decode that one
+//! - [`Scenario::AttrStats`] decodes that one
 //!   attribute column and nothing else: no geometry at all.
 //!
 //! The RESULT of every one of those is unchanged — same counting unit,
@@ -103,8 +103,8 @@
 //! part of that schema, so a query against either always falls back to a
 //! full [`fcb_core::FcbReader::select_all`] walk here (checked once per
 //! call via the header's own column schema, not assumed) — this is
-//! expected given `-A`, not a bug. [`Scenario::AttrStats`] and
-//! [`Scenario::Project`] always use that same full walk regardless of
+//! expected given `-A`, not a bug. [`Scenario::AttrStats`]
+//! always uses that same full walk regardless of
 //! whether the column is indexed: FCB's B+-tree only supports point/range
 //! *filtering*, not columnar aggregation, so there is no faster native
 //! mechanism to measure — the full scan IS the honest cost.
@@ -851,36 +851,6 @@ fn attr_stats(input: &Path, column: &str) -> Result<u64> {
     Ok(count)
 }
 
-/// [`Scenario::Project`]: always a full `select_all` walk (same rationale
-/// as [`attr_stats`]), counting every CityObject (across every feature)
-/// carrying a non-null value for `column` — CityObject level.
-///
-/// Attributes only: no geometry is decoded. The reserved `object_type`
-/// column is present on every CityObject, so — exactly as before — it
-/// counts every one of them.
-fn project(input: &Path, column: &str) -> Result<u64> {
-    let reader = open(input)?;
-    let root = owned_columns(&reader.header());
-    let mut iter = reader.select_all()?;
-    let mut count = 0u64;
-    while let Some(feat) = iter.next()? {
-        let Some(objects) = feat.cur_feature().objects() else {
-            continue;
-        };
-        for co in objects.iter() {
-            let present = if column == "object_type" {
-                true
-            } else {
-                attribute_value(&co, root.as_deref(), column)?.is_some()
-            };
-            if present {
-                count += 1;
-            }
-        }
-    }
-    Ok(count)
-}
-
 /// Request count + bytes tally shared (via `Arc`) across every
 /// [`CountingRangeClient`] clone created for one [`run_http`] call —
 /// `fcb_core`'s HTTP reader reopens a fresh reader per scenario stage (see
@@ -1093,31 +1063,6 @@ async fn attr_stats_http(url: &str, tally: RangeTally, column: &str) -> Result<u
     Ok(count)
 }
 
-/// The async, HTTP-sourced mirror of [`project`].
-async fn project_http(url: &str, tally: RangeTally, column: &str) -> Result<u64> {
-    let reader = open_http(url, tally).await?;
-    let root = owned_columns(&reader.header());
-    let mut iter = reader.select_all().await?;
-    let mut count = 0u64;
-    while iter.next().await?.is_some() {
-        let feature = iter.cur_feature().feature();
-        let Some(objects) = feature.objects() else {
-            continue;
-        };
-        for co in objects.iter() {
-            let present = if column == "object_type" {
-                true
-            } else {
-                attribute_value(&co, root.as_deref(), column)?.is_some()
-            };
-            if present {
-                count += 1;
-            }
-        }
-    }
-    Ok(count)
-}
-
 /// Joins `base_url`/`key` into one URL via `Url::path_segments_mut`
 /// (percent-encodes each segment) — not a plain `format!("{base}/{key}")`,
 /// which would send a `key` containing a character like `#`/`?`/`%` or a
@@ -1178,10 +1123,6 @@ async fn run_http(
             id_lookup_http(&url, tally.clone(), id).await?
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
-        Scenario::Project => {
-            let column = require(&params.attr_column, "attr-column", scenario)?;
-            project_http(&url, tally.clone(), column).await?
-        }
     };
 
     let (bytes, requests) = tally.snapshot();
@@ -1231,10 +1172,6 @@ impl FormatRunner for FlatCityBufRunner {
                         id_lookup(input, id)?
                     }
                     Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
-                    Scenario::Project => {
-                        let column = require(&params.attr_column, "attr-column", scenario)?;
-                        project(input, column)?
-                    }
                 };
                 return Ok(RunOutcome {
                     result_count,
@@ -1259,7 +1196,7 @@ mod tests {
 
     use super::{
         AttrPred, attr_stats, full_read, full_walk_attr_filter, full_walk_id_lookup, join_url,
-        matches_predicate, open, project,
+        matches_predicate, open,
     };
 
     // ---------------------------------------------------------------
@@ -1316,22 +1253,6 @@ mod tests {
                         .and_then(|v| v.as_f64())
                         .is_some()
                 })
-                .count() as u64;
-        }
-        Ok(count)
-    }
-
-    /// The OLD `project`.
-    fn cj_project(input: &Path, column: &str) -> Result<u64> {
-        let reader = open(input)?;
-        let mut iter = reader.select_all()?;
-        let mut count = 0u64;
-        while let Some(feat) = iter.next()? {
-            let cj = feat.cur_cj_feature()?;
-            count += cj
-                .city_objects
-                .values()
-                .filter(|co| column_value_cj(co, column).is_some())
                 .count() as u64;
         }
         Ok(count)
@@ -1476,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_attr_stats_and_project_agree_with_the_cityjson_feature_walk() {
+    fn raw_attr_stats_agrees_with_the_cityjson_feature_walk() {
         let Some((_tmp, input)) = delft_fcb() else {
             eprintln!("skipping: delft fixture or `fcb` CLI unavailable");
             return;
@@ -1496,23 +1417,7 @@ mod tests {
                 "attr-stats on '{column}' must count the same CityObjects \
                  (raw {raw}, cur_cj_feature {cj})"
             );
-
-            let raw = project(&input, column).unwrap();
-            let cj = cj_project(&input, column).unwrap();
-            assert_eq!(
-                raw, cj,
-                "project on '{column}' must count the same CityObjects \
-                 (raw {raw}, cur_cj_feature {cj})"
-            );
         }
-
-        // The reserved column is present on every CityObject, so project
-        // counts delft's own 2231 of them (Caveat 1 of READ_BENCHMARK.md).
-        assert_eq!(
-            project(&input, "object_type").unwrap(),
-            2231,
-            "delft carries 2231 CityObjects across its 1115 features"
-        );
     }
 
     #[test]

@@ -52,10 +52,12 @@ if grep -q -- '--numeric-column' "$code"; then
   fail "readbench_duckdb.sh still takes --numeric-column; the sidecar carries that choice"
 fi
 
-# --- project must use the sidecar's numeric column, not object_type ---
-if grep -q 'count(object_type) FROM read_parquet' "$code"; then
-  fail "project still counts object_type; the coordinator projects the numeric column"
+# --- `project` is retired from the format family: no row may carry it ---
+if grep -q '"project"' "$code"; then
+  fail "readbench_duckdb.sh still appends a project row; the scenario is retired"
 fi
+grep -q '"attr-stats"' "$code" ||
+  fail "the script must still append its attr-stats row"
 
 # --- and it must actually READ the sidecar ---
 grep -q "jq -r '.windows\[\]" "$code" ||

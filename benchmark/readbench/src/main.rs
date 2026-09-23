@@ -65,7 +65,7 @@ struct Cli {
     format: Option<Format>,
 
     /// Scenario to run: full-read, count, bbox-query, attr-filter,
-    /// attr-stats, id-lookup, project.
+    /// attr-stats, id-lookup, feature-lookup (CityParquet only).
     #[arg(long)]
     scenario: Option<String>,
 
@@ -80,7 +80,7 @@ struct Cli {
     #[arg(long, value_delimiter = ',')]
     bbox: Option<Vec<f64>>,
 
-    /// Attribute column for `attr-filter` / `attr-stats` / `project`.
+    /// Attribute column for `attr-filter` / `attr-stats`.
     #[arg(long)]
     attr_column: Option<String>,
 
@@ -200,9 +200,9 @@ struct RunArgs {
     write_repeat: usize,
 
     /// Comma-separated scenario names, or their [`Scenario::from_str`]
-    /// aliases. Omitting this selects [`Scenario::ALL`] — the seven
+    /// aliases. Omitting this selects [`Scenario::ALL`] — the six
     /// format-comparison scenarios `full-read`, `count`, `bbox-query`,
-    /// `attr-filter`, `attr-stats`, `id-lookup` and `project`. `feature-lookup`
+    /// `attr-filter`, `attr-stats` and `id-lookup`. `feature-lookup`
     /// is CityParquet-only, so it is not in that set and has to be named here.
     #[arg(long, value_delimiter = ',')]
     scenarios: Option<Vec<String>>,

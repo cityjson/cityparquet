@@ -74,7 +74,6 @@
 #                on stderr, when the sidecar names none)
 #   attr-stats   only if the sidecar names a numeric column (else skipped,
 #                noted on stderr)
-#   project      SELECT count(<that same numeric column>)
 #
 # EVERY query parameter is READ from the coordinator's resolved-parameters
 # sidecar (`--params <OUT_CSV>.params.json`), never derived here. That is what
@@ -91,11 +90,11 @@
 # What used to live here instead: a bash `bbox_window` reproducing the
 # coordinator's lower-left construction, and a `GROUP BY object_type ORDER BY
 # c DESC, object_type LIMIT 1` reproducing its tie-break — both with a comment
-# arguing they matched. The `project` scenario counted `object_type` while the
-# coordinator counted the numeric column, so the parity claim was already
-# false in one place.
+# arguing they matched. A since-retired `project` scenario counted
+# `object_type` while the coordinator counted the numeric column, so the
+# parity claim was already false in one place.
 #
-#   - The object-level denominator for `attr-filter`/`attr-stats`/`project`
+#   - The object-level denominator for `attr-filter`/`attr-stats`
 #     selectivity is `count(*)` over THIS table — which, because this
 #     script always queries a `cityparquet` package's own main table (one
 #     row per CityObject), is exactly the coordinator's own
@@ -458,21 +457,6 @@ if [[ -n "$NUMERIC_COLUMN" ]]; then
     "attr=$NUMERIC_COLUMN min=$MIN_V max=$MAX_V sum=$SUM_V"
 else
   echo "# skip: attr-stats — the dataset has no numeric attribute column (never fabricated)" >&2
-fi
-
-# --- project: single-column projected non-null count, on the SAME column the
-# coordinator projects. This counted `object_type` while the coordinator
-# counted the numeric column, so the two `project` rows were different
-# queries sharing a scenario name. ---
-if [[ -n "$NUMERIC_COLUMN" ]]; then
-  SQL="SELECT count($NUMERIC_COLUMN) FROM read_parquet('$TABLE');"
-  CNT=$(run_sql "$SQL")
-  read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
-  RSS=$(capture_rss "$SQL")
-  SEL=$(safe_div "$CNT" "$TOTAL")
-  append_row "$DATASET" "duckdb-parquet" "project" "$SEL" "$CNT" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "attr=$NUMERIC_COLUMN"
-else
-  echo "# skip: project — the dataset has no numeric attribute column (never fabricated)" >&2
 fi
 
 echo "readbench_duckdb: appended duckdb-parquet rows for dataset=$DATASET to $OUT_CSV" >&2

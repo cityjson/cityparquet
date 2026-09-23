@@ -147,9 +147,6 @@ enum ScenarioPlan<'a> {
     FeatureLookup {
         feature_id: &'a str,
     },
-    Project {
-        column: &'a str,
-    },
 }
 
 impl<'a> ScenarioPlan<'a> {
@@ -175,9 +172,6 @@ impl<'a> ScenarioPlan<'a> {
             Scenario::FeatureLookup => Self::FeatureLookup {
                 feature_id: require(&params.target_feature_id, "target-feature-id", scenario)?
                     .as_str(),
-            },
-            Scenario::Project => Self::Project {
-                column: require(&params.attr_column, "attr-column", scenario)?.as_str(),
             },
         })
     }
@@ -298,10 +292,6 @@ async fn run_http(
             .await?;
             (objects.len() as u64, Some(counters(stats)))
         }
-        ScenarioPlan::Project { column } => (
-            query_async::project_column_async(dyn_store(), &table_path, column).await?,
-            None,
-        ),
     };
 
     let stats = store.tally();
@@ -353,9 +343,6 @@ impl FormatRunner for CityParquetRunner {
                         let (objects, stats) =
                             query::feature_lookup_with_stats(&table, &meta, feature_id)?;
                         (objects.len() as u64, Some(counters(stats)))
-                    }
-                    ScenarioPlan::Project { column } => {
-                        (query::project_column(&table, column)?, None)
                     }
                 };
                 return Ok(RunOutcome {

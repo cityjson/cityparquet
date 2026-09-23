@@ -21,11 +21,11 @@ evidence until equivalent checks have been made on a new run.
 ## Purpose
 
 Compare **read** performance — wall-clock time and memory — of the formats a
-3D city model can actually be published in, across seven access-pattern
+3D city model can actually be published in, across six access-pattern
 scenarios that mirror how a consumer of that data actually reads it: a full
 scan, a metadata-only count, a spatial window query at three selectivities,
-an attribute-equality filter, a numeric-attribute aggregate, a single-id
-lookup, and a single-column projection. The read side is the geometry- and
+an attribute-equality filter, a numeric-attribute aggregate, and a single-id
+lookup. The read side is the geometry- and
 query-facing half of the CityParquet argument; the write side (encoding
 size, write time, row-group pruning) is already covered by `benchmark/formats/README.md`.
 
@@ -178,7 +178,7 @@ CityGML must be checked for information loss, including collapse of fractional
 LoDs (Caveat 14). This limitation also needs checking on the large 3DBAG slice;
 a successful conversion alone does not prove equivalent content.
 
-## The seven scenarios
+## The six scenarios
 
 Every format implements every scenario via its own natural mechanism —
 never a hand-tuned shortcut, never an artificial common code path:
@@ -191,7 +191,6 @@ never a hand-tuned shortcut, never an artificial common code path:
 | `attr-filter`                    | count of objects matching an ATTRIBUTE predicate — `attr == v`, or `attr >= q` (see "Which attribute the predicate runs on") | parse all, test each CityObject's `attributes`                                                                                                                                                                          | parse all, test each CityObject's `attributes`                                                                                                                       | parse all, test each CityObject's `attributes`              | B+-tree attribute index (`select_attr_query`) when the column is in the CityJSON `attributes` map; otherwise a raw `select_all` walk that decodes only that one column (Caveats 11, 19, 24)                              | `RowFilter` (`ArrowPredicateFn`) + row-group statistics prune                                      | `WHERE "<attr>" = '<v>'` / `WHERE "<attr>" >= <q>`, read from the sidecar                                                                               |
 | `attr-stats`                     | `(min, max, sum, count)` of a numeric attribute                                                                              | parse all, aggregate                                                                                                                                                                                                    | parse all, aggregate                                                                                                                                                 | parse all, aggregate                                        | full walk decoding only that one attribute column, no geometry, then aggregate (no numeric-range index)                                                                                                                  | min/max from Parquet column-chunk statistics (near-free); sum/count from a 1-column projected scan | `SELECT min(c), max(c), sum(c), count(c)`                                                                                                               |
 | `id-lookup` (x4)                 | the single object with a given id, materialised                                                                              | parse until found (early exit); a miss drains to EOF                                                                                                                                                                    | parse the whole document, then one map lookup                                                                                                                        | parse until found (early exit)                              | the B+-tree is tried and never has the field, so in practice a raw `select_all` walk comparing each CityObject's borrowed `id()`, exiting at the hit (Caveats 19, 24)                                                    | `RowFilter` on `id` + decode of the one surviving row                                              | not run (id lookup is not a distinct DuckDB SQL pattern worth timing separately from `attr-filter`'s `WHERE` plan; the coordinator's own rows carry it) |
-| `project`                        | one attribute column read across every row; non-null count                                                                   | parse all, read that attribute                                                                                                                                                                                          | parse all, read that attribute                                                                                                                                       | parse all, read that attribute                              | full walk decoding only that one attribute column, no geometry                                                                                                                                                           | single-column `ProjectionMask`                                                                     | `SELECT count(<that same numeric column>)`                                                                                                              |
 
 `cityparquet` and `cityparquet-hilbert` share one runner and one column here:
 a Hilbert-ordered package is still a plain CityParquet package on disk, and
@@ -199,7 +198,7 @@ the only thing that differs between the two tags is which artefact path
 resolves (`Format::artefact`). That is exactly why the ordering question gets
 its own single-axis run rather than an extra column.
 
-The three unindexed formats' `attr-filter`/`attr-stats`/`project`/`id-lookup`
+The three unindexed formats' `attr-filter`/`attr-stats`/`id-lookup`
 mechanisms are not merely _similar_: `citygml` and `cityjson` reuse the
 `cityjsonseq` runner's own attribute helpers **verbatim**, so all three agree
 on what a column name and an `--attr-eq` predicate mean by construction
@@ -268,8 +267,16 @@ column records, so target against achieved is checkable per row.
 
 `feature-lookup` (CityParquet only, run by name — the `bloom` family) returns
 every object of one `feature_id`, probed at `feature-50pct` (the `id-50pct`
-feature) and `feature-miss`; it is not one of the seven comparison scenarios,
+feature) and `feature-miss`; it is not one of the six comparison scenarios,
 because no other format stores the column.
+
+A seventh scenario, `project` (one attribute column read across every row,
+reporting its non-null count), was retired on 2026-09-23. A single-attribute
+projection is not a real-world workload, and for every format without a
+columnar layout it cost what a full parse costs, so it added a row without
+adding a question. The runner rejects the name like any unknown scenario.
+Result CSVs written before that date still carry `project` rows; they are not
+part of the comparison set and must not be read as one.
 
 ## Metrics and the CSV contract
 
@@ -306,7 +313,7 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
 - `notes` — a `;`-separated tag list (never a comma: it is one CSV field):
   the `bbox-*pct` selectivity tag, the attribute predicate used for
   `attr-filter` (`attr=<column>=<value>` or `attr=<column>>=<q>`), the
-  attribute name for `attr-stats`/`project` (`attr=<column>`), the sampled
+  attribute name for `attr-stats` (`attr=<column>`), the sampled
   id for `id-lookup`, or
   `cold` (always first) for the one cold-cache row — plus any DISCLOSURE the
   run made about that row:
@@ -368,15 +375,15 @@ each cold number stands alone, one per format, one `full-read` only.
    | one row per **CityObject** (children counted separately)   | `cityparquet`, `cityparquet-hilbert`, `cityjson`, `duckdb-parquet` |
    | one row per **top-level feature/member** (children inline) | `citygml`, `cityjsonseq`, `cityjsonseq-gz`, `flatcitybuf`          |
 
-   But `attr-filter`, `attr-stats`, `project`, and `id-lookup` are
+   But `attr-filter`, `attr-stats` and `id-lookup` are
    **CityObject-granular in every format** — `citygml`/`cityjsonseq`/
    `flatcitybuf` deliberately flatten to per-CityObject counting for exactly
-   these four scenarios (`flatcitybuf` because that is what its B+-tree
+   these three scenarios (`flatcitybuf` because that is what its B+-tree
    attribute index naturally returns per entry: `fcb_core` indexes every
    value of a feature's `city_objects` map, not only the root object, so on
    Vienna an indexed `attr-filter` returns 600 entries from 307 features,
    and the raw-accessor walks of Caveat 32 count the same way; the two
-   parsing formats by explicit choice, to match) — so these four are directly, honestly
+   parsing formats by explicit choice, to match) — so these three are directly, honestly
    comparable across every format; `count`/`full-read`/`bbox-query` are not.
    Empirically: `lod3_railway.city.json` is 121 CityObjects / 38 top-level
    features; `delft.city.jsonl`'s `object_type == "BuildingPart"` count is
@@ -384,9 +391,9 @@ each cold number stands alone, one per format, one `full-read` only.
    `railway_lod3_fragment.gml` is 6 CityObjects / 4 members. Each of those is
    asserted in the runners' own tests, not merely claimed here.
 
-2. **Selectivity's denominator differs by scenario, on purpose.** The four
-   CityObject-granular scenarios (`attr-filter`/`attr-stats`/`project`/
-   `id-lookup`) divide by the **dataset-global CityObject total** — the
+2. **Selectivity's denominator differs by scenario, on purpose.** The three
+   CityObject-granular scenarios (`attr-filter`/`attr-stats`/`id-lookup`)
+   divide by the **dataset-global CityObject total** — the
    same number as CityParquet's own `count` — as a single shared
    denominator across every format, so their selectivity is always in
    `(0, 1]` and directly comparable format-to-format. `bbox-query` instead
@@ -578,14 +585,14 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     bounds them. What _is_ structural rather than implementation-specific is
     the absence of an index: a published `.gml` carries no offsets, no object
     directory and no spatial or attribute tree, so _any_ reader must traverse
-    the document to answer any of the seven scenarios. The constant factor is
+    the document to answer any of the six scenarios. The constant factor is
     ours; the linear term is the format's.
 
     Two further disclosures about that row, neither folded silently into it:
 
     - **The appearance pre-pass is skipped.** `FeatureReader::open` re-reads
       the whole document up front to index CityModel-level appearance; not one
-      of the seven scenarios consults appearance, so the runner uses
+      of the six scenarios consults appearance, so the runner uses
       `open_without_appearance`. On a real 117 MB PLATEAU tile that pre-pass
       was ~35–45% of `count`'s elapsed time and ~20× its peak heap — both
       published CSV columns, and both measuring this harness rather than
@@ -961,7 +968,7 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
 
 32. **FlatCityBuf is read through the raw FlatBuffers accessors, not
     `cur_cj_feature`.** Every FCB walk — `full-read`, the `attr-filter`
-    fallback, `id-lookup`, `attr-stats`, `project` — reads
+    fallback, `id-lookup`, `attr-stats` — reads
     `FeatureIter::cur_feature()`, the zero-copy `CityFeature` table, and
     touches only what the scenario's answer needs: one flatbuffer enum for
     `object_type`, one borrowed `&str` for an id, one targeted decode of a
@@ -976,14 +983,14 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     `to_cj_feature`: a whole CityJSON feature — nested `serde_json` boundary
     arrays, every vertex converted, every attribute into a
     `serde_json::Map`, a `String` id per CityObject — built to answer a
-    question needing one comparison. That made FCB's four attribute/id rows
+    question needing one comparison. That made FCB's attribute/id rows
     cost the same as its `full-read` row, and measured the conversion rather
     than the format. Measured on this machine, 3 repeats, medians, identical
     `result_count` in every pair: on `3dbag_n10000` `full-read` 0.404 s ->
     0.037 s, `attr-filter` on `object_type` 0.405 s -> 0.034 s, `id-miss`
-    0.407 s -> 0.035 s, `attr-stats` 0.404 s -> 0.045 s, `project` 0.403 s
-    -> 0.046 s; on `zurich_building_lod2` the same five rows 2.22/2.05/
-    2.22/2.22/2.45 s -> 0.55/0.50/0.50/0.51/0.52 s. Peak heap falls with
+    0.407 s -> 0.035 s, `attr-stats` 0.404 s -> 0.045 s; on
+    `zurich_building_lod2` the same four rows 2.22/2.05/2.22/2.22 s ->
+    0.55/0.50/0.50/0.51 s. Peak heap falls with
     them (1.3 MB -> 0.3 MB on zurich). The INDEXED paths
     (`select_attr_query`, `select_query`) were already native and are
     unchanged — `b3_dak_type == slanted` on `3dbag_n10000` sits at ~1 ms

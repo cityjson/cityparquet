@@ -483,7 +483,7 @@ fn an_explicitly_requested_skip_does_not_raise_the_incomplete_set_alarm() {
     );
 }
 
-/// Object-level scenarios (`AttrFilter`/`AttrStats`/`Project`/`IdLookup`) are
+/// Object-level scenarios (`AttrFilter`/`AttrStats`/`IdLookup`) are
 /// CityObject-level for EVERY format (see `coordinator`'s own module doc),
 /// so their selectivity denominator must be the dataset-global CityObject
 /// total — the `cityparquet` package's own `Count` — shared across every

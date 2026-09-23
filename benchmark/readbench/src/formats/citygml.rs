@@ -35,7 +35,7 @@
 //!
 //! **The appearance pre-pass is skipped.** `FeatureReader::open` re-reads the
 //! whole document up front to index its CityModel-level appearance; not one of
-//! the seven scenarios consults appearance, so this runner opens via
+//! the six scenarios consults appearance, so this runner opens via
 //! `open_without_appearance` instead. On a real 117 MB PLATEAU tile the
 //! pre-pass was ~35-45% of `count`'s elapsed time and ~20x its peak heap —
 //! both published CSV columns, and both measuring this harness rather than
@@ -55,13 +55,13 @@
 //!   `bldg:BuildingInstallation` is NOT counted in its own right here — it is
 //!   nested inside its parent's feature, exactly as a CityJSONSeq line bundles
 //!   a Building with its parts.
-//! - [`Scenario::AttrFilter`], [`Scenario::AttrStats`], [`Scenario::Project`]
-//!   and [`Scenario::IdLookup`] are **CityObject-level**: they flatten every
+//! - [`Scenario::AttrFilter`], [`Scenario::AttrStats`] and
+//!   [`Scenario::IdLookup`] are **CityObject-level**: they flatten every
 //!   feature's `CityObjects` map, so those nested parts and installations DO
 //!   count. On `railway_lod3_fragment.gml` that is 4 vs. 6 — both honest
 //!   answers to different questions, and asserted rather than merely claimed
 //!   in `tests/citygml_runner.rs`.
-//! - Those four scenarios reuse [`super::cityjsonseq`]'s own attribute helpers
+//! - Those three scenarios reuse [`super::cityjsonseq`]'s own attribute helpers
 //!   verbatim, so `citygml` and the two JSON runners agree on what a column
 //!   name and an `--attr-eq` predicate mean by construction rather than by
 //!   coincidence.
@@ -214,7 +214,7 @@ fn ensure_every_member_was_mapped(
 ///
 /// Opened via `open_without_appearance`: the reader's default `open` re-reads
 /// the entire document up front to index its CityModel-level appearance, and
-/// not one of the seven scenarios consults appearance at all. On a real 117 MB
+/// not one of the six scenarios consults appearance at all. On a real 117 MB
 /// PLATEAU tile that pre-pass was ~35-45% of `count`'s elapsed time and ~20x
 /// its peak heap — both published CSV columns, both measuring this harness
 /// rather than CityGML.
@@ -360,19 +360,6 @@ fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Res
             Ok(found as u64)
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
-        Scenario::Project => {
-            let column = require(&params.attr_column, "attr-column", scenario)?;
-            let mut count = 0u64;
-            stream_members(doc, |feature| {
-                for co in feature.city_objects.values() {
-                    if column_value(co, column).is_some() {
-                        count += 1;
-                    }
-                }
-                Ok(())
-            })?;
-            Ok(count)
-        }
     }
 }
 

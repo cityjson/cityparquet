@@ -174,7 +174,7 @@ async fn http_feature_walks_match_the_local_transport() {
 
     // (scenario, extra args, the count `tests/flatcitybuf_runner.rs`
     // asserts for the same call on the local transport).
-    let cases: [(&str, Vec<&str>, &str); 7] = [
+    let cases: [(&str, Vec<&str>, &str); 6] = [
         ("full-read", vec![], "38"),
         (
             "attr-filter",
@@ -198,7 +198,6 @@ async fn http_feature_walks_match_the_local_transport() {
             "1",
         ),
         ("id-lookup", vec!["--target-id", "no-such-id"], "0"),
-        ("project", vec!["--attr-column", "function"], "94"),
         // This fixture carries no numeric attribute at all (`function` is
         // a string code), so `attr-stats` is 0 on both transports — the
         // assertion here is that the two walks AGREE and that the HTTP one
