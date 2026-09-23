@@ -522,6 +522,12 @@ The kernel has **no interfaces**. `grep virtual src/kernel src/include/kernel` f
 - **`cli/src/main.rs::cli_definition_is_valid`** (`Cli::command().debug_assert()`). It is clap's documented way to catch conflicting argument definitions and costs 0.03 s.
 - **`variant.rs` error-string assertions** (`only_zstd_takes_a_level`, `duplicates_malformed_suffixes_…_with_the_grammar`). They assert that the message contains the offending id and the `GRAMMAR` constant. For a CLI and benchmark variant grammar, that text is the user-facing contract, not an incidental string. (`wkb_read.rs`'s checks already match case-insensitively on one token such as "unclosed" / "trailing", which is acceptable.)
 
+Things that look like architecture debt but are not:
+
+- **`reader::CityParquetReaderBuilder` extension trait** (`core/reader.rs:141`): extending the upstream `ArrowReaderBuilder<T>` instead of wrapping it is the correct seam; it already works for both sync and async builders.
+- **`query_core` split**: the predicate/pruning/aggregation logic already lives once; what D-RS-13 removes is only the duplicated _entry points_ and the parity tests they force.
+- **`cityparquet-schema` isolation**: enforced and holding; its `parquet-geospatial` dependency is metadata-only and does not breach the rule.
+
 **`lib/duckdb-3d`**
 
 - **`test/sql/postgis_oracle.test`** (0.50 s, the slowest file, 83 assertions against the frozen `test/data/postgis_oracle/golden*.csv`): the only external oracle. It catches wrong answers that self-consistent kernel tests cannot, because a kernel test's expected value is the author's own arithmetic.
@@ -531,6 +537,214 @@ The kernel has **no interfaces**. `grep virtual src/kernel src/include/kernel` f
 - **One smoke query per SQL function** (for example `st_3d_measurements.test`: tetra volume 1/6, footprint 0.5, NULL propagation, `ST_3DVolume` raising on an open shell): these repeat kernel values but are the binding contract. They are cheap and belong in SQL per CLAUDE.md.
 
 ## 5. Part 2 — technical debt, by module and priority
+
+### 5.1 `lib/cityparquet-rs`
+
+Paths below use `core/` = `lib/cityparquet-rs/crates/core/src/` and `cli/` = `lib/cityparquet-rs/crates/cli/src/`. Items are in priority order, except D-RS-13 to D-RS-15, which came out of cross-checking Part 1; section 6 gives the combined order. No trait sits at any input, output or package boundary; the only `pub trait` in core is `reader::CityParquetReaderBuilder`.
+
+#### D-RS-01 — CityJSON boundary helpers live in `encode`, which ties 7 modules into one cycle
+
+- **Location:** `core/encode.rs:180` (`reorder_extent`), `:331` (`count_boundary_faces`), `:342` (`values_nesting_depth`), `:354` (`face_ring_vertex_counts`), `:397` (`flatten_values`), `:653` (`raw_address_members`). Consumers: `core/appearance.rs:44-46`, `core/lod0.rs:535-537`, `core/compare.rs:219,418-424,770`, `core/export.rs:1614`. Reverse edges: `core/encode.rs:965` (→ `lod0`), `core/encode.rs:28` (→ `appearance`), `core/encode.rs:33` (→ `scan`), `core/scan.rs:130` (→ `lod0`).
+- **Problem:** pure functions over CityJSON `boundaries`/`values` JSON (no Arrow, no encoder state) are `pub(crate)` items of the pass-2 encoder. Every module that needs to walk a CityJSON boundary tree — the appearance interner, LoD0 synthesis, the comparator, the exporter — therefore depends on the encoder, while the encoder depends back on `appearance`, `lod0` and `scan`. Together with D-RS-02's back-edge this makes `{source, citygml, export, encode, scan, lod0, appearance}` the crate's only strongly connected component (verified with Tarjan over the production-only import graph). Removing the five edges `appearance→encode`, `lod0→encode`, `compare→encode`, `export→encode`, `citygml→export` leaves **no** cycle in the crate.
+- **Impact:** changeability (touching `encode.rs`, 1.9k production lines, recompiles and risks every consumer); testability (the helpers can only be reached through `encode` or its callers); correctness — see D-RS-09 on the comparator sharing the encoder's `flatten_values`.
+- **How to fix:**
+  1. Create leaf module `core/cityjson_boundary.rs` (no `crate::` imports except `address` types if needed) and move `values_nesting_depth`, `count_boundary_faces`, `face_ring_vertex_counts`, `flatten_values` into it verbatim.
+  2. Move `raw_address_members` / `address_members_from_json` (`encode.rs:653-700`) into the existing leaf `core/address.rs`, next to `map_postal_fields`, which both `encode` and `compare` already use.
+  3. Move `reorder_extent` next to `AxisOrder` (wherever `AxisOrder::apply` is defined) so `export` no longer imports `encode`.
+  4. Update imports in `appearance`, `lod0`, `compare`, `export`, `encode`. No signature changes.
+  5. Add a CI guard so the cycle cannot return: a small `tests/module_layering.rs` (or a `just layering` recipe) that greps `use crate::` edges of the leaf modules (`cityjson_boundary`, `address`, `wkb_read`, `wkb_write`, `recipe`, `order`) and fails if any appears.
+- **Tests that become simpler:** the boundary helpers get direct table-driven unit tests in `cityjson_boundary` (nesting depth per `GeometryType`, null-shorthand expansion) instead of being exercised only through whole-fixture `convert`/`compare` runs.
+- **Effort:** S (mechanical moves; ~6 functions, ~5 import sites)
+- **Related Part 1:** tests in `core/encode.rs` `mod tests` and `core/tests/encode_real_data.rs` that verify flattening/face counting via a full encode pass
+
+#### D-RS-02 — No package-read abstraction: `export`, the CityGML writer, `query`, `stac` and the bench each re-open the package by hand
+
+- **Location:** `core/stac/properties.rs:40-90` (`PackageTables { dir, tables: Vec<PathBuf>, sidecar_files: Vec<String> }`, `open` reads `metadata.json` via `fs::read_to_string`); 15 production `PackageTables::open` call sites. Duplicated read prologue: `core/export.rs:1403-1500` and `core/citygml/writer/mod.rs:160-240` (both: open manifest → `fs::File::open(tables[0])` → `ParquetRecordBatchReaderBuilder` → `cityparquet_metadata()` → `read_materials(dir.join("materials.parquet"))` / `read_textures(...)` gated by string-matching `sidecar_files` → loop over tables → `decode_batch`). Shared helpers the CityGML writer borrows from the CityJSON exporter: `core/export.rs:108` `table_display_name`, `:240` `partition_shells`, `:283` `shell_faces`, `:299` `single_solid_shell`, `:819` `appearance_columns`, `:865` `AppearanceKind`, `:894` `read_lod_keyed_appearance`, `:932` `nest_by_shells`, imported at `core/citygml/writer/mod.rs:31-33`, `geometry.rs:212-290`, `semantics.rs:361-386`. Also `core/query.rs:374` (`query` → `stac`) and `cli/bench.rs:335,385,404`.
+- **Problem:** "a package" has no type. The file inventory lives in the STAC module; sidecar presence is decided by comparing file-name strings (`f == "materials.parquet"`) in each consumer; each consumer opens tables with `std::fs::File`. The CityGML writer is a second _output format_ but depends on the first output format (`export`) for read-side reassembly, which is the `citygml→export` back-edge in the cycle (D-RS-01).
+- **Impact:** replaceability (a package cannot be read from object storage or memory by export/CityGML; only `query_async` can, via a parallel code path); changeability (a change to the manifest or sidecar naming touches ≥5 modules); testability (every export/CityGML test needs a converted on-disk package).
+- **How to fix:**
+  1. Introduce module `core/package_read.rs` with `pub struct Package<S: PackageStore>` (holds the store plus, manifest-derived: `tables: Vec<TableRef>`, `sidecars: SidecarSet { materials: bool, textures: bool, templates: bool }`, dataset-wide `CityMetadata`) and `impl<S: PackageStore> Package<S> { fn open(store: S) -> Result<Self>; fn tables(&self) -> impl Iterator<Item = Result<CityParquetRecordBatchReader>>; fn materials(&self) -> Result<HashMap<i64, Value>>; fn textures(..); fn templates(..) }`.
+  2. Define the storage seam `pub trait PackageStore { type Table: parquet::file::reader::ChunkReader + 'static; fn read_manifest(&self) -> Result<Vec<u8>>; fn open_table(&self, name: &str) -> Result<Self::Table>; }` (an associated type, because `ChunkReader` has its own associated type and `ParquetRecordBatchReaderBuilder::try_new` is generic, not `dyn`; `parquet` already implements `ChunkReader` for `File` and `Bytes`). Implement `LocalDirStore(PathBuf)` (`Table = File`) and `MemoryStore(HashMap<String, Bytes>)` (`Table = Bytes`). This is the same read-side seam as D-RS-13's `TableSource` — its sync variant — not a second abstraction; land them as one trait family.
+  3. Move `PackageTables` out of `stac::properties` into `package_read` (STAC keeps only asset-role _constants_ and `build_item`); `stac::properties` then depends on `package_read`, not the other way round.
+  4. Move the read-side reassembly helpers listed above out of `export.rs` into `core/reassembly.rs` (depends only on `decode`, `wkb_read`, `appearance_columns`, `sidecar`). `export` and `citygml::writer` both import `reassembly`; `citygml` no longer imports `export`.
+  5. Rewrite `export::export`, `citygml::writer::write_package`, `query::package_feature_lookup*` and `cli/bench.rs` table loops on `Package`. Each keeps only its format-specific emission logic.
+  6. Optional follow-up: express the two exporters as `trait ObjectSink { fn begin(&mut self, header: &CityJSON); fn feature(&mut self, f: DecodedFeature); fn finish(self) -> Result<Report>; }` with `CityJsonSeqSink`, `CityJsonDocSink`, `CityGmlSink`, driven by one `Package::decode_features()` loop.
+- **Tests that become simpler:** export/CityGML-writer tests can build a package once into a `MemoryStore` (or read a committed tiny package) instead of `convert`-ing delft into a tempdir per test; "manifest lists a sidecar that is missing" and "corrupt reference" cases become a two-line `MemoryStore` edit instead of deleting files on disk; `stac` tests no longer need a Parquet table to test the Item.
+- **Effort:** L (steps 1–5); step 4 alone is S and can land first to break the cycle.
+- **Related Part 1:** export_real_data / citygml_writer_* tests that mutate files on disk to simulate corrupt packages; tests asserting sidecar behaviour by file existence
+
+#### D-RS-03 — No write-side sink: the writer is hard-wired to local files, with a test-only flag in the production struct
+
+- **Location:** `core/package.rs:731` (`writers: Vec<ArrowWriter<fs::File>>`), `:813-840` `open_table` (`fs::File::create(tmp_dir.join(name))`), `:1179` (`fs::write(metadata.json)`), `:234-333` `purge_stale_package_files` / `commit_package` (rename dance), `:1322-1440` (`create_dir_all`, `read_dir`, `remove_dir_all` of the tmp dir); `core/sidecar.rs:283,375,520` (`write_materials(path: &Path, ..)`, `write_textures`, `write_templates`). Test-only escape hatch: `core/package.rs:701-716` (`force_identity_projection: bool`, documented as "Test-only ... Production ALWAYS prunes"), passed as literal `false` at `:1044`; `TableWriters::new` needs `#[allow(clippy::too_many_arguments)]` (`:752`).
+- **Problem:** `write_package` mixes three responsibilities — routing batches to per-module tables and projecting columns, footer/`geo` metadata assembly, and crash-safe filesystem commit — with no seam between them. `ArrowWriter` is generic over any `W: Write + Send`, but the crate fixes `W = fs::File`. To unit-test routing the tests had to add a boolean that disables the production projection logic, i.e. the tests exercise a mode production never runs.
+- **Impact:** replaceability (no direct-to-object-store or in-memory package write; `citylake`/`partition` must go via local disk); testability (routing tests need synthetic batches plus the escape hatch; crash-safety tests hand-write fake files, `package.rs:1828-1875`); changeability (9-argument constructor).
+- **How to fix:**
+  1. Add `pub trait PackageSink { type Table: std::io::Write + Send; fn create_table(&mut self, name: &str) -> Result<Self::Table>; fn put_file(&mut self, name: &str, bytes: &[u8]) -> Result<()>; fn commit(self, files: &[String]) -> Result<Vec<PathBuf>>; }` in `core/package.rs` (or `core/sink.rs`).
+  2. Implement `LocalDirSink { output_dir, tmp_dir, overwrite }` by moving `purge_stale_package_files`, `commit_package` and the tmp-dir lifecycle (`package.rs:1322-1440`) into it unchanged — crash safety becomes one type's contract.
+  3. Implement `MemorySink(HashMap<String, Vec<u8>>)` for tests (and for `partition`, which today writes each partition via the full disk path).
+  4. Make `TableWriters<S: PackageSink>` hold `ArrowWriter<S::Table>`; change `sidecar::write_*` to take `impl Write` instead of `&Path`; route `metadata.json` through `put_file`.
+  5. Split `TableWriters` into `TableRouter` (object_type → `ModuleKey` → table name, collision/reserved-name rules; pure, no I/O) and the writer map. Unit-test `TableRouter` directly and delete `force_identity_projection`.
+  6. Bundle `TableWriters::new`'s 9 arguments into a `TableLayout { wide_schema, module_lods_by_file, module_geo_by_file, base_city, attributes }` built once from `ScanResult`.
+  7. `convert_source_impl` takes `&mut dyn PackageSink` (public `convert` keeps constructing `LocalDirSink`).
+- **Tests that become simpler:** routing/collision tests (`package.rs:1554-1826`) test `TableRouter` with plain strings, no `RecordBatch`, no escape hatch; crash-safety tests become one `FailingSink` that errors on the N-th `create_table`; many convert tests can assert against `MemorySink` bytes read back via `ParquetRecordBatchReaderBuilder::try_new(Bytes)` without a tempdir.
+- **Effort:** M
+- **Related Part 1:** `core/package.rs` `mod tests` (`by_type_write_*`, `write_batch_*`, `commit_package_mid_swap_failure_*`) — tests that use `force_identity_projection`/synthetic batches
+
+#### D-RS-04 — The public API is the test API: internal pipeline stages are `pub` only so integration tests can reach them
+
+- **Location:** `core/lib.rs:1-34` (28 of 33 modules `pub`). Modules used by **no** external crate (cli, `benchmark/readbench`) but imported by `core/tests/*`: `appearance` (1 test file), `appearance_columns` (3), `decode` (8), `encode` (1), `order` (1), `scan` (6), `sidecar` (3), `wkb_read` (10), `wkb_write` (4). E.g. `core/tests/encode_real_data.rs` (`use cityparquet::encode::encode`), `core/tests/scan_real_data.rs` (`use cityparquet::scan::{city_and_geo_for_file, scan}`), sidecar round-trips via `cityparquet::sidecar::{write_materials, read_materials, ...}`.
+- **Problem:** pass-1 (`scan`), pass-2 (`encode`), the sidecar row codecs and WKB internals are semver-visible surface of a crate that `publish.yml` pushes to crates.io, purely because integration tests import them. Those tests are therefore pinned to the internal pipeline decomposition (e.g. "scan then encode"), so re-shaping the pipeline (D-RS-03's sink, a streaming single-pass writer) breaks tests that verify no user-visible contract.
+- **Impact:** changeability (every internal refactor is a public breaking change and a test rewrite); API clarity for crates.io consumers.
+- **How to fix:**
+  1. Decide the public contract: `package::{convert, convert_source, ConvertOptions, ConvertReport}`, `export`, `compare`, `reader`, `query`(+`query_async`), `source::Source`, `partition`/`merge`, `stac`, `recipe`, `citygml::{writer, sniff}`, `inputs`, `lod0::Lod0Options`. Re-export these from `lib.rs` as the façade.
+  2. Change `appearance`, `appearance_columns`, `encode`, `order`, `scan`, `sidecar`, `wkb_write` to `pub(crate)`; keep `decode`/`wkb_read` public only for the types that appear in public signatures (`DecodedObject`, `DecodedGeometry`, `DecodedKind` — `pub use` them from `query`/`reader`) and make the rest `pub(crate)`.
+  3. For each integration test that breaks: if it asserts a user-visible property, rewrite it against `convert` → reader/`export` (the contract); if it asserts an internal invariant worth keeping (e.g. WKB byte layout), move it into the module's `#[cfg(test)] mod tests`.
+  4. Add `#![warn(unreachable_pub)]` to `core/lib.rs` so the surface cannot silently regrow.
+- **Tests that become simpler:** none become simpler per se; the win is that the remaining integration tests only touch the façade and survive internal refactors (D-RS-01/02/03) unchanged.
+- **Effort:** M (visibility change is S; rewriting ~35 test files' imports is the bulk)
+- **Related Part 1:** "over-reliance on internals" candidates in `core/tests/{scan_real_data,encode_real_data,wkb_real_data,wkb_roundtrip_real_data,decode_real_data}.rs` and sidecar/appearance_columns cell tests
+
+#### D-RS-05 — Benchmark code lives in the library and the CLI, and the CLI harness re-implements the query path
+
+- **Location:** `cli/bench.rs` (543 lines) + `cli/lib.rs:1-7` (a library target that exists only to expose `bench`); `core/variant.rs` (310 lines, "Benchmark variant identifiers", used by `cli/bench.rs:38` and `benchmark/readbench`); `core/counting_store.rs` (230 lines, an `ObjectStore` decorator counting requests, used by `benchmark/readbench` and `core/query_async.rs:653` tests only). Re-implementation: the untimed recount at `cli/bench.rs:396-410` re-opens every table with `File::open` and recounts row groups with `row_group_intersects` — the same numbers `core/query_core.rs:485` `bbox_row_group_counts` (via `query::bbox_query`) already returns. Stale reference: `cli/bench.rs:14-16` cites `.superpowers/sdd/bytype-family-report.md`, which does not exist in the tree.
+- **Problem:** `lib/cityparquet-rs/CLAUDE.md` states "The benchmark is not here", yet the write/variant benchmark harness is in the CLI crate and two benchmark-only modules are in the published library. The harness duplicates the pruning measurement instead of calling the library's own query API, so the benchmark's "row groups touched" and the library's `BBoxQueryResult` could drift.
+- **Impact:** responsibility/boundary (publishable crates carry evaluation code; the CLI binary ships a `bench` subcommand); test cost — `cityparquet-cli::bench_smoke` is the slowest suite: 10 tests, 239 s of test time, including the single slowest test in the workspace (`bench_run_produces_the_default_nine_variant_matrix_for_delft`, 128.8 s).
+- **How to fix:**
+  1. Create `benchmark/writebench` (own workspace like `benchmark/readbench`, or a second `[[bin]]` in readbench) and move `cli/bench.rs`, `core/variant.rs` and `core/counting_store.rs` there; delete `cli/lib.rs` and the `bench` subcommand from `cli/main.rs:171-213,772`.
+  2. Point the root `justfile:480` recipe at the new binary.
+  3. In the moved harness, replace only the **untimed** recount at `bench.rs:396-410` with the library's pruning count (make `query_core::bbox_row_group_counts` public, or take `row_groups_total/touched` from `query::bbox_query`). Leave both **timed** loops untouched — the full scan (`:330-347`) and the window query (`:381-394`, which reads all columns of the surviving row groups): swapping `bbox_query` (an `id`/`bbox` projection plus row filter) into the timed loop would redefine `window_query_s`, which the monorepo rules treat as a defect.
+  4. Remove the dangling `.superpowers/...` reference.
+  5. Move `bench_smoke` tests with it; they then run under `just check` at the root only (they already do via the root recipe list), not in the library gate.
+- **Tests that become simpler:** `cd lib/cityparquet-rs && just test` loses ~239 s of test time; the query-pruning numbers are covered once, by `core/tests/query_real_data.rs`.
+- **Effort:** S–M
+- **Related Part 1:** `lib/cityparquet-rs/crates/cli/tests/bench_smoke.rs` (all 10); `core/query_async.rs` `counting_store` tests
+
+#### D-RS-06 — `Source` is a format tag plus optional fields rather than one type per input
+
+- **Location:** `core/source.rs:14-48` (`SourceFormat` enum; `Source { path, format, header, doc: Option<CityJSON>, buffered: Option<BufferedSource>, .. }`), `:55-150` (`open` sniffs and fills whichever fields its branch needs), `:161-178` (`from_parts` takes a caller-supplied `format` tag and the doc says "Callers pass `SourceFormat::CityJsonSeq`" — an in-memory subset labels itself Seq), `:230` (CityGML special case in `set_reference_system`), `:301-322` (`features()` switches on `buffered` then on `format`, with `.expect("doc set")` at `:315`), `:424-434` (`FeatureIter` 4-variant enum). Parallel enum: `core/scan.rs:193-199` maps `source::SourceFormat` 1:1 onto `cityparquet_schema::SourceFormat`.
+- **Problem:** the invariants "`doc` is `Some` iff format is `CityJson`", "`buffered` overrides `format`" are enforced by convention and an `expect`, not by types. Adding an input (CityGML 3.0, a `.city.jsonl.gz` stream — readbench already wraps one itself in `formats/cityjsonseq.rs` `Backend::Gz`) means editing `open`, `features`, `FeatureIter`, `set_reference_system` and the scan mapping.
+- **Impact:** replaceability/extensibility of inputs; correctness risk (the `expect`, the Seq label on synthetic sources feeding the `source_format` footer stamp).
+- **How to fix:**
+  1. Define `pub trait FeatureSource { fn header(&self) -> &CityJSON; fn format(&self) -> cityparquet_schema::SourceFormat; fn doc_appearance(&self) -> Option<&Appearance>; fn features(&self) -> Result<Box<dyn Iterator<Item = Result<CityJSONFeature>> + '_>>; }`.
+  2. Implement `CityJsonDocSource`, `CityJsonSeqSource`, `CityGmlSource` (wrapping `citygml::FeatureReader`), `MemorySource` (today's `from_parts`; its `format()` returns the format of the source it was split from).
+  3. Keep `Source::open(path) -> Result<Box<dyn FeatureSource>>` as the sniffing factory; move CRS-override state (`crs_is_operator_supplied`, `set_reference_system`) into a small wrapper `WithOperatorCrs<S>` so the CityGML scale rule lives in `CityGmlSource`.
+  4. Delete `source::SourceFormat` and use `cityparquet_schema::SourceFormat` directly (removes `scan.rs:193-199`).
+  5. Change `scan`, `encode`, `package::convert_source`, `merge`, `partition`, `compare` to take `&dyn FeatureSource`.
+  6. **Comparator entry point (do first; S, independent of steps 1–5):** `compare::compare_datasets(a: &Path, b: &Path, ..)` (`core/compare.rs:2009`) is the only entry; `load_side` (`:1625-1631`) calls `Source::open(path)` and derives the report label from the file name. Split into `pub fn compare_sources(a: &Source, b: &Source, labels: (&str, &str), opts: &CompareOptions) -> Result<CompareReport>` and keep `compare_datasets` as the path wrapper. Header/extension/version-mismatch tests can then compare two `Source::from_parts` values built from one parsed fixture with a mutated header, instead of writing two files and re-parsing delft per side.
+- **Tests that become simpler:** encoder/scan edge cases can be fed a `MemorySource` built from a slice of fixture features (already possible via `from_parts`, so the gain is modest); per-format sniffing tests target the factory alone; `compare.rs` `mod tests` mismatch cases (`header_extensions_mismatch_is_a_difference`, `header_version_mismatch_is_a_difference`, `compare_delft_against_itself_is_equal`, ≈9 s each) stop going through files via step 6.
+- **Effort:** M (step 6 alone: S)
+- **Related Part 1:** `core/tests/source_real_data.rs`; `core/compare.rs` `mod tests` header-mismatch tests
+
+#### D-RS-07 — `CityParquetError::Schema` is the catch-all for invalid input, corrupt packages and harness failures
+
+- **Location:** `schema/src/error.rs:6-40` (variants: `Arrow`, `Json`, `Metadata`, `Schema`, `Attribute`, `Lod`, `Io`, `Geometry`, `Parquet`). 114 direct `CityParquetError::Schema` constructions in core+cli, plus 14 per-module `fn err`/`schema_err` helpers of which 11 map to `Schema`: `core/source.rs:50` (used for `"invalid CityJSON: {e}"`, `source.rs:137`, and "unsupported CityGML version", `:76`), `core/export.rs:100` (43 call sites: corrupt package references), `core/compare.rs:135` (34), `core/sidecar.rs:56` (26), `core/appearance_columns.rs:39` (28), `core/appearance.rs:48` (19: dangling appearance indices in the _source_), `core/package.rs:213`, `core/merge.rs:40`, `core/partition.rs:283`, `core/arrow_compat.rs:25`, `core/geometry_properties.rs:33`. `cli/bench.rs:352,361` uses it for "row count mismatch" / "no bbox". Symptom in tests: `core/tests/export_real_data.rs:1760-1765` accepts `Io { .. } | Schema(_)` and then string-matches the message.
+- **Problem:** a caller cannot distinguish "your input file is malformed", "this package is corrupt/truncated", "feature not supported" and "internal invariant broken" — all are `Schema(String)`. Tests compensate by asserting on message substrings (21 `contains(` assertions on error text across `core/tests` + `cli/tests`).
+- **Impact:** correctness of error handling for library consumers (CityLake cannot map errors to HTTP 400 vs 500); testability (tests bind to wording).
+- **How to fix:**
+  1. Add variants `InvalidInput(String)` (source data violates CityJSON/CityGML or references dangle), `CorruptPackage(String)` (a package violates the CityParquet spec: missing listed sidecar, dangling template/material id, bad footer), `Unsupported(String)` (CityGML ≠ 2.0, unresolvable extension module).
+  2. Re-point the 14 `err()` helpers (they are the choke points) per module: `source`/`appearance`/`merge` → `InvalidInput`; `export`/`sidecar`/`appearance_columns`/`geometry_properties`/`decode` read paths → `CorruptPackage`; keep `Schema` for Arrow-schema construction errors only.
+  3. Replace the `Io | Schema` disjunction and message-substring assertions with `matches!(err, CityParquetError::CorruptPackage(_))`.
+  4. Harness errors in the benchmark (after D-RS-05) use the harness's own error type (`anyhow`, as readbench does).
+- **Tests that become simpler:** negative-path tests assert a variant, not a sentence; wording can change freely.
+- **Effort:** S–M (≈14 helper edits + auditing direct `Schema(` sites)
+- **Related Part 1:** tests asserting exact error strings (21 `contains(` on error text), `export_real_data.rs` missing-sidecar test
+
+#### D-RS-08 — Test-suite cost is a build-friction problem with an architectural cause: every test converts delft from scratch into its own tempdir
+
+- **Location:** `lib/cityparquet-rs/crates/core/tests/` — 48 separate integration-test files (48 test binaries, each linking arrow+parquet); 35 test files call `convert(&…)` (`convert_real_data.rs` 25×, `export_real_data.rs` 22×, `roundtrip_real_data.rs` 9×). Timing data (`rs_test_timings.tsv`): 795 tests, 3,318 s summed test time, of which 214 tests >5 s account for 3,005 s (91 %); a typical delft-converting test is ≈9–10 s under parallel load; wall clock 2 m 46 s, 49 m CPU (`nextest.time`).
+- **Problem:** there is no shared, pre-built package fixture; the only way to obtain a package is `convert` into a tempdir (no in-memory sink, D-RS-03; no package-read seam, D-RS-02). Hundreds of tests therefore pay a full scan+encode+write of delft to test a read-side or export-side property.
+- **Impact:** CI time and local feedback loop (the TDD discipline in `CLAUDE.md` depends on it); link time of 48 binaries.
+- **How to fix:**
+  1. Add a test-support module (`core/tests/support/mod.rs`, or a `cityparquet-testkit` dev-crate) with `fn delft_package() -> &'static Path` that converts once per fixture into `target/test-fixtures/<fixture-sha>-<crate-version>/` guarded by a lock file, reusing it if present. This works under both `cargo test` (one process per binary — a `OnceLock` would also suffice) and nextest (one process per test — a `OnceLock` shares nothing, hence the on-disk cache).
+  2. Convert read-only tests (reader, query, decode, export, stac, citygml writer) to take `delft_package()` instead of calling `convert`; tests that mutate the package copy it first (or, after D-RS-02, load it into a `MemoryStore`).
+  3. Collapse the 48 `core/tests/*.rs` files into one binary: `core/tests/it/main.rs` with `mod convert_real_data; mod export_real_data; …` (standard Rust practice; one link instead of 48).
+- **Tests that become simpler:** all read-side integration tests lose their convert prologue; expected saving is most of the ≈3,000 s test-time spent in >5 s tests (estimate, not measured — depends on how many of the 214 only need a read-only package).
+- **Effort:** S (step 1) + M (steps 2–3, mechanical)
+- **Related Part 1:** all `*_real_data.rs` tests that `convert` delft to test a read-side property; duplicate full-convert tests
+
+#### D-RS-09 — The round-trip oracle (`compare`) reuses the writer's own flattening and dequantisation code
+
+- **Location:** `core/compare.rs:400-425` (`canonical_semantics` calls `crate::encode::values_nesting_depth`, `flatten_values`, `count_boundary_faces`; the comment says "Reuses the exact flatten the encoder uses, so the two never diverge"), `:75` (reuses `encode::face_ring_vertex_counts`), `:219` (`encode::raw_address_members`), `:99,171-218` (`wkb_write::VertexPool` for dequantisation). Contrast `lib/cityparquet-rs/docs/architecture.md` §Comparator and `compare.rs:12-18`: ring normalisation is reimplemented "independently of the writer — on purpose: a comparator that reused the writer's own normalisation function could not catch a bug in that function".
+- **Problem:** the independence principle is applied to ring normalisation but not to semantics/appearance flattening, face counting, address extraction or vertex dequantisation. A bug in `flatten_values` (e.g. mis-expanding the `values: [null]` shorthand) or in `VertexPool`'s axis-order handling is applied identically to both sides of `compare`, so `convert → export → compare` reports equality. This is the property the whole round-trip suite rests on.
+- **Impact:** correctness (blind spot in the losslessness proof); after D-RS-01 the coupling is at least explicit.
+- **How to fix:**
+  1. After D-RS-01, the shared helpers live in `cityjson_boundary`; decide per helper whether it is _spec reading_ (acceptable to share — e.g. nesting depth per `GeometryType` is a table from the CityJSON spec) or _transformation under test_ (must not be shared — `flatten_values` null-shorthand expansion, `VertexPool` dequantisation/axis order).
+  2. For the latter, give `compare` its own minimal implementations (a naive recursive flatten; dequantise with `v * scale + translate` directly) and add one differential property test that runs both implementations over every geometry in the fixtures and asserts equality — that test is what catches a writer-side bug.
+  3. Update `architecture.md` §Comparator to state exactly which helpers are shared and why.
+- **Tests that become simpler:** none; this adds one differential test and increases the oracle's strength.
+- **Effort:** S–M
+- **Related Part 1:** round-trip tests in `roundtrip_real_data.rs` that rely on `compare_datasets` as their only assertion (their value depends on this item)
+
+#### D-RS-10 — `benchmark/readbench` copies core's predicate/bbox semantics because they are `pub(crate)`
+
+- **Location:** `benchmark/readbench/src/formats/cityjsonseq.rs:337-345` (`intersects`: "identical in spirit to `cityparquet::reader::box_intersects_query` (that function is `pub(crate)` … so this runner keeps its own copy)"), `:239-260` (`matches_predicate`, "the CityJSONSeq analogue of `cityparquet::query::evaluate_attr_predicate`"); `benchmark/readbench/src/params.rs:481` (`utf8_values` mirroring core's `Utf8`/`Dictionary` dispatch). Core side: `core/reader.rs:466` (`pub(crate) fn box_intersects_query`).
+- **Problem:** no boundary is _violated_ (readbench compiles against public items only), but the cross-format benchmark's fairness depends on every format answering the same bbox/attribute question, and the definition exists in 2–3 copies kept in sync by comments. A change to core's intersection semantics (e.g. open vs closed interval) silently changes what the CityParquet column of the benchmark means relative to the others.
+- **Impact:** correctness of published benchmark comparisons; changeability.
+- **How to fix:**
+  1. Promote the query _semantics_ to a small public value type in core: `pub struct BBox3([f64; 6])` with `pub fn intersects(&self, min: [f64; 3], max: [f64; 3]) -> bool`, used by `reader::box_intersects_query`/`row_group_intersects`.
+  2. Give `AttrPredicate` a public scalar evaluator `pub fn matches_json(&self, v: &serde_json::Value) -> bool` defined next to the Arrow evaluator, with one shared table-driven test covering both.
+  3. Replace readbench's `intersects` and `matches_predicate` with calls to these.
+- **Tests that become simpler:** readbench's `tests/attr_consistency.rs` reduces to checking it calls the shared evaluator; one contract test in core covers the semantics.
+- **Effort:** S
+- **Related Part 1:** readbench tests duplicating predicate semantics (if in Part 1 scope)
+
+#### D-RS-11 — Dependency hygiene: dead workspace deps and a duplicate `quick-xml`
+
+- **Location:** `lib/cityparquet-rs/Cargo.toml` `[workspace.dependencies]`: `fcb_core = "0.7"` and `peak_alloc = "0.3.0"` are declared but used by **no** member crate (they belong to `benchmark/readbench`, which is its own workspace and pins them itself). `cargo tree -d`: `quick-xml` 0.37.5 (direct, `core`) vs 0.39.4 (via `object_store 0.13` and `parquet`'s object_store feature). Other duplicates (`getrandom`, `rand`, `hashbrown`, `thiserror` 1/2, `itertools`, `syn` 2/3) are transitive and not actionable here.
+- **Problem / Impact:** stale entries mislead readers about what the library measures/depends on; two XML parsers compiled into the `object-store` build.
+- **How to fix:** 1. Delete `fcb_core` and `peak_alloc` from `[workspace.dependencies]`. 2. Bump `quick-xml` to `0.39` in the workspace and fix the (small) API drift in `core/citygml/{xml,reader,sniff}.rs`; re-run `just test` + `just interop`.
+- **Effort:** S
+- **Related Part 1:** —
+
+#### D-RS-12 — Smaller items (one line each)
+
+- **Location / Problem / Fix:**
+  - `core/package.rs:959-972` `extension_registry` is a documented stub that always returns an empty registry, so any source with a `+`-extension type hard-errors (`core/tests/extension_module_real_data.rs:83` pins that). Track it as a spec implementation-status gap (`documents/docs/06-resources/02-software.mdx`) rather than a code comment. Effort S.
+  - `core/source.rs:348` quotes an upstream cjseq `TODO` (the only TODO in production code); zero `#[allow(dead_code)]` in production code. Nothing to do.
+- **Effort:** S
+- **Related Part 1:** —
+
+#### D-RS-13 — Every query is implemented twice (`&Path` sync, `ObjectStore` async) with no shared byte-source seam, which forces sync/async parity tests
+
+- **Location:** `core/query.rs:59-392` (13 `pub fn`s taking `table_path: &Path`, each `File::open` + `ParquetRecordBatchReaderBuilder`) and `core/query_async.rs:64-459` (11 `pub async fn …_async(store: Arc<dyn ObjectStore>, path: &ObjectPath, ..)`, each `ParquetObjectReader` + `ParquetRecordBatchStreamBuilder`). Logic is shared via `core/query_core.rs`; the open → configure builder → iterate/stream → fold frame is duplicated per pair (compare `query.rs:91-122` `bbox_query` with `query_async.rs:109-145`). `bloom_keep_row_groups{,_async}` (`query.rs:227` / `query_async.rs:262`) additionally differ in fetch strategy (per-filter `pread` vs one batched `get_byte_ranges`); verdict semantics match (no filter / no declared length → keep). `core/query.rs:374` also reaches into `stac::properties::PackageTables` (see D-RS-02).
+- **Problem:** the transport (local file vs object store) is fixed per function instead of injected, so each new query needs two public functions and a parity test proving they agree. Of the 12 tests in `query_async::tests`, 10 are "async matches sync on a real fixture" parity tests, 127.8 s of test time together (e.g. `project_column_async_matches_sync_project_column_on_a_real_fixture` 9.8 s).
+- **Impact:** changeability (every query change is made twice); test cost; replaceability (CityLake/readbench choose an API family rather than a store).
+- **How to fix:**
+  1. Make the async implementation the single one, generic over the byte source: `pub async fn bbox_query<R: AsyncFileReader + Clone + Send + 'static>(reader: R, query_bbox: [f64; 6]) -> Result<BBoxQueryResult>` (likewise for the other 10). `parquet` already implements `AsyncFileReader` for `ParquetObjectReader` and for `tokio::fs::File`, so a local file is just another reader.
+  2. Introduce `pub trait TableSource { type Reader: AsyncFileReader + Clone + Send + 'static; fn open(&self, table: &str) -> Result<Self::Reader>; }` with `LocalTables(PathBuf)` and (feature `object-store`) `ObjectStoreTables { store, prefix }`; it is the read-side half of D-RS-02's `PackageStore`.
+  3. Keep the sync API as thin wrappers: `pub fn bbox_query(path: &Path, q) -> Result<_> { block_on(query::bbox_query(tokio::fs::File::open(path)?, q)) }` using a current-thread runtime, or drop it if no caller needs sync (CLI and readbench can use a runtime). **Cost to decide explicitly:** today `tokio` is a dev-dependency only and `parquet/async` comes in only via the `object-store` feature; a single async implementation makes both non-optional for every `core` consumer — or the sync API must move behind the feature. Choose one before starting.
+  4. Keep the batched bloom fetch (the async variant) as the only strategy; it is a superset.
+  5. Delete the 10 parity tests; keep one contract test per query, parameterised over `[LocalTables, ObjectStoreTables(InMemory)]` (`object_store::memory::InMemory` needs no HTTP server).
+- **Tests that become simpler:** parity tests disappear (≈120 s); async tests stop needing the axum/tower-http test server (`core/Cargo.toml` dev-deps) for anything but the HTTP-transport smoke test.
+- **Effort:** M
+- **Related Part 1:** `core/query_async.rs` `mod tests` `*_matches_sync_*` (10 tests)
+
+#### D-RS-14 — Sidecar content is assembled across `encode`, `package` and `sidecar` with temporal coupling
+
+- **Location:** `core/encode.rs:1736` (`BatchIter` owns the dataset-global `AppearanceInterner`), `:1749-1763` (`appearance()` / `appearance_mut()` exposed so a post-encode pass can mutate it); `core/package.rs:1062-1068` (must call `set_tolerate_invalid_refs` _before_ the encode loop and before templates), `:1086-1092` (must fold templates via `build_template_rows(.., batches.appearance_mut())` _after_ encode and _before_ reading materials/textures), `:1094-1114` (then writes three sidecars by path); `core/package.rs:366-456` `build_template_rows` (template WKB + appearance encoding) lives in the orchestrator, is `pub(crate)` "so the sidecar round-trip test exercises THIS production builder" (`:359-360`) and is imported by `core/sidecar.rs` tests at `:1543,1612,1712,1755,1848,1880`. `core/citygml/building.rs:47,71` holds its own `AppearanceInterner`.
+- **Problem:** no single type owns "the package's appearance and template content". The interner's lifecycle is threaded through the encoder iterator and mutated from outside in a required order (tolerance flag → encode → fold templates → read totals); the template row codec sits in `package` rather than in the sidecar codec module, so `sidecar`'s tests import from `package`.
+- **Impact:** correctness risk (reordering three statements in `write_package` silently drops template-only materials from `materials.parquet`); testability (sidecar codec tests depend on the orchestrator module); changeability of `package.rs` (1.5k production lines).
+- **How to fix:**
+  1. Introduce `pub(crate) struct AppearanceCatalog { interner: AppearanceInterner, template_rows: Vec<TemplateRow> }` in `core/appearance.rs` with `fn new(tolerate_invalid_refs: bool)`, `fn intern_feature(..)` (what encode calls today), `fn add_templates(&mut self, templates: &GeometryTemplates, header: &CityJSON) -> Result<()>` (today's `build_template_rows`, moved), and `fn finish(self) -> SidecarContent { materials, textures, templates, invalid_refs_dropped }`.
+  2. `encode` takes `&mut AppearanceCatalog` as a parameter instead of owning an interner; delete `BatchIter::appearance{,_mut}`.
+  3. `write_package` becomes: `let mut cat = AppearanceCatalog::new(opts.tolerate_invalid_appearance); encode(.., &mut cat); cat.add_templates(..)?; let content = cat.finish(); sink.write_sidecars(&content)` — the order is enforced because `finish` consumes the catalog.
+  4. Move the `TemplateRow` Arrow codec (`write_templates`/`read_templates`) and `add_templates` tests together in `sidecar` / `appearance`; `sidecar` tests stop importing `package`.
+- **Tests that become simpler:** template/material sidecar tests build an `AppearanceCatalog` from the fixture header and assert `SidecarContent` directly, with no convert and no Parquet round-trip; the round-trip through Parquet stays as one codec test per sidecar.
+- **Effort:** M
+- **Related Part 1:** `core/sidecar.rs` `mod tests` that import `crate::package::build_template_rows`; template-related tests in `roundtrip_real_data.rs`
+
+#### D-RS-15 — CRS resolution parses the entire vendored EPSG table to serve one code
+
+- **Location:** `schema/src/crs.rs:192-209` (`static ASSET = include_bytes!("../assets/epsg_projjson.json.gz")`, 670 KB gzipped; `table()` gunzips and `serde_json::from_str`s the whole thing into `HashMap<String, Value>` on first use).
+- **Problem:** the first CRS lookup in a process pays for decompressing and building a DOM for every EPSG entry. `OnceLock` amortises this within a process, but under nextest (one process per test) every CRS-touching test pays it again: `crs::tests::*` take 2.9–3.2 s each in the timing data, versus milliseconds for comparable pure-function tests, and every convert test with a CRS inherits it.
+- **Impact:** test/CLI latency (each `cityparquet convert` invocation — e.g. the ~74k-item catalogue driver in `scripts/catalog2cityparquet` — pays the full parse); memory.
+- **How to fix:**
+  1. Parse lazily per entry: deserialise into `HashMap<String, Box<serde_json::value::RawValue>>` (enable serde_json's `raw_value` feature) and parse only the requested entry into `Value` on lookup. Keys still require one pass over the text, but no per-entry DOM.
+  2. Better: change `tools/gen_projjson.py` to emit a sorted, newline-delimited `code\tprojjson` file (or a small build-script-generated `phf` map of `&'static str`), and binary-search/lookup the code without parsing the rest.
+  3. Keep the public API (`resolve_to_projjson`, `axis_scale`) unchanged, so this is invisible to callers.
+- **Tests that become simpler:** none change; `crs::tests` and every CRS-touching convert test drop the ≈3 s fixed cost (debug build).
+- **Effort:** S
+- **Related Part 1:** `cityparquet-schema::crs::tests::*` (slow for this reason, not because they are redundant)
 
 ### 5.2 `lib/duckdb-3d`
 
