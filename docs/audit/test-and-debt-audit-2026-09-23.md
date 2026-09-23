@@ -15,18 +15,37 @@ Crate direction is clean and acyclic: `cityparquet-cli` → `cityparquet`
 (core) → `cityparquet-schema`. The schema crate has no `arrow-array` or
 `parquet` dependency, and `just isolation` enforces that.
 
-Inside `cityparquet` (core, ~33 modules, ~55k lines including tests) there is
-**no internal layering**. The `crate::<module>` path graph (a lower bound: it
-misses `use crate::{…}` groups) has cycles at every level:
+Inside `cityparquet` (core, 33 top-level modules, ~55k lines including tests)
+the **production** import graph is mostly layered. It was derived from
+`crate::…` paths and `use crate::{…}` groups, excluding `#[cfg(test)]` modules
+and comments. `wkb_read`, `wkb_write`, `recipe`, `order` and `address` import
+nothing from the crate, and the read path
+(`reader` → `decode` → `query_core` → `query` → `query_async`) is acyclic.
+There is **one strongly connected cluster**, on the write/export side:
+`{source, citygml, export, encode, scan, lod0, appearance}`. It comes from
+three back-edges:
 
-| Cycle                                                            | Where                                                                                               |
-| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `wkb_read` ↔ `wkb_write`                                         | the geometry codec's two halves import each other                                                   |
-| `encode` ↔ `package` ↔ `scan` ↔ `recipe`                         | the write pipeline's stages and its orchestrator import each other                                  |
-| `decode` ↔ `reader` ↔ `geometry_encoding`                        | the read path                                                                                       |
-| `query` ↔ `query_async` ↔ `query_core`                           | the sync, async and shared query layers import each other                                           |
-| `export` ↔ `compare`, `export` ↔ `sidecar`, `export` ↔ `citygml` | `export` is a hub: 11 modules import it, including `decode`, `order`, `stac` and the CityGML writer |
-| `package` → `compare`                                            | the write orchestrator depends on the round-trip comparator                                         |
+| Back-edge                    | Cause                                                                                                                                                                                                                                                  |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `export` ↔ `citygml::writer` | `export` dispatches to the CityGML writer, and the writer imports `export`'s `pub(crate)` helpers (`partition_shells`, `shell_faces`, `appearance_columns`, `nest_by_shells`, …). Shared WKB-to-CityJSON-structure decoding lives in the export module |
+| `encode` ↔ `lod0`            | `lod0` calls `encode::values_nesting_depth` and `encode::flatten_values`, and `encode` calls `lod0` synthesis                                                                                                                                          |
+| `encode` ↔ `appearance`      | the appearance interner imports encode helpers, and encode imports the interner                                                                                                                                                                        |
+
+`source` → `citygml` (reader) is a legitimate edge. It only closes the loop
+because the CityGML reader and writer share one parent module.
+
+Public interfaces: `package::convert(&ConvertOptions)`,
+`export::export(&ExportOptions)`, `compare`, `query`/`query_async`, and the
+`CityParquetReaderBuilder` extension trait on Parquet's `ArrowReaderBuilder`.
+That trait is the **only** `pub trait` in the core crate. Every other seam is a
+concrete type or free function. `Source` is one struct that switches on a
+`SourceFormat` tag and on which optional field is populated (`doc`, or
+`buffered` for in-memory merge/partition input), rather than a trait with one
+implementation per input. Package output always goes to a local directory:
+the write path (`package`, `sidecar`, `partition`, `stac`) calls `std::fs`
+directly, and `object_store` is used only by the feature-gated async query
+path. `lib.rs` exports 28 of the 33 modules as `pub`, so the crate's public
+surface is effectively its whole internal layout.
 
 Public interfaces: `package::convert(&ConvertOptions)`,
 `export::export(&ExportOptions)`, `compare`, `query`/`query_async`, and the
