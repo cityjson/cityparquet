@@ -6,7 +6,7 @@ Scope: `lib/cityparquet-rs`, `lib/duckdb-3d` and `lib/duckdb-cityjson`, in
 that priority order. This is an audit only: no test or source file is changed.
 Part 1 has 58 test candidates and Part 2 has 31 debt items; each gives
 followable steps. Every headline claim below was checked against the code.
-The two duckdb-cityjson bugs were reproduced against the existing release build.
+The two duckdb-cityjson bugs were reproduced against the existing release build (`build/release/duckdb`).
 
 **Where test time goes.** In cityparquet-rs, the gate `just test`
 (`cargo test`) takes **10 min 10 s** wall-clock, because test binaries run one
@@ -19,23 +19,23 @@ redundant tests is maintenance, not runtime.
 
 ### Top 5 test changes (value ÷ effort)
 
-| #   | ID                   | Change                                                                                                                                                                                                                      | Gate wall saved          | Effort |
-| --- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | ------ |
-| 1   | T-RS-I-07            | `bench_smoke` nine-variant test: set `skip_roundtrip: true`. Core already proves each of its nine round trips                                                                                                               | ≈ 45 s                   | S      |
-| 2   | T-RS-I-02            | Delete two byte-identical delft round trips (`_compatibility_`, `_by_type_`); split the sequential 63 s preset loop into one test per preset                                                                                | ≈ 45 s                   | S      |
-| 3   | T-RS-U-01…04         | Comparator unit tests: collapse eight whole-dataset "mutation is detected" tests into one table on a header + one-feature fixture; drop two unnecessary railway convert + export runs                                       | ≈ 155 s CPU              | S      |
-| 4   | T-RS-I-01, T-RS-I-16 | Delete `export_stac_roundtrip.rs` (a finished migration safety net, now a pure duplicate); run `citygml_buildingparts` on a slice of delft                                                                                  | ≈ 40 s                   | S      |
-| 5   | T-CJ-02              | Replace two duckdb-cityjson conversion files that check only counts on a fixture with no `vertices` (geometry silently reads as NULL) with `EXCEPT ALL` checks on real data, adding the uncovered FCB → CityJSON directions | ≈ 0 (fixes a false pass) | S      |
+| #   | ID                   | Change                                                                                                                                                                                                                      | Saved (gate wall unless stated)                                          | Effort |
+| --- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------ |
+| 1   | T-RS-I-07            | `bench_smoke` nine-variant test: set `skip_roundtrip: true`. Core already proves each of its nine round trips                                                                                                               | ≈ 45 s                                                                   | S      |
+| 2   | T-RS-I-02            | Delete two byte-identical delft round trips (`_compatibility_`, `_by_type_`); split the sequential 63 s preset loop into one test per preset                                                                                | ≈ 45 s                                                                   | S      |
+| 3   | T-RS-U-01…04         | Comparator unit tests: collapse eight whole-dataset "mutation is detected" tests into one table on a header + one-feature fixture; drop two unnecessary railway convert + export runs                                       | ≈ 150 s nextest time; a few s of gate (the whole unit binary takes 20 s) | S      |
+| 4   | T-RS-I-01, T-RS-I-16 | Delete `export_stac_roundtrip.rs` (a finished migration safety net, now a pure duplicate); run `citygml_buildingparts` on a slice of delft                                                                                  | ≈ 40 s                                                                   | S      |
+| 5   | T-CJ-02              | Replace two duckdb-cityjson conversion files that check only counts on a fixture with no `vertices` (geometry silently reads as NULL) with `EXCEPT ALL` checks on real data, adding the uncovered FCB → CityJSON directions | ≈ 0 (fixes a false pass)                                                 | S      |
 
 ### Top 5 debt items (value ÷ effort)
 
-| #   | ID      | Problem → fix                                                                                                                                                                                                                                        | Effort |
-| --- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| 1   | D-CJ-01 | **Reproduced bug.** `COPY (SELECT … FROM read_cityjsonseq(…))` reopens the source with format auto-detection and writes no `metadata`, so EPSG:7415 is lost. Route every reader open through the recorded reader kind                                | S      |
-| 2   | D-RS-15 | The first CRS lookup in each process parses the whole 13.2 MB EPSG → PROJJSON table (1.8 s measured, debug build). That costs up to ~1.5 min of the gate and ~750 s of nextest time. Parse per entry, or ship an indexed asset                       | S      |
-| 3   | D-RS-01 | Break the core crate's only dependency cycle, `{source, citygml, export, encode, scan, lod0, appearance}`: move the CityJSON boundary helpers out of `encode` and the reassembly helpers out of `export` into leaf modules, and add a layering guard | S      |
-| 4   | D-RS-05 | The write benchmark harness lives in the published CLI crate, and `variant`/`counting_store` in the library. Move them to `benchmark/`: that takes the 127 s `bench_smoke` binary out of the library gate                                            | S–M    |
-| 5   | D-RS-09 | The round-trip oracle (`compare`) reuses the writer's `flatten_values` and `VertexPool`, so a bug there passes every losslessness test. Give the comparator its own implementations, plus one differential test                                      | S–M    |
+| #   | ID      | Problem → fix                                                                                                                                                                                                                                                                                                               | Effort |
+| --- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| 1   | D-CJ-01 | **Reproduced bug.** COPY reopens its source with format auto-detection instead of the reader kind the query used. For `read_cityjsonseq` over a Seq file named `*.city.json`, it misreads the file, logs a warning and writes no `metadata`, so EPSG:7415 is lost. Route every reader open through the recorded reader kind | S      |
+| 2   | D-RS-15 | The first CRS lookup in each process parses the whole 13.2 MB EPSG → PROJJSON table (1.8 s measured, debug build). That costs up to ~1.5 min of the gate and ~750 s of nextest time. Parse per entry, or ship an indexed asset                                                                                              | S      |
+| 3   | D-RS-01 | Break the core crate's only dependency cycle, `{source, citygml, export, encode, scan, lod0, appearance}`: move the CityJSON boundary helpers out of `encode` and the reassembly helpers out of `export` into leaf modules, and add a layering guard                                                                        | S      |
+| 4   | D-RS-05 | The write benchmark harness lives in the published CLI crate, and `variant`/`counting_store` in the library. Move them to `benchmark/`: that takes the 127 s `bench_smoke` binary out of the library gate                                                                                                                   | S–M    |
+| 5   | D-RS-09 | The round-trip oracle (`compare`) reuses the writer's `flatten_values` and `VertexPool`, so a bug there passes every losslessness test. Give the comparator its own implementations, plus one differential test                                                                                                             | S–M    |
 
 The main interface work, all M-sized: `PackageSink` for the writer
 (D-RS-03, which removes a test-only flag from a production struct); one query
@@ -71,7 +71,8 @@ nothing from the crate, and the read path
 (`reader` → `decode` → `query_core` → `query` → `query_async`) is acyclic.
 There is **one strongly connected cluster**, on the write/export side:
 `{source, citygml, export, encode, scan, lod0, appearance}`. It comes from
-three back-edges:
+three back-edges (D-RS-01 lists the five import edges whose removal leaves the
+crate acyclic):
 
 | Back-edge                    | Cause                                                                                                                                                                                                                                                  |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
