@@ -69,7 +69,7 @@ snapshot test.
 | Crate                | Inline unit (`src/`) | Integration (`tests/`)                      | Measured                              |
 | -------------------- | -------------------- | ------------------------------------------- | ------------------------------------- |
 | `cityparquet-schema` | 100                  | 2 (1 file)                                  | 25 s CPU                              |
-| `cityparquet` (core) | 381                  | 279 (45 files; 6 `#[ignore]`, bloom/DuckDB) | 355 s unit + ~2,700 s integration CPU |
+| `cityparquet` (core) | 381                  | 279 (45 files; 6 `#[ignore]`, bloom/DuckDB) | 355 s unit + ~2,470 s integration CPU |
 | `cityparquet-cli`    | 3                    | 36 (`cli.rs`, `bench_smoke.rs`)             | 469 s CPU                             |
 
 This comes from a single run of `cargo nextest run --workspace --all-features`
