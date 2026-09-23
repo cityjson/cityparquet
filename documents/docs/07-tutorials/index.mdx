@@ -9,15 +9,49 @@ sidebar:
 Explained, task-oriented walkthroughs. For the bare copy-paste path, see
 [Getting started](/getting-started).
 
-Three take one tool and one local file each. The rest work on the
-[published datasets](/resources/datasets) **on object storage**: 3DBAG at national
-scale; PLATEAU's Tokyo, in geographic coordinates, with its land use; finding
-packages in the STAC catalogue and querying many at once; joining city models to
-Overture Maps; and LoD3 façade semantics.
+Choose a tool: **DuckDB** for SQL conversion, **Python** for a small analysis
+script, or **Rust** for library reads and writes and CLI conversion. The DuckDB
+3D link opens the extension’s own documentation.
+
+**With actual cities** brings the tools together on
+[published datasets](/resources/datasets): national-scale 3DBAG, PLATEAU Tokyo,
+catalogue queries, joins with Overture Maps, and LoD3 façade semantics.
 
 If you would rather not install anything first, the [SQL playground](/playground)
 runs DuckDB and both extensions in your browser, against a 16.4 GB 3DBAG package on
 object storage.
+
+## DuckDB
+
+<CardGroup cols={2}>
+  <Card title="Convert to and from CityParquet" href="/tutorials/duckdb" icon="database">
+    Read city model formats, write CityParquet, insert records, and export again.
+  </Card>
+  <Card title="DuckDB 3D documentation" href="https://cityjson.github.io/duckdb-3d/#/" icon="box">
+    Installation, function reference, and examples on the DuckDB 3D documentation site.
+  </Card>
+</CardGroup>
+
+## Python
+
+<CardGroup cols={2}>
+  <Card title="Prepare building-energy inputs with Python" href="/tutorials/python-energy" icon="code">
+    Select a neighbourhood, calculate surface-to-volume ratios from 3DBAG attributes, and save a CSV.
+  </Card>
+</CardGroup>
+
+## Rust
+
+<CardGroup cols={2}>
+  <Card title="Read and write CityParquet with Rust" href="/tutorials/rust-read-write" icon="code">
+    Write a package with the Rust library and read selected columns in Arrow batches.
+  </Card>
+  <Card title="Convert formats with the CityParquet CLI" href="/tutorials/cli-conversion" icon="terminal">
+    Convert CityJSON, CityJSONSeq, and CityGML into packages, export them again, and check a round trip.
+  </Card>
+</CardGroup>
+
+## With actual cities
 
 <CardGroup cols={2}>
   <Card
@@ -49,18 +83,5 @@ object storage.
   </Card>
   <Card title="LoD3 façades" href="/tutorials/lod3-openings" icon="building">
     Measure window and wall area from per-face semantics.
-  </Card>
-  <Card title="DuckDB" href="/tutorials/duckdb" icon="database">
-    Query and convert CityParquet with plain DuckDB.
-  </Card>
-  <Card title="DuckDB 3D extension" href="/tutorials/duckdb-3d" icon="box">
-    Validate and measure 3D solids.
-  </Card>
-  <Card
-    title="DuckDB CityJSON extension"
-    href="/tutorials/duckdb-cityjson"
-    icon="arrow-right-left"
-  >
-    Read and write CityJSON / CityJSONSeq.
   </Card>
 </CardGroup>

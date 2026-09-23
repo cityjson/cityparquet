@@ -1,0 +1,122 @@
+---
+title: Convert formats with the CityParquet CLI
+description: Convert CityJSON, CityJSONSeq, and CityGML into CityParquet packages and export them again from the command line.
+sidebar:
+  label: CLI conversion
+  icon: terminal
+---
+
+The `cityparquet` command-line tool converts local city-model files into
+CityParquet packages and exports them again. This walkthrough uses a Delft
+CityJSONSeq file and shows the equivalent commands for CityJSON and CityGML.
+For FlatCityBuf or SQL-based conversion, use the
+[DuckDB format-conversion tutorial](/tutorials/duckdb).
+
+## Install the CLI
+
+With Rust and Cargo installed, clone the repository and install the CLI from
+source:
+
+```bash
+git clone --recurse-submodules https://github.com/cityjson/cityparquet.git
+cd cityparquet/lib/cityparquet-rs
+cargo install --path crates/cli --locked
+cityparquet --help
+```
+
+Cargo installs the `cityparquet` executable in its bin directory, normally
+`~/.cargo/bin`; ensure that directory is on your `PATH`.
+
+## Convert CityJSONSeq to CityParquet
+
+Download the Delft example into a working directory:
+
+```bash
+mkdir -p conversion-example
+cd conversion-example
+curl -fL https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl \
+  -o delft.city.jsonl
+```
+
+Convert it into a package:
+
+```bash
+cityparquet convert delft.city.jsonl --output delft_package --no-lod0
+```
+
+`--no-lod0` disables synthesis of extra LoD0 footprints, which makes this example
+suitable for comparing the exported model with its source later. Omit it when
+you want the default footprint synthesis for objects without a source LoD0.
+
+The output is a directory containing one Parquet object table per CityGML module
+and a `metadata.json` file. Delft's buildings and building parts go into
+`building.parquet`. Material, texture, and geometry-template sidecars are written
+when the source contains those data. See the
+[package layout](/specification/dataset-package).
+
+Use a new output directory for another conversion. To replace an existing
+package deliberately, add `--overwrite`.
+
+## Convert CityJSON or CityGML
+
+The same command accepts a CityJSON document or CityGML 2.0 file. Replace these
+example input names with your own local files:
+
+```bash
+cityparquet convert model.city.json --output cityjson_package
+cityparquet convert model.gml --output citygml_package
+```
+
+If a source lacks a coordinate reference system, supply its known EPSG code with
+`--crs`, for example `--crs EPSG:7415` for the Dutch reference system. This declares
+the source CRS; it does not reproject coordinates or override a CRS already
+declared by the source.
+
+Several input files can be merged into one package:
+
+```bash
+cityparquet convert tile_a.city.jsonl tile_b.city.jsonl --output combined_package
+```
+
+## Export to CityJSONSeq or CityJSON
+
+Pass the package directory and an output filename. The suffix selects the format:
+
+```bash
+cityparquet export delft_package delft_export.city.jsonl
+cityparquet export delft_package delft_export.city.json
+```
+
+`.city.jsonl` produces CityJSONSeq; `.city.json` produces a single CityJSON
+document. Review the export report for any dropped instances or appearance
+references before treating the conversion as lossless.
+
+## Export to CityGML
+
+A `.gml` suffix selects the CityGML 2.0 writer:
+
+```bash
+cityparquet export delft_package delft_export.gml
+```
+
+CityGML export has narrower coverage than CityJSON export. Its report lists
+buildings written, non-building objects skipped, missing geometry, unsupported
+multi-solids, and skipped LoDs or attributes. Check that report for your model;
+a successful command does not mean every source object was exported.
+
+## Check the CityJSONSeq round trip
+
+Compare the exported CityJSONSeq with the downloaded source:
+
+```bash
+cityparquet compare delft.city.jsonl delft_export.city.jsonl
+```
+
+The comparator checks semantic equality rather than identical file bytes. It
+prints `equal` and exits with code 0 when the models match; differences produce
+exit code 2 and a report. The comparator accepts CityJSON and CityJSONSeq, not
+CityGML.
+
+You now have a CityParquet package for analysis and exported files for exchange.
+Continue with [Getting started](/getting-started) to query a package, or inspect
+`cityparquet convert --help` and `cityparquet export --help` for command options.

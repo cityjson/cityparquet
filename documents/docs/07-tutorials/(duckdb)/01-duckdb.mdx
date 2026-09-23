@@ -1,0 +1,217 @@
+---
+title: Convert to and from CityParquet
+description: Read CityJSON, CityJSONSeq, or FlatCityBuf, write a CityParquet package, add records, and export to other formats with DuckDB.
+sidebar:
+  badge: WIP
+  label: CityJSON extension
+---
+
+Use DuckDB's `cityjson` extension to move a city model between CityJSON,
+CityJSONSeq, FlatCityBuf, and CityParquet. This walkthrough starts with Delft,
+writes a CityParquet package, adds another tile, and exports the updated model.
+The examples follow the extension's
+[testing walkthrough](https://github.com/cityjson/duckdb-cityjson/blob/main/docs/TESTING.md)
+and [function reference](https://github.com/cityjson/duckdb-cityjson/blob/main/docs/FUNCTIONS.md).
+
+## Set up the extension
+
+Install [DuckDB](https://duckdb.org/docs/installation/), open its SQL shell,
+and install the `cityjson` extension from the community registry:
+
+```sql
+INSTALL cityjson FROM community;
+LOAD cityjson;
+```
+
+If you already have an older installation, update it from the same registry:
+
+```sql
+FORCE INSTALL cityjson FROM community;
+```
+
+Restart DuckDB and run `LOAD cityjson;` to use the updated extension.
+
+:::note[Package-operation availability]
+The package steps use `cityparquet_init`, `cityparquet_write`,
+`cityparquet_read`, and `insert_cityjson`. These were absent from the community
+version tested for this walkthrough. If your registry version does not yet
+provide them after updating, use [CLI conversion](/tutorials/cli-conversion)
+for package creation and export. The examples below document those package
+operations, but require a release that includes them.
+:::
+
+Run the SQL blocks below **separately and in order**. Package pragmas inspect the
+existing catalogue when they are expanded, so submitting schema creation and a
+pragma together can fail before the schema exists.
+
+## Read CityJSON, CityJSONSeq, or FlatCityBuf
+
+Each reader exposes one row per city object, with attributes and separate geometry
+columns for each LoD. These are three alternative sources, not three datasets to
+append together:
+
+```sql
+SELECT * FROM read_cityjson(
+  'https://cityjson.open3d.city/cityjson/delft.city.json')
+LIMIT 5;
+```
+
+```sql
+SELECT * FROM read_cityjsonseq(
+  'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
+LIMIT 5;
+```
+
+```sql
+SELECT * FROM read_flatcitybuf(
+  'https://flatcitybuf.open3d.city/data/delft.fcb')
+LIMIT 5;
+```
+
+Use the CityJSONSeq source for the rest of this walkthrough. The other readers
+can supply the same object-table layout.
+
+## Write a CityParquet package
+
+Create a schema to hold the package's tables:
+
+```sql
+CREATE SCHEMA pkg;
+```
+
+Delft contains building-module objects, so load its buildings and building parts
+into one `building` table:
+
+```sql
+CREATE TABLE pkg.building AS
+SELECT * FROM read_cityjsonseq(
+  'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+```
+
+Register the tables as a package:
+
+```sql
+PRAGMA cityparquet_init('pkg');
+```
+
+Write the package directory, explicitly supplying the source coordinate reference
+system because a table created from a reader does not retain the source metadata:
+
+```sql
+SELECT * FROM cityparquet_write('pkg', 'delft_package', crs => 'EPSG:7415');
+```
+
+This produces `delft_package/building.parquet` and `metadata.json`, with package
+and geometry metadata in the Parquet footer. Use `cityparquet_write` for this
+package output; a plain `COPY … TO (FORMAT PARQUET)` only writes a table and does
+not construct the package metadata.
+
+This simple table-loading example is for Delft. For mixed-module or textured
+sources, use the package insertion operations below to route objects and bring
+in any material, texture, or template sidecars.
+
+## Insert records from another tile
+
+Add the versioned 3DBAG tile used by the extension's notebook test:
+
+```sql
+PRAGMA insert_cityjson(
+  'pkg',
+  'https://data.3dbag.nl/v20250903/tiles/9/304/532/9-304-532.city.json');
+```
+
+The insertion routes objects into their module tables, updates relationships and
+bounding boxes, and remaps sidecar identifiers. Existing object identifiers are
+rejected rather than silently overwritten, so run this insertion once. The
+source must use the same coordinate reference system; insertion does not
+reproject coordinates.
+
+For an additional local file in either of the other formats, use the matching
+operation instead. These filenames are placeholders for your own data:
+
+```sql
+PRAGMA insert_cityjsonseq('pkg', 'another_tile.city.jsonl');
+```
+
+```sql
+PRAGMA insert_flatcitybuf('pkg', 'another_tile.fcb');
+```
+
+Validate the updated package, then inspect the report in a separate statement:
+
+```sql
+PRAGMA cityparquet_validate('pkg');
+```
+
+```sql
+SELECT * FROM cityparquet_validation;
+```
+
+Write the updated package to a new directory:
+
+```sql
+SELECT * FROM cityparquet_write('pkg', 'delft_updated', crs => 'EPSG:7415');
+```
+
+If you used an explicit transaction for changes, commit it before writing:
+`cityparquet_write` reads committed state through an internal connection.
+
+## Read the package back
+
+Load the saved package into a fresh schema, preserving its footer metadata:
+
+```sql
+PRAGMA cityparquet_read('delft_updated', 'restored');
+```
+
+```sql
+SELECT object_type, COUNT(*) AS objects
+FROM restored.building
+GROUP BY object_type;
+```
+
+Use `cityparquet_read` when editing an existing package. For analytical queries
+on a single file, ordinary `read_parquet` is sufficient, but loading its rows
+alone does not preserve the package footer for subsequent edits and writes.
+
+## Export to CityJSON, CityJSONSeq, or FlatCityBuf
+
+Export the restored building table, including both buildings and their parts.
+Keeping the geometry and properties columns lets the writer reconstruct the
+available LoDs and their semantics.
+
+### CityJSON
+
+Write a single CityJSON document:
+
+```sql
+COPY (SELECT * FROM restored.building)
+TO 'delft_updated.city.json'
+  (FORMAT cityjson, crs 'https://www.opengis.net/def/crs/EPSG/0/7415');
+```
+
+### CityJSONSeq
+
+Write a metadata header followed by streamed CityJSON features:
+
+```sql
+COPY (SELECT * FROM restored.building)
+TO 'delft_updated.city.jsonl'
+  (FORMAT cityjsonseq, crs 'https://www.opengis.net/def/crs/EPSG/0/7415');
+```
+
+### FlatCityBuf
+
+Write the binary format with its spatial index:
+
+```sql
+COPY (SELECT * FROM restored.building)
+TO 'delft_updated.fcb'
+  (FORMAT flatcitybuf, crs 'https://www.opengis.net/def/crs/EPSG/0/7415');
+```
+
+These examples export the building module used throughout this walkthrough.
+For the complete package API and appearance handling, see the
+[function reference](https://github.com/cityjson/duckdb-cityjson/blob/main/docs/FUNCTIONS.md).
+For selecting and exporting a region directly from a hosted CityParquet file,
+continue with [Working with 3DBAG at cloud scale](/tutorials/cloud-scale-3dbag#convert-to-cityjsonseq-and-other-formats).

@@ -1,6 +1,7 @@
 import { defineMeta } from "blume";
 
 export default defineMeta({
-  title: "Tutorials",
-  icon: "graduation-cap",
+  title: "DuckDB",
+  order: 1,
+  pages: ["duckdb", "duckdb-3d"],
 });

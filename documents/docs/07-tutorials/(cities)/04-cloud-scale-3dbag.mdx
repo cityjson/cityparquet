@@ -218,7 +218,7 @@ next section measures.
 ## Measure the 3D solids with `three_d`
 
 To turn the `Solid` columns into measurable values, use the
-[`three_d`](/tutorials/duckdb-3d) extension, available from the DuckDB community registry.
+[`three_d`](https://cityjson.github.io/duckdb-3d/#/) extension, available from the DuckDB community registry.
 
 :::note[`three_d` loads alongside `spatial`]
 `three_d` exposes its 3D operations under `ST_3D*` names, so it shares a session with
@@ -297,7 +297,7 @@ The volume the kernel computes from the stored WKB tracks `b3_volume_lod22` to a
 fraction of a per mille — a live check that the encoding preserved the geometry
 losslessly. `three_d` **validates, it never silently repairs**; the full function
 surface (distance queries, transforms, serialisation) is in the
-[`three_d` tutorial](/tutorials/duckdb-3d).
+[`three_d` documentation](https://cityjson.github.io/duckdb-3d/#/).
 
 ## Roof-type analysis over semantics and geometry
 
@@ -394,7 +394,7 @@ complex, a reminder that a national dataset always has outliers.
 
 ## Convert to CityJSONSeq (and other formats)
 
-Because the [`cityjson`](/tutorials/duckdb-cityjson) extension also _writes_ city
+Because the [`cityjson`](/tutorials/duckdb) extension also _writes_ city
 models, `COPY … TO` turns CityParquet back into CityJSON, CityJSONSeq, or FlatCityBuf
 — DuckDB as a format converter. It consumes the wide layout directly: a plain
 `SELECT *` becomes one **multi-LoD** CityObject per row, and the STRUCT
@@ -457,5 +457,5 @@ at three levels:
 The same three properties are what make CityParquet a _delivery_ format for 3D city
 models, not just a storage one. To reproduce these numbers on your own data, convert
 a CityJSON source with the [`cityparquet-rs`](/resources/software) reference writer or
-the [`cityjson` one-liner](/tutorials/duckdb-cityjson), and point the queries at your
+the [format-conversion walkthrough](/tutorials/duckdb), and point the queries at your
 package.
