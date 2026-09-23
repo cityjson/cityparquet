@@ -524,6 +524,151 @@ The kernel has **no interfaces**. `grep virtual src/kernel src/include/kernel` f
 | Confidence                      | Medium. Straightforward, but check the exact expected strings against a fresh build before merging.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Architecture link               | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
+### 3.3 `lib/duckdb-cityjson`
+
+#### Measured cost
+
+- Binary: `build/release/test/unittest` (built 2026-09-22 21:35). The only source newer than it is
+  `src/cityjson/cityparquet_write.cpp`, whose later commits are comment-only ("docs: ..."), so the binary
+  reflects the code.
+- Run: each of the 70 `test/sql/*.test` files through `unittest <file>` once, sequentially.
+  **Total 90.2 s, all 70 pass.** 5 files are `require-env`-gated and skip in ~0.08 s each
+  (`cityjson_corpus_parity`, `cityjson_remote`, `cityjson_fcb_remote`, `cityjson_notebook_e2e`,
+  `cityjson_notebook_geoparquet`) — so the default run never exercises them.
+- Slowest: `cityparquet_insert` 7.4 s, `cityparquet_io` 6.6 s, `cityjson_delft_e2e` 5.5 s,
+  `cityjson_appearance_roundtrip` 5.3 s, `cityparquet_crs_precondition` 3.8 s, `cityjson_appearance_sidecar` 3.4 s,
+  `cityjson_equivalence` 3.2 s, `cityparquet_footer` 3.0 s, `copy_mesh_appearance` 2.9 s,
+  `cityjson_seq_multipass` 2.9 s. Most files are 0.1–1.5 s; much of each file's time is per-process DuckDB
+  start-up plus extension load, so file count matters more than record count.
+- No flaky markers: no `skip`, `mode skip`, `loop`, or timing-dependent assertions. The only `require`
+  gates are `require cityjson` (70), `require parquet` (14) and the 5 `require-env` files.
+- Runtime is not a meaningful reason to delete anything here; the case for deletions below is maintenance
+  (duplicate assertions to keep in step with every schema change) and signal quality.
+
+- Estimated runtime saved by the Part 1 actions: about 3 process launches plus a few records, roughly 2–3 s
+  of 90 s. That is negligible; the case for them is maintenance.
+- Opt-in harnesses, not timed (outside `make test`): `test/cpp/run_{obj_parser,face_triangulation,fcb_selective}_tests.sh`,
+  and `test/wasm/run_wasm_smoke.sh` + `smoke.mjs` (317 lines), a Node smoke test of the Wasm build that needs
+  `just wasm` first. CI (`.github/workflows/MainDistributionPipeline.yml`) runs `make test` plus the format and
+  tidy checks. It runs none of the harnesses or `require-env` files.
+
+#### Interfaces, in brief
+
+- **Readers share an interface.** `CityJSONReader` (`src/include/cityjson/reader.hpp:23-99`) has four
+  implementations (`LocalCityJSONReader`, `LocalCityJSONSeqReader`, `FlatCityBufReader`, `OBJReader`), and the
+  whole scan pipeline (`bind_function.cpp`, `scan_function.cpp`, `init_global.cpp`) is written against it. That
+  part works well.
+- **Writers share nothing.** `CityJSONWriter::WriteCityJSON/WriteCityJSONSeq/WriteFlatCityBuf` are static
+  functions with three different signatures, OBJ/glTF go through `FinalizeObj`/`FinalizeGltf`, and
+  `copy_function.cpp` holds one bind-data union and one option loop for all six formats (D-CJ-02).
+- **Format knowledge leaks into consumers.** Readers are chosen in five places (D-CJ-01). The domain model
+  depends on DuckDB through `lod_table` → `column_types` (D-CJ-04). The inverse of the geometry-properties
+  flattening is written as statics inside `copy_function.cpp` (D-CJ-03).
+
+#### T-CJ-01 — Three "native FCB" files that are subsets of other files
+
+| Field                           | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Location                        | `lib/duckdb-cityjson/test/sql/cityjson_fcb_reader_native.test` (2 records), `cityjson_fcb_metadata_native.test` (2), `cityjson_fcb_writer_native.test` (3)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Category                        | Duplicates                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Action                          | Delete (all three files)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| How                             | Delete the three files. Where each assertion is already covered: `flatcitybuf_metadata('test/data/sample.fcb')` → `(NULL, 2)` is asserted verbatim at `cityjson_metadata_counts.test:28-35`. `COUNT(*) FROM read_flatcitybuf('test/data/sample.fcb')` is tied to the header count at `cityjson_metadata_counts.test:44-50` and read again by `cityparquet_insert_fcb.test`. `COPY read_cityjsonseq('sample.city.jsonl') TO .fcb` followed by count and `feature_id` is the same statement as `cityjson_e2e_fcb.test` Phases 1/3 and is superseded by `cityjson_equivalence.test:180-194`. No helper becomes dead. Keep `test/data/fcb_bbox_attr.fcb`, which `test/cpp/test_fcb_selective.cpp:167-264` still uses. |
+| Realistic bug missed if removed | none. Every assertion is repeated elsewhere, in some places with a stronger oracle.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Cost of keeping                 | 3 extra process launches (~0.1 s each). Three places to update whenever the FCB metadata shape changes. Their names ("native") refer to a reader-implementation migration that is finished.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Confidence                      | High. I compared each assertion line by line with its covering test.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Architecture link               | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+
+#### T-CJ-02 — Count-only format-conversion matrices run on a fixture with no geometry
+
+| Field                           | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Location                        | `lib/duckdb-cityjson/test/sql/cityjson_e2e_formats.test` (17 records), `cityjson_e2e_fcb.test` (34 records)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Category                        | Duplicates + excessive case splitting                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Action                          | Merge into `test/sql/cityjson_equivalence.test`, then delete both files                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| How                             | Both files run every source→target pair on `test/data/sample.city.jsonl` and check only `COUNT(*)`, `version`, and `(object_type, yearOfConstruction)`. That fixture's features have **no `"vertices"` key** (`grep -c '"vertices"'` → 0), so `geometry_lod2_2` reads back NULL for both rows (checked with `build/release/duckdb`, via `scan_function.cpp:50-56`). None of these conversions carries any geometry. `cityjson_equivalence.test` already runs Seq→Seq and Seq→FCB on `delft_subset.city.jsonl` using `EXCEPT ALL`. `cityjson_copy.test` covers CJ→CJ, Seq→Seq and CJ→Seq→CJ. Add a table-driven section to `cityjson_equivalence.test` with the same `EXCEPT ALL` over `(id, object_type, feature_id, tijdstipregistratie, b3_dak_type, oorspronkelijkbouwjaar, geometry_lod2_2)`:<br>`source` / `via` / `read back with`<br>`delft_subset.city.jsonl` / `FORMAT cityjson` / `read_cityjson` (new)<br>`delft_subset.city.jsonl` / `FORMAT flatcitybuf` / `read_flatcitybuf` (exists, extend to geometry)<br>`eq.fcb` / `FORMAT cityjsonseq` / `read_cityjsonseq` (new: FCB→Seq)<br>`eq.fcb` / `FORMAT cityjson` / `read_cityjson` (new: FCB→CJ)<br>The multi-hop chains (Phases 7/8 of `e2e_fcb`) add nothing once each single hop is lossless, so drop them. |
+| Realistic bug missed if removed | Without the merge: FCB→CityJSON and FCB→CityJSONSeq are exercised nowhere else in the default run. With the merge, nothing is lost, and geometry loss on those paths becomes visible for the first time.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Cost of keeping                 | ~1 s. 51 records that must be edited whenever the fixture changes. They give false assurance: green "data integrity" sections on a fixture with no geometry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Confidence                      | High. Checked the fixture and the NULL geometry directly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Architecture link               | D-CJ-07 (why the missing geometry never surfaced)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+
+#### T-CJ-03 — `cityparquet_column_order.test` restates requirement 5 as requirements 1, 3 and 4
+
+| Field                           | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Location                        | `lib/duckdb-cityjson/test/sql/cityparquet_column_order.test`, requirements 1/3/4 in each of three blocks (lines 28-70, 120-162, 212-254)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Category                        | Excessive case splitting                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Action                          | Modify                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| How                             | Requirement 5 (lines 71-105 and its two copies) is one chained comparison covering `parents<children<children_roles` (req 1), `bbox < MIN(geometry_lod*)` (req 3) and `other < MIN(attribute)` (req 4 in ordered form). Delete reqs 1, 3 and 4 in each block, and keep req 2 (existence of `address`/`template`) and req 5. For readability, replace req 5's chain with `SELECT list(column_name ORDER BY ord) FROM wide_cols WHERE column_name IN (<reserved>)`, compared against the literal expected list, plus the existing "no attribute before the last reserved" check. Keep the three blocks for now: they cover three independent schema assemblies (header comment lines 16-19). 27 records → ~12. |
+| Realistic bug missed if removed | none. Every removed conjunct is inside req 5.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Cost of keeping                 | Small runtime. Three copies of five requirements have to change together whenever the spec's reserved order changes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Confidence                      | High. The subsumption can be read directly from the SQL.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Architecture link               | D-CJ-05. Once `Columns()` is assembled in one place, one wide block plus one `lod =>` block is enough.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+
+#### T-CJ-04 — The geometry_properties STRUCT type spelling is pinned outside its owning test
+
+| Field                           | Content                                                                                                                                                                                                                                                                       |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Location                        | `lib/duckdb-cityjson/test/sql/cityjson_wkb.test` (`typeof(geometry_properties_lod2_2)` at lines 26-29, 95-98, and `..._lod2_0` at 154-157); `read_obj.test` (1 occurrence)                                                                                                    |
+| Category                        | Duplicates                                                                                                                                                                                                                                                                    |
+| Action                          | Modify (delete those four records)                                                                                                                                                                                                                                            |
+| How                             | `cityjson_geometry_properties_struct.test` declares itself the home of this contract (header lines 7-13) and covers both the wide and `lod =>` layouts. Delete the four copies. Keep the `typeof(geometry_lod*) = BLOB` records, which are cheap and specific to their files. |
+| Realistic bug missed if removed | none. The owning test fails on the same change.                                                                                                                                                                                                                               |
+| Cost of keeping                 | Every change to the spec §8 struct, or to DuckDB's type printing (the quoting of `"type"`), means editing 5 places instead of 1.                                                                                                                                              |
+| Confidence                      | High                                                                                                                                                                                                                                                                          |
+| Architecture link               | —                                                                                                                                                                                                                                                                             |
+
+#### T-CJ-05 — A `LIMIT 0` tautology
+
+| Field                           | Content                                                                                                                       |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Location                        | `lib/duckdb-cityjson/test/sql/cityjson.test:17-21` ("Check that we have the expected columns")                                |
+| Category                        | Re-checking guarantees of the type system or a library                                                                        |
+| Action                          | Delete (the record)                                                                                                           |
+| How                             | `SELECT COUNT(*) FROM (SELECT * FROM buildings LIMIT 0)` returns 0 for any table. It checks nothing about columns. Delete it. |
+| Realistic bug missed if removed | none                                                                                                                          |
+| Cost of keeping                 | Negligible runtime. It misleads readers: the comment says it checks the column set.                                           |
+| Confidence                      | High                                                                                                                          |
+| Architecture link               | —                                                                                                                             |
+
+#### T-CJ-06 — `transform_stub.cpp`: a dead copy of the implementation
+
+| Field                           | Content                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Location                        | `lib/duckdb-cityjson/test/cpp/transform_stub.cpp` (tracked)                                                                                                                                                                                                                                                                                                          |
+| Category                        | Copies of the implementation                                                                                                                                                                                                                                                                                                                                         |
+| Action                          | Delete                                                                                                                                                                                                                                                                                                                                                               |
+| How                             | The file says it is "copied verbatim from src/cityjson/cityjson_types.cpp:15-25; if that file changes, so must this". No script, CMake file or justfile references it (`grep -rn transform_stub` outside `duckdb/` and `build/` finds nothing). Its only consumer, an encoder harness from commit `feff10f`, no longer exists. Delete it. Nothing else becomes dead. |
+| Realistic bug missed if removed | none. It is never compiled.                                                                                                                                                                                                                                                                                                                                          |
+| Cost of keeping                 | A maintenance promise ("so must this") that nothing enforces.                                                                                                                                                                                                                                                                                                        |
+| Confidence                      | High                                                                                                                                                                                                                                                                                                                                                                 |
+| Architecture link               | D-CJ-04 (the stub existed only because the domain model links DuckDB)                                                                                                                                                                                                                                                                                                |
+
+#### T-CJ-07 — `test_fcb_selective.cpp` T8 pins a stale, hand-copied schema by position
+
+| Field                           | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Location                        | `lib/duckdb-cityjson/test/cpp/test_fcb_selective.cpp:537-633` (`WideSchema()`, `T8_ProjectionToFieldMask`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Category                        | Over-reliance on internals                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Action                          | Modify                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| How                             | `WideSchema()` says it is "the wide schema read_flatcitybuf infers", but its order (`children` before `parents`, `other` before attributes, `bbox` last, no `address`/`template`) is not what any reader emits now (compare `column_types.cpp:445-455` and `local_cityjson_reader.cpp:176-185`). The cases then pass magic positions such as `{1, 8}` and `{9..13}`. The test still passes because `ComputeFcbFieldMask` (`src/cityjson/fcb_selective_convert.cpp:358-385`) classifies each column by kind (`IsGeometryDerivedColumn`) and name (`StructuralColumnNames`), not by position, so the stale order goes unnoticed. Change it to (a) build the schema from `GetDefinedColumns()` + `CityObjectUtils::InferGeometryColumns(...)` + `LODTableUtils::GetTrailingColumns()` + attributes, or from the single assembly D-CJ-05 introduces, and (b) look up each column id by name (`IndexOf(schema, "height")`) rather than by literal position. |
+| Realistic bug missed if removed | Not proposing removal. As written it would miss a mask bug that only shows up with the real column order, for example an id-range assumption.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Cost of keeping                 | Opt-in harness, so no runtime cost. Every schema change makes it more misleading.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Confidence                      | Medium. The drift is confirmed; whether it hides a real mask bug is not.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Architecture link               | D-CJ-05                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+
+#### T-CJ-08 — Vacuum error expectations spell out the full DuckDB MAP type (optional)
+
+| Field                           | Content                                                                                                                                                                                                                                            |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Location                        | `lib/duckdb-cityjson/test/sql/cityparquet_vacuum.test:49-67` (3 `statement error` records)                                                                                                                                                         |
+| Category                        | Over-reliance on internals (exact error strings)                                                                                                                                                                                                   |
+| Action                          | Modify                                                                                                                                                                                                                                             |
+| How                             | Keep all three cases: the scalar case guards a release-build crash. Shorten each expected message to the stable prefix `expected a MAP(VARCHAR, BIGINT[]) (material)` plus the `got <T>` tail where present, and drop the texture STRUCT spelling. |
+| Realistic bug missed if removed | none. A substring match still tells refusal apart from success.                                                                                                                                                                                    |
+| Cost of keeping                 | Three lines change on any texture-cell type change or DuckDB type-printing change.                                                                                                                                                                 |
+| Confidence                      | Medium                                                                                                                                                                                                                                             |
+| Architecture link               | —                                                                                                                                                                                                                                                  |
+
 ## 4. Kept, and why
 
 **`lib/cityparquet-rs`**
@@ -547,6 +692,17 @@ Things that look like architecture debt but are not:
 - **Far-from-origin precision cases** (`test_measurements.cpp:201`, `:251`; `test_validation.cpp:261`; `test_triangulation.cpp:65`; `test_geometry_math.cpp:40`): these look like excessive splitting of "volume is right". Each targets a distinct cancellation bug that shows up only at real-world coordinates (for example RD New / 3DBAG), which is exactly the data this stack carries.
 - **Crafted-malformed payload rejections** (`test_payload.cpp:127-232`, `test_geom_payload.cpp:48-95`): this is the only place a hostile BLOB cast to `SOLID_3D`/`GEOM_3D` is tested before its offsets are used as raw indices by every reader.
 - **One smoke query per SQL function** (for example `st_3d_measurements.test`: tetra volume 1/6, footprint 0.5, NULL propagation, `ST_3DVolume` raising on an open shell): these repeat kernel values but are the binding contract. They are cheap and belong in SQL per CLAUDE.md.
+
+**`lib/duckdb-cityjson`**
+
+- `test/cpp/run_obj_parser_tests.sh` and `run_face_triangulation_tests.sh`: their bare `c++ -Isrc/include` compile
+  lines prove that those kernels are DuckDB-free. That is the seam D-CJ-04 wants for the rest of the format code.
+- `cityjson_streaming_reader_kind.test`: pins a real regression, where bind and scan disagreed on the reader.
+  D-CJ-01 is the same bug class on the COPY path.
+- `cityjson_equivalence.test` and `cityjson_delft_e2e.test`: real data, `EXCEPT ALL` plus file-level checks. These are
+  the merge target for T-CJ-02, not candidates.
+- `cityparquet_crs_precondition.test` `statement error` records: short substrings (`CRS mismatch`,
+  `CRS is unknown`, ...) that tell the precondition's branches apart. That is behaviour, not wording.
 
 ## 5. Part 2 — technical debt, by module and priority
 
@@ -853,3 +1009,249 @@ Paths below use `core/` = `lib/cityparquet-rs/crates/core/src/` and `cli/` = `li
   4. Move the `Dist*` primitives into a `kernel/detail/distance_primitives.hpp` that is explicitly internal, keeping their fine-grained tests (they cover real geometric branches). Make `Geom3DBBoxDistance` file-local.
 - **Effort:** S
 - **Related Part 1:** T-3D-06, T-3D-07
+
+### 5.3 `lib/duckdb-cityjson`
+
+#### D-CJ-01 — COPY re-detects the source format it already knows, and drops the CRS (reproduced bug)
+
+- **Location:** `src/cityjson/copy_function.cpp:583-590`; `src/include/cityjson/copy_source_ref.hpp:14-17` and
+  `src/cityjson/copy_source_ref.cpp:31-38`; `src/cityjson/copy_function.cpp:559-566` (`metadata_from`);
+  `src/cityjson/cityparquet_insert.cpp:56-62` (`OpenFor`); direct constructions at
+  `obj_table_function.cpp:53,166` and `flatcitybuf_table_function.cpp:398`; `OpenAnyCityJSONFile` at
+  `appearance_table_function.cpp:337`, `geoparquet_table_function.cpp:228` and `metadata_table_function.cpp:52`.
+- **Problem:** `FindCopySourceRef` records which read function the SELECT used, as three bools
+  (`is_seq/is_fcb/is_obj`). COPY bind then ignores `is_seq` and reopens the source with the auto-detecting
+  `OpenAnyCityJSONFile`. That is exactly the non-idempotent choice that `ReaderKind` (`reader.hpp:236-264`) was
+  introduced to stop on the scan path. Reproduced with the built extension:
+  `COPY (SELECT * FROM read_cityjsonseq('test/data/seq_named_city_json.city.json')) TO 'y.city.jsonl' (FORMAT cityjsonseq)`
+  logs "could not read metadata from source ... parse error at line 2" and writes a header with **no
+  `metadata`**. The source's `EPSG:7415` is gone (the catch-all at `copy_function.cpp:617-622` turns this into a
+  warning). More generally, "which reader opens this path" is decided in five places: `reader_factory.cpp`,
+  the bools, the `reader_function == "read_cityjsonseq"` string test in `OpenFor`, the `.fcb/.jsonl/.obj`
+  suffix sniffing for `metadata_from`, and direct `make_unique<OBJReader>` calls.
+- **Impact:** correctness (silent CRS loss, which the extension's own docs call the worst case);
+  changeability (a new reader means editing all five places); replaceability.
+- **How to fix:**
+  1. Extend `ReaderKind` (`reader.hpp`) to `{Auto, CityJSONSeq, FlatCityBuf, Obj}` and add
+     `ReaderKind ReaderKindForFunction(const std::string &read_function)` next to it in `reader_factory.cpp`.
+  2. Replace `CopySourceRef::is_seq/is_fcb/is_obj` with `ReaderKind kind` (plus `OBJReadOptions` when `Obj`).
+     `FindCopySourceRef` sets it through `ReaderKindForFunction`, and `metadata_from` uses `Auto`.
+  3. Give `OpenCityJSONFileOfKind` the `Obj`/`FlatCityBuf` cases. Route `copy_function.cpp:583-590`,
+     `cityparquet_insert.cpp:OpenFor`, and the OBJ/FCB table functions through it.
+  4. Add one contract case to `test/sql/cityjson_copy_metadata_preserve.test`: the COPY above keeps
+     `referenceSystem`.
+- **Effort:** S
+- **Related Part 1:** — (the test to add is in step 4; `cityjson_streaming_reader_kind.test` is the scan-path twin)
+
+#### D-CJ-02 — No writer interface: one bind union and one option loop for six formats, unknown options silently ignored
+
+- **Location:** `src/include/cityjson/copy_function.hpp:53-150` (`CopyFormat`, `CityJSONCopyBindData` with
+  `fcb_*`, `obj_*`, `gltf_*`, `mesh_*` fields); `src/cityjson/copy_function.cpp:434-527` (option loop),
+  `:1589-1645` (finalize `switch`); `src/include/cityjson/cityjson_writer.hpp` (three static writers, three signatures).
+- **Problem:** readers have `CityJSONReader`, but writers have no abstraction. Every format's options are
+  parsed for every format, and the `if/else if` chain has no final `else`, so an unknown option is dropped
+  silently. Reproduced: `COPY ... TO 'x.city.json' (FORMAT cityjson, trasform_scale '1,1,1', triangulate true, attr_index 'nope')`
+  succeeds (rc=0). The typo'd `transform_scale` is ignored and the output uses the default 0.001 quantisation.
+  The OBJ-only `triangulate` and FCB-only `attr_index` are also accepted without complaint. Adding a format means
+  editing the union, the ternary at `:439-444`, the option loop and the `switch`.
+- **Impact:** correctness (silent option loss changes output precision); changeability; testability (a writer
+  cannot be exercised without the full COPY pipeline).
+- **How to fix:**
+  1. Introduce `class CopyWriter { virtual bool TryParseOption(const std::string &name, const Value &v) = 0; virtual void Validate(const CopyColumnMap &) {} virtual void Finalize(ClientContext &, const CityJSONWriteMetadata &, const FeatureObjects &, const std::string &path) = 0; }`
+     in `copy_function.hpp`.
+  2. Implement `CityJSONCopyWriter`, `CityJSONSeqCopyWriter`, `FlatCityBufCopyWriter` (owning
+     `attr_index/branching_factor/index_node_size`) and `ObjCopyWriter`/`GltfCopyWriter` (owning
+     `lod/origin/triangulate/precision/attributes`). Common options (`version/crs/metadata_*/transform_*`) stay
+     in the shared bind.
+  3. `CityJSONCopyBindData` holds `unique_ptr<CopyWriter>`, created by `MakeCopyWriter(CopyFormat)`. The option
+     loop hands each option to the common parser first, then to the writer, and throws
+     `BinderException("COPY TO <fmt>: unknown option '<name>'")` when neither accepts it.
+  4. Replace the finalize `switch` with `writer->Finalize(...)`.
+- **Effort:** M
+- **Related Part 1:** —
+
+#### D-CJ-03 — `copy_function.cpp` (1,691 lines) mixes DuckDB row I/O with CityJSON geometry reconstruction
+
+- **Location:** `src/cityjson/copy_function.cpp:785-1113` (static `ValueToJson`, `PartitionFlat`,
+  `ShellCountsOfSolid`, `RenestValues`, `RenestBoundaries`, `CountFaces`), `:1115-1561` (the 450-line
+  `CityJSONCopyToSink` with nested lambdas `decode_wkb`, `apply_properties` and `apply_appearance`);
+  `src/cityjson/cityjson_writer.cpp:168-181` (`TextureNestingDepth`, "mirroring exactly the branches
+  `RenestValues` (copy_function.cpp) applies"); `src/include/cityjson/geometry_properties.hpp:18-32`
+  (only the forward `Serialize`).
+- **Problem:** the flatten direction of the spec §8 geometry-properties codec is in `geometry_properties.cpp`.
+  Its inverse (re-nesting shells, semantics and appearance values) is file-static inside the COPY sink, and a
+  third copy of the nesting rule lives in `cityjson_writer.cpp`, kept in step only by a comment. The sink also
+  pulls every cell through `Vector::GetValue(row)` (boxing each cell into a `Value`, e.g. `:1147-1149`,
+  `:1377`, `:1477`) and builds JSON in the same function.
+- **Impact:** testability (the renest logic can only be reached through SQL COPY, and no DuckDB-free
+  round-trip test of flatten∘renest is possible); correctness risk (three copies of one nesting rule);
+  performance (per-cell `Value` allocation).
+- **How to fix:**
+  1. Add a DuckDB-free `GeometryPropertiesCodec` to `geometry_properties.{hpp,cpp}` with
+     `json Flatten(const Geometry &)` (the current `Serialize`), `json RenestBoundaries(type, flat, shells)`,
+     `json RenestValues(type, flat, shells)`, `size_t CountFaces(type, boundaries)`, and
+     `int ValuesNestingDepth(const std::string &type)`. Move the statics from `copy_function.cpp:932-1113`
+     into it, and make `cityjson_writer.cpp:TextureNestingDepth` call `ValuesNestingDepth`.
+  2. Split the sink into a DuckDB-facing part that reads a row into a plain `CopyRow` struct (key strings,
+     WKB `string_view`s by column, properties/appearance JSON), using `UnifiedVectorFormat` instead of
+     `GetValue`, and a pure `json BuildCityObject(const CopyRow &, const CopyColumnMap &)`.
+  3. Add a `test/cpp/test_geometry_properties.cpp` kernel harness in the style of `run_obj_parser_tests.sh`,
+     asserting `Renest(Flatten(g)) == g` for Solid/MultiSolid/CompositeSolid/MultiSurface.
+- **Effort:** M
+- **Related Part 1:** —
+
+#### D-CJ-04 — The format domain model depends on DuckDB
+
+- **Location:** `src/include/cityjson/cityjson_types.hpp:5` (`#include "duckdb.hpp"`, nothing from it used);
+  `src/cityjson/cityjson_types.cpp:3,232-234` → `LODTableUtils::NormalizeLOD` → `src/cityjson/lod_table.cpp:3`
+  (`column_types.hpp`) → `src/include/cityjson/column_types.hpp:5,34,43` (`LogicalTypeId`, `LogicalType`).
+- **Problem:** `CityJSON`, `CityObject`, `Geometry` and `Transform` are pure format types, yet linking them
+  pulls in libduckdb, because the LoD-string normaliser sits in the same translation unit as column-schema
+  building, which sits beside `ToDuckDBType`. The evidence is in the tests: `test/cpp/transform_stub.cpp` was
+  written to copy `Transform` "verbatim" only to avoid this link (T-CJ-06), and `run_fcb_selective_tests.sh`
+  links `-lduckdb` plus a freshly rebuilt `libduckdb.so` to test a pure FlatBuffer→struct conversion. The OBJ
+  parser and face triangulator show the target shape: they build with `c++ -Isrc/include` alone.
+- **Impact:** testability (kernel tests need a full DuckDB build); dependency direction (core → framework);
+  build friction (stale `libduckdb.so` link failures, documented in CLAUDE.md).
+- **How to fix:**
+  1. Move `NormalizeLOD`, `FormatLODAsColumnSuffix` and `ParseLODFromSuffix` out of `LODTableUtils` into a
+     dependency-free `lod.hpp/lod.cpp`, and make `cityjson_types.cpp` include only that.
+  2. Remove `#include "duckdb.hpp"` from `cityjson_types.hpp`.
+  3. Split `column_types.hpp`: a pure `object_table_schema.hpp` (`Column`, `ColumnType`,
+     `GetDefinedColumns`, `IsReservedColumnName`, the column-role classifier from D-CJ-06) and
+     `column_types_duckdb.hpp` (`ColumnTypeUtils::ToDuckDBType/ToLogicalTypeId`).
+  4. Drop `-lduckdb` and the `duckdb/src/include` path from `run_fcb_selective_tests.sh`. If it still links,
+     the boundary holds.
+- **Effort:** M
+- **Related Part 1:** T-CJ-06, T-CJ-07
+
+#### D-CJ-05 — Five independent assemblies of the object-table schema
+
+- **Location:** `src/cityjson/local_cityjson_reader.cpp:158-190`, `local_cityjsonseq_reader.cpp:240-262`,
+  `flatcitybuf_reader.cpp:325-360`, `obj_reader.cpp:405-420` (four `Columns()` bodies:
+  `GetDefinedColumns()` + `InferGeometryColumns` + `GetTrailingColumns()` + attributes); a fifth path is
+  `LODTableUtils::InferLODTables` → `GetGeometryColumns` (`lod_table.cpp:93-190`), used for `lod =>`
+  (`bind_function.cpp:74`).
+- **Problem:** the spec's reserved-column order is written down five times. The only per-format difference is
+  how features are sampled, plus FCB's extra header-declared attributes. `obj_reader.cpp:409` says "Same order
+  as LocalCityJSONReader::Columns", which is a convention, not a structure. `cityparquet_column_order.test` has
+  to repeat its five requirements per assembly, and it does not cover the FCB and OBJ ones at all. Separately,
+  the `lod =>` "not found" error (`bind_function.cpp:85-87`) lists only `lod_tables[0]` as "Available LODs".
+- **Impact:** changeability (a spec order change means 5 edits); correctness (a missed edit makes one reader
+  emit a non-conforming schema); testability.
+- **How to fix:**
+  1. Make `CityJSONReader::Columns()` non-virtual (template method): `AssembleObjectTableSchema(SampleFeatures(n), ExtraDeclaredAttributes())`.
+  2. Add `protected: virtual std::vector<CityJSONFeature> SampleFeatures(size_t n) const` (FCB overrides it with its
+     full-mask sampling) and `virtual std::vector<Column> ExtraDeclaredAttributes() const { return {}; }`
+     (FCB returns its header columns).
+  3. Implement the `lod =>` path as a filter over the same assembled list (keep only the one LoD's
+     geometry-family columns) and delete `InferLODTables`, `GetGeometryColumns`, `CollectLODs` and
+     `GetTableNameForLOD`.
+  4. Fix the error message to join every available LoD.
+- **Effort:** M
+- **Related Part 1:** T-CJ-03, T-CJ-07
+
+#### D-CJ-06 — Reserved-column and role classification repeated, with inconsistent case rules
+
+- **Location:** `src/cityjson/copy_function.cpp:38-96` (`DetectColumnRole`, case-sensitive) and
+  `:1128-1143` (LoD parsed from the column name inline); `src/cityjson/column_types.cpp:463-476`
+  (`IsReservedColumnName`, case-insensitive) and `:485-521` (`IsGeometryColumn`, `ParseLODFromColumnName`,
+  `ParseLODFromGeometryColumn`); `src/cityjson/cityparquet_insert.cpp:285-300` and `:365-378`, and
+  `src/cityjson/cityparquet_merge.cpp:137-150` (the same `PendingTable` classification loop three times).
+- **Problem:** the mapping from column name to spec role (key, hierarchy, geometry/properties/appearance
+  per LoD, bbox, other) is reimplemented per consumer. The readers treat reserved names case-insensitively
+  (`cityjson_reserved_attr.test`), but COPY's `DetectColumnRole` compares exactly. Reproduced:
+  `COPY (SELECT id AS "ID", feature_id, object_type FROM read_cityjson('test/data/minimal.city.json')) TO ... (FORMAT cityjson)`
+  fails with `Binder Error: COPY TO cityjson requires an 'id' column`. `fcb_selective_convert.cpp:338-353`
+  (`StructuralColumnNames`) is yet another classifier.
+- **Impact:** changeability; correctness (case drift between the read and write paths).
+- **How to fix:**
+  1. In the pure `object_table_schema.hpp` from D-CJ-04, add `enum class ColumnRole` and
+     `ColumnRole ClassifyColumn(std::string_view name)` (case-insensitive) plus
+     `std::optional<std::string> LodOfColumn(std::string_view name)`.
+  2. Rewrite `DetectColumnRole` and `IsReservedColumnName` as thin calls to it. Delete the inline LoD
+     parsing in `decode_wkb`.
+  3. Add `static PendingTable PendingTable::FromColumns(const std::vector<ColumnInfo> &)` in
+     `cityparquet_reconcile.hpp` and replace the three loops.
+- **Effort:** S
+- **Related Part 1:** —
+
+#### D-CJ-07 — Bad input is handled three different ways (silent NULL, swallow, throw)
+
+- **Location:** `src/cityjson/scan_function.cpp:50-56` (geometry → NULL when there is no vertex pool);
+  `src/cityjson/vector_writer.cpp:190-195`, `:212-217` (`catch (CityJSONError)` → NULL) and `:268`, `:283`
+  (`catch (...)` → NULL on numeric coercion); `src/cityjson/wkb_encoder.cpp:91-93` (out-of-range index throws);
+  `src/cityjson/scan_function.cpp:207-213` (other value errors → `ConversionException`);
+  `src/cityjson/copy_function.cpp:617-622` (any exception while reading source metadata → log warning).
+- **Problem:** a geometry that references vertices when the file has no pool is silently NULLed, while one
+  whose index exceeds the pool aborts the query. Numeric coercion failures silently become NULL, but other
+  value errors raise. The concrete effect: `test/data/sample.city.jsonl`, used by 7 test files, has no
+  `vertices` at all, so all its geometry reads back NULL and no test noticed (T-CJ-02). D-CJ-01's CRS loss
+  is only a warning for the same reason.
+- **Impact:** correctness (silent data loss); testability (tests cannot tell "no geometry" from "geometry
+  dropped").
+- **How to fix:**
+  1. Add a single policy type `enum class OnInvalid { Error, Null }`, exposed as a read option
+     (`on_invalid := 'error'` by default), on `CityJSONBindData`.
+  2. Have `scan_function.cpp:50-56` apply it when a geometry is present but `vertex_pool == nullptr`, and have
+     the `catch` sites in `vector_writer.cpp` apply it instead of hard-coding NULL.
+  3. In COPY bind, narrow the catch at `:617` to the "source unreadable" case and raise on a parse failure of a
+     source that `FindCopySourceRef` positively identified.
+  4. Add vertices to `test/data/sample.city.jsonl` (or switch the tests that use it to `delft_subset`).
+- **Effort:** M
+- **Related Part 1:** T-CJ-02
+
+#### D-CJ-08 — Dead legacy `geom_lod*` STRUCT layout and dead helpers
+
+- **Location:** `src/include/cityjson/types.hpp:29-31` (`ColumnType::Geometry`, commented "legacy");
+  producer `ColumnTypeUtils::Parse` (`column_types.cpp:225-300`) has **no callers**; consumers are
+  `column_types.cpp:485-505` (`IsGeometryColumn`, `ParseLODFromColumnName`), `bind_function.cpp:114-117`,
+  `scan_function.cpp:163`, `vector_writer.cpp:64,341`, `fcb_selective_convert.cpp:315`,
+  `copy_function.cpp:63,1132-1136,1195-1215`, `copy_function.hpp:134-135`, and
+  `mesh_model.cpp:267-380` (`legacy_index_boundaries`); doc comment `city_object_utils.hpp:59` still describes
+  `geom_lod{X}_{Y}` output.
+- **Problem:** no reader emits `ColumnType::Geometry` or a `geom_lod*` name. `InferGeometryColumns` emits only
+  `GeometryWKB`/`GeometryPropertiesStruct`, and `Parse` is never called. The only way in is a user who builds a
+  `geom_lod*` column by hand for COPY. The repo policy is "no legacy branches". This is roughly 150 lines of
+  branches that every change to geometry handling has to reason about.
+- **Impact:** changeability; review cost.
+- **How to fix:**
+  1. Delete `ColumnType::Geometry` and `ColumnTypeUtils::Parse`, then follow the compile errors through the
+     listed sites.
+  2. Delete `IsGeometryColumn`/`ParseLODFromColumnName`, the `geom_lod` prefixes in `DetectColumnRole` and
+     `decode_wkb`, and the `geometry_properties_col` legacy fallback. Delete `legacy_index_boundaries` in
+     `mesh_model.cpp`.
+  3. Fix the `city_object_utils.hpp:59` comment. Delete `test/cpp/transform_stub.cpp` (T-CJ-06).
+- **Effort:** S
+- **Related Part 1:** T-CJ-06
+
+#### D-CJ-09 — Other: generated EPSG table, gated oracle, WKB duplication
+
+- **Location:** `src/cityjson/epsg_projjson_data.cpp` (29,145 lines), `tools/gen_epsg_embed.py`,
+  `src/assets/epsg_projjson.json.gz`; `test/sql/cityjson_corpus_parity.test` (`require-env CITYJSON_REMOTE_TEST`);
+  `src/cityjson/wkb_{encoder,decoder,extent}.cpp` (809 lines).
+- **Problem:**
+  - The EPSG table is a committed byte-array rendering of the committed `.gz` asset, which in turn is a copy of
+    `lib/cityparquet-rs/crates/schema/assets/epsg_projjson.json.gz` (md5 `1131c985…` for both today). Nothing
+    checks either link. The generator emits 40 values per line, but the committed file has 23, so it was
+    clang-formatted after generation, and a regeneration produces a whole-file diff. Two copies of one
+    670 KB asset, plus a 29k-line derivative in review diffs.
+  - The only non-circular cross-format oracle, `cityjson_corpus_parity.test` (four files with the same 3 features,
+    produced by upstream tooling), is `require-env`-gated behind ~93 KB of downloads, so `make test` and CI never
+    run it. Every default-run conversion test writes its own source with the writer under test. The file's own
+    header explains why that is not enough.
+  - WKB encode/decode here overlaps conceptually with `lib/duckdb-3d/src/include/kernel/geom_wkb_parser.hpp`.
+    That is out of scope as a code change (the libraries are coupled through the spec, not through each other),
+    but worth recording.
+- **Impact:** build friction and drift risk (low today); review noise.
+- **How to fix:**
+  1. Generate the array at build time: an `add_custom_command` in `CMakeLists.txt` that runs
+     `tools/gen_epsg_embed.py` into `${CMAKE_BINARY_DIR}`, or CMake `file(READ ... HEX)`. Delete the committed
+     `.cpp`.
+  2. Add a `just vendor-check`-style step (the monorepo root already has one) comparing the `.gz` md5 with
+     `lib/cityparquet-rs/crates/schema/assets/`.
+  3. Vendor the corpus (`small.city.jsonl`, `small.city.json`, `small.fcb`, `small/building.parquet` +
+     `metadata.json`, ~93 KB, 3DBAG CC BY 4.0) into `test/data/corpus/`, point `cityjson_corpus_parity.test` at the
+     local paths and drop its `require-env`. The HTTP variant stays in `cityjson_remote.test`.
+- **Effort:** S
+- **Related Part 1:** —
