@@ -44,16 +44,23 @@ These override anything below that conflicts with them:
 - **FlatCityBuf's `bbox-query` must read the features it finds (D-RB-11).**
   It reads them as FlatBuffers features, without decoding them to in-memory
   CityJSON. Counting R-tree hits alone is not enough.
-- **Delete the scaling-read and write-bench pipelines (D-PL-05)**, with
-  their recipes, prep loaders, committed result directories and fixtures. The
-  **ordering** pipeline is not covered by this decision.
+- **Delete the ordering, scaling-read and write-bench pipelines (D-PL-05)**,
+  with their recipes, prep loaders, committed result directories and fixtures.
 - **The live-host MCP tests run in CI (D-MCP-02).** Splitting them into their
   own script (`test:live`) is still useful locally, but CI runs both the
   offline and the live suites as required checks.
 
-Still open: D-PL-01 (were the markers removed on purpose?), `time_s` mean or
-median (D-DB-02), the ordering pipeline (D-PL-05), and T-RB-08/T-RB-10. See
-section 5.
+- **The † and ≈ figure markers were removed on purpose (D-PL-01).** Delete
+  the dead `grain_comparable`/`below_floor` computation from `prep.py` and the
+  text in DESIGN.md, the prep docstring and the fixture README that describes
+  the markers. The caveats stay as prose on the HTML page.
+- **`time_s` is the mean in both harnesses (D-DB-02).** readbench switches
+  from the median. The dispersion column next to it must match: `time_mad_s`
+  is currently measured around the median, so rename it or replace it (for
+  example with a standard deviation), and say which in `READ_BENCHMARK.md`
+  and the `databases` README. Fix T-DB-08 so its inputs have different means
+  and medians.
+- **T-RB-08 and T-RB-10 are approved for deletion.**
 
 ### Top 5 test changes
 
@@ -1316,8 +1323,8 @@ Exact pins `@duckdb/node-api 1.5.5-r.5` and `@modelcontextprotocol/server 2.0.0`
 ## 3. Suggested order of execution
 
 1. **Evidence integrity first, before any new benchmark run is cited:**
-   - D-PL-01 (confirm, then restore the caveat markers or remove the dead fields).
-   - D-DB-01 (area window in both harnesses; decided) and D-DB-02 (one statistic; still open).
+   - D-PL-01 (remove the dead marker fields and docs; decided).
+   - D-DB-01 (area window in both harnesses; decided) and D-DB-02 (mean in both; decided).
    - D-DB-04 (record the image versions in the manifest).
    - D-RB-07 (HTTP timing includes runtime setup).
    - D-RB-11 (make FlatCityBuf read the FlatBuffers features it finds; decided).
@@ -1333,7 +1340,7 @@ Exact pins `@duckdb/node-api 1.5.5-r.5` and `@modelcontextprotocol/server 2.0.0`
    - D-DB-03 → D-DB-04 and D-DB-05 → T-DB-04.
    - D-MCP-03 → T-MCP-05, D-MCP-05 → T-MCP-07, and D-MCP-04 → T-MCP-06.
    - D-SC-02 (`readbench describe --json`) → drop the source-scraping tests in `benchmark/plot/tests/test_csv_contract.py` and T-SC-02.
-5. **Clean-up:** D-PL-05 (unconsumed pipelines, only after your answer below),
+5. **Clean-up:** D-PL-05 (delete the ordering, scaling-read and write-bench pipelines; decided),
    D-RB-10, D-DB-09 and D-DB-10, D-SC-04, D-MCP-10, and the remaining
    deletions and merges.
 
@@ -1349,18 +1356,4 @@ Exact pins `@duckdb/node-api 1.5.5-r.5` and `@modelcontextprotocol/server 2.0.0`
 
 ## 5. Open questions for you
 
-Answered on 2026-09-24 (see "Decisions" in section 1): the window definition
-for D-DB-01, D-RB-11, D-PL-05 for scaling-read and write-bench, and D-MCP-02.
-
-1. **D-PL-01:** were the † (grain-incomparable) and ≈/greyed-cell (under the
-   10 ms floor) markers removed from the figures on purpose in `68a3f0a`? If
-   yes, delete `grain_comparable`/`below_floor` from `prep.py` along with the
-   docs that describe the markers. If no, restore them on the heatmaps.
-2. **D-DB-02:** should `time_s` be a mean or a median in both harnesses?
-   readbench and `stats.py` argue for the median; the `databases` README and
-   `report.py` use the mean.
-3. **D-PL-05:** can the **ordering** pipeline be deleted too? Nothing renders
-   it.
-4. **T-RB-08 and T-RB-10** delete a duplicated CityGML guard and two
-   doc-comment checks, both of which touch caveat wording. Are you happy to
-   delete them?
+None. Every question was answered on 2026-09-24; see "Decisions" in section 1.
