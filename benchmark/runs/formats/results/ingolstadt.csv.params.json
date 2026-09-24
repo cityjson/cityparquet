@@ -70,8 +70,29 @@
       "substituted": false
     }
   ],
-  "object_type": "BuildingInstallation",
-  "object_type_count": 323,
+  "attr_filter": {
+    "column": "klumMaterialClass",
+    "pred": {
+      "eq": "Wood"
+    },
+    "matched": 26,
+    "share": 0.06860158311345646,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "UUID_1432b984-e0fb-4ddf-8cf3-29c1907d0383",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "UUID_1432b984-e0fb-4ddf-8cf3-29c1907d0383-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
   "numeric_attr": "materialUncertainty",
   "cp_object_total": 379
 }

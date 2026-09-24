@@ -1,0 +1,42 @@
+{
+  "code": {
+    "git_head": "e04b0903ee0c7ea8bd7339b08c641264e8f7357b",
+    "tracked_diff_sha256": "91c431a808e7364c1702288f16933fb95c3fcf6c0162a0b4ba322b91ac572b15",
+    "untracked_sources_sha256": {}
+  },
+  "family": "bloom",
+  "machine": {
+    "machine": "x86_64",
+    "processor": "x86_64",
+    "python": "3.12.3",
+    "release": "6.8.0-136-generic",
+    "system": "Linux"
+  },
+  "measurement": {
+    "fixed_configuration": "bloom/zstd-3/default-row-groups",
+    "read_repeat": 7,
+    "write_repeat": 3
+  },
+  "profile": "full",
+  "result": {
+    "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/scaling_bloom_results/ingolstadt.csv",
+    "files_sha256": {
+      "ingolstadt.csv": "4f3c3c6f61fa5f9fd9385f6d6030261baf4f0aaac4dcc8b6ad09ab51952f90e9",
+      "ingolstadt.csv.params.json": "954d5914d6bfd27632a5f93af84cee83950dbf09d59aee8f18269f40bab93b71",
+      "ingolstadt.csv.samples.json": "70eeaceef6f1686780c2ef47c2262dd388ae0843f39bc2e65d3297822ffa4b27"
+    },
+    "params_sha256": "954d5914d6bfd27632a5f93af84cee83950dbf09d59aee8f18269f40bab93b71"
+  },
+  "schema": 1,
+  "smoke": false,
+  "source": {
+    "path": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/data/benchmark/ingolstadt.city.json",
+    "sha256": "91e45df269dec5a22f80af6c149dca0d64c85ce1796b8fefc6296ae6bfa5cfe5"
+  },
+  "tools": {
+    "cityparquet": "unavailable",
+    "cjseq": "cjseq 0.3.1",
+    "fcb": "fcb 0.7.8",
+    "rust": "rustc 1.93.1 (01f6ddf75 2026-02-11)"
+  }
+}

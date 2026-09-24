@@ -1,0 +1,11 @@
+dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
+3dbag_n1000.city.jsonl,cityparquet,write,,1000,0.680124,0.040487,154149516,195293184,3,,,,,,
+3dbag_n1000.city.jsonl,cityparquet,id-lookup,0.001000,1,0.031440,0.001168,5156977,21475328,7,id-50pct,,,1,0,2048
+3dbag_n1000.city.jsonl,cityparquet,id-lookup,0.000000,0,0.004011,0.000227,432385,12406784,7,id-miss,,,1,1,2048
+3dbag_n1000.city.jsonl,cityparquet,feature-lookup,0.002000,2,0.030600,0.000847,5183318,21385216,7,feature-50pct,,,1,0,1024
+3dbag_n1000.city.jsonl,cityparquet,feature-lookup,0.000000,0,0.004185,0.000437,432398,12410880,7,feature-miss,,,1,1,1024
+3dbag_n1000.city.jsonl,cityparquet+nobloom,write,,1000,0.721681,0.003422,153617886,194547712,3,,,,,,
+3dbag_n1000.city.jsonl,cityparquet+nobloom,id-lookup,0.001000,1,0.031455,0.000861,5156993,21413888,7,id-50pct,,,1,0,0
+3dbag_n1000.city.jsonl,cityparquet+nobloom,id-lookup,0.000000,0,0.004395,0.000437,433433,13111296,7,id-miss,,,1,0,0
+3dbag_n1000.city.jsonl,cityparquet+nobloom,feature-lookup,0.002000,2,0.031483,0.000632,5183334,21446656,7,feature-50pct,,,1,0,0
+3dbag_n1000.city.jsonl,cityparquet+nobloom,feature-lookup,0.000000,0,0.004849,0.000166,433446,12955648,7,feature-miss,,,1,0,0

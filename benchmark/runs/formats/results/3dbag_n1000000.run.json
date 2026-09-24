@@ -1,7 +1,7 @@
 {
   "code": {
-    "git_head": "68a3f0ac1a75abb46c5d08754be40cfe1a367227",
-    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "git_head": "e04b0903ee0c7ea8bd7339b08c641264e8f7357b",
+    "tracked_diff_sha256": "a6d8a64d773f77d1b6f90361294d0eadc258b030fafcc6d29ba0494c9cd66863",
     "untracked_sources_sha256": {}
   },
   "family": "formats",
@@ -13,25 +13,26 @@
     "system": "Linux"
   },
   "measurement": {
-    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq; write retry after user-requested interruption; reads retained from previous full run",
+    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq; write-formats=cityjson,cityjsonseq,flatcitybuf,cityparquet-hilbert; read-formats=citygml,cityjsonseq,flatcitybuf,cityparquet-hilbert",
     "read_repeat": 7,
     "write_repeat": 3
   },
+  "profile": "full",
   "result": {
-    "csv": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/formats/results/3dbag_n1000000.csv",
+    "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/results/3dbag_n1000000.csv",
     "files_sha256": {
-      "3dbag_n1000000.csv": "24f217a0a53bba7fdf0da18889caf84c687a788735e2a1ce559c75127a15ce29",
-      "3dbag_n1000000.csv.params.json": "29827fe62cd838e88249db37bc57f11bcdd28555316b0c109a077689958e0013",
-      "3dbag_n1000000.csv.samples.json": "9fe0078186d7417118dc41e266580a378f25a22f8e1470b80543df8de7510104",
-      "3dbag_n1000000.write.samples.csv": "629930e0382b2253f762e7d5b55641aecb26820b7f38889926ec70ea7c3e5d79"
+      "3dbag_n1000000.csv": "22abe6b67441ac11250bac220b6a569856d0f121586b4d4e1aaec385dfadfded",
+      "3dbag_n1000000.csv.params.json": "e739199b072799dbfab5bb97cecdc759b25da860d8fb452998373a7be6ae74b9",
+      "3dbag_n1000000.csv.samples.json": "e19172dba488761e055586d9d4c5c5ffdde50231bc98f0320086e75a65ca637e",
+      "3dbag_n1000000.write.samples.csv": "1052d08db8f7fe0f3db777234d0590c7198fc403b2beed9a6d19475c4ff6ff89"
     },
-    "params_sha256": "29827fe62cd838e88249db37bc57f11bcdd28555316b0c109a077689958e0013"
+    "params_sha256": "e739199b072799dbfab5bb97cecdc759b25da860d8fb452998373a7be6ae74b9"
   },
   "schema": 1,
   "smoke": false,
   "source": {
     "path": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/data/scaling/3dbag_n1000000.city.jsonl",
-    "sha256": "b20fce5a8c5477eb905c9c4f8a5c15a2c4b1ec18f4c5a5f16c1af9d8cf7f9b29"
+    "sha256": "5a863610c39771440b0fdc28b792088c9fa699960d7050e72a437e7714c000a5"
   },
   "tools": {
     "cityparquet": "unavailable",

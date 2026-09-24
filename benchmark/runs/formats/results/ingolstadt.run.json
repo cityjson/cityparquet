@@ -1,18 +1,8 @@
 {
   "code": {
-    "git_head": "454928f0e0984f163511bcfc44aa67ccf1f7fa3c",
-    "tracked_diff_sha256": "9854d9c4efe777879c2a51827710351e652c2201e23bb85b1da128def66ac408",
-    "untracked_sources_sha256": {
-      "benchmark/databases/src/citybench/lifecycle.py": "67a5114f9764b271ca7ed4b65b028abd71ad898e218005fe643c1efc1b07eabe",
-      "benchmark/databases/tests/test_lifecycle.py": "5bcad544fa6fe3a114b1a9a0720168d6bedad097f8b9cdfc91ddb43c7974c413",
-      "benchmark/manifest.toml": "01b317ff729aabeac203fc90382f2d0a45cbbe13c5d92d992ca5e985def2a550",
-      "benchmark/plot/tests/test_axis_validity.py": "610d186ee53151e464ed21358493593fa28fcc09650284716f464716a4fc9cf1",
-      "benchmark/plot/tests/test_cli_selection.py": "3d1cec6f9dcb9542ecdcc8a8556a8fa41f5d337a82862c6002900a1b94f97fb3",
-      "benchmark/scripts/bench_suite.py": "739709c28cdd7c85474f7e1008445e84eef8384c121f4196e890aba39d95c950",
-      "benchmark/scripts/format_write.py": "81d032753f0043095dc1821703a79dbd4e196b9ac63f978c89c10dbabae94bdf",
-      "benchmark/scripts/measure_sizes.py": "afb88c3ee1bb6afc46ffa21e5927490f7f8f3f76f4c2a6b1e7bc1dcdc3819cc6",
-      "benchmark/scripts/tests/test_bench_suite.py": "d571d4fe83b1a6a4cefdfe7c7c88a3b9f7f64adc22119dc21d6d476bb2c5bfd2"
-    }
+    "git_head": "e04b0903ee0c7ea8bd7339b08c641264e8f7357b",
+    "tracked_diff_sha256": "d2f8e18e743fb8af5e1be37550e35f67b09aa5c4c80eb2b2414316a7edfc320e",
+    "untracked_sources_sha256": {}
   },
   "family": "formats",
   "machine": {
@@ -27,15 +17,16 @@
     "read_repeat": 7,
     "write_repeat": 3
   },
+  "profile": "full",
   "result": {
-    "csv": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/formats/results/ingolstadt.csv",
+    "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/results/ingolstadt.csv",
     "files_sha256": {
-      "ingolstadt.csv": "c7330aad05946110204b471b0a5a6fd8fa5ade1a8527e68a5179365281e4f57c",
-      "ingolstadt.csv.params.json": "e19e3ecdd5bd8ee1d2804689e1a902da04445af19d762242cd9200ef9e78cf9e",
-      "ingolstadt.csv.samples.json": "1ec11504315c062b3919d780f431f82d897f346ce282ff4af8173ed59431b522",
-      "ingolstadt.write.samples.csv": "3a6b78909ba82802912f8df3aa4d6daddf773efb397f11a7ccd8e8bc042f8309"
+      "ingolstadt.csv": "fe76af63ed0cbbb9ace9f3a1732913af355cb9cc2d5d2fe86ed98e052d5a442e",
+      "ingolstadt.csv.params.json": "d076dba38f59017969a434c91cb212dc5b27ce9f6e6f36a3c24844eeba5f80d5",
+      "ingolstadt.csv.samples.json": "eaac3b22fd351f8bc0af601ac0ce79df6a3fa5e64c88bd4a4c8830fe84815c35",
+      "ingolstadt.write.samples.csv": "e1ab9cba9a18ce954bfaecc34b8e7ce635ba1af0aff299f8981f01e2b244d6a8"
     },
-    "params_sha256": "e19e3ecdd5bd8ee1d2804689e1a902da04445af19d762242cd9200ef9e78cf9e"
+    "params_sha256": "d076dba38f59017969a434c91cb212dc5b27ce9f6e6f36a3c24844eeba5f80d5"
   },
   "schema": 1,
   "smoke": false,
