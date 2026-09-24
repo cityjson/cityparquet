@@ -8,6 +8,20 @@ Part 1 has 58 test candidates and Part 2 has 31 debt items; each gives
 followable steps. Every headline claim below was checked against the code.
 The two duckdb-cityjson bugs were reproduced against the existing release build (`build/release/duckdb`).
 
+**Decisions taken after the audit (2026-09-24).** These override anything
+below that conflicts with them:
+
+- **The test gate moves to `cargo nextest`.** Nextest runs every test in its own
+  process, so an in-memory `LazyLock`/`OnceLock` fixture shares nothing between
+  tests. Any shared fixture (D-RS-08, T-RS-U-05, T-RS-U-07, T-RS-I-12/-14/-21)
+  must be an on-disk cache under `target/`. Merges and smaller inputs save time
+  under nextest; `LazyLock` sharing alone does not. The CI job and
+  `just test` switch to `cargo nextest run --workspace --all-features`.
+- **The query API keeps both a sync and an async surface, implemented once.**
+  Sync stays the default. Async stays behind the `object-store` feature. The
+  shared logic is written once over parquet's `ArrowReaderBuilder<T>`. There is
+  no async core with `block_on` wrappers. D-RS-13 describes the design.
+
 **Where test time goes.** In cityparquet-rs, the gate `just test`
 (`cargo test`) takes **10 min 10 s** wall-clock, because test binaries run one
 after another. A single run of `cargo nextest` takes 2 min 46 s wall-clock and
@@ -1322,13 +1336,40 @@ Paths below use `core/` = `lib/cityparquet-rs/crates/core/src/` and `cli/` = `li
 - **Location:** `core/query.rs:59-392` (13 `pub fn`s taking `table_path: &Path`, each `File::open` + `ParquetRecordBatchReaderBuilder`) and `core/query_async.rs:64-459` (11 `pub async fn …_async(store: Arc<dyn ObjectStore>, path: &ObjectPath, ..)`, each `ParquetObjectReader` + `ParquetRecordBatchStreamBuilder`). Logic is shared via `core/query_core.rs`; the open → configure builder → iterate/stream → fold frame is duplicated per pair (compare `query.rs:91-122` `bbox_query` with `query_async.rs:109-145`). `bloom_keep_row_groups{,_async}` (`query.rs:227` / `query_async.rs:262`) additionally differ in fetch strategy (per-filter `pread` vs one batched `get_byte_ranges`); verdict semantics match (no filter / no declared length → keep). `core/query.rs:374` also reaches into `stac::properties::PackageTables` (see D-RS-02).
 - **Problem:** the transport (local file vs object store) is fixed per function instead of injected, so each new query needs two public functions and a parity test proving they agree. Of the 12 tests in `query_async::tests`, 10 are "async matches sync on a real fixture" parity tests, 127.8 s of test time together (e.g. `project_column_async_matches_sync_project_column_on_a_real_fixture` 9.8 s).
 - **Impact:** changeability (every query change is made twice); test cost; replaceability (CityLake/readbench choose an API family rather than a store).
-- **How to fix:**
-  1. Make the async implementation the single one, generic over the byte source: `pub async fn bbox_query<R: AsyncFileReader + Clone + Send + 'static>(reader: R, query_bbox: [f64; 6]) -> Result<BBoxQueryResult>` (likewise for the other 10). `parquet` already implements `AsyncFileReader` for `ParquetObjectReader` and for `tokio::fs::File`, so a local file is just another reader.
-  2. Introduce `pub trait TableSource { type Reader: AsyncFileReader + Clone + Send + 'static; fn open(&self, table: &str) -> Result<Self::Reader>; }` with `LocalTables(PathBuf)` and (feature `object-store`) `ObjectStoreTables { store, prefix }`; it is the read-side half of D-RS-02's `PackageStore`.
-  3. Keep the sync API as thin wrappers: `pub fn bbox_query(path: &Path, q) -> Result<_> { block_on(query::bbox_query(tokio::fs::File::open(path)?, q)) }` using a current-thread runtime, or drop it if no caller needs sync (CLI and readbench can use a runtime). **Cost to decide explicitly:** today `tokio` is a dev-dependency only and `parquet/async` comes in only via the `object-store` feature; a single async implementation makes both non-optional for every `core` consumer — or the sync API must move behind the feature. Choose one before starting.
-  4. Keep the batched bloom fetch (the async variant) as the only strategy; it is a superset.
-  5. Delete the 10 parity tests; keep one contract test per query, parameterised over `[LocalTables, ObjectStoreTables(InMemory)]` (`object_store::memory::InMemory` needs no HTTP server).
-- **Tests that become simpler:** parity tests disappear (≈120 s); async tests stop needing the axum/tower-http test server (`core/Cargo.toml` dev-deps) for anything but the HTTP-transport smoke test.
+- **How to fix** (decided 2026-09-24: keep both APIs, one implementation):
+  1. **Keep two public surfaces.** `query::*` (sync, default, no tokio) and
+     `query_async::*_async` (behind the `object-store` feature). Do not build
+     sync as `block_on` over async: that forces tokio on sync users, and it
+     panics when called from inside a runtime (CityLake).
+  2. **Share the logic, not the transport.** parquet's sync and async builders
+     are the same generic type, `ArrowReaderBuilder<T>`, and
+     `CityParquetReaderBuilder` is already implemented for both. For each query,
+     move the builder configuration into `query_core` as one generic function:
+     projection, row-group selection, row filter, and the pre-read counts. An
+     example is `fn plan_bbox<T>(b: ArrowReaderBuilder<T>, q: [f64; 6]) ->
+Result<(ArrowReaderBuilder<T>, RowGroupCounts)>`. Move the per-batch fold
+     into one function too, for example `fn fold_bbox(acc: &mut BBoxAcc, batch:
+&RecordBatch)`. `query.rs:91-122` already has this shape; the async twin
+     repeats it.
+  3. **Shrink each public function to the transport alone.** It opens the
+     source, calls `plan_*`, builds the reader or stream, and feeds each batch
+     to `fold_*`. After this, adding a query means one plan and one fold, plus
+     two thin entry points.
+  4. **Keep one real difference.** Bloom-filter fetching stays per transport:
+     per-filter reads on the sync side, one batched `get_byte_ranges` on the
+     async side. The verdict logic (no filter, or no declared length, means
+     keep) stays shared in `query_core`, as it is today.
+  5. **Optional.** Introduce a `TableSource` trait: `LocalTables(PathBuf)`
+     opens `File`, and `ObjectStoreTables { store, prefix }` opens
+     `ParquetObjectReader`. Entry points then take a table name rather than a
+     path or object path. It is the read-side half of D-RS-02's `PackageStore`.
+  6. **Tests.** Replace the ~10 `*_matches_sync_*` parity tests with one
+     table-driven test that runs every query through both transports. Use
+     `object_store::memory::InMemory` for the async side, so no HTTP server is
+     needed. Unit-test the `plan_*` and `fold_*` functions directly. Keep the
+     two I/O-shape tests (one ranged call for all filters; the fallback when a
+     filter has no declared length) and one HTTP smoke test.
+- **Tests that become simpler:** the parity tests collapse into one table (≈120 s of test time). The async tests stop needing the axum/tower-http test server (`core/Cargo.toml` dev-deps), except for the HTTP smoke test. `plan_*` and `fold_*` become testable without I/O.
 - **Effort:** M
 - **Related Part 1:** T-RS-I-22, T-RS-U-05. Also: `core/query_async.rs` `mod tests` `*_matches_sync_*` (10 tests)
 
@@ -1738,16 +1779,15 @@ Arrows mean "do first". Items in the same step are independent of each other.
 - D-RS-05 supersedes T-RS-I-07 and T-RS-I-08: `bench_smoke` moves with the
   harness. If D-RS-05 is scheduled soon, skip T-RS-I-08.
 - D-RS-08 step 1 (an on-disk package cache) → T-RS-I-12, -14, -21, T-RS-U-07
-  and T-RS-U-11. Decide first which runner the gate uses (open question 1).
+  and T-RS-U-11. The gate uses nextest (decided), so this must be the on-disk cache variant.
 
 **Step 4: interface work (M)**
 
 - D-RS-03 (`PackageSink`, `TableRouter`) → delete `force_identity_projection`
   and the routing tests that depend on it.
-- D-RS-13 (one query implementation over a `TableSource`) → deletes most of
-  `query_async::tests`. If D-RS-13 is near, skip T-RS-U-05's merge, because
-  those tests are deleted outright. Decide on sync or async first (open
-  question 3).
+- D-RS-13 (shared `plan_*`/`fold_*` logic behind both APIs) → collapses the
+  parity tests in `query_async::tests` into one table. If D-RS-13 is near,
+  skip T-RS-U-05's merge, because those tests are replaced outright. Both APIs stay, implemented once (decided): see D-RS-13.
 - D-RS-14 (`AppearanceCatalog`) → T-RS-U-07 and T-RS-U-09 (sidecar tests stop
   importing `package`).
 - D-RS-02 (package read seam; its sync half pairs with D-RS-13's trait) →
@@ -1792,20 +1832,15 @@ The audit did not look at the following:
 
 ## 8. Open questions for you
 
-1. **Which runner should test cost be optimised for?** CI and `just test` use
-   `cargo test`, which took 10 min 10 s. `cargo nextest` took 2 min 46 s on
-   the same machine. Should the gate move to nextest? If so, the shared-fixture
-   proposals (T-RS-U-05, D-RS-08) need the on-disk cache variant, because an
-   in-memory `LazyLock` shares nothing across nextest's per-test processes.
+1. ~~Which runner should test cost be optimised for?~~ **Decided 2026-09-24:
+   nextest.** See the decisions in section 1.
 2. **Should the write benchmark leave the published crates?** D-RS-05 moves
    `cli/bench.rs`, `variant.rs` and `counting_store.rs` into `benchmark/`, and
    drops the `cityparquet bench` subcommand. Does anything outside the monorepo
    (the paper's reproduction instructions, for example) invoke
    `cityparquet bench`?
-3. **Sync or async for the query API (D-RS-13)?** One implementation over
-   `AsyncFileReader` makes `tokio` and `parquet/async` non-optional for every
-   `cityparquet` consumer, unless the sync API moves behind a feature. Which
-   cost do you prefer?
+3. ~~Sync or async for the query API?~~ **Decided 2026-09-24: both, implemented
+   once over `ArrowReaderBuilder<T>`.** See D-RS-13.
 4. **How independent must the comparator be (D-RS-09)?** The architecture
    document says ring normalisation is re-implemented on purpose. Should the
    same rule apply to `flatten_values` and `VertexPool` dequantisation? That
