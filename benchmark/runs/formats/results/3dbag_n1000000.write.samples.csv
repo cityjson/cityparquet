@@ -11,3 +11,6 @@ dataset,format,scenario,sample,time_s,peak_rss_bytes
 3dbag_n1000000,cityparquet-hilbert,write,1,212.951378,34517893120
 3dbag_n1000000,cityparquet-hilbert,write,2,225.362154,34514493440
 3dbag_n1000000,cityparquet-hilbert,write,3,199.061269,34516865024
+3dbag_n1000000,citygml,write,1,32337.994463,32968454144
+3dbag_n1000000,citygml,write,2,32786.302283,33087528960
+3dbag_n1000000,citygml,write,3,32840.288536,32893984768

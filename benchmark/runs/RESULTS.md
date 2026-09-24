@@ -28,16 +28,19 @@ mix the two.
 
 ## Coverage and limitations
 
-- The 1M slice's **CityJSON read rows are absent**: the whole-document
-  parse (about 35 GB resident) was refused twice by the host's strict
-  memory-overcommit limit while other users' processes held the commit
-  budget. They are re-measured separately once the budget allows and
-  merged into `formats/results/3dbag_n1000000.csv`; until then every 1M
-  figure shows CityJSON as not measured.
+- The 1M slice's **CityJSON read rows were measured one scenario per run**
+  on 24 September: the whole-document parse (about 35 GB resident) was
+  refused three times by the host's strict memory-overcommit limit while
+  other users' processes held the commit budget, and the coordinator
+  truncates its CSV per run, so each scenario ran as its own invocation
+  with the identical parameter sidecar and the rows were merged into
+  `formats/results/3dbag_n1000000.csv` (the run manifest says so). Same
+  binary, same artefacts, same host; timings are single-scenario runs on a
+  shared machine and carry the usual noise floor.
 - The 1M slice's **CityGML write row** was not re-measured (nine hours on
-  the previous run and unaffected by any fix); the 11 September sample is
-  kept in the paper repository's research notes and is re-attached, tagged,
-  when the CityJSON rows are merged.
+  the previous run and unaffected by any fix): the 11 September sample is
+  kept in the CSV with `measured-2026-09-11-pre-fix-run;not-re-measured` in
+  its notes, and its three raw samples are in the write-samples file.
 - The database run exited non-zero for two rows only: `append-object` on
   the two CityParquet tags errors with a DuckDB `BinderException`, because
   the extension types an empty `material_lod*` column as `VARCHAR` while the
