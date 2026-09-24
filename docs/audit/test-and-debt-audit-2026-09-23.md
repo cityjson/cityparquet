@@ -1818,7 +1818,7 @@ Arrows mean "do first". Items in the same step are independent of each other.
 
 The scope was set mid-task to three libraries, in this priority order:
 `lib/cityparquet-rs`, then `lib/duckdb-3d`, then `lib/duckdb-cityjson`.
-The audit did not look at the following:
+The audit did not look at the following. The benchmark workspaces and `ai/mcp` are now covered by the addendum [`test-and-debt-audit-2026-09-24-benchmark-mcp.md`](test-and-debt-audit-2026-09-24-benchmark-mcp.md).
 
 - `lib/citylake` (the Rust lakehouse and web API, a separate Cargo workspace), or its gate `just citylake-check`.
 - `benchmark/readbench`, `benchmark/plot`, `benchmark/scripts` and `benchmark/databases` (their own suites: `plot-test`, `scripts-test`). The one exception is D-RS-10, which touches readbench only where it copies core semantics.
