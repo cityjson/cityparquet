@@ -41,21 +41,9 @@ class Inputs:
             else self.bench_dir / "read_results"
         )
 
-    @property
-    def ordering_dir(self) -> Path:
-        return self.bench_dir / "ordering_results"
-
     # The scaling corpus: one city model cut to four cardinalities, which is
     # how the configuration axes are measured -- a codec or a row-group size
     # answers "how does this scale", not "how does this compare to Vienna".
-    @property
-    def scaling_read_dir(self) -> Path:
-        return self.bench_dir / "scaling_read_results"
-
-    @property
-    def scaling_ordering_dir(self) -> Path:
-        return self.bench_dir / "scaling_ordering_results"
-
     @property
     def scaling_codec_dir(self) -> Path:
         return self.bench_dir / "scaling_codec_results"
@@ -94,15 +82,6 @@ class Inputs:
 
 
 BASELINE_FORMAT = "cityjsonseq"
-CITATION_FLOOR_S = 0.010
-
-# The ROW-ORDERING axis, mirroring `Format::ORDERING_SET`
-# (benchmark/readbench/src/format.rs). Both members are the same
-# writer, reader and scenarios; the only difference is the order rows were
-# written in, which is why its baseline is the source-order package and NOT
-# `BASELINE_FORMAT` -- an ordering run has no CityJSONSeq row to divide by.
-ORDERING_BASELINE = "cityparquet"
-ORDERING_VARIANT = "cityparquet-hilbert"
 
 KNOWN_FORMATS = (
     "citygml",
@@ -119,8 +98,7 @@ KNOWN_FORMATS = (
 # (benchmark/readbench/src/format.rs): one tag per format family, with
 # CityParquet represented by the Hilbert-ordered package — the configuration
 # that would actually ship, so the comparison is not handicapped by an ordering
-# choice no other format faces. Ordering is its own question, asked by
-# `Format::ORDERING_SET` over benchmark/formats/ordering_results.
+# choice no other format faces.
 #
 # `cityjsonseq-gz` and `duckdb-parquet` are deliberately absent: the first is a
 # compression variant of a format already on the axis, the second an SQL-engine
@@ -152,12 +130,6 @@ FEATURE_GRAIN_FORMATS = (
     "flatcitybuf",
 )
 
-# Scenarios whose counting grain differs between feature-grain and
-# CityObject-grain formats (READ_BENCHMARK.md fairness caveat 1).
-GRAIN_INCOMPARABLE_SCENARIOS = frozenset(
-    {"full-read", "count", "bbox-1pct", "bbox-5pct", "bbox-25pct"}
-)
-
 READ_COLUMNS = [
     "dataset",
     "format",
@@ -165,7 +137,7 @@ READ_COLUMNS = [
     "selectivity",
     "result_count",
     "time_s",
-    "time_mad_s",
+    "time_std_s",
     "peak_heap_bytes",
     "peak_rss_bytes",
     "repeat",
@@ -365,8 +337,7 @@ def read_caveats(inputs: Inputs) -> list[str]:
     stop the page from quoting caveats that exist. What is checked instead is
     that the extraction actually produced the source's list: numbering starting
     at 1 and running without a gap, since the views deep-link to caveats by
-    number (the "†" grain marker points at caveat 1, the noise floor at 8, the
-    id-lookup bias at 9) and a misaligned list would footnote the wrong text.
+    number and a misaligned list would footnote the wrong text.
     """
     path = inputs.read_benchmark_md
     body = _extract_section(path, "Fairness caveats")
@@ -476,21 +447,13 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
                 heap_b = _int(row["peak_heap_bytes"])
                 rss_b = _int(row["peak_rss_bytes"])
 
-                if base is None or time_s is None or base_time is None:
-                    below_floor = None
-                elif fmt == BASELINE_FORMAT:
-                    below_floor = None  # the baseline is the reference itself
-                else:
-                    below_floor = abs(time_s - base_time) < CITATION_FLOOR_S
-
                 records.append(
                     {
                         "dataset": dataset,
                         "format": fmt,
                         "scenario_key": key,
-                        "grain_comparable": key not in GRAIN_INCOMPARABLE_SCENARIOS,
                         "time_s": time_s,
-                        "time_mad_s": _float(row["time_mad_s"]),
+                        "time_std_s": _float(row["time_std_s"]),
                         # The reference's own seconds, so a view can turn a
                         # ratio back into wall-clock without re-deriving it.
                         "base_time_s": base_time,
@@ -506,7 +469,6 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
                             float(rss_b) if rss_b is not None else None,
                             base_rss,
                         ),
-                        "below_floor": below_floor,
                         "notes": row["notes"],
                         "status": row.get("status", ""),
                     }
@@ -515,193 +477,8 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
 
 
 # --------------------------------------------------------------------------
-# ordering
-# --------------------------------------------------------------------------
-
-
-def load_ordering(inputs: Inputs) -> list[dict]:
-    """One record per (dataset, scenario) of the row-ordering run.
-
-    A corpus with no ordering run at all is normal, not an error: it is a
-    separate pass with its own recipe (`just ordering-bench`), and its corpus
-    need not match the read benchmark's -- it routinely covers datasets the
-    read benchmark never measured. Records therefore carry the dataset shape
-    they need (object count, and the baseline's own absolute time) rather than
-    expecting a `datasets` entry to exist for them.
-    """
-    records: list[dict] = []
-
-    for path in _dataset_csvs(inputs.ordering_dir):
-        dataset = path.stem
-        rows = _read_rows(path, READ_COLUMNS)
-        groups: dict[str, dict[str, dict[str, str]]] = {}
-        for row in rows:
-            if COLD_RE.search(row["notes"]):
-                continue
-            if row["format"] not in (ORDERING_BASELINE, ORDERING_VARIANT):
-                continue
-            bucket = groups.setdefault(_scenario_key(row), {})
-            if row["format"] in bucket:
-                raise PrepError(
-                    f"{dataset}: duplicate ordering row for ({_scenario_key(row)}, {row['format']})"
-                )
-            bucket[row["format"]] = row
-
-        objects = None
-        for bucket in groups.values():
-            variant = bucket.get(ORDERING_VARIANT) or bucket.get(ORDERING_BASELINE)
-            if variant is not None and variant["scenario"] == "full-read":
-                objects = _int(variant["result_count"])
-
-        for key in sorted(groups):
-            bucket = groups[key]
-            base, variant = bucket.get(ORDERING_BASELINE), bucket.get(ORDERING_VARIANT)
-            if base is None or variant is None:
-                continue  # a half-measured scenario answers no question
-            base_t, variant_t = _float(base["time_s"]), _float(variant["time_s"])
-            base_m = _float(base["peak_rss_bytes"])
-            variant_m = _float(variant["peak_rss_bytes"])
-            if base_t is None or variant_t is None:
-                continue
-            records.append(
-                {
-                    "dataset": dataset,
-                    "scenario_key": key,
-                    "objects": objects,
-                    "base_time_s": base_t,
-                    "variant_time_s": variant_t,
-                    "base_rss_b": _int(base["peak_rss_bytes"]),
-                    "variant_rss_b": _int(variant["peak_rss_bytes"]),
-                    # Speed-up of the Hilbert package over the source-order one:
-                    # >1 means ordering paid, <1 means it cost.
-                    "time_ratio": _ratio(base_t, variant_t),
-                    "rss_ratio": _ratio(base_m, variant_m),
-                    "delta_s": abs(base_t - variant_t),
-                    "below_floor": abs(base_t - variant_t) < CITATION_FLOOR_S,
-                }
-            )
-    return records
-
-
-# --------------------------------------------------------------------------
 # scaling corpus
 # --------------------------------------------------------------------------
-
-
-def _scaling_objects(rows: list[dict[str, str]]) -> int | None:
-    """CityObject count for a slice, read from the run rather than its name.
-
-    The slices are named for the cardinality they were ASKED for, and the
-    generator gives what a strict prefix of the source actually holds --
-    `n5000` is 5,001 objects and `n50000` is 50,001. Naming is not measurement.
-    """
-    for row in rows:
-        if row["scenario"] == "full-read" and row["format"].startswith("cityparquet"):
-            return _int(row["result_count"])
-    return None
-
-
-def load_scaling(inputs: Inputs) -> dict:
-    """The scaling corpus: one dataset at four cardinalities.
-
-    A separate key, never merged into `read`/`datasets`. The slices are the
-    same city model cut to different sizes, so putting them beside a corpus of
-    unrelated models would answer a different question -- and would grow four
-    synthetic panels onto every per-dataset grid.
-
-    Absolute seconds and bytes are kept alongside the ratios: a trend view
-    plots the absolutes, because the SLOPE of time against cardinality on
-    log-log axes is the quantity being read, and a ratio flattens it.
-    """
-    read_dir = inputs.scaling_read_dir
-    slices = {p.stem: _read_rows(p, READ_COLUMNS) for p in _dataset_csvs(read_dir)}
-    if not slices:
-        return {"read": [], "sizes": [], "ordering": []}
-
-    objects = {name: _scaling_objects(rows) for name, rows in slices.items()}
-
-    read_records: list[dict] = []
-    for name, rows in slices.items():
-        groups: dict[str, dict[str, dict[str, str]]] = {}
-        for row in rows:
-            if COLD_RE.search(row["notes"]) or row["format"] not in KNOWN_FORMATS:
-                continue
-            groups.setdefault(_scenario_key(row), {})[row["format"]] = row
-        for key in sorted(groups):
-            bucket = groups[key]
-            base = bucket.get(BASELINE_FORMAT)
-            base_t = _float(base["time_s"]) if base else None
-            base_rss = _float(base["peak_rss_bytes"]) if base else None
-            for fmt, row in sorted(bucket.items()):
-                time_s = _float(row["time_s"])
-                rss_b = _int(row["peak_rss_bytes"])
-                read_records.append(
-                    {
-                        "dataset": name,
-                        "objects": objects.get(name),
-                        "format": fmt,
-                        "scenario_key": key,
-                        "time_s": time_s,
-                        "rss_b": rss_b,
-                        "time_ratio": _ratio(time_s, base_t),
-                        "rss_ratio": _ratio(float(rss_b) if rss_b is not None else None, base_rss),
-                        "below_floor": (None if time_s is None else time_s < CITATION_FLOOR_S),
-                    }
-                )
-
-    # sizes.csv sweeps the SHARED prepared-artefact directory, so it carries the
-    # catalogue corpus too. Keep only the slices this run measured -- derived
-    # from the directory's own CSV stems, so no dataset name is written here.
-    size_records: list[dict] = []
-    sizes_csv = read_dir / SIZES_CSV_NAME
-    if sizes_csv.exists():
-        for row in _read_rows(sizes_csv, SIZES_COLUMNS):
-            if row["dataset"] not in slices or row["format"] not in KNOWN_FORMATS:
-                continue
-            size_records.append(
-                {
-                    "dataset": row["dataset"],
-                    "objects": objects.get(row["dataset"]),
-                    "format": row["format"],
-                    "bytes": _int(row["bytes"]),
-                    "mb": _float(row["mb"]),
-                    "ratio_vs_cityjsonseq": _float(row["ratio_vs_cityjsonseq"]),
-                }
-            )
-
-    ordering_records: list[dict] = []
-    for path in _dataset_csvs(inputs.scaling_ordering_dir):
-        name = path.stem
-        groups: dict[str, dict[str, dict[str, str]]] = {}
-        for row in _read_rows(path, READ_COLUMNS):
-            if row["format"] not in (ORDERING_BASELINE, ORDERING_VARIANT):
-                continue
-            groups.setdefault(_scenario_key(row), {})[row["format"]] = row
-        for key in sorted(groups):
-            base = groups[key].get(ORDERING_BASELINE)
-            variant = groups[key].get(ORDERING_VARIANT)
-            if not base or not variant:
-                continue
-            bt, vt = _float(base["time_s"]), _float(variant["time_s"])
-            if bt is None or vt is None:
-                continue
-            ordering_records.append(
-                {
-                    "dataset": name,
-                    "objects": objects.get(name),
-                    "scenario_key": key,
-                    "base_time_s": bt,
-                    "variant_time_s": vt,
-                    "time_ratio": _ratio(bt, vt),
-                    "below_floor": abs(bt - vt) < CITATION_FLOOR_S,
-                }
-            )
-
-    return {
-        "read": read_records,
-        "sizes": size_records,
-        "ordering": ordering_records,
-    }
 
 
 def _measure_key(row: dict[str, str]) -> str:
@@ -800,7 +577,7 @@ def load_scaling_axis(
             # The dispersion travels with the time it belongs to: a headline
             # that names one variant the fastest has to be able to check the
             # lead against the two runs' own spread, not against a fixed floor.
-            base_mad = _float(base["time_mad_s"]) if base_valid else None
+            base_mad = _float(base["time_std_s"]) if base_valid else None
             base_rss = _int(base["peak_rss_bytes"]) if base_valid else None
             if base is not None and not base_valid:
                 gaps.append({"dataset": name, "issue": f"{baseline} {key} status={base_status}"})
@@ -817,7 +594,7 @@ def load_scaling_axis(
                 # Failed, skipped and mismatched probes remain visible to the
                 # renderer as labelled empty cells; they never become ratios.
                 t = _float(row["time_s"]) if valid else None
-                mad = _float(row["time_mad_s"]) if valid else None
+                mad = _float(row["time_std_s"]) if valid else None
                 rss = _int(row["peak_rss_bytes"]) if valid else None
                 records.append(
                     {
@@ -828,20 +605,15 @@ def load_scaling_axis(
                         "kind": "default" if variant == baseline else "variant",
                         "measure": key,
                         "time_s": t,
-                        "time_mad_s": mad,
+                        "time_std_s": mad,
                         "rss_b": rss,
                         "base_time_s": base_t,
-                        "base_time_mad_s": base_mad,
+                        "base_time_std_s": base_mad,
                         "base_rss_b": base_rss,
                         "time_ratio": _ratio(t, base_t),
                         "rss_ratio": _ratio(
                             float(rss) if rss is not None else None,
                             float(base_rss) if base_rss is not None else None,
-                        ),
-                        "below_floor": (
-                            None
-                            if t is None or base_t is None
-                            else abs(base_t - t) < CITATION_FLOOR_S
                         ),
                         "status": status,
                         "notes": row.get("notes", ""),
@@ -1120,11 +892,11 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     datasets = build_datasets(read_records, raw_mb)
     apply_manifest_titles(inputs, datasets)
     database_data = load_databases(inputs)
-    ordering_records = load_ordering(inputs)
-    scaling = load_scaling(inputs)
-    scaling["codec"] = load_scaling_axis(inputs.scaling_codec_dir)
-    scaling["rowgroup"] = load_scaling_axis(inputs.scaling_rowgroup_dir)
-    scaling["bloom"] = load_scaling_axis(inputs.scaling_bloom_dir, measures=BLOOM_MEASURES)
+    scaling = {
+        "codec": load_scaling_axis(inputs.scaling_codec_dir),
+        "rowgroup": load_scaling_axis(inputs.scaling_rowgroup_dir),
+        "bloom": load_scaling_axis(inputs.scaling_bloom_dir, measures=BLOOM_MEASURES),
+    }
 
     order = {d["id"]: i for i, d in enumerate(datasets)}
     read_records.sort(
@@ -1135,15 +907,6 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
         )
     )
     size_records.sort(key=lambda r: (order.get(r["dataset"], len(order)), r["format"]))
-    # The ordering corpus is not a subset of `datasets`, so datasets it alone
-    # measured sort after the shared ones rather than being dropped.
-    ordering_records.sort(
-        key=lambda r: (
-            order.get(r["dataset"], len(order)),
-            r["dataset"],
-            r["scenario_key"],
-        )
-    )
 
     data = {
         "meta": {
@@ -1151,17 +914,12 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
             "sources": {
                 "read": inputs.label(inputs.read_dir),
                 "sizes": inputs.label(inputs.sizes_csv),
-                "ordering": inputs.label(inputs.ordering_dir),
-                "scaling": inputs.label(inputs.scaling_read_dir),
                 "codec": inputs.label(inputs.scaling_codec_dir),
                 "rowgroup": inputs.label(inputs.scaling_rowgroup_dir),
                 "bloom": inputs.label(inputs.scaling_bloom_dir),
             },
             "caveats_read": read_caveats(inputs),
             "codec_level_note": CODEC_LEVEL_NOTE,
-            "citation_floor_s": CITATION_FLOOR_S,
-            "ordering_baseline": ORDERING_BASELINE,
-            "ordering_variant": ORDERING_VARIANT,
             "axis_baseline": AXIS_BASELINE,
             "format_axis": list(FORMAT_AXIS),
             "object_grain_formats": list(OBJECT_GRAIN_FORMATS),
@@ -1176,7 +934,6 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
         "datasets": datasets,
         "read": read_records,
         "sizes": size_records,
-        "ordering": ordering_records,
         "scaling": scaling,
         "databases": database_data,
     }
@@ -1207,11 +964,7 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
         f"{len(data['sizes'])} size records, "
         f"{len(data['scaling']['codec']['records'])} codec records, "
         f"{len(data['scaling']['rowgroup']['records'])} row-group records, "
-        f"{len(data['scaling']['bloom']['records'])} bloom records, "
-        f"{len(data['ordering'])} ordering records "
-        f"({len({r['dataset'] for r in data['ordering']})} datasets), "
-        f"{len(data['scaling']['read'])} scaling read records "
-        f"({len({r['dataset'] for r in data['scaling']['read']})} slices)"
+        f"{len(data['scaling']['bloom']['records'])} bloom records"
     )
     for note in anomalies:
         print(f"  anomaly: {note}")

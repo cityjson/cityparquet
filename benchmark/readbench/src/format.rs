@@ -114,8 +114,7 @@ impl Format {
     /// scenarios; the ONLY difference is the row order the package was
     /// written in (see [`Format::artefact`]). Running this set alongside
     /// other formats would confound the two axes, which is why it is its own
-    /// set rather than extra members of [`Format::DEFAULT_SET`] — the
-    /// justfile's `ordering-bench` recipe passes exactly these two tags.
+    /// set rather than extra members of [`Format::DEFAULT_SET`].
     pub const ORDERING_SET: [Format; 2] = [Format::CityParquet, Format::CityParquetHilbert];
 
     /// The canonical kebab-case CLI/CSV spelling (round-trips through

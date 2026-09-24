@@ -14,7 +14,7 @@ def _row(format: str, *, time: str, rss: str, status: str = "") -> dict[str, str
         "selectivity": "",
         "result_count": "1000",
         "time_s": time,
-        "time_mad_s": "0.01",
+        "time_std_s": "0.01",
         "peak_heap_bytes": "50",
         "peak_rss_bytes": rss,
         "repeat": "3",

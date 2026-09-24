@@ -15,10 +15,10 @@
 # those from inside that directory; its `check` needs no `uv`, no `jq` and no
 # corpus, which is the point of the split.
 #
-# The four per-dataset recipes (`convert-all`, `bench`, `write-bench`,
+# The three per-dataset recipes (`convert-all`, `bench`,
 # `variant-bench`) are deliberately in ONE file: they share the
 # input-extension convention below verbatim, and
-# `benchmark/readbench/tests/strip_extension.rs` extracts all four
+# `benchmark/readbench/tests/strip_extension.rs` extracts all three
 # out of this file and RUNS them to prove they have not drifted apart. Split
 # them across two justfiles and that check has nothing to compare.
 # ===========================================================================
@@ -187,8 +187,8 @@ fetch-tools:
 # CityJSONSeq prefixes with a fixed number of CityObjects each: one
 # DEST/3dbag_n<SIZE>.city.jsonl per SIZE, every slice a strict prefix of
 # the next larger one, in source feature order. This is the input for the
-# CONFIGURATION-axis benchmarks (`codec-bench`, `rowgroup-bench`, `bloom-bench`,
-# `ordering-bench`): one dataset at several cardinalities shows the trend
+# CONFIGURATION-axis benchmarks (`codec-bench`, `rowgroup-bench`,
+# `bloom-bench`): one dataset at several cardinalities shows the trend
 # over size with the data held constant, where a corpus of unrelated city
 # models would entangle every configuration delta with a data delta.
 #
@@ -352,9 +352,8 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
     #     requested: the coordinator derives EVERY query parameter — bbox
     #     windows, the id, the attribute predicate — from that one package.
     # Naming `duckdb-parquet` is also the ONLY thing that appends the
-    # SQL-engine baseline below (see the header): a deliberately single-axis
-    # run — the default format comparison, or `ordering-bench` — must not have
-    # an extra series quietly added to its CSV.
+    # SQL-engine baseline below (see the header): the default format
+    # comparison must not have an extra series quietly added to its CSV.
     # BEGIN format-selection (extracted and RUN by
     # benchmark/scripts/tests/bench_recipe_test.sh — keep both markers
     # in column 5, and keep this block free of anything the test cannot
@@ -435,70 +434,6 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
     fi
     echo "bench: ${found} file(s) benchmarked into {{OUT}}"
 
-
-# The ORDERING-COMPARISON run: the same benchmark, restricted to
-# `Format::ORDERING_SET`
-# (benchmark/readbench/src/format.rs) — a
-# source-order CityParquet package and a Hilbert-ordered one, same writer,
-# same reader, same scenarios, so the ONLY variable is the row order.
-#
-# A separate OUT default (benchmark/formats/ordering_results) rather than a
-# shared one: `plot` charts a whole directory, so mixing an ordering run's CSVs
-# in with the format comparison's would put two axes on one chart and answer
-# neither question. `duckdb-parquet` is deliberately absent from the list,
-# which is what keeps `bench` from appending the SQL-engine baseline here.
-#
-# It DELEGATES to `bench` rather than copying its body — a forked recipe is
-# how the two would drift apart.
-[private]
-[doc("The same run restricted to the ordering axis (source order vs Hilbert)")]
-ordering-bench FOLDER OUT=(BENCH / "ordering_results"):
-    just bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet-hilbert"
-
-# Encoding-variant WRITE benchmark (M5): for every CityJSON/CityJSONSeq file
-# found under FOLDER (recursive), run the `cityparquet bench` variant matrix
-# and append the DuckDB `COPY` baseline into one OUT/<name>.csv. Each
-# OUT/<name>.csv is removed first so a re-run is always clean.
-# Network-dependent (the DuckDB baseline installs the `cityjson` community
-# extension); kept OUT of `just check`/CI.
-[private]
-[doc("Encoding-variant WRITE benchmark plus the DuckDB COPY baseline")]
-write-bench FOLDER OUT=(BENCH / "results"):
-    #!/usr/bin/env bash
-    set -euo pipefail
-    mkdir -p "{{OUT}}"
-    found=0
-    while IFS= read -r -d '' f; do
-        name="$(basename "$f")"
-        for ext in {{KNOWN_INPUT_EXTENSIONS}}; do
-            if [[ "$name" == *"$ext" ]]; then name="${name%"$ext"}"; break; fi
-        done
-        out="{{OUT}}/${name}.csv"
-        echo ">> ${f} -> ${out}"
-        rm -f "$out"
-
-        cargo run --release {{CARGO}} -p cityparquet-cli --bin cityparquet -- bench \
-            --input "$f" --out "$out"
-        # Exit 3 means the community `cityjson` extension is unavailable for
-        # this DuckDB build (see bench_duckdb.sh) — the duckdb-copy baseline
-        # is skipped and said so on stderr, while the encoding-variant rows
-        # this recipe exists for are unaffected. Any other non-zero code is
-        # a real failure and still stops the run.
-        ./{{BENCH_SCRIPTS}}/bench_duckdb.sh "$f" "$out" || {
-            rc=$?
-            if [[ "$rc" -ne 3 ]]; then exit "$rc"; fi
-            echo ">> duckdb-copy baseline SKIPPED for ${name} (extension unavailable)"
-        }
-
-        found=$((found + 1))
-    done < <(find "{{FOLDER}}" -type f \
-        \( {{KNOWN_INPUT_FIND}} \) ! -name 'metadata.json' -print0 \
-        | sort -z)
-    if [[ "$found" -eq 0 ]]; then
-        echo "write-bench: no city-model inputs found under {{FOLDER}}" >&2
-        exit 1
-    fi
-    echo "write-bench: ${found} file(s) benchmarked into {{OUT}}"
 
 # The configuration-axis runner behind `codec-bench`, `rowgroup-bench` and
 # `bloom-bench`:

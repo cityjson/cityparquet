@@ -1,4 +1,4 @@
-dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests
+dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests
 delft.city.jsonl,cityparquet,write,,2231,1.169096,0.002897,182264600,224612352,2,,,
 delft.city.jsonl,cityparquet,full-read,,2231,0.269407,0.014033,42125189,62058496,2,,,
 delft.city.jsonl,cityparquet,bbox-query,0.009861,22,0.005169,0.000214,394693,14712832,2,bbox-1pct,,

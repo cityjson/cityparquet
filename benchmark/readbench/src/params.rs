@@ -4,7 +4,7 @@
 //!
 //! This lives in the library rather than beside the coordinator so the
 //! choices it makes are testable without spawning a single child process:
-//! [`window_for_target`] is a pure function over an in-memory slice, and the
+//! [`area_window`] is a pure function over an in-memory slice, and the
 //! integration tests reach the rest directly.
 
 use std::collections::HashMap;
@@ -43,8 +43,8 @@ fn open_arrow_schema(table: &Path) -> Result<Schema> {
 /// Every row's bbox, plus their union.
 ///
 /// The whole vector is kept — not just the union — because
-/// [`window_for_target`] searches for a window that intersects a target
-/// FRACTION of rows, which cannot be answered from the extent alone. One
+/// [`area_window`] reports the fraction of ROWS its area window actually
+/// intersects, which cannot be answered from the extent alone. One
 /// `[f64; 6]` per row is 48 bytes; the largest corpus dataset holds roughly
 /// 199,000 rows, so under 10 MB.
 pub struct RowBoxes {
@@ -132,44 +132,34 @@ pub fn scan_row_bboxes(table: &Path) -> Result<RowBoxes> {
     Ok(RowBoxes { boxes, dataset })
 }
 
-/// `(target fraction of rows, notes tag)` for the three bbox windows — one
-/// CSV row per entry.
+/// `(fraction of the dataset's x/y area, notes tag)` for the three bbox
+/// windows — one CSV row per entry.
 ///
-/// The targets are fractions of ROWS, not of the dataset's area. An
-/// area-anchored window says nothing about how many objects it selects: the
-/// retired lower-left construction returned zero rows for `bbox-1pct` on
-/// every dataset in the corpus, on every format.
+/// The fraction is of the dataset's x/y AREA, anchored at the lower-left
+/// corner: the same construction `benchmark/databases`'s `BBox.window` uses,
+/// so the tags mean the same thing in both harnesses. How many ROWS such a
+/// window selects is a property of the data, not of the tag; the realised
+/// fraction is measured ([`BboxWindow::achieved`]) and reported next to the
+/// tag rather than assumed.
 pub const BBOX_TARGETS: [(f64, &str); 3] = [
     (0.01, "bbox-1pct"),
     (0.05, "bbox-5pct"),
     (0.25, "bbox-25pct"),
 ];
 
-/// How far the achieved fraction may sit from the target before the window
-/// is disclosed as `approx`, as a fraction OF THE TARGET (so 10% of 1% is
-/// one part in a thousand, not one in ten).
-const BBOX_TOLERANCE: f64 = 0.1;
-
-/// Bisection steps. The count of intersecting rows is a step function of the
-/// half-extent, so the search converges on a jump rather than a point; 60
-/// halvings take the bracket well below one row's width on any real extent.
-const BBOX_SEARCH_STEPS: u32 = 60;
-
-/// One resolved bbox window: which target it was searched for, what fraction
-/// of rows it actually selects, and whether those two agree.
+/// One resolved bbox window: which area fraction it covers, what fraction of
+/// rows it actually intersects, and the window itself.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BboxWindow {
     /// The `notes` tag this window's CSV rows carry, e.g. `bbox-1pct`.
     pub tag: String,
-    /// The fraction of rows the search aimed at.
+    /// The fraction of the dataset's x/y AREA the window covers.
     pub target: f64,
-    /// The fraction of rows the returned window actually intersects.
+    /// The fraction of rows whose bbox intersects the window. Data-dependent:
+    /// a 1% area window need not select 1% of the objects.
     pub achieved: f64,
     /// `[minx, miny, minz, maxx, maxy, maxz]`.
     pub window: [f64; 6],
-    /// `achieved` is outside [`BBOX_TOLERANCE`] of `target` — the target was
-    /// not reachable on this data. Disclosed in `notes`, never silent.
-    pub approx: bool,
 }
 
 /// The same 3D overlap test every format runner applies row-by-row
@@ -184,98 +174,46 @@ fn intersects(row: &[f64; 6], window: &[f64; 6]) -> bool {
     true
 }
 
-/// The median of `values` (must be non-empty).
-fn median_of(values: &mut [f64]) -> f64 {
-    values.sort_by(|a, b| a.partial_cmp(b).expect("bbox coordinates are finite"));
-    let mid = values.len() / 2;
-    if values.len().is_multiple_of(2) {
-        (values[mid - 1] + values[mid]) / 2.0
-    } else {
-        values[mid]
-    }
-}
-
-/// A window centred on `centre`, extending `half` of each of the dataset's
-/// own x/y spans, and always covering the dataset's FULL z range — a query
-/// window's z must never exclude a row, because `readbench_duckdb.sh` tests
-/// x/y overlap only and the two must agree.
-fn window_at(centre: (f64, f64), half: f64, dataset: [f64; 6]) -> [f64; 6] {
-    let span_x = dataset[3] - dataset[0];
-    let span_y = dataset[4] - dataset[1];
-    [
-        centre.0 - half * span_x,
-        centre.1 - half * span_y,
-        dataset[2],
-        centre.0 + half * span_x,
-        centre.1 + half * span_y,
-        dataset[5],
-    ]
-}
-
-/// Searches for a window intersecting `target` (a fraction in `(0, 1]`) of
-/// `boxes`, centred on the median row centre so it lands where the data is
-/// rather than at a bounding-box corner.
+/// The lower-left window covering `area_fraction` of `dataset`'s x/y extent,
+/// with the fraction of `boxes` it intersects.
 ///
-/// The half-extent scales with each axis's OWN span, so a long, thin tile
-/// receives a long, thin window instead of a square one that misses on the
-/// short axis. The row count is monotonically non-decreasing in the
-/// half-extent, which is what makes bisection valid.
-///
-/// A target that cannot be reached — 1% of a 10-row dataset is 0.1 rows —
-/// returns the nearest achievable window with `approx` set, never a silently
-/// missed target.
-pub fn window_for_target(
+/// `side = sqrt(area_fraction)` of each x/y span, anchored at the dataset's
+/// lower-left corner — exactly the construction `benchmark/databases`'s
+/// `BBox.window` uses, so `bbox-1pct` names the same window in both
+/// harnesses. The z range is never narrowed, so every row is in range
+/// vertically. The realised row fraction is measured ([`BboxWindow::achieved`]),
+/// never targeted.
+pub fn area_window(
     boxes: &[[f64; 6]],
     dataset: [f64; 6],
-    target: f64,
+    area_fraction: f64,
     tag: &str,
 ) -> BboxWindow {
+    assert!(
+        area_fraction > 0.0 && area_fraction <= 1.0,
+        "area_fraction must be in (0, 1]"
+    );
+    let side = area_fraction.sqrt();
+    let window = [
+        dataset[0],
+        dataset[1],
+        dataset[2],
+        dataset[0] + (dataset[3] - dataset[0]) * side,
+        dataset[1] + (dataset[4] - dataset[1]) * side,
+        dataset[5],
+    ];
     let total = boxes.len();
-    assert!(total > 0, "window_for_target needs at least one row box");
-
-    let mut xs: Vec<f64> = boxes.iter().map(|b| (b[0] + b[3]) / 2.0).collect();
-    let mut ys: Vec<f64> = boxes.iter().map(|b| (b[1] + b[4]) / 2.0).collect();
-    let centre = (median_of(&mut xs), median_of(&mut ys));
-
-    let count_at = |half: f64| -> usize {
-        let w = window_at(centre, half, dataset);
-        boxes.iter().filter(|b| intersects(b, &w)).count()
+    let hit = boxes.iter().filter(|row| intersects(row, &window)).count();
+    let achieved = if total == 0 {
+        0.0
+    } else {
+        hit as f64 / total as f64
     };
-
-    let fraction = |count: usize| count as f64 / total as f64;
-    let wanted = target * total as f64;
-
-    // `hi` must select everything: half = 1.0 spans the full extent either
-    // side of the centre, which covers the dataset whatever the centre is.
-    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
-    for _ in 0..BBOX_SEARCH_STEPS {
-        let mid = (lo + hi) / 2.0;
-        if (count_at(mid) as f64) < wanted {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-
-    // `hi` is the smallest searched half-extent reaching the target; `lo` the
-    // largest falling short. Whichever lands closer to the target wins, but
-    // never an empty window — a zero-row window is the defect this function
-    // replaces.
-    let mut best = hi;
-    let mut best_count = count_at(hi);
-    let lo_count = count_at(lo);
-    if lo_count > 0 && (fraction(lo_count) - target).abs() < (fraction(best_count) - target).abs() {
-        best = lo;
-        best_count = lo_count;
-    }
-
-    let achieved = fraction(best_count);
     BboxWindow {
         tag: tag.to_string(),
-        target,
+        target: area_fraction,
         achieved,
-        window: window_at(centre, best, dataset),
-        approx: (achieved - target).abs() > BBOX_TOLERANCE * target,
+        window,
     }
 }
 
@@ -611,7 +549,7 @@ pub fn resolve(
     let rows = scan_row_bboxes(cp_table)?;
     let windows = BBOX_TARGETS
         .iter()
-        .map(|(target, tag)| window_for_target(&rows.boxes, rows.dataset, *target, tag))
+        .map(|(target, tag)| area_window(&rows.boxes, rows.dataset, *target, tag))
         .collect();
 
     let id_probes = match seq_path {
@@ -762,18 +700,24 @@ mod tests {
     const FIELD: [f64; 6] = [0.0, 0.0, 0.0, 100.0, 100.0, 10.0];
 
     #[test]
-    fn hits_every_target_on_a_uniform_grid() {
-        let boxes = grid(100, 100); // 10,000 boxes
+    fn the_window_is_the_lower_left_area_fraction() {
+        let boxes = grid(100, 100); // uniform, so area fraction ~ row fraction
         for (target, tag) in BBOX_TARGETS {
-            let w = window_for_target(&boxes, FIELD, target, tag);
+            let w = area_window(&boxes, FIELD, target, tag);
+            assert_eq!(w.window[0], FIELD[0], "{tag}: anchored at xmin");
+            assert_eq!(w.window[1], FIELD[1], "{tag}: anchored at ymin");
+            let side = target.sqrt();
             assert!(
-                !w.approx,
-                "{tag}: a uniform 10,000-box grid can hit {target} exactly, got {}",
-                w.achieved
+                (w.window[3] - (FIELD[0] + (FIELD[3] - FIELD[0]) * side)).abs() < 1e-9,
+                "{tag}: x extent must be span * sqrt(target)"
             );
             assert!(
-                (w.achieved - target).abs() <= 0.1 * target,
-                "{tag}: achieved {} is outside the tolerance around {target}",
+                (w.window[4] - (FIELD[1] + (FIELD[4] - FIELD[1]) * side)).abs() < 1e-9,
+                "{tag}: y extent must be span * sqrt(target)"
+            );
+            assert!(
+                (w.achieved - target).abs() <= 0.05,
+                "{tag}: on a uniform grid the realised row fraction {} should be near {target}",
                 w.achieved
             );
         }
@@ -783,73 +727,48 @@ mod tests {
     fn never_returns_an_empty_window() {
         let boxes = grid(100, 100);
         for (target, tag) in BBOX_TARGETS {
-            let w = window_for_target(&boxes, FIELD, target, tag);
+            let w = area_window(&boxes, FIELD, target, tag);
             assert!(w.achieved > 0.0, "{tag} selected no rows at all");
         }
     }
 
-    /// The median centroid of a bimodal cloud falls in the gap between the
-    /// two clusters. The search must still find a populated window rather
-    /// than converging on the empty middle.
+    /// The realised row fraction is a property of the data, not the tag: a
+    /// dataset clustered into the lower-left corner has a 1% area window that
+    /// selects nearly every row. The window itself is still the lower-left
+    /// area window.
     #[test]
-    fn finds_rows_when_the_median_falls_between_two_clusters() {
-        let mut boxes = Vec::new();
-        for i in 0..500 {
-            let x = i as f64 * 0.02; // 0..10
-            boxes.push([x, x, 0.0, x + 0.1, x + 0.1, 1.0]);
-        }
-        for i in 0..500 {
-            let x = 90.0 + i as f64 * 0.02; // 90..100
-            boxes.push([x, x, 0.0, x + 0.1, x + 0.1, 1.0]);
-        }
-        let w = window_for_target(&boxes, FIELD, 0.05, "bbox-5pct");
-        assert!(
-            w.achieved > 0.0,
-            "a bimodal cloud must still yield a populated window, got {w:?}"
-        );
-    }
-
-    /// A long, thin dataset must not receive a window whose y half-extent is
-    /// so small it selects nothing: the half-extents scale with each axis's
-    /// own span.
-    #[test]
-    fn scales_the_window_to_the_datasets_aspect_ratio() {
+    fn reports_the_realised_row_fraction_of_a_clustered_dataset() {
         let mut boxes = Vec::new();
         for i in 0..1000 {
-            let x = i as f64; // 0..1000
-            boxes.push([x, 0.0, 0.0, x + 0.5, 1.0, 1.0]);
+            let x = (i % 10) as f64 * 0.01;
+            let y = ((i / 10) % 10) as f64 * 0.01;
+            boxes.push([x, y, 0.0, x + 0.001, y + 0.001, 1.0]);
         }
-        let thin: [f64; 6] = [0.0, 0.0, 0.0, 1000.0, 1.0, 10.0];
-        let w = window_for_target(&boxes, thin, 0.25, "bbox-25pct");
-        assert!(w.achieved > 0.0, "thin dataset selected nothing: {w:?}");
+        let w = area_window(&boxes, FIELD, 0.01, "bbox-1pct");
         assert!(
-            (w.achieved - 0.25).abs() <= 0.1 * 0.25,
-            "thin dataset achieved {}, expected near 0.25",
+            w.achieved > 0.9,
+            "a 1% area window over a lower-left cluster should select nearly every row, got {}",
             w.achieved
         );
     }
 
-    /// 1% of 10 rows is 0.1 rows — unreachable. The search must disclose that
-    /// with `approx` rather than silently reporting a missed target as met.
+    /// The window scales with each axis's own span, so a long, thin dataset
+    /// gets a long, thin window rather than a square one.
     #[test]
-    fn flags_approx_when_the_target_is_unreachable() {
-        let boxes = grid(2, 5); // 10 boxes
-        let w = window_for_target(&boxes, FIELD, 0.01, "bbox-1pct");
-        assert!(
-            w.approx,
-            "1% of 10 rows cannot be hit within tolerance; expected approx, got {w:?}"
-        );
-        assert!(
-            w.achieved > 0.0,
-            "even an unreachable target must yield a populated window, got {w:?}"
-        );
+    fn scales_the_window_to_the_datasets_aspect_ratio() {
+        let boxes = grid(10, 1000);
+        let thin: [f64; 6] = [0.0, 0.0, 0.0, 1000.0, 1.0, 10.0];
+        let w = area_window(&boxes, thin, 0.25, "bbox-25pct");
+        let side = 0.25_f64.sqrt();
+        assert!((w.window[3] - 1000.0 * side).abs() < 1e-6, "{w:?}");
+        assert!((w.window[4] - 1.0 * side).abs() < 1e-6, "{w:?}");
     }
 
     #[test]
     fn the_window_always_spans_the_datasets_full_z_range() {
         let boxes = grid(50, 50);
         for (target, tag) in BBOX_TARGETS {
-            let w = window_for_target(&boxes, FIELD, target, tag);
+            let w = area_window(&boxes, FIELD, target, tag);
             assert_eq!(w.window[2], FIELD[2], "{tag} must keep the dataset zmin");
             assert_eq!(w.window[5], FIELD[5], "{tag} must keep the dataset zmax");
         }

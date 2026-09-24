@@ -20,7 +20,7 @@ import json
 from pathlib import Path
 
 from citybench.config import Measurement
-from citybench.stats import mad, mean, median
+from citybench.stats import mean, standard_deviation
 
 COLUMNS: tuple[str, ...] = (
     "dataset",
@@ -29,7 +29,7 @@ COLUMNS: tuple[str, ...] = (
     "selectivity",
     "result_count",
     "time_s",
-    "time_mad_s",
+    "time_std_s",
     "peak_heap_bytes",
     "peak_rss_bytes",
     "repeat",
@@ -79,7 +79,7 @@ def row_from_measurement(
         "selectivity": _fmt(selectivity),
         "result_count": _int(measurement.result_count),
         "time_s": _fmt(mean(times)) if times else "",
-        "time_mad_s": _fmt(mad(times)) if times else "",
+        "time_std_s": _fmt(standard_deviation(times)) if times else "",
         "peak_heap_bytes": _int(measurement.peak_heap_bytes),
         "peak_rss_bytes": _int(measurement.peak_rss_bytes),
         "repeat": str(len(times)),

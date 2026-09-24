@@ -57,7 +57,7 @@ DB_COLUMNS = [
     "selectivity",
     "result_count",
     "time_s",
-    "time_mad_s",
+    "time_std_s",
     "peak_heap_bytes",
     "peak_rss_bytes",
     "repeat",
@@ -317,7 +317,7 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
         "counts the requests the reader made after",
         # 30-31: what predates default-on filters and must be re-run.
         "The committed codec and row-group CSVs predate bloom filters.",
-        "Every other committed CSV predates bloom filters too.",
+        "The committed read CSVs predate bloom filters too.",
         "refuses to",
     ):
         assert phrase in caveats, phrase

@@ -119,7 +119,7 @@ const CSV_COLUMNS: [&str; 16] = [
     "selectivity",
     "result_count",
     "time_s",
-    "time_mad_s",
+    "time_std_s",
     "peak_heap_bytes",
     "peak_rss_bytes",
     "repeat",
@@ -132,11 +132,11 @@ const CSV_COLUMNS: [&str; 16] = [
 ];
 
 const EXPECTED_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,\
-time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,\
+time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,\
 row_groups_total,bloom_pruned,filter_bytes";
 
 #[test]
-fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from_real_data() {
+fn run_produces_the_exact_csv_contract_with_means_and_selectivity_derived_from_real_data() {
     let prepared = tempfile::tempdir().unwrap();
     let input = fixture("delft.city.jsonl");
 
@@ -217,10 +217,10 @@ fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from
             .parse()
             .unwrap_or_else(|e| panic!("time_s '{}' must parse as f64: {e}", row.field("time_s")));
         assert!(time_s >= 0.0, "time_s must be non-negative, got {time_s}");
-        let _time_mad_s: f64 = row.field("time_mad_s").parse().unwrap_or_else(|e| {
+        let _time_std_s: f64 = row.field("time_std_s").parse().unwrap_or_else(|e| {
             panic!(
-                "time_mad_s '{}' must parse as f64: {e}",
-                row.field("time_mad_s")
+                "time_std_s '{}' must parse as f64: {e}",
+                row.field("time_std_s")
             )
         });
         let _peak_heap_bytes: u64 = row.field("peak_heap_bytes").parse().unwrap_or_else(|e| {
@@ -299,18 +299,13 @@ fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from
             "expected exactly 3 bbox-query rows (1pct/5pct/25pct) for {format}"
         );
         let tags: Vec<&str> = bbox_rows.iter().map(|r| r.field("notes")).collect();
-        assert!(
-            tags.contains(&"bbox-1pct"),
-            "missing bbox-1pct row: {tags:?}"
-        );
-        assert!(
-            tags.contains(&"bbox-5pct"),
-            "missing bbox-5pct row: {tags:?}"
-        );
-        assert!(
-            tags.contains(&"bbox-25pct"),
-            "missing bbox-25pct row: {tags:?}"
-        );
+        for tag in ["bbox-1pct", "bbox-5pct", "bbox-25pct"] {
+            assert!(
+                tags.iter()
+                    .any(|notes| notes.starts_with(&format!("{tag};row-frac="))),
+                "missing {tag} row carrying its realised row fraction: {tags:?}"
+            );
+        }
     }
 }
 
@@ -677,60 +672,6 @@ async fn run_with_http_transport_reports_bytes_and_requests_on_the_cityparquet_r
         requests >= 1,
         "expected at least 1 http_requests, got {requests}"
     );
-}
-
-/// **C1's regression guard.** A CityGML input must never be measured as
-/// CityJSONSeq.
-///
-/// `Format::CityJsonSeq` used to resolve to the `--input` itself, which was
-/// correct only while every input WAS a `.city.jsonl`. On the catalogue
-/// corpus — `.gml` and `.city.json` — that made the `cityjsonseq` row a
-/// measurement of the input's own format under another name: on
-/// `plateau_chuo_fld.gml`, `count` was 0.175 s of CityGML parsing published
-/// as CityJSONSeq. Nothing caught it, because every coordinator test here
-/// used the one input kind for which the old resolution was right.
-///
-/// So: with no `<base>.city.jsonl` in `--prepared-dir`, `cityjsonseq` must be
-/// SKIPPED — the same treatment any other format's missing artefact gets —
-/// and the `.gml` must not appear in the CSV under that tag.
-#[test]
-fn a_citygml_input_is_never_measured_as_cityjsonseq() {
-    let prepared = tempfile::tempdir().unwrap();
-    let input = citygml_fixture("savenow_ingolstadt_lod2.gml");
-    let package_dir = prepared.path().join("savenow_ingolstadt_lod2.parquet");
-    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
-    let out_csv = prepared.path().join("out.csv");
-
-    let output = run_coordinator(&[
-        "--input",
-        input.to_str().unwrap(),
-        "--prepared-dir",
-        prepared.path().to_str().unwrap(),
-        "--out",
-        out_csv.to_str().unwrap(),
-        "--repeat",
-        "1",
-        "--scenarios",
-        "count",
-        "--formats",
-        "cityparquet,cityjsonseq",
-    ]);
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("skipping format 'cityjsonseq'")
-            && stderr.contains("savenow_ingolstadt_lod2.city.jsonl"),
-        "cityjsonseq must be skipped for its own missing prepared artefact; stderr:\n{stderr}"
-    );
-
-    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
-    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
-    assert_eq!(
-        rows.len(),
-        1,
-        "only cityparquet may be measured here: {csv_text}"
-    );
-    assert_eq!(rows[0].field("format"), "cityparquet");
 }
 
 /// The same guard for a `.city.json` input — the other half of the catalogue

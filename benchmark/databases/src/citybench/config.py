@@ -24,10 +24,15 @@ class BBox:
     def window(self, area_fraction: float) -> BBox:
         """A sub-window covering ``area_fraction`` of this bbox's x/y area.
 
-        Anchored at the lower-left corner, matching the construction the
-        existing cityparquet-rs harness uses, so selectivity tags stay
-        comparable across the two harnesses. The z range is never narrowed:
-        the window is 2D, so every object is in range vertically.
+        Anchored at the lower-left corner, the same construction the
+        cityparquet-rs readbench harness uses for its ``bbox-Npct`` windows,
+        so the selectivity tags stay comparable across the two harnesses.
+        ``area_fraction`` is the window's share of the dataset's x/y area,
+        not of its objects: the realised object fraction is data-dependent
+        and is what the ``selectivity`` column reports, while this area
+        target is what the ``notes`` window tag records. The z range is
+        never narrowed: the window is 2D, so every object is in range
+        vertically.
         """
         side = math.sqrt(area_fraction)
         return BBox(
