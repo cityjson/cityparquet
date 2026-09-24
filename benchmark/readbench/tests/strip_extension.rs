@@ -6,9 +6,9 @@
 //! resolves `--prepared-dir/<dataset>.parquet` and friends, the prepare
 //! script writes those very artefacts, and the justfile's per-dataset
 //! recipes name a CSV/package directory after it. The rule is therefore
-//! implemented four times over — once in Rust
+//! implemented three times over — once in Rust
 //! ([`strip_known_extension`]), once in `benchmark/scripts/readbench_prepare.sh`,
-//! four identical times in the MONOREPO's root `justfile` (which is where
+//! three identical times in the MONOREPO's root `justfile` (which is where
 //! the per-dataset recipes live: they reach both this crate and the corpora
 //! under `benchmark/`), and once (as its composable package-name
 //! counterpart) in `benchmark/scripts/readbench_duckdb.sh` — because a shell script
@@ -56,7 +56,7 @@ const CASES: &[(&str, &str)] = &[
 /// The MONOREPO root: `benchmark/readbench/` sits two levels below it.
 ///
 /// One root, not two. Everything this test reads — the shell implementations
-/// under `benchmark/scripts/`, and the four per-dataset recipes in the root
+/// under `benchmark/scripts/`, and the three per-dataset recipes in the root
 /// `justfile` — is named relative to the repository root, so a second base
 /// would only be a second thing to keep correct.
 fn mono_root() -> PathBuf {
@@ -216,7 +216,7 @@ fn extract_shell_function(source: &str, name: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 3. the justfile (four recipes, one shared extension list)
+// 3. the justfile (three recipes, one shared extension list)
 // ---------------------------------------------------------------------------
 
 /// Every `for ext in {{KNOWN_INPUT_EXTENSIONS}} ... done` block in the
@@ -243,11 +243,11 @@ fn justfile_stripper_blocks(justfile: &str) -> Vec<String> {
 fn the_justfile_has_exactly_one_stripper_repeated_verbatim() {
     let justfile = read("justfile");
     let blocks = justfile_stripper_blocks(&justfile);
-    // convert-all, bench, write-bench, variant-bench.
+    // convert-all, bench, variant-bench.
     assert_eq!(
         blocks.len(),
-        4,
-        "expected four per-dataset recipes to strip the input extension, found {}",
+        3,
+        "expected three per-dataset recipes to strip the input extension, found {}",
         blocks.len()
     );
     for block in &blocks[1..] {
@@ -266,7 +266,7 @@ fn the_justfile_has_exactly_one_stripper_repeated_verbatim() {
     // be wrong in a way the block itself cannot catch.
     assert_eq!(
         justfile.matches(r#"name="$(basename "$f")""#).count(),
-        4,
+        3,
         "every per-dataset recipe must strip the basename, not the path"
     );
 }
@@ -334,8 +334,8 @@ fn every_recipe_discovers_inputs_through_the_shared_pattern() {
     let justfile = read("justfile");
     assert_eq!(
         justfile.matches("{{KNOWN_INPUT_FIND}}").count(),
-        4,
-        "expected four per-dataset recipes to discover inputs through KNOWN_INPUT_FIND"
+        3,
+        "expected three per-dataset recipes to discover inputs through KNOWN_INPUT_FIND"
     );
     let inline = justfile
         .lines()

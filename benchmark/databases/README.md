@@ -37,12 +37,12 @@ measurement gap.
 The only committed database results are one run over the 1,000,001-object
 3DBAG scaling slice (`3dbag_n1000000`):
 
-| File | Contents |
-|---|---|
-| `benchmark/runs/databases/results/3dbag_n1000000.csv` | 36 rows: three systems × twelve scenario rows, `repeat` = 7 |
+| File                                                            | Contents                                                                                                                          |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `benchmark/runs/databases/results/3dbag_n1000000.csv`           | 36 rows: three systems × twelve scenario rows, `repeat` = 7                                                                       |
 | `benchmark/runs/databases/results/3dbag_n1000000.manifest.json` | source SHA-256, host, versions, `pg_settings`, ingest times, sizes, cjdb patch disclosure, SRIDs, memory scope, temporary storage |
-| `benchmark/runs/databases/results/3dbag_n1000000.params.json` | the query parameters derived from that source |
-| `benchmark/runs/databases/results/3dbag_n1000000.indexes.sql` | the DDL this harness added, plus a live `pg_indexes` dump for both PostgreSQL schemas |
+| `benchmark/runs/databases/results/3dbag_n1000000.params.json`   | the query parameters derived from that source                                                                                     |
+| `benchmark/runs/databases/results/3dbag_n1000000.indexes.sql`   | the DDL this harness added, plus a live `pg_indexes` dump for both PostgreSQL schemas                                             |
 
 `benchmark/runs/RESULTS.md` describes the run and its limitations; read it
 before citing a number. In brief:
@@ -64,13 +64,13 @@ before citing a number. In brief:
 
 ## Systems
 
-| tag | what it is | index support |
-|---|---|---|
-| `duckdb-cityparquet` | DuckDB (Python client) `read_parquet()` over the source-order CityParquet package `<prepared>/<dataset>.parquet`; no separate ingest | Parquet statistics used by DuckDB's own scan |
-| `cjdb` | cjdb 2.2.0, **patched (Caveat 2)**, imported into PostgreSQL/PostGIS. Full geometry is JSONB (`city_object.geometry`); only a 2D footprint is a PostGIS geometry (`ground_geometry`) | cjdb's own defaults plus one added btree(`object_id`) — see "Index sets" |
-| `3dcitydb` | 3DCityDB v5.1.2, imported with `citydb-tool` 1.3.2 into PostgreSQL/PostGIS. Generic `feature`/`property`/`geometry_data` schema: CityGML classes are rows, attributes are EAV rows | the indexes `citydb-tool import cityjson` creates; none added |
-| `cityparquet` | the native Rust reader over the same source-order package, driven per sample as `cityparquet-readbench --child` | Parquet row-group min/max statistics and column projection |
-| `cityparquet-hilbert` | the same reader over `<prepared>/<dataset>-hilbert.parquet`, rows in Hilbert-curve order | the same statistics, with tighter per-row-group bounding boxes |
+| tag                   | what it is                                                                                                                                                                           | index support                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| `duckdb-cityparquet`  | DuckDB (Python client) `read_parquet()` over the source-order CityParquet package `<prepared>/<dataset>.parquet`; no separate ingest                                                 | Parquet statistics used by DuckDB's own scan                             |
+| `cjdb`                | cjdb 2.2.0, **patched (Caveat 2)**, imported into PostgreSQL/PostGIS. Full geometry is JSONB (`city_object.geometry`); only a 2D footprint is a PostGIS geometry (`ground_geometry`) | cjdb's own defaults plus one added btree(`object_id`) — see "Index sets" |
+| `3dcitydb`            | 3DCityDB v5.1.2, imported with `citydb-tool` 1.3.2 into PostgreSQL/PostGIS. Generic `feature`/`property`/`geometry_data` schema: CityGML classes are rows, attributes are EAV rows   | the indexes `citydb-tool import cityjson` creates; none added            |
+| `cityparquet`         | the native Rust reader over the same source-order package, driven per sample as `cityparquet-readbench --child`                                                                      | Parquet row-group min/max statistics and column projection               |
+| `cityparquet-hilbert` | the same reader over `<prepared>/<dataset>-hilbert.parquet`, rows in Hilbert-curve order                                                                                             | the same statistics, with tighter per-row-group bounding boxes           |
 
 `citybench run` uses the first three by default. The native readers run only
 when named in `--systems` and need the binary
@@ -84,15 +84,15 @@ the source CityJSON or CityJSONSeq file by `citybench.params.derive` (ties
 are broken by sorting). No system derives its own idea of "a 5 % window" or
 "a typical building".
 
-| field | derivation |
-|---|---|
-| `bbox_full` | extent of every dequantised vertex in the file |
-| `attr_column` | always `object_type` |
-| `attr_eq` | most frequent CityObject type |
-| `numeric_column` | most frequent numeric attribute; `null` if none |
-| `target_id` | lexicographically first CityObject id |
-| `parent_id` | lexicographically first CityObject with `children`; `null` if none |
-| `total_city_objects` | the selectivity denominator |
+| field                | derivation                                                         |
+| -------------------- | ------------------------------------------------------------------ |
+| `bbox_full`          | extent of every dequantised vertex in the file                     |
+| `attr_column`        | always `object_type`                                               |
+| `attr_eq`            | most frequent CityObject type                                      |
+| `numeric_column`     | most frequent numeric attribute; `null` if none                    |
+| `target_id`          | lexicographically first CityObject id                              |
+| `parent_id`          | lexicographically first CityObject with `children`; `null` if none |
+| `total_city_objects` | the selectivity denominator                                        |
 
 `citybench run` derives the parameters afresh from the source on every run
 and writes them beside the CSV as `<dataset>.params.json`; it never reads a
@@ -112,18 +112,18 @@ Each system answers each scenario through its own natural mechanism — never a
 hand-tuned shortcut, never a shape contrived to match another system's plan
 (the design rule stated in `sql_citydb.py` and `sql_duckdb.py`).
 
-| scenario | common target | `duckdb-cityparquet` | `cjdb` | `3dcitydb` | `cityparquet`(`-hilbert`) |
-|---|---|---|---|---|---|
-| `full-read` | decode every object; `(count, checksum)` | `SELECT count(*), sum(hash(COLUMNS(*)))::HUGEINT` — DuckDB expands `COLUMNS(*)` into one hash sum per column, forcing every column to be decoded | `count(*)` plus the summed text length of `geometry`, `attributes` and `ground_geometry`, each `coalesce`d so one NULL column cannot drop a row | pre-aggregated `geometry_data` and `property` text lengths joined back to `feature`, with the CityObject predicate (Caveat 1) | scan every row group single-threaded, decode each row's WKB (`cityparquet::query`) |
-| `count` | total CityObject count | `SELECT count(*)` | `SELECT count(*) FROM cjdb.city_object` | `count(*)` over `feature` with the CityObject predicate | Parquet file metadata `num_rows` |
-| `bbox-query` (1/5/25 %) | objects whose bbox intersects the window | `bbox.xmax/xmin/ymax/ymin` comparisons on the `bbox` STRUCT — **x/y only** | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3) | `envelope && ST_MakeEnvelope(...)`, GIST-indexed — `envelope` is 3D, but `ST_MakeEnvelope` returns a 2D polygon, so the test is 2D | row-group pruning plus a row-level test of all six bounds |
-| `attr-filter` | objects with `object_type = attr_eq` | `WHERE object_type = ?` | `WHERE "type" = %s` (btree) | `objectclass_id` = the class id for `attr_eq` (btree) | Arrow row filter plus row-group statistics |
-| `attr-stats` | `(count, min, max, sum)` of `numeric_column` | aggregates over the flattened top-level column | aggregates over `(attributes->>col)::numeric` — every row's JSONB unpacked | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` because an integer value is stored in `val_int` (see also Caveat 13) | column-chunk statistics for min/max; projected scan for sum/count |
-| `id-lookup` | the row for `target_id`, materialised | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB | `SELECT * FROM feature WHERE objectid = %s` (btree) — the `feature` row only; `property` and `geometry_data` are not joined | row filter on `id`, decode the surviving row |
-| `project` | one column read across every row; non-null count | `SELECT count(object_type)` | `SELECT count("type")` | `count(objectclass_id)` with the CityObject predicate | single-column projection |
-| `lod-extract` *(SQL only)* | objects carrying an LoD 1.2 geometry | `count(geometry_lod1_2) WHERE geometry_lod1_2 IS NOT NULL` — one column projected; `WHERE FALSE` when the package has no such column (Caveat 15) | `geometry @? '$[*] ? (@.lod == "1.2")'` — the `@?` operator, which uses cjdb's GIN(`geometry`) index; the `jsonb_path_exists` function form does not | `property` join on `val_lod = '1' AND val_geometry_id IS NOT NULL` — the importer stores LoD 1.2 as `'1'` (`docs/3dcitydb-v5-schema.md`, "LoD value format") | not run (Caveat 7) |
-| `semantic-surface` *(SQL only)* | objects with ≥ 1 `RoofSurface`, **any LoD** (Caveat 9) | `OR` of `list_contains(json_extract_string(<col>.surfaces, '$[*].type'), 'RoofSurface')` over every `geometry_properties_lod*` column the package has | `geometry @? '$[*].semantics.surfaces[*] ? (@.type == "RoofSurface")'` | `count(DISTINCT pr.feature_id)` over owners of a `RoofSurface` feature — a presence test, not a surface-row count | not run |
-| `hierarchy` *(SQL only)* | direct children of `parent_id` | `WHERE list_contains(parents, ?)` | join `city_object_relationships` to the parent's `object_id` | `property.val_feature_id` join from parent to child, CityObject predicate on the child | not run |
+| scenario                        | common target                                          | `duckdb-cityparquet`                                                                                                                                  | `cjdb`                                                                                                                                               | `3dcitydb`                                                                                                                                                      | `cityparquet`(`-hilbert`)                                                          |
+| ------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `full-read`                     | decode every object; `(count, checksum)`               | `SELECT count(*), sum(hash(COLUMNS(*)))::HUGEINT` — DuckDB expands `COLUMNS(*)` into one hash sum per column, forcing every column to be decoded      | `count(*)` plus the summed text length of `geometry`, `attributes` and `ground_geometry`, each `coalesce`d so one NULL column cannot drop a row      | pre-aggregated `geometry_data` and `property` text lengths joined back to `feature`, with the CityObject predicate (Caveat 1)                                   | scan every row group single-threaded, decode each row's WKB (`cityparquet::query`) |
+| `count`                         | total CityObject count                                 | `SELECT count(*)`                                                                                                                                     | `SELECT count(*) FROM cjdb.city_object`                                                                                                              | `count(*)` over `feature` with the CityObject predicate                                                                                                         | Parquet file metadata `num_rows`                                                   |
+| `bbox-query` (1/5/25 %)         | objects whose bbox intersects the window               | `bbox.xmax/xmin/ymax/ymin` comparisons on the `bbox` STRUCT — **x/y only**                                                                            | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3)                                                                   | `envelope && ST_MakeEnvelope(...)`, GIST-indexed — `envelope` is 3D, but `ST_MakeEnvelope` returns a 2D polygon, so the test is 2D                              | row-group pruning plus a row-level test of all six bounds                          |
+| `attr-filter`                   | objects with `object_type = attr_eq`                   | `WHERE object_type = ?`                                                                                                                               | `WHERE "type" = %s` (btree)                                                                                                                          | `objectclass_id` = the class id for `attr_eq` (btree)                                                                                                           | Arrow row filter plus row-group statistics                                         |
+| `attr-stats`                    | `(count, min, max, sum)` of `numeric_column`           | aggregates over the flattened top-level column                                                                                                        | aggregates over `(attributes->>col)::numeric` — every row's JSONB unpacked                                                                           | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` because an integer value is stored in `val_int` (see also Caveat 13) | column-chunk statistics for min/max; projected scan for sum/count                  |
+| `id-lookup`                     | the row for `target_id`, materialised                  | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index                                                                           | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB                                                                  | `SELECT * FROM feature WHERE objectid = %s` (btree) — the `feature` row only; `property` and `geometry_data` are not joined                                     | row filter on `id`, decode the surviving row                                       |
+| `project`                       | one column read across every row; non-null count       | `SELECT count(object_type)`                                                                                                                           | `SELECT count("type")`                                                                                                                               | `count(objectclass_id)` with the CityObject predicate                                                                                                           | single-column projection                                                           |
+| `lod-extract` _(SQL only)_      | objects carrying an LoD 1.2 geometry                   | `count(geometry_lod1_2) WHERE geometry_lod1_2 IS NOT NULL` — one column projected; `WHERE FALSE` when the package has no such column (Caveat 15)      | `geometry @? '$[*] ? (@.lod == "1.2")'` — the `@?` operator, which uses cjdb's GIN(`geometry`) index; the `jsonb_path_exists` function form does not | `property` join on `val_lod = '1' AND val_geometry_id IS NOT NULL` — the importer stores LoD 1.2 as `'1'` (`docs/3dcitydb-v5-schema.md`, "LoD value format")    | not run (Caveat 7)                                                                 |
+| `semantic-surface` _(SQL only)_ | objects with ≥ 1 `RoofSurface`, **any LoD** (Caveat 9) | `OR` of `list_contains(json_extract_string(<col>.surfaces, '$[*].type'), 'RoofSurface')` over every `geometry_properties_lod*` column the package has | `geometry @? '$[*].semantics.surfaces[*] ? (@.type == "RoofSurface")'`                                                                               | `count(DISTINCT pr.feature_id)` over owners of a `RoofSurface` feature — a presence test, not a surface-row count                                               | not run                                                                            |
+| `hierarchy` _(SQL only)_        | direct children of `parent_id`                         | `WHERE list_contains(parents, ?)`                                                                                                                     | join `city_object_relationships` to the parent's `object_id`                                                                                         | `property.val_feature_id` join from parent to child, CityObject predicate on the child                                                                          | not run                                                                            |
 
 `bbox-query` produces one row per window, tagged `bbox-1pct`, `bbox-5pct` or
 `bbox-25pct` in `notes`, so the seven Tier-1 scenarios give nine rows per
@@ -154,13 +154,13 @@ containers. Stock PostgreSQL defaults (128 MB `shared_buffers`) would make
 either database a strawman. The manifest's `pg_settings` block records the
 values the committed run read back with `current_setting()`:
 
-| setting | cjdb | 3dcitydb |
-|---|---|---|
-| `shared_buffers` | 8GB | 8GB |
-| `effective_cache_size` | 24GB | 24GB |
-| `work_mem` | 256MB | 256MB |
-| `random_page_cost` | 1.1 | 1.1 |
-| `max_parallel_workers` | 16 | 16 |
+| setting                           | cjdb                  | 3dcitydb              |
+| --------------------------------- | --------------------- | --------------------- |
+| `shared_buffers`                  | 8GB                   | 8GB                   |
+| `effective_cache_size`            | 24GB                  | 24GB                  |
+| `work_mem`                        | 256MB                 | 256MB                 |
+| `random_page_cost`                | 1.1                   | 1.1                   |
+| `max_parallel_workers`            | 16                    | 16                    |
 | `max_parallel_workers_per_gather` | 0 (benchmark session) | 0 (benchmark session) |
 
 Both adapters call `pg.disable_parallel_query`, which sets
@@ -231,14 +231,13 @@ in their schema (`pg.vacuum_analyze`) before any timed scenario runs.
 Every `run()` performs **one discarded warm-up** call followed by `repeat`
 timed samples of the same query; `--repeat` defaults to **7**.
 
-- `time_s` is the **arithmetic mean** of the samples and `time_mad_s` is the
-  **median absolute deviation** about their median (`report.py`,
-  `stats.py`), both to six decimal places. The raw samples are in
-  `raw_time_samples_s`.
+- `time_s` is the **arithmetic mean** of the samples and `time_std_s` is
+  their **population standard deviation** (`report.py`, `stats.py`), both to
+  six decimal places. The raw samples are in `raw_time_samples_s`.
 - The PostgreSQL adapters time each sample from just before the query is sent
   to just after every row has been fetched. After each timed execution the
   same query runs again, untimed, under `EXPLAIN (ANALYZE, BUFFERS, FORMAT
-  JSON)` to obtain `server_time_s` (Caveat 4).
+JSON)` to obtain `server_time_s` (Caveat 4).
 - `duckdb-cityparquet` times `execute(...).fetchall()` in-process.
 - The native readers start a fresh child process per sample, and the harness
   uses the child's own reported elapsed time, so process start-up is
@@ -278,7 +277,7 @@ the same figures.
 columns:
 
 ```
-dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,server_time_s,size_bytes,size_bytes_no_index,status,raw_time_samples_s,raw_server_time_samples_s
+dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,server_time_s,size_bytes,size_bytes_no_index,status,raw_time_samples_s,raw_server_time_samples_s
 ```
 
 The first thirteen columns match, in name and order, the header of the format
@@ -291,7 +290,7 @@ there) and are separate experiments.
 
 - **`selectivity`** — `result_count / total_city_objects`; empty for `count`
   and `full-read`. The window's area target is in `notes`, not here.
-- **`time_s` / `time_mad_s`** — see "The warm protocol".
+- **`time_s` / `time_std_s`** — see "The warm protocol".
 - **`peak_heap_bytes`** — populated only for the native readers (the child's
   allocator high-water mark); empty for every SQL system.
 - **`peak_rss_bytes`** — peak resident set size of the process executing the
@@ -363,7 +362,7 @@ Read these before citing a number.
 4. **`server_time_s` is an instrumented upper bound, not a component of
    `time_s`.** `time_s` is the uninstrumented end-to-end figure for every
    system. `server_time_s` comes from a separate `EXPLAIN (ANALYZE,
-   BUFFERS)` execution, whose per-node timing and buffer counters (and
+BUFFERS)` execution, whose per-node timing and buffer counters (and
    `track_io_timing`) add overhead. In the committed 3DBAG CSV, 9 of the 24
    PostgreSQL rows have `server_time_s` greater than `time_s`, which a
    "subset of wall-clock" reading cannot explain. **Do not subtract the two
@@ -643,12 +642,12 @@ fails against the stamped copies; re-running `fetch_corpus.sh` restores the
 pristine bytes, after which stamping must be repeated. The step is idempotent
 and, for CityJSONSeq, rewrites only the header line.
 
-| dataset | EPSG | `bbox_full` lower-left corner in WGS 84 | location |
-|---|---|---|---|
-| `Montreal` | 2950 (NAD83(CSRS) / MTM zone 8) | 45.506° N, 73.561° W | Montreal |
-| `Vienna` | 31256 (MGI / Austria GK East) | 48.202° N, 16.345° E | Vienna |
-| `Zurich` | 2056 (CH1903+ / LV95) | 47.323° N, 8.459° E | Zurich |
-| `lod3_railway` | 7415 (Amersfoort / RD New + NAP) | — | a synthetic scene of about 12 × 7 × 1.5 m near the origin; 7415 only satisfies the CRS requirement |
+| dataset        | EPSG                             | `bbox_full` lower-left corner in WGS 84 | location                                                                                           |
+| -------------- | -------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `Montreal`     | 2950 (NAD83(CSRS) / MTM zone 8)  | 45.506° N, 73.561° W                    | Montreal                                                                                           |
+| `Vienna`       | 31256 (MGI / Austria GK East)    | 48.202° N, 16.345° E                    | Vienna                                                                                             |
+| `Zurich`       | 2056 (CH1903+ / LV95)            | 47.323° N, 8.459° E                     | Zurich                                                                                             |
+| `lod3_railway` | 7415 (Amersfoort / RD New + NAP) | —                                       | a synthetic scene of about 12 × 7 × 1.5 m near the origin; 7415 only satisfies the CRS requirement |
 
 The corners can be reproduced from `params/<dataset>.json` with `cs2cs
 EPSG:<code> EPSG:4326`. `EPSG:31256` uses (northing, easting) axis order, so

@@ -23,7 +23,9 @@ from citybench.scenarios.registry import ALL, SELECTIVITY_SCENARIOS, ScenarioUna
 
 SELECTIVITY_TARGETS = (0.01, 0.05, 0.25)
 
-# The window tag published in `notes`, matching the existing harness.
+# The window's area target, published in `notes` as its tag and matching the
+# readbench harness's tags. The realised object fraction is data-dependent
+# and is the `selectivity` column, not this value.
 _WINDOW_TAGS = {0.01: "bbox-1pct", 0.05: "bbox-5pct", 0.25: "bbox-25pct"}
 
 # Scenarios for which the `selectivity` column is left blank. Per the

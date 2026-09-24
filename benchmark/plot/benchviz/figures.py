@@ -85,9 +85,9 @@ SCENARIO_LABELS = {
     "id-miss": "Id miss",
     "attr-filter": "Attr filter",
     "attr-stats": "Attr stats",
-    "bbox-1pct": "Spatial 1%",
-    "bbox-5pct": "Spatial 5%",
-    "bbox-25pct": "Spatial 25%",
+    "bbox-1pct": "Area 1%",
+    "bbox-5pct": "Area 5%",
+    "bbox-25pct": "Area 25%",
     "id-10pct": "Id 10%",
     "id-50pct": "Id 50%",
     "id-90pct": "Id 90%",
@@ -733,7 +733,7 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
                 label=variant.replace("cityparquet+", "").replace("cityparquet", "default"),
             )
             if field == "time_s":
-                spreads = [float(r.get("time_mad_s") or 0) for r in points]
+                spreads = [float(r.get("time_std_s") or 0) for r in points]
                 ax.fill_between(
                     counts,
                     [v - spread for v, spread in zip(values, spreads, strict=True)],

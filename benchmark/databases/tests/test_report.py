@@ -7,7 +7,7 @@ from citybench.report import COLUMNS, row_from_measurement, write_csv
 def test_columns_match_the_inherited_contract_exactly():
     assert COLUMNS == (
         "dataset", "format", "scenario", "selectivity", "result_count",
-        "time_s", "time_mad_s", "peak_heap_bytes", "peak_rss_bytes",
+        "time_s", "time_std_s", "peak_heap_bytes", "peak_rss_bytes",
         "repeat", "notes", "bytes_read", "http_requests",
         "server_time_s", "size_bytes", "size_bytes_no_index",
         "status", "raw_time_samples_s", "raw_server_time_samples_s",
@@ -33,10 +33,12 @@ def test_size_columns_blank_when_unknown():
     assert row["size_bytes_no_index"] == ""
 
 
-def test_row_reports_median_and_mad_at_six_decimals():
+def test_row_reports_the_mean_and_population_std_dev_at_six_decimals():
+    # [0.1, 0.1, 0.4] has mean 0.2 but median 0.1, so a mean/median swap
+    # would change `time_s`; its population std dev is sqrt(0.06/3).
     m = Measurement(
         result_count=42,
-        times_s=[0.1, 0.2, 0.3],
+        times_s=[0.1, 0.1, 0.4],
         server_times_s=[],
         peak_rss_bytes=None,
     )
@@ -45,7 +47,7 @@ def test_row_reports_median_and_mad_at_six_decimals():
         measurement=m, selectivity=None,
     )
     assert row["time_s"] == "0.200000"
-    assert row["time_mad_s"] == "0.100000"
+    assert row["time_std_s"] == "0.141421"
     assert row["result_count"] == "42"
     assert row["repeat"] == "3"
 

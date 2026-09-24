@@ -3,26 +3,22 @@
 # (Task 12). Appends `duckdb-parquet` rows to the SAME CSV the
 # `cityparquet-readbench` coordinator (`benchmark/readbench`) owns,
 # using the EXACT header contract:
-#   dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,
+#   dataset,format,scenario,selectivity,result_count,time_s,time_std_s,
 #   peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
 # The last five are always emitted empty here (see `append_row` below).
 #
-# UNLIKE `benchmark/scripts/bench_duckdb.sh` (M5's write-side baseline, which reads
-# CityJSON/CityJSONSeq through the community `cityjson` extension's
-# `read_cityjson`/`read_cityjsonseq` table functions — an extension with
-# well-documented partial-geometry gaps, see that script's own header), THIS
-# script queries a `cityparquet-rs`-WRITTEN CityParquet package directly via
-# plain `read_parquet(...)`. It carries full geometry (every LoD column the
-# package declares) and a typed `bbox` STRUCT(xmin, ymin, zmin, xmax, ymax,
-# zmax) column, DuckDB-verified via `DESCRIBE` against a real converted
-# package:
+# This script queries a `cityparquet-rs`-WRITTEN CityParquet package directly
+# via plain `read_parquet(...)`, not through the community `cityjson`
+# extension's `read_cityjson`/`read_cityjsonseq` table functions (which have
+# well-documented partial-geometry gaps). It therefore carries full geometry
+# (every LoD column the package declares) and a typed `bbox`
+# STRUCT(xmin, ymin, zmin, xmax, ymax, zmax) column, DuckDB-verified via
+# `DESCRIBE` against a real converted package:
 #   duckdb -c "DESCRIBE SELECT * FROM read_parquet('<pkg>/<main-table>.parquet');"
 # -> bbox  struct(xmin double, ymin double, zmin double, xmax double, ymax
 #    double, zmax double)
-# So the `cityjson`-extension geometry-coverage/COPY caveats in
-# `bench_duckdb.sh` do NOT apply here: this is a clean SQL-engine-over-
-# columnar-Parquet baseline, and reading plain Parquet needs NO
-# `INSTALL`/`LOAD` of any extension.
+# So this is a clean SQL-engine-over-columnar-Parquet baseline, and reading
+# plain Parquet needs NO `INSTALL`/`LOAD` of any extension.
 #
 # `peak_heap_bytes` is EMPTY for every row this script writes: DuckDB is an
 # out-of-process SQL engine here, so there is no `peak_alloc` hook into its
@@ -61,8 +57,8 @@
 #
 # Scenarios (SQL over the package's single main table, resolved from its
 # `metadata.json` manifest — see the `TABLE` resolution below), each
-# timed via a shell-measured `duckdb -c "..."` (median of `--repeat`, default
-# 5, 6-decimal `time_s`/`time_mad_s`):
+# timed via a shell-measured `duckdb -c "..."` (mean of `--repeat`, default
+# 5, 6-decimal `time_s`/`time_std_s`):
 #   count        SELECT count(*)                                    (selectivity empty)
 #   full-read    SELECT sum(hash(COLUMNS(*)))  (forces full decode, M5 pattern; selectivity empty)
 #   bbox-query   one row per window in the sidecar (tagged in notes),
@@ -114,10 +110,9 @@
 # rather than silently mismatched.
 #
 # Timing honesty: the fixed per-invocation `duckdb` process-startup overhead
-# every timed sample carries is measured (median of 5 of `duckdb -c "SELECT
-# 1;"`) and disclosed on stderr as a `# calibration:` line — mirroring
-# `benchmark/scripts/bench_duckdb.sh` — and is NEVER subtracted from the reported
-# `time_s`/`time_mad_s`.
+# every timed sample carries is measured (mean of 5 of `duckdb -c "SELECT
+# 1;"`) and disclosed on stderr as a `# calibration:` line — and is NEVER subtracted from the reported
+# `time_s`/`time_std_s`.
 #
 # This is a local dev tool: needs `duckdb` (v1.5.x tested) + `python3` on
 # PATH, and a package produced by `just readbench-prepare`/`cityparquet
@@ -136,7 +131,7 @@ DUCKDB=${DUCKDB:-duckdb}
 # `benchmark/scripts/format_write.py`'s `HEADER` out of their own sources and
 # asserts all three agree, plus that `benchviz.prep.READ_COLUMNS` is still a
 # leading prefix of them.
-CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes"
+CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes"
 
 usage() {
   cat >&2 <<EOF
@@ -244,25 +239,19 @@ else
   echo "$CSV_HEADER" > "$OUT_CSV"
 fi
 
-# Median + median-absolute-deviation of float-second samples (`$@`), at
-# 6-decimal (microsecond) precision, printed as "MEDIAN MAD" on one line —
-# matching the coordinator's own `median`/`mad` helpers
+# Arithmetic mean + population standard deviation of float-second samples
+# (`$@`), at 6-decimal (microsecond) precision, printed as "MEAN STD" on one
+# line — matching the coordinator's own `mean`/`std_dev` helpers
 # (`benchmark/readbench/src/coordinator.rs`) so the two tools'
 # numbers are directly comparable.
-median_and_mad() {
+mean_and_std() {
   python3 -c "
 import sys
 
-def med(xs):
-    xs = sorted(xs)
-    n = len(xs)
-    mid = n // 2
-    return xs[mid] if n % 2 else (xs[mid - 1] + xs[mid]) / 2
-
 vals = [float(v) for v in sys.argv[1:]]
-m = med(vals)
-mad = med([abs(v - m) for v in vals])
-print(f'{m:.6f} {mad:.6f}')
+m = sum(vals) / len(vals)
+var = sum((v - m) ** 2 for v in vals) / len(vals)
+print(f'{m:.6f} {var ** 0.5:.6f}')
 " "$@"
 }
 
@@ -281,8 +270,7 @@ run_sql() {
 
 # Prints the wall-clock seconds `"$DUCKDB" -c "$DUCKDB_PRELUDE $1"` takes,
 # measured with time.time() inside ONE python3 interpreter wrapping the
-# subprocess (so interpreter startup falls outside the timed window) —
-# identical technique to `benchmark/scripts/bench_duckdb.sh`'s own `timed_duckdb`.
+# subprocess (so interpreter startup falls outside the timed window).
 timed_duckdb() {
   python3 -c '
 import subprocess, sys, time
@@ -292,15 +280,15 @@ print(time.time() - t0)
 ' "$DUCKDB" "$DUCKDB_PRELUDE" "$1"
 }
 
-# Runs `$1` `$REPEAT` times via `timed_duckdb`, prints "MEDIAN MAD".
-timed_median() {
+# Runs `$1` `$REPEAT` times via `timed_duckdb`, prints "MEAN STD".
+timed_mean() {
   local sql="$1"
   local times=()
   local i
   for ((i = 0; i < REPEAT; i++)); do
     times+=("$(timed_duckdb "$sql")")
   done
-  median_and_mad "${times[@]}"
+  mean_and_std "${times[@]}"
 }
 
 # One extra, UNTIMED invocation of `$1` wrapped in `/usr/bin/time`, to
@@ -359,39 +347,39 @@ print(f'{num / den:.6f}' if den > 0 else '')
 # counters are empty too: they belong to the CityParquet runner's own lookups.
 append_row() {
   local dataset="$1" format="$2" scenario="$3" selectivity="$4" result_count="$5" \
-    time_s="$6" time_mad_s="$7" peak_heap_bytes="$8" peak_rss_bytes="$9" repeat="${10}" notes="${11}"
+    time_s="$6" time_std_s="$7" peak_heap_bytes="$8" peak_rss_bytes="$9" repeat="${10}" notes="${11}"
   printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$dataset" "$format" "$scenario" "$selectivity" "$result_count" \
-    "$time_s" "$time_mad_s" "$peak_heap_bytes" "$peak_rss_bytes" "$repeat" "$notes" \
+    "$time_s" "$time_std_s" "$peak_heap_bytes" "$peak_rss_bytes" "$repeat" "$notes" \
     "" "" "" "" "" \
     >> "$OUT_CSV"
 }
 
 # Calibrate the fixed per-invocation `duckdb` process-startup overhead every
 # timed sample below still carries (plain Parquet needs no
-# INSTALL/LOAD): median of 5, disclosed on stderr, deliberately NOT
-# subtracted from any reported time_s/time_mad_s.
+# INSTALL/LOAD): mean of 5, disclosed on stderr, deliberately NOT
+# subtracted from any reported time_s/time_std_s.
 CAL_TIMES=()
 for _ in 1 2 3 4 5; do
   CAL_TIMES+=("$(timed_duckdb "SELECT 1;")")
 done
-read -r CAL_MEDIAN CAL_MAD <<< "$(median_and_mad "${CAL_TIMES[@]}")"
-echo "# calibration: duckdb process startup (no extension LOAD needed for plain Parquet) = ${CAL_MEDIAN}s per invocation (median of 5, MAD ${CAL_MAD}s); included, undeducted, in every time_s sample below" >&2
+read -r CAL_MEAN CAL_STD <<< "$(mean_and_std "${CAL_TIMES[@]}")"
+echo "# calibration: duckdb process startup (no extension LOAD needed for plain Parquet) = ${CAL_MEAN}s per invocation (mean of 5, standard deviation ${CAL_STD}s); included, undeducted, in every time_s sample below" >&2
 
 TOTAL=$(run_sql "SELECT count(*) FROM read_parquet('$TABLE');")
 echo "cityparquet-readbench duckdb-parquet baseline: dataset=$DATASET table=$TABLE total_objects=$TOTAL repeat=$REPEAT params=$PARAMS" >&2
 
 # --- count ---
 SQL="SELECT count(*) FROM read_parquet('$TABLE');"
-read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
+read -r TIME_S TIME_STD_S <<< "$(timed_mean "$SQL")"
 RSS=$(capture_rss "$SQL")
-append_row "$DATASET" "duckdb-parquet" "count" "" "$TOTAL" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" ""
+append_row "$DATASET" "duckdb-parquet" "count" "" "$TOTAL" "$TIME_S" "$TIME_STD_S" "" "$RSS" "$REPEAT" ""
 
 # --- full-read (forces full column decode, M5 pattern) ---
 SQL="SELECT sum(hash(COLUMNS(*))) FROM read_parquet('$TABLE');"
-read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
+read -r TIME_S TIME_STD_S <<< "$(timed_mean "$SQL")"
 RSS=$(capture_rss "$SQL")
-append_row "$DATASET" "duckdb-parquet" "full-read" "" "$TOTAL" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" ""
+append_row "$DATASET" "duckdb-parquet" "full-read" "" "$TOTAL" "$TIME_S" "$TIME_STD_S" "" "$RSS" "$REPEAT" ""
 
 # --- bbox-query: the coordinator's own searched windows, read from the
 # sidecar. Each targets a fraction of ROWS (1%/5%/25%); a window whose target
@@ -404,10 +392,10 @@ while IFS=$'\t' read -r TAG APPROX WXMIN WYMIN _WZMIN WXMAX WYMAX _WZMAX; do
   [[ "$APPROX" == "true" ]] && NOTES="$TAG;approx"
   SQL="SELECT count(*) FROM read_parquet('$TABLE') WHERE bbox.xmax >= $WXMIN AND bbox.xmin <= $WXMAX AND bbox.ymax >= $WYMIN AND bbox.ymin <= $WYMAX;"
   MATCHES=$(run_sql "$SQL")
-  read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
+  read -r TIME_S TIME_STD_S <<< "$(timed_mean "$SQL")"
   RSS=$(capture_rss "$SQL")
   SEL=$(safe_div "$MATCHES" "$TOTAL")
-  append_row "$DATASET" "duckdb-parquet" "bbox-query" "$SEL" "$MATCHES" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "$NOTES"
+  append_row "$DATASET" "duckdb-parquet" "bbox-query" "$SEL" "$MATCHES" "$TIME_S" "$TIME_STD_S" "" "$RSS" "$REPEAT" "$NOTES"
 done < <(jq -r '.windows[] | [.tag, .approx, .window[0], .window[1], .window[2], .window[3], .window[4], .window[5]] | @tsv' "$PARAMS")
 
 # --- attr-filter: the coordinator's own most-frequent object_type, read from
@@ -417,10 +405,10 @@ OBJECT_TYPE="$(jq -r '.object_type' "$PARAMS")"
 
 SQL="SELECT count(*) FROM read_parquet('$TABLE') WHERE object_type = '$OBJECT_TYPE';"
 MATCHES=$(run_sql "$SQL")
-read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
+read -r TIME_S TIME_STD_S <<< "$(timed_mean "$SQL")"
 RSS=$(capture_rss "$SQL")
 SEL=$(safe_div "$MATCHES" "$TOTAL")
-append_row "$DATASET" "duckdb-parquet" "attr-filter" "$SEL" "$MATCHES" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "attr=object_type=$OBJECT_TYPE"
+append_row "$DATASET" "duckdb-parquet" "attr-filter" "$SEL" "$MATCHES" "$TIME_S" "$TIME_STD_S" "" "$RSS" "$REPEAT" "attr=object_type=$OBJECT_TYPE"
 
 # --- attr-stats: only if the dataset has a numeric attribute at all ---
 NUMERIC_COLUMN="$(jq -r '.numeric_attr // empty' "$PARAMS")"
@@ -428,10 +416,10 @@ if [[ -n "$NUMERIC_COLUMN" ]]; then
   SQL="SELECT min($NUMERIC_COLUMN), max($NUMERIC_COLUMN), sum($NUMERIC_COLUMN), count($NUMERIC_COLUMN) FROM read_parquet('$TABLE');"
   STATS_ROW=$(run_sql "$SQL")
   IFS=',' read -r MIN_V MAX_V SUM_V CNT_V <<< "$STATS_ROW"
-  read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
+  read -r TIME_S TIME_STD_S <<< "$(timed_mean "$SQL")"
   RSS=$(capture_rss "$SQL")
   SEL=$(safe_div "$CNT_V" "$TOTAL")
-  append_row "$DATASET" "duckdb-parquet" "attr-stats" "$SEL" "$CNT_V" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" \
+  append_row "$DATASET" "duckdb-parquet" "attr-stats" "$SEL" "$CNT_V" "$TIME_S" "$TIME_STD_S" "" "$RSS" "$REPEAT" \
     "attr=$NUMERIC_COLUMN min=$MIN_V max=$MAX_V sum=$SUM_V"
 else
   echo "# skip: attr-stats — the dataset has no numeric attribute column (never fabricated)" >&2
@@ -444,10 +432,10 @@ fi
 if [[ -n "$NUMERIC_COLUMN" ]]; then
   SQL="SELECT count($NUMERIC_COLUMN) FROM read_parquet('$TABLE');"
   CNT=$(run_sql "$SQL")
-  read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
+  read -r TIME_S TIME_STD_S <<< "$(timed_mean "$SQL")"
   RSS=$(capture_rss "$SQL")
   SEL=$(safe_div "$CNT" "$TOTAL")
-  append_row "$DATASET" "duckdb-parquet" "project" "$SEL" "$CNT" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "attr=$NUMERIC_COLUMN"
+  append_row "$DATASET" "duckdb-parquet" "project" "$SEL" "$CNT" "$TIME_S" "$TIME_STD_S" "" "$RSS" "$REPEAT" "attr=$NUMERIC_COLUMN"
 else
   echo "# skip: project — the dataset has no numeric attribute column (never fabricated)" >&2
 fi

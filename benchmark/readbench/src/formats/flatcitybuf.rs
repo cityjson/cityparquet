@@ -718,8 +718,14 @@ async fn run_http(
             // FCB's packed R-tree is 2D; drop the z components (indices
             // 2/5) rather than approximate them — same as the local branch.
             let query = SpatialQuery::BBox(bbox[0], bbox[1], bbox[3], bbox[4]);
-            let iter = reader.select_query(query).await?;
-            iter.features_count().unwrap_or(0) as u64
+            // Read every hit as a FlatBuffers feature, without decoding it to
+            // in-memory CityJSON (D-RB-11) — same as the local branch.
+            let mut iter = reader.select_query(query).await?;
+            let mut count = 0u64;
+            while iter.next().await?.is_some() {
+                count += 1;
+            }
+            count
         }
         Scenario::AttrFilter => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
@@ -770,8 +776,17 @@ impl FormatRunner for FlatCityBufRunner {
                         // FCB's packed R-tree is 2D; drop the z components
                         // (indices 2/5) rather than approximate them.
                         let query = SpatialQuery::BBox(bbox[0], bbox[1], bbox[3], bbox[4]);
-                        let iter = reader.select_query(query, None, None)?;
-                        iter.features_count().unwrap_or(0) as u64
+                        // Read every hit as a FlatBuffers feature, without
+                        // decoding it to in-memory CityJSON: counting the
+                        // R-tree hits alone would measure a different amount
+                        // of work than CityParquet's `bbox_query`, which reads
+                        // the `id` column (D-RB-11).
+                        let mut iter = reader.select_query(query, None, None)?;
+                        let mut count = 0u64;
+                        while iter.next()?.is_some() {
+                            count += 1;
+                        }
+                        count
                     }
                     Scenario::AttrFilter => {
                         let column = require(&params.attr_column, "attr-column", scenario)?;
