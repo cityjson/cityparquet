@@ -27,6 +27,34 @@ claims below were checked against the code.
 | `benchmark/scripts`   | `just scripts-test`                    | 57 checks, **6.6 s**. `test_bench_suite.py` is in no gate                                                                                |
 | `ai/mcp`              | `pnpm test` (vitest)                   | 209 tests, **46.7 s**. 3 failures, all DNS lookups to the live `open3d.city` hosts; each run downloads the extension set about six times |
 
+### Decisions taken after the audit (2026-09-24)
+
+These override anything below that conflicts with them:
+
+- **`bbox-Npct` is an area window in both harnesses (D-DB-01).** It is the
+  fraction of the dataset's x/y area, which is what `databases` already uses.
+  - readbench's `params::window_for_target` (a row-count target) changes to
+    the area window.
+  - The `databases` docstring that claims the two harnesses match becomes true.
+  - `READ_BENCHMARK.md` and the plot labels change with it: selectivity then
+    varies by dataset, and the realised row fraction must be reported next to
+    the tag.
+  - Both harnesses must anchor the window the same way. `databases` uses the
+    lower-left corner.
+- **FlatCityBuf's `bbox-query` must read the features it finds (D-RB-11).**
+  It reads them as FlatBuffers features, without decoding them to in-memory
+  CityJSON. Counting R-tree hits alone is not enough.
+- **Delete the scaling-read and write-bench pipelines (D-PL-05)**, with
+  their recipes, prep loaders, committed result directories and fixtures. The
+  **ordering** pipeline is not covered by this decision.
+- **The live-host MCP tests run in CI (D-MCP-02).** Splitting them into their
+  own script (`test:live`) is still useful locally, but CI runs both the
+  offline and the live suites as required checks.
+
+Still open: D-PL-01 (were the markers removed on purpose?), `time_s` mean or
+median (D-DB-02), the ordering pipeline (D-PL-05), and T-RB-08/T-RB-10. See
+section 5.
+
 ### Top 5 test changes
 
 | #   | ID                             | Change                                                                                                                                                                                                                                        | Saved                                        | Effort |
@@ -1289,10 +1317,10 @@ Exact pins `@duckdb/node-api 1.5.5-r.5` and `@modelcontextprotocol/server 2.0.0`
 
 1. **Evidence integrity first, before any new benchmark run is cited:**
    - D-PL-01 (confirm, then restore the caveat markers or remove the dead fields).
-   - D-DB-01 and D-DB-02 (one window definition and one statistic, shared by both harnesses).
+   - D-DB-01 (area window in both harnesses; decided) and D-DB-02 (one statistic; still open).
    - D-DB-04 (record the image versions in the manifest).
    - D-RB-07 (HTTP timing includes runtime setup).
-   - D-RB-11 (disclose the FlatCityBuf count-only work, or change it).
+   - D-RB-11 (make FlatCityBuf read the FlatBuffers features it finds; decided).
 2. **Restore missing coverage:** T-RB-14 with D-RB-09 (pinned `fcb` in CI),
    D-SC-01 (put `test_bench_suite.py` in `scripts-test`), and T-DB-15 with
    D-DB-08 (integration tests on the lifecycle the suite actually uses).
@@ -1321,20 +1349,18 @@ Exact pins `@duckdb/node-api 1.5.5-r.5` and `@modelcontextprotocol/server 2.0.0`
 
 ## 5. Open questions for you
 
-1. **D-PL-01:** was dropping the † and ≈ markers from the figures in
-   `68a3f0a` intended? If so, the prep fields and the docs that describe the
-   markers should go.
-2. **D-DB-01 and D-DB-02:** which definition should both harnesses use? The
-   options are a lower-left area fraction or a row-count target for
-   `bbox-Npct`, and a mean or a median for `time_s`. Readbench's choices
-   (row-count target, median) are the ones its caveats document.
-3. **D-RB-11:** should FlatCityBuf's `bbox-query` read the features it finds,
-   or should a caveat disclose that it only counts them?
-4. **D-PL-05:** can the ordering, scaling-read and write-bench pipelines, with
-   their committed result and fixture directories, be deleted? Nothing renders
-   them.
-5. **D-MCP-02:** should tests that need the live `open3d.city` hosts run in a
-   separate, non-blocking CI job?
-6. **T-RB-08 and T-RB-10** delete a duplicated CityGML guard and two
+Answered on 2026-09-24 (see "Decisions" in section 1): the window definition
+for D-DB-01, D-RB-11, D-PL-05 for scaling-read and write-bench, and D-MCP-02.
+
+1. **D-PL-01:** were the † (grain-incomparable) and ≈/greyed-cell (under the
+   10 ms floor) markers removed from the figures on purpose in `68a3f0a`? If
+   yes, delete `grain_comparable`/`below_floor` from `prep.py` along with the
+   docs that describe the markers. If no, restore them on the heatmaps.
+2. **D-DB-02:** should `time_s` be a mean or a median in both harnesses?
+   readbench and `stats.py` argue for the median; the `databases` README and
+   `report.py` use the mean.
+3. **D-PL-05:** can the **ordering** pipeline be deleted too? Nothing renders
+   it.
+4. **T-RB-08 and T-RB-10** delete a duplicated CityGML guard and two
    doc-comment checks, both of which touch caveat wording. Are you happy to
    delete them?
