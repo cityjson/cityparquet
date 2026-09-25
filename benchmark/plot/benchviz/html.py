@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .paths import DEFAULT_DATA_PATH, DEFAULT_FIGURES_DIR, DEFAULT_HTML_PATH
 
-ORDER = ("sizes", "heatmap", "codec", "codec-scaling", "rowgroup", "rowgroup-scaling", "bloom", "bloom-scaling", "bloom-corpus", "databases", "databases-write")
+ORDER = ("sizes", "heatmap", "codec", "codec-scaling", "rowgroup", "rowgroup-scaling", "bloom", "bloom-scaling", "bloom-corpus", "databases")
 TITLES = {
     "sizes": "File size on disk",
     "heatmap": "Format comparison",
@@ -21,7 +21,6 @@ TITLES = {
     "bloom-scaling": "Bloom-filter scaling",
     "bloom-corpus": "Bloom filters on the corpus",
     "databases": "Database comparison",
-    "databases-write": "Database write tier",
 }
 
 

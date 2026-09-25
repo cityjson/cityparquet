@@ -108,15 +108,14 @@ compression effort across codec families.
 `just bench-summary` produces individual SVG and PNG files and a self-contained
 `index.html` collecting the same figures and their conditions.
 
-| Figure                                               | Content                                                                                  |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `sizes`                                              | Vertical size bars, one subplot per dataset; actual sizes and ratios to CityJSONSeq      |
-| `heatmap`                                            | One panel per dataset, with write time, write memory, read time and read memory heatmaps |
-| `codec`, `rowgroup`, `bloom`                         | Five metric panels for the largest measured scaling dataset                              |
-| `codec-scaling`, `rowgroup-scaling`, `bloom-scaling` | Absolute metrics against actual CityObject counts                                        |
-| `bloom-corpus`                                       | The bloom pair per corpus dataset, apart from the slice curves                           |
-| `databases`                                          | Storage bars; read time/memory heatmaps, `threads=single` and `threads=parallel` apart   |
-| `databases-write`                                    | The database write tier as a table of absolute values, apart from the reads              |
+| Figure                                               | Content                                                                                                                                                                    |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sizes`                                              | Vertical size bars, one subplot per dataset; actual sizes and ratios to CityJSONSeq                                                                                        |
+| `heatmap`                                            | One panel per dataset, with write time, write memory, read time and read memory heatmaps                                                                                   |
+| `codec`, `rowgroup`, `bloom`                         | Five metric panels for the largest measured scaling dataset                                                                                                                |
+| `codec-scaling`, `rowgroup-scaling`, `bloom-scaling` | Absolute metrics against actual CityObject counts                                                                                                                          |
+| `bloom-corpus`                                       | The bloom pair per corpus dataset, apart from the slice curves                                                                                                             |
+| `databases`                                          | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |
 
 Heatmap colours encode measurement divided by baseline: **lower is better**,
 with 1× neutral. Cell labels show actual values and units. Format comparisons

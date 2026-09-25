@@ -44,9 +44,7 @@ def _bench_dir(args: argparse.Namespace) -> Path:
 def _drop_databases(payload: dict) -> None:
     """Deselect the database family, its figure conditions included."""
     payload["databases"] = {"baseline": "3dcitydb", "records": [], "sizes": []}
-    conditions = payload.get("meta", {}).get("conditions", {})
-    for name in ("databases", "databases-write"):
-        conditions.pop(name, None)
+    payload.get("meta", {}).get("conditions", {}).pop("databases", None)
 
 
 def _cmd_prep(args: argparse.Namespace) -> None:

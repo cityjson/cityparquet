@@ -17,8 +17,9 @@ The harness measures **steady-state performance** — wall-clock time, peak
 resident memory of the executing process and, for PostgreSQL read
 scenarios, server-reported execution time — against a dataset already
 loaded into each system. Ten **read** scenarios run under two disclosed
-thread configurations; four **write** scenarios then run once, reported in
-their own table under their own caveat (Caveat 19). The scenario set is the
+thread configurations; four **write** scenarios then run once, under
+`threads=single`, reported as the write-tier rows below the reads in the
+`databases` figure, under their own caveat (Caveat 19). The scenario set is the
 author's query catalogue, `notes/benchmark-queries.md`, which is the
 specification this harness implements. **Ingest is not compared.** Encoding a CityParquet package and populating an indexed
 relational schema are different operations, not points on one scale.
@@ -258,7 +259,7 @@ the timed window on every system.
 | `attr-filter`             | ids                      | objects matching the per-dataset attribute predicate               | `WHERE "<col>" = ?` — a typed, flattened top-level column                                                                                             | `WHERE attributes ->> '<col>' = %s` — **no index on `attributes`** (see "Index sets")                                                                                                                    | `property` join on `pr.name = %s AND pr.val_string = %s` (Caveat 13)                                                                                                                                                                              |
 | `attr-range`              | ids                      | objects whose numeric attribute exceeds the threshold              | `WHERE "<col>" > ?` — DOUBLE column with row-group statistics                                                                                         | `WHERE (attributes ->> '<col>')::float > %s`                                                                                                                                                             | `property` join with `coalesce(val_double, val_int) > %s`                                                                                                                                                                                         |
 | `attr-stats`              | `(count, min, max, sum)` | aggregate of `numeric_column`                                      | aggregates over the flattened top-level column                                                                                                        | aggregates over `(attributes->>col)::numeric` — every row's JSONB unpacked, and heavier arithmetic than a DOUBLE sum                                                                                     | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` (Caveat 13)                                                                                                                                            |
-| `id-lookup` (×4 probes)   | the object               | the row for one probe id, materialised                             | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index                                                                           | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB                                                                                                                      | `SELECT * FROM feature WHERE objectid = %s` (btree) — the `feature` row only; `property` and `geometry_data` are not joined (Caveat 17)                                                                                                           |
+| `id-lookup` (×4 probes)   | the object               | the row for one probe id, materialised                             | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index; bloom filters prune, the cost is the row-group decode (Caveats 21, 22)   | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB                                                                                                                      | `SELECT * FROM feature WHERE objectid = %s` (btree) — the `feature` row only; `property` and `geometry_data` are not joined (Caveat 17)                                                                                                           |
 | `lod-query`               | whole rows               | objects carrying an LoD 1.2 geometry (Caveat 9)                    | `SELECT * WHERE geometry_lod1_2 IS NOT NULL`, fetched to Arrow inside the timed window; `WHERE FALSE` when the package has no such column (Caveat 15) | `SELECT *` with `geometry @? '$[*] ? (@.lod == "1.2")'` — the `@?` operator, which uses cjdb's GIN(`geometry`) index; the `jsonb_path_exists` function form does not; the row carries the geometry JSONB | `SELECT DISTINCT ON (f.id) f.*, gd.geometry` through the `property` row with `val_lod = '1' AND val_geometry_id IS NOT NULL`, joined to `geometry_data` — the importer stores LoD 1.2 as `'1'` (`docs/3dcitydb-v5-schema.md`, "LoD value format") |
 | `parts-per-building`      | one row per Building     | how many parts each Building has, **childless Buildings included** | `SELECT id, coalesce(len(children), 0) WHERE object_type = 'Building'` — a stored array, no join                                                      | `LEFT JOIN city_object_relationships cor ON cor.parent_id = co.id`, `count(cor.child_id)`, `GROUP BY co.object_id`                                                                                       | `feature parent LEFT JOIN property LEFT JOIN feature child`, the CityObject predicate on the child, `count(child.id)`                                                                                                                             |
 | `parts-per-building-join` | one row per Building     | the same question in the shape a normalised store must use         | `LEFT JOIN (SELECT unnest(parents) AS parent, id … WHERE object_type = 'BuildingPart') p ON p.parent = b.id … GROUP BY b.id`                          | —                                                                                                                                                                                                        | —                                                                                                                                                                                                                                                 |
@@ -295,7 +296,8 @@ would compare different result sets.
 
 ## The write tier
 
-Four scenarios, run **last** and reported in their own table. They are
+Four scenarios, run **last**, once, under `threads=single`, and reported as
+the write-tier rows of the `databases` figure, below the reads. They are
 **different operations, not one scale** (Caveat 19).
 
 | scenario        | `duckdb-cityparquet` / `-writeback`                                                                                                                       | `cjdb`                                                                                              | `3dcitydb`                                                                                                                                                                        |
@@ -981,7 +983,8 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     `geometry_data` are not joined, so it hands back an object's identity
     and envelope without its attributes or geometry. That makes 3DCityDB's
     `id-lookup` the least work of the three, and the scenario is one
-    CityParquet loses heavily in any case. Read it as "locate a row by id",
+    CityParquet loses heavily in any case, for a reason Caveat 22 isolates
+    (a row-group decode, not a missing index). Read it as "locate a row by id",
     not "materialise a comparable object". `lod-query` narrows the same gap
     without closing it: there 3DCityDB's row does carry the LoD-1 geometry,
     but still not the attributes (Caveat 9).
@@ -1024,9 +1027,13 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     four `append-object` rows as four accounts of "what it costs this
     system to add a building", never as one ratio. The area expressions also differ, inherited
     from the CJDB paper (footprint area on cjdb, envelope area on
-    3DCityDB). Publish the write table beside the read table with this
-    caveat attached, exactly as the ingest section already does — not as
-    points on one axis. `attr-delete`'s CityParquet `result_count` is a
+    3DCityDB). The `databases` figure puts the write rows below the reads
+    and colours them by ratio to 3DCityDB like the reads, so it carries
+    this caveat as its footnote: a write ratio says what each system pays
+    for the same request, not how fast one common operation runs, and is
+    never quoted without this caveat. The CityParquet (DuckDB) write cell
+    stacks the in-engine value over the `-writeback` value (marked `+wb`),
+    each with its own ratio. `attr-delete`'s CityParquet `result_count` is a
     definition rather than a measurement (see "The write tier").
 
 20. **`EXPLAIN (ANALYZE, BUFFERS)` doubles the per-sample work on both
@@ -1050,7 +1057,42 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     carried no filters. A figure that puts the two runs side by side must
     say so. `parquet_metadata(...)` on the package shows
     `bloom_filter_offset` non-null on the filtered columns; the format
-    family's `bloom` family measures the effect in isolation.
+    family's `bloom` family measures the effect in isolation. The filters
+    explain the `id-miss` row, not the hit rows: what a hit costs on
+    `duckdb-cityparquet` is the decode of the surviving row group (Caveat
+    22).
+
+22. **`duckdb-cityparquet`'s `id-lookup` hit is a row-group decode, not an
+    index miss.** DuckDB does use the bloom filters; what the hit rows
+    measure is DuckDB materialising every column of the one surviving row
+    group for a `SELECT *`. A diagnostic probe on 25 September 2026, on the
+    committed 1M Hilbert package with the harness's own probe ids, the same
+    DuckDB 1.5.5 the committed run used, one thread, five samples after a
+    warm-up (a probe, not the committed rows' means) measured:
+
+    | query                            | hit            | miss           |
+    | -------------------------------- | -------------- | -------------- |
+    | `SELECT * … WHERE id = ?`        | 385 ms         | 32 ms          |
+    | `SELECT id … WHERE id = ?`       | 9.4 ms         | 6.0 ms         |
+    | `SELECT count(*) … WHERE id = ?` | as `SELECT id` | as `SELECT id` |
+
+    `parquet_bloom_probe` confirms that the miss id is excluded by the
+    filters of every row group. The committed `threads=single` rows agree
+    in shape: 374, 373 and 274 ms for the three hits, 44 ms for the miss.
+    The id-only probe is faster than the native Rust reader's own lookup
+    (the `bloom` family reports 150 ms for a hit and 16 ms for a miss), so
+    the bloom filters are not what is missing. DuckDB has no late
+    materialisation for Parquet: once the filters leave one 65 536-row row
+    group, a `SELECT *` decodes that whole row group across all 84
+    columns, four geometry columns included, before it keeps one row. The
+    Rust reader decodes only the pages that hold the hit.
+
+    So the database `id-lookup` and the `bloom` family's `id-lookup` are
+    **different operations** — the whole object through a SQL engine,
+    against the reader's own lookup — and must not be compared across
+    figures. A smaller row group would cut the cost of the hit, at the
+    price the `rowgroup` family's axis measures; the committed package
+    uses the writer's default.
 
 ## Running the benchmark
 
