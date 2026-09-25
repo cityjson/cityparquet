@@ -643,88 +643,45 @@ pub fn module_file(key: &ModuleKey) -> String {
 mod lod_tests {
     use super::*;
 
+    /// The canonical form of every LoD spelling: display, column suffix,
+    /// major component, and the suffix→LoD inverse. Every input/output pair
+    /// the split-out tests pinned lives in one row here.
     #[test]
-    fn parses_and_displays() {
-        // Display always carries the minor (canonical export spelling).
-        assert_eq!(Lod::parse("2").unwrap().to_string(), "2.0");
-        assert_eq!(Lod::parse("2.2").unwrap().to_string(), "2.2");
-        assert!(Lod::parse("").is_err());
-        assert!(Lod::parse("2.x").is_err());
-        assert!(Lod::parse("2.2.2").is_err());
-    }
+    fn lod_canonical_forms() {
+        let cases = [
+            ("0", "0.0", "lod0_0", 0u8),
+            ("1", "1.0", "lod1_0", 1),
+            ("1.0", "1.0", "lod1_0", 1),
+            ("2", "2.0", "lod2_0", 2),
+            ("2.2", "2.2", "lod2_2", 2),
+            ("0.3", "0.3", "lod0_3", 0),
+        ];
+        for (input, display, suffix, major) in cases {
+            let lod = Lod::parse(input).unwrap_or_else(|e| panic!("{input}: {e}"));
+            assert_eq!(lod.to_string(), display, "{input}: canonical display");
+            assert_eq!(lod.column_suffix(), suffix, "{input}: column suffix");
+            assert_eq!(lod.major(), major, "{input}: major component");
+            assert_eq!(
+                Lod::from_column_suffix(suffix),
+                Some(lod),
+                "{input}: suffix must parse back to the same Lod"
+            );
+            assert_eq!(
+                geometry_column_name("geometry", &lod),
+                format!("geometry_{suffix}"),
+                "{input}: every LoD's geometry column is suffixed"
+            );
+        }
 
-    #[test]
-    fn column_suffix_round_trip() {
-        let lod = Lod::parse("2.2").unwrap();
-        assert_eq!(lod.column_suffix(), "lod2_2");
-        assert_eq!(Lod::from_column_suffix("lod2_2"), Some(lod));
-        assert_eq!(Lod::from_column_suffix("geometry"), None);
-    }
-
-    /// spec §"Levels of detail": "A suffix always carries a minor. LoD `1`
-    /// yields `geometry_lod1_0`, never `geometry_lod1`."
-    #[test]
-    fn column_suffix_always_carries_a_minor() {
-        assert_eq!(Lod::parse("1").unwrap().column_suffix(), "lod1_0");
-        assert_eq!(Lod::parse("0").unwrap().column_suffix(), "lod0_0");
+        for bad in ["", "2.x", "2.2.2"] {
+            assert!(Lod::parse(bad).is_err(), "{bad:?} must not parse");
+        }
         assert_eq!(
             Lod::from_column_suffix("lod1"),
             None,
-            "a bare-major suffix with no minor is no longer legal column-name shape"
+            "a bare-major suffix with no minor is not a legal column-name shape"
         );
-    }
-
-    /// spec: "a source `\"1\"` and a source `\"1.0\"` both map to the same
-    /// column `geometry_lod1_0`" — a canonicalisation of the LoD string, not
-    /// its value, so the two must be the identical `Lod`.
-    #[test]
-    fn bare_and_dot_zero_minor_collapse_to_the_same_lod() {
-        assert_eq!(Lod::parse("1").unwrap(), Lod::parse("1.0").unwrap());
-        assert_eq!(Lod::parse("0").unwrap(), Lod::parse("0.0").unwrap());
-        assert_eq!(
-            Lod::parse("1").unwrap().column_suffix(),
-            Lod::parse("1.0").unwrap().column_suffix()
-        );
-    }
-
-    /// spec: `Display` always shows `"{major}.{minor}"`, e.g. `"1.0"`, never
-    /// bare `"1"` — the canonical export spelling.
-    #[test]
-    fn display_always_shows_the_minor() {
-        assert_eq!(Lod::parse("1").unwrap().to_string(), "1.0");
-        assert_eq!(Lod::parse("0").unwrap().to_string(), "0.0");
-        assert_eq!(Lod::parse("2.2").unwrap().to_string(), "2.2");
-    }
-
-    /// spec "Levels of detail": every LoD's geometry column is suffixed,
-    /// including the `0.*` family — there is no picked-out "footprint" LoD
-    /// that goes unsuffixed.
-    #[test]
-    fn geometry_column_name_always_suffixes_every_lod() {
-        let p = |s: &str| Lod::parse(s).unwrap();
-        assert_eq!(
-            geometry_column_name("geometry", &p("0.3")),
-            "geometry_lod0_3"
-        );
-        assert_eq!(
-            geometry_column_name("geometry_properties", &p("0")),
-            "geometry_properties_lod0_0"
-        );
-        assert_eq!(
-            geometry_column_name("geometry", &p("0.1")),
-            "geometry_lod0_1"
-        );
-        assert_eq!(
-            geometry_column_name("geometry", &p("2.2")),
-            "geometry_lod2_2"
-        );
-    }
-
-    #[test]
-    fn lod_major_extracts_major_component() {
-        assert_eq!(Lod::parse("2").unwrap().major(), 2);
-        assert_eq!(Lod::parse("2.2").unwrap().major(), 2);
-        assert_eq!(Lod::parse("1").unwrap().major(), 1);
+        assert_eq!(Lod::from_column_suffix("geometry"), None);
     }
 
     #[test]

@@ -664,9 +664,39 @@ mod tests {
     // `crate::package`'s own tests for the `geo`-present-iff-a-legal-column
     // coverage this recipe-level test used to carry.
 
+    /// Names every `RecipePreset` variant. A new variant fails to compile in
+    /// the exhaustive `match` until it is added here, and the test below then
+    /// fails until it is also in `ALL` — which the fixed-size array's length
+    /// alone cannot enforce.
+    fn all_preset_variants() -> [RecipePreset; 6] {
+        [
+            RecipePreset::CityParquet,
+            RecipePreset::ParquetDefaults,
+            RecipePreset::NoDictionary,
+            RecipePreset::NoByteStreamSplit,
+            RecipePreset::NoDelta,
+            RecipePreset::Snappy,
+        ]
+    }
+
     #[test]
-    fn all_lists_exactly_six_presets() {
-        assert_eq!(RecipePreset::ALL.len(), 6);
+    fn every_preset_variant_is_in_all() {
+        let named = all_preset_variants();
+        for preset in named {
+            match preset {
+                RecipePreset::CityParquet
+                | RecipePreset::ParquetDefaults
+                | RecipePreset::NoDictionary
+                | RecipePreset::NoByteStreamSplit
+                | RecipePreset::NoDelta
+                | RecipePreset::Snappy => {}
+            }
+        }
+        let mut named_sorted = named;
+        named_sorted.sort_by_key(|p| p.name());
+        let mut all_sorted = RecipePreset::ALL;
+        all_sorted.sort_by_key(|p| p.name());
+        assert_eq!(named_sorted, all_sorted);
     }
 
     #[test]
@@ -767,9 +797,37 @@ mod tests {
         );
     }
 
+    /// Names every `Codec` variant, for the same reason as
+    /// [`all_preset_variants`].
+    fn all_codec_variants() -> [Codec; 6] {
+        [
+            Codec::Uncompressed,
+            Codec::Snappy,
+            Codec::Gzip,
+            Codec::Lz4,
+            Codec::Brotli,
+            Codec::Zstd,
+        ]
+    }
+
     #[test]
-    fn codec_all_lists_exactly_six_codecs() {
-        assert_eq!(Codec::ALL.len(), 6);
+    fn every_codec_variant_is_in_all() {
+        let named = all_codec_variants();
+        for codec in named {
+            match codec {
+                Codec::Uncompressed
+                | Codec::Snappy
+                | Codec::Gzip
+                | Codec::Lz4
+                | Codec::Brotli
+                | Codec::Zstd => {}
+            }
+        }
+        let mut named_sorted = named;
+        named_sorted.sort_by_key(|c| c.name());
+        let mut all_sorted = Codec::ALL;
+        all_sorted.sort_by_key(|c| c.name());
+        assert_eq!(named_sorted, all_sorted);
     }
 
     #[test]

@@ -114,8 +114,15 @@ jobs:
         working-directory: lib/cityparquet-rs
         run: rustup component add rustfmt clippy
 
+      # `just test` runs cargo-nextest, so the gate needs it. Nextest gives
+      # every test its own process, which is what makes the gate's wall-clock
+      # independent of test-binary ordering.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       # Tests read real CityJSON fixtures rather than inline hand-written
-      # documents, so they have to be fetched before `cargo test`. All seven are
+      # documents, so they have to be fetched before the test gate. All seven are
       # pinned URLs; this is the one network dependency in this job.
       - name: Fetch fixtures
         working-directory: lib/cityparquet-rs

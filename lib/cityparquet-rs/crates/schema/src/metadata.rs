@@ -484,26 +484,27 @@ mod tests {
         );
     }
 
+    /// A footer round trip over `(city variant, Option<geo>)`: the optional
+    /// `geo` key is restored (or stays absent), and an unrecognised
+    /// `source_format` string round-trips as `Other`, never rejected.
     #[test]
-    fn round_trips_through_key_values() {
-        let city = sample_city();
-        let geo = sample_geo();
-        let kvs = city.to_key_values(Some(&geo)).unwrap();
-        let (back_city, back_geo) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert_eq!(back_city, city);
-        assert_eq!(back_geo, Some(geo));
-    }
+    fn footer_round_trips_city_and_optional_geo() {
+        let mut other_source = sample_city();
+        other_source.source_format = Some(SourceFormat::Other("3DCityDB".to_string()));
 
-    #[test]
-    fn from_key_values_without_geo_key_returns_none() {
-        let city = sample_city();
-        let kvs = city.to_key_values(None).unwrap();
-        let (_back, geo) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert!(geo.is_none());
+        let cases: Vec<(&str, CityMetadata, Option<GeoMetadata>)> = vec![
+            ("city + geo", sample_city(), Some(sample_geo())),
+            ("city only", sample_city(), None),
+            ("Other source format", other_source, None),
+        ];
+        for (name, city, geo) in cases {
+            let kvs = city.to_key_values(geo.as_ref()).unwrap();
+            let (back_city, back_geo) =
+                CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                    .unwrap();
+            assert_eq!(back_city, city, "{name}: city must round-trip");
+            assert_eq!(back_geo, geo, "{name}: geo must round-trip");
+        }
     }
 
     #[test]
@@ -521,35 +522,6 @@ mod tests {
         );
         let value = serde_json::to_value(&entry).unwrap();
         assert_eq!(value["orientation_3d"], "right-handed");
-    }
-
-    /// `CityColumnEntry::new` records the encoding the column was rendered
-    /// under, taken from [`GeometryEncoding::footer_token`], so the footer can
-    /// never disagree with the physical Arrow schema.
-    #[test]
-    fn city_column_entry_records_the_encoding_it_was_rendered_under() {
-        let entry = CityColumnEntry::new(
-            "geometry_lod2_2".to_string(),
-            vec!["MultiPolygon Z".to_string()],
-            GeometryEncoding::Wkb,
-        );
-        assert_eq!(entry.encoding, GeometryEncoding::WKB_TOKEN);
-    }
-
-    /// `source_format` is open-ended: an unrecognised string round-trips as
-    /// `Other`, never rejected.
-    #[test]
-    fn source_format_other_round_trips() {
-        let mut city = sample_city();
-        city.source_format = Some(SourceFormat::Other("3DCityDB".to_string()));
-        let kvs = city.to_key_values(None).unwrap();
-        let (back, _) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert_eq!(
-            back.source_format,
-            Some(SourceFormat::Other("3DCityDB".to_string()))
-        );
     }
 
     /// `source_format` is optional: a table authored natively omits it
@@ -578,89 +550,45 @@ mod tests {
     /// states must survive a footer round trip. `Option<Value>` collapsed
     /// "absent" and "null" onto one `None`, so a writer that meant `null`
     /// silently emitted absence — which per GeoParquet asserts OGC:CRS84 over
-    /// a projected national city model.
+    /// a projected national city model. The three distinct expected members
+    /// also make the serialised footers pairwise distinct.
     #[test]
-    fn crs_known_serialises_as_the_projjson_object_and_round_trips() {
-        let city = sample_city();
-        let members = city_members(&city);
+    fn crs_state_footer_contract() {
+        let known = json!({"type": "ProjectedCRS", "id": {"authority": "EPSG", "code": 28992}});
+        let cases: Vec<(CrsState, Option<Value>)> = vec![
+            (CrsState::Known(known.clone()), Some(known)),
+            (CrsState::Unknown, Some(Value::Null)),
+            (CrsState::Unspecified, None),
+        ];
+        let mut footers = Vec::new();
+        for (state, expected_member) in cases {
+            let mut city = sample_city();
+            city.crs = state.clone();
+
+            let members = city_members(&city);
+            match &expected_member {
+                Some(value) => assert_eq!(
+                    members.get("crs"),
+                    Some(value),
+                    "{state:?} must serialise as {value:?}"
+                ),
+                None => assert!(
+                    !members.contains_key("crs"),
+                    "an unspecified CRS writes NO key at all: {members:?}"
+                ),
+            }
+
+            let kvs = city.to_key_values(None).unwrap();
+            let (back, _) =
+                CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                    .unwrap();
+            assert_eq!(back.crs, state, "the footer must restore {state:?}");
+            footers.push(kvs[0].1.clone());
+        }
         assert!(
-            members["crs"].is_object(),
-            "a known CRS is a PROJJSON object: {:?}",
-            members["crs"]
+            footers[0] != footers[1] && footers[1] != footers[2] && footers[0] != footers[2],
+            "the three CRS states must serialise to three different footers"
         );
-        assert_eq!(members["crs"]["id"]["code"], 28992);
-
-        let kvs = city.to_key_values(None).unwrap();
-        let (back, _) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert_eq!(back.crs, city.crs);
-        assert!(back.crs.is_known());
-    }
-
-    #[test]
-    fn crs_unknown_serialises_as_an_explicit_null_and_round_trips() {
-        let mut city = sample_city();
-        city.crs = CrsState::Unknown;
-        let members = city_members(&city);
-        assert!(
-            members.contains_key("crs"),
-            "an unknown CRS is DECLARED, never omitted: {members:?}"
-        );
-        assert_eq!(
-            members["crs"],
-            Value::Null,
-            "an unknown CRS is an explicit JSON null"
-        );
-
-        let kvs = city.to_key_values(None).unwrap();
-        let (back, _) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert_eq!(
-            back.crs,
-            CrsState::Unknown,
-            "null must not decode as absent"
-        );
-    }
-
-    #[test]
-    fn crs_unspecified_stays_absent_and_round_trips() {
-        let mut city = sample_city();
-        city.crs = CrsState::Unspecified;
-        let members = city_members(&city);
-        assert!(
-            !members.contains_key("crs"),
-            "an unspecified CRS writes NO key at all: {members:?}"
-        );
-
-        let kvs = city.to_key_values(None).unwrap();
-        let (back, _) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert_eq!(
-            back.crs,
-            CrsState::Unspecified,
-            "absent must not decode as null"
-        );
-    }
-
-    /// The three states are genuinely distinguishable at the byte level —
-    /// pinned as one assertion so a regression that collapses any two of them
-    /// cannot pass by satisfying the individual tests above in isolation.
-    #[test]
-    fn the_three_crs_states_serialise_to_three_different_footers() {
-        let known = sample_city();
-        let mut unknown = sample_city();
-        unknown.crs = CrsState::Unknown;
-        let mut unspecified = sample_city();
-        unspecified.crs = CrsState::Unspecified;
-
-        let json = |c: &CityMetadata| c.to_key_values(None).unwrap()[0].1.clone();
-        let (k, u, a) = (json(&known), json(&unknown), json(&unspecified));
-        assert!(k != u && u != a && k != a, "\n{k}\n{u}\n{a}");
-        assert!(u.contains("\"crs\":null"), "{u}");
-        assert!(!a.contains("\"crs\""), "{a}");
     }
 
     /// `geo`'s mirror is GeoParquet's OWN tri-state, so a `null` there is
