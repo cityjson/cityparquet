@@ -1,7 +1,7 @@
 {
   "code": {
-    "git_head": "e04b0903ee0c7ea8bd7339b08c641264e8f7357b",
-    "tracked_diff_sha256": "91c431a808e7364c1702288f16933fb95c3fcf6c0162a0b4ba322b91ac572b15",
+    "git_head": "5c54e510b45fe7c66751da4295ef43c7524150f1",
+    "tracked_diff_sha256": "9461f9701fc48b461b340e43a6325a2bbce0f8a82266a24565822f2242237a63",
     "untracked_sources_sha256": {}
   },
   "family": "bloom",
@@ -13,7 +13,7 @@
     "system": "Linux"
   },
   "measurement": {
-    "fixed_configuration": "bloom/zstd-3/default-row-groups",
+    "fixed_configuration": "bloom/zstd-3/default-row-groups; time_s/time_std_s recomputed on 2026-09-25 as mean and population standard deviation from the run's own raw samples (the run wrote median/MAD)",
     "read_repeat": 7,
     "write_repeat": 3
   },
@@ -21,7 +21,7 @@
   "result": {
     "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/scaling_bloom_results/3dbag_n5000.csv",
     "files_sha256": {
-      "3dbag_n5000.csv": "61d0f7d001575d26ba7a01a2fda499fc0ed1126e34e06f2e294739772c40765c",
+      "3dbag_n5000.csv": "4ac9884006482b17595258cfd170a2163c8d780754eb503bb65adb80da6466de",
       "3dbag_n5000.csv.params.json": "08ca2397a684bdb626d45056dc8283cdf119cfd9b51c2df1143b6e89c2d17fa9",
       "3dbag_n5000.csv.samples.json": "a86961dfb0f054518ed2df6e4b81222a2ed5f42e01b3bdc303c626826b8144d2"
     },

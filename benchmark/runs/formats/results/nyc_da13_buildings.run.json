@@ -1,7 +1,7 @@
 {
   "code": {
-    "git_head": "e04b0903ee0c7ea8bd7339b08c641264e8f7357b",
-    "tracked_diff_sha256": "d309b9d95eae0ca229debb19a0584ba04d5b65b0017fe331529304d71ea805ca",
+    "git_head": "5c54e510b45fe7c66751da4295ef43c7524150f1",
+    "tracked_diff_sha256": "8e1b122682c311a4e5834009ba7caff9824c25c68e43878367f08c87a92a1c84",
     "untracked_sources_sha256": {}
   },
   "family": "formats",
@@ -13,7 +13,7 @@
     "system": "Linux"
   },
   "measurement": {
-    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq",
+    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq; time_s/time_std_s recomputed on 2026-09-25 as mean and population standard deviation from the run's own raw samples (the run wrote median/MAD)",
     "read_repeat": 7,
     "write_repeat": 3
   },
@@ -21,7 +21,7 @@
   "result": {
     "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/results/nyc_da13_buildings.csv",
     "files_sha256": {
-      "nyc_da13_buildings.csv": "44253aeeb85ab6e0551c9acd8b3ce1986746c79d10340a34d22559fbcd21884b",
+      "nyc_da13_buildings.csv": "b010c5e2f0cb9c0cce7e5cb26b4b023762b14ba8e7c823aa38c7530528b9a752",
       "nyc_da13_buildings.csv.params.json": "b23a805f8a8cf877bcbbe2e03d20be196db7e6a9e051c9e8c0e5ec7b12770f80",
       "nyc_da13_buildings.csv.samples.json": "eea97a80771eebbce7483d6bb2ac1ddc9a41c6dbba2b63bf1e9b1c84f57c194c",
       "nyc_da13_buildings.write.samples.csv": "cd6d3cd7edc1b375cd90c2e145a85d43e8c9b3bcc4faade0f254189451d858aa"

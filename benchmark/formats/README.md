@@ -5,7 +5,7 @@ to write, how many bytes it occupies, and how those two move with the writer's
 own knobs — codec, row-group size, bloom filters. Its read-side counterpart, and
 the cross-format comparison, is `benchmark/formats/READ_BENCHMARK.md`.
 
-**The committed write-side evidence is `read_results/`**, where the `formats`
+**The committed write-side evidence is `benchmark/runs/formats/results/`** (the `read_results/` directory here is legacy, see its `LEGACY.md`), where the `formats`
 family writes its per-dataset read and `write` rows and its package `sizes.csv`,
 alongside the configuration axes under `scaling_codec_results/` and
 `scaling_rowgroup_results/` and the bloom family's `scaling_bloom_results/`,

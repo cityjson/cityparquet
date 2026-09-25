@@ -1,7 +1,7 @@
 {
   "code": {
-    "git_head": "e04b0903ee0c7ea8bd7339b08c641264e8f7357b",
-    "tracked_diff_sha256": "a70857dc5e73e65e5731cdf5bbf6070b6c6121e5844034ce326cecdb586b7407",
+    "git_head": "5c54e510b45fe7c66751da4295ef43c7524150f1",
+    "tracked_diff_sha256": "e437d6354072b211afcb3f2200ee4bc1631f2c19037d3518e4a09866441b7202",
     "untracked_sources_sha256": {}
   },
   "family": "formats",
@@ -13,7 +13,7 @@
     "system": "Linux"
   },
   "measurement": {
-    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq",
+    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq; time_s/time_std_s recomputed on 2026-09-25 as mean and population standard deviation from the run's own raw samples (the run wrote median/MAD)",
     "read_repeat": 7,
     "write_repeat": 3
   },
@@ -21,7 +21,7 @@
   "result": {
     "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/results/zurich_building_lod2.csv",
     "files_sha256": {
-      "zurich_building_lod2.csv": "963a9acdb3dce744bf4cd484f8c864d3d94bae85bb0c53405fdb7c79cc5a53d2",
+      "zurich_building_lod2.csv": "b2873a665247a098c78744f06a1a4372063a5c928d6ca7d93fd04d8ae4f899cf",
       "zurich_building_lod2.csv.params.json": "995f35c851d6f006a8a81286fe5d30cf40cff934e387be0ce0c59fde287e8937",
       "zurich_building_lod2.csv.samples.json": "ff9bb497b6fe908f37f794becfe8268e31a044a6a51f9151479b17b0e791c9c3",
       "zurich_building_lod2.write.samples.csv": "cf695bae2c90fc1f56cd6c3eef379680e97c9a08452e90ab1a1240720c44d9a1"

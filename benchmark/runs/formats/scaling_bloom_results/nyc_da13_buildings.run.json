@@ -1,7 +1,7 @@
 {
   "code": {
-    "git_head": "e04b0903ee0c7ea8bd7339b08c641264e8f7357b",
-    "tracked_diff_sha256": "91c431a808e7364c1702288f16933fb95c3fcf6c0162a0b4ba322b91ac572b15",
+    "git_head": "5c54e510b45fe7c66751da4295ef43c7524150f1",
+    "tracked_diff_sha256": "7d8ab09120f567b68220193f76c99ba53bf7906f4d44aa91d9fe840a88026b4c",
     "untracked_sources_sha256": {}
   },
   "family": "bloom",
@@ -13,7 +13,7 @@
     "system": "Linux"
   },
   "measurement": {
-    "fixed_configuration": "bloom/zstd-3/default-row-groups",
+    "fixed_configuration": "bloom/zstd-3/default-row-groups; time_s/time_std_s recomputed on 2026-09-25 as mean and population standard deviation from the run's own raw samples (the run wrote median/MAD)",
     "read_repeat": 7,
     "write_repeat": 3
   },
@@ -21,7 +21,7 @@
   "result": {
     "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/scaling_bloom_results/nyc_da13_buildings.csv",
     "files_sha256": {
-      "nyc_da13_buildings.csv": "69b89114bb0a979c7c6b172374d0a901af093659d8746fd977fcd54467d99f6b",
+      "nyc_da13_buildings.csv": "df457aa465779e0850bb47fecd143789c21f2cd1b2aade57880c29f9f35d61e2",
       "nyc_da13_buildings.csv.params.json": "18ca119f36c13fbfd1def97e90c0ac41c520a631605bad301d5e669c09dab37a",
       "nyc_da13_buildings.csv.samples.json": "9c2f026b63907c4a86bf7dab2a3f956db761bd86ddcf437fdf9d6e79db4cfe03"
     },

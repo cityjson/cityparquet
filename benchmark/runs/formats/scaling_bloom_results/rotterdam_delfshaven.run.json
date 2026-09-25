@@ -1,7 +1,7 @@
 {
   "code": {
-    "git_head": "e04b0903ee0c7ea8bd7339b08c641264e8f7357b",
-    "tracked_diff_sha256": "91c431a808e7364c1702288f16933fb95c3fcf6c0162a0b4ba322b91ac572b15",
+    "git_head": "5c54e510b45fe7c66751da4295ef43c7524150f1",
+    "tracked_diff_sha256": "d83560f3bf9303432a394a4678e564036858ed18bfadd431be404c62f0293405",
     "untracked_sources_sha256": {}
   },
   "family": "bloom",
@@ -13,7 +13,7 @@
     "system": "Linux"
   },
   "measurement": {
-    "fixed_configuration": "bloom/zstd-3/default-row-groups",
+    "fixed_configuration": "bloom/zstd-3/default-row-groups; time_s/time_std_s recomputed on 2026-09-25 as mean and population standard deviation from the run's own raw samples (the run wrote median/MAD)",
     "read_repeat": 7,
     "write_repeat": 3
   },
@@ -21,7 +21,7 @@
   "result": {
     "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/scaling_bloom_results/rotterdam_delfshaven.csv",
     "files_sha256": {
-      "rotterdam_delfshaven.csv": "e7f98d9351bfa770eb1f50216cc708ebbaac9f05368eb319a4a048b19cbd1064",
+      "rotterdam_delfshaven.csv": "1359b2f3e9942a883539b270ab5469e8688dbd7a2617895abac2cd14148d12c6",
       "rotterdam_delfshaven.csv.params.json": "cc855f646b201df500bbb7c96ba211375af093b9f782190fdf260271d8ee1f33",
       "rotterdam_delfshaven.csv.samples.json": "6176beb0b8c7ea615ced04b5d4ee7fc16d627a7e68b98515c48bfcb83c2683fc"
     },

@@ -37,29 +37,24 @@ measurement gap.
 
 ## Committed evidence
 
-> **The committed CSV predates this scenario set and is not citable
-> against it.** It was produced by the previous harness: `full-read`,
-> `project` and `hierarchy` instead of `geometry-scan`,
-> `parts-per-building` and the write tier; a single `id-lookup` target
-> instead of four probes; no `append-object` row; `lod-extract` returning
-> ids where `lod-query` returns rows; `attr-filter` on `object_type`;
-> lower-left area windows achieving 0.49 %/6.37 %/22.1 % instead of the
-> row-fraction targets; DuckDB on 16 threads against a PostgreSQL with
-> parallel query disabled; and the source-order package displayed as
-> "CityParquet" while the format family displayed the Hilbert one. The
-> database family must be re-run before any database figure is regenerated.
-> `notes/benchmark-fairness-review-2026-09-22.md` records what each of
-> those changed and why.
+The committed database results are one run over the 1,000,001-object 3DBAG
+scaling slice (`3dbag_n1000000`), measured on 23 September 2026 on this
+scenario set, in both thread configurations, with the write tier:
 
-The only committed database results are one run over the 1,000,001-object
-3DBAG scaling slice (`3dbag_n1000000`):
+| File                                                                | Contents                                                                                                                                                        |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `benchmark/runs/databases/results/3dbag_n1000000.csv`               | 108 rows: the read scenarios for every system under `threads=single` and `threads=parallel`, then the write tier; `repeat` = 7                                  |
+| `benchmark/runs/databases/results/3dbag_n1000000.manifest.json`     | source SHA-256, host, versions, `pg_settings` per configuration, ingest times, sizes, the cjdb patch disclosure, SRIDs, memory scope, the count tolerance       |
+| `benchmark/runs/databases/results/3dbag_n1000000.params.json`       | the query parameters derived from the source and the package: windows with achieved fractions, the attribute predicates, the four id probes, the append feature |
+| `benchmark/runs/databases/results/3dbag_n1000000.indexes.sql`       | the DDL this harness added, plus a live `pg_indexes` dump for both PostgreSQL schemas                                                                           |
+| `benchmark/runs/databases/results/3dbag_n1000000.append.city.jsonl` | the one-feature CityJSONSeq file the `append-object` scenario imports                                                                                           |
 
-| File                                                            | Contents                                                                                                                          |
-| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `benchmark/runs/databases/results/3dbag_n1000000.csv`           | 36 rows: three systems × twelve scenario rows of the RETIRED set, `repeat` = 7                                                    |
-| `benchmark/runs/databases/results/3dbag_n1000000.manifest.json` | source SHA-256, host, versions, `pg_settings`, ingest times, sizes, cjdb patch disclosure, SRIDs, memory scope, temporary storage |
-| `benchmark/runs/databases/results/3dbag_n1000000.params.json`   | the query parameters derived from that source                                                                                     |
-| `benchmark/runs/databases/results/3dbag_n1000000.indexes.sql`   | the DDL this harness added, plus a live `pg_indexes` dump for both PostgreSQL schemas                                             |
+Every row is `ok` or `ok-deviation` (the nine spatial rows per configuration
+differ across systems by at most 0.02 %, with the decomposition in `notes`)
+except the two CityParquet `append-object` rows, which error because the
+DuckDB extension refuses to widen an empty `material_lod*` column (see the
+write tier below). The package the DuckDB systems read carries bloom filters
+(Caveat 21).
 
 `benchmark/runs/RESULTS.md` describes the run and its limitations; read it
 before citing a number. In brief:

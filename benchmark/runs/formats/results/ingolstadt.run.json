@@ -1,7 +1,7 @@
 {
   "code": {
-    "git_head": "e04b0903ee0c7ea8bd7339b08c641264e8f7357b",
-    "tracked_diff_sha256": "d2f8e18e743fb8af5e1be37550e35f67b09aa5c4c80eb2b2414316a7edfc320e",
+    "git_head": "5c54e510b45fe7c66751da4295ef43c7524150f1",
+    "tracked_diff_sha256": "8da581d857dcd36f02cf23727893a7b14edf244c38e84b619d37b4ae040b2873",
     "untracked_sources_sha256": {}
   },
   "family": "formats",
@@ -13,7 +13,7 @@
     "system": "Linux"
   },
   "measurement": {
-    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq",
+    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq; time_s/time_std_s recomputed on 2026-09-25 as mean and population standard deviation from the run's own raw samples (the run wrote median/MAD)",
     "read_repeat": 7,
     "write_repeat": 3
   },
@@ -21,7 +21,7 @@
   "result": {
     "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/results/ingolstadt.csv",
     "files_sha256": {
-      "ingolstadt.csv": "fe76af63ed0cbbb9ace9f3a1732913af355cb9cc2d5d2fe86ed98e052d5a442e",
+      "ingolstadt.csv": "1035127775b8a1468e746a7c3d97f4e50fc698f5097348ab878533757f29a519",
       "ingolstadt.csv.params.json": "d076dba38f59017969a434c91cb212dc5b27ce9f6e6f36a3c24844eeba5f80d5",
       "ingolstadt.csv.samples.json": "eaac3b22fd351f8bc0af601ac0ce79df6a3fa5e64c88bd4a4c8830fe84815c35",
       "ingolstadt.write.samples.csv": "e1ab9cba9a18ce954bfaecc34b8e7ce635ba1af0aff299f8981f01e2b244d6a8"
