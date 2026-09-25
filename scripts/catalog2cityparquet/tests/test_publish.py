@@ -266,3 +266,19 @@ def test_one_collection_cannot_delete_anothers_sources(tmp_path):
     with pytest.raises(ValueError, match="overlap"):
         publish.check_no_overlap(spec, tmp_path / "out")
     assert (pkg_b / "metadata.json").exists()
+
+
+def test_a_packages_texture_images_are_published_with_it(tmp_path):
+    # A relative `image_uri` resolves against the package directory, so the
+    # images' subdirectory is part of the payload.
+    src = tmp_path / "src"
+    pkg = _package(src, "13101_chiyoda-ku_pref_2025_citygml_1_op")
+    (pkg / "53394509_bldg_6697_appearance").mkdir()
+    (pkg / "53394509_bldg_6697_appearance" / "roof.jpg").write_bytes(b"JPEG")
+    spec = _spec(src, slug=r"^\d+_(?P<slug>[^_]+)_")
+
+    publish.lay_out(spec, tmp_path / "out")
+
+    image = tmp_path / "out/plateau/chiyoda-ku/53394509_bldg_6697_appearance/roof.jpg"
+    assert image.read_bytes() == b"JPEG"
+    assert os.stat(image).st_ino == os.stat(pkg / "53394509_bldg_6697_appearance/roof.jpg").st_ino

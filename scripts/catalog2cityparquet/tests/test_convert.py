@@ -233,3 +233,101 @@ def test_convert_error_detail_is_bounded(tmp_path):
     with pytest.raises(convert.ConvertError) as excinfo:
         convert.run_convert(fake, [tmp_path / "in.json"], tmp_path / "out", None, timeout=30)
     assert len(excinfo.value.detail) <= convert.MAX_DETAIL_CHARS
+
+
+# --- Texture images travel with the package ---------------------------------
+#
+# A package's `textures.parquet` names each image by `image_uri`, relative to
+# the source document it came from. The images are not Parquet, so the
+# converter never writes them; the driver copies each referenced one from the
+# unpacked source into the package at the same relative path, where a reader
+# resolves a relative `image_uri` against the package directory.
+
+
+def _textures(pkg, uris):
+    import duckdb
+
+    pkg.mkdir(parents=True, exist_ok=True)
+    values = ", ".join(f"({i}, '{u}')" for i, u in enumerate(uris))
+    duckdb.sql(
+        f"COPY (SELECT * FROM (VALUES {values}) t(id, image_uri)) "
+        f"TO '{pkg / 'textures.parquet'}' (FORMAT parquet)"
+    )
+
+
+def test_a_referenced_image_is_copied_into_the_package_at_its_relative_path(tmp_path):
+    src = tmp_path / "extract"
+    (src / "tile_appearance").mkdir(parents=True)
+    (src / "tile.gml").write_text("<CityModel/>")
+    (src / "tile_appearance" / "roof.jpg").write_bytes(b"JPEG")
+    pkg = tmp_path / "pkg"
+    _textures(pkg, ["tile_appearance/roof.jpg"])
+
+    copied, missing = convert.copy_texture_images([src / "tile.gml"], pkg)
+
+    assert (copied, missing) == (1, [])
+    assert (pkg / "tile_appearance" / "roof.jpg").read_bytes() == b"JPEG"
+
+
+def test_an_image_resolves_against_the_directory_of_the_document_naming_it(tmp_path):
+    # Merged multi-tile archives keep each tile's images beside its own GML.
+    src = tmp_path / "extract"
+    (src / "udx" / "bldg" / "a_appearance").mkdir(parents=True)
+    (src / "udx" / "bldg" / "a.gml").write_text("<CityModel/>")
+    (src / "udx" / "bldg" / "a_appearance" / "t.jpg").write_bytes(b"A")
+    (src / "other.gml").write_text("<CityModel/>")
+    pkg = tmp_path / "pkg"
+    _textures(pkg, ["a_appearance/t.jpg"])
+
+    copied, missing = convert.copy_texture_images(
+        [src / "other.gml", src / "udx" / "bldg" / "a.gml"], pkg
+    )
+
+    assert (copied, missing) == (1, [])
+    assert (pkg / "a_appearance" / "t.jpg").read_bytes() == b"A"
+
+
+def test_an_image_the_source_lacks_is_reported_not_invented(tmp_path):
+    src = tmp_path / "extract"
+    src.mkdir()
+    (src / "tile.gml").write_text("<CityModel/>")
+    pkg = tmp_path / "pkg"
+    _textures(pkg, ["tile_appearance/gone.jpg"])
+
+    copied, missing = convert.copy_texture_images([src / "tile.gml"], pkg)
+
+    assert (copied, missing) == (0, ["tile_appearance/gone.jpg"])
+    assert not (pkg / "tile_appearance").exists()
+
+
+def test_a_uri_that_would_leave_the_package_is_never_followed(tmp_path):
+    # `image_uri` is third-party text: `..` or an absolute path must not read
+    # files outside the source tree, nor write outside the package.
+    src = tmp_path / "extract"
+    src.mkdir()
+    (src / "tile.gml").write_text("<CityModel/>")
+    (tmp_path / "secret.jpg").write_bytes(b"S")
+    pkg = tmp_path / "pkg"
+    _textures(pkg, ["../secret.jpg", str(tmp_path / "secret.jpg")])
+
+    copied, missing = convert.copy_texture_images([src / "tile.gml"], pkg)
+
+    assert copied == 0
+    assert sorted(missing) == sorted(["../secret.jpg", str(tmp_path / "secret.jpg")])
+    assert not (tmp_path / "secret.jpg").with_name("pkg").joinpath("secret.jpg").exists()
+
+
+def test_a_remote_image_uri_is_left_to_the_reader(tmp_path):
+    src = tmp_path / "extract"
+    src.mkdir()
+    (src / "tile.gml").write_text("<CityModel/>")
+    pkg = tmp_path / "pkg"
+    _textures(pkg, ["https://example.invalid/roof.jpg"])
+
+    assert convert.copy_texture_images([src / "tile.gml"], pkg) == (0, [])
+
+
+def test_a_package_without_textures_needs_no_images(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    assert convert.copy_texture_images([tmp_path / "tile.gml"], pkg) == (0, [])

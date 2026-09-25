@@ -589,6 +589,14 @@ def process_item(
             config.crs_by_collection.get(item.collection),
             timeout=config.convert_timeout,
         )
+        # Before the working directory is swept: the images live only there.
+        _, missing = convert.copy_texture_images(inputs, out_dir)
+        if missing:
+            shown = ", ".join(missing[:3]) + (", …" if len(missing) > 3 else "")
+            _warn(
+                f"  ! {item.collection}/{item.item_id}: {len(missing)} texture image(s) "
+                f"not in the source: {shown}"
+            )
         convert.stamp(out_dir, item)
         return count
     finally:
