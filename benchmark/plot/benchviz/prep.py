@@ -819,9 +819,10 @@ def _require_read_results(inputs: Inputs) -> None:
 
 
 # The database family's scenario vocabulary (benchmark/databases/README.md).
-# Reads run under both thread configurations; the write tier runs once and is
-# a different kind of operation (Caveat 19), so it never shares a figure with
-# the reads.
+# Reads run under both thread configurations; the write tier runs once, under
+# `threads=single`, and is a different kind of operation (Caveat 19): it shares
+# the `databases` figure as rows below the reads, with that caveat as a
+# footnote.
 DB_BASELINE = "3dcitydb"
 DB_READ_SCENARIOS = (
     "geometry-scan",
@@ -857,6 +858,12 @@ DB_ACHIEVED_RE = re.compile(r"\bachieved=([0-9.eE+-]+)")
 DB_DEVIATION_RE = re.compile(r"count-mismatch:.*?spread=[0-9.eE+-]+")
 DB_ROWS_ADDED_RE = re.compile(r"\b((?:city-object|feature)-rows-added): (\d+)")
 DB_AREA_RE = re.compile(r"\barea: (\S+)")
+# The write-tier condition lines the `databases` figure quotes in its footnote.
+DB_WRITE_NOTE_PREFIXES = (
+    "Write rows:",
+    "Area expression",
+    *(f"{w} on " for w in DB_WRITE_SCENARIOS),
+)
 
 
 def _db_empty() -> dict:
@@ -1062,10 +1069,10 @@ def format_conditions(inputs: Inputs, read_records: list[dict]) -> list[str]:
 
 
 def database_conditions(db: dict) -> dict[str, list[str]]:
-    """Conditions for the database read figure and the write-tier figure."""
+    """Conditions for the database figure: the reads, then the write tier."""
     records = db.get("records", [])
     if not records:
-        return {"databases": [], "databases-write": []}
+        return {"databases": []}
     params = db.get("params") or {}
     reads = [r for r in records if r["tier"] == "read"]
     read_lines = [
@@ -1111,10 +1118,13 @@ def database_conditions(db: dict) -> dict[str, list[str]]:
             + "."
         )
     writes = [r for r in records if r["tier"] == "write"]
+    if not writes:
+        return {"databases": read_lines}
     write_lines = [
-        "Different operations, not one scale (databases README, Caveat 19): each "
-        "system does different work for the same request, so no ratio is drawn.",
-        "The write tier runs once, under threads=single, after every read row.",
+        "Write rows: different operations, not one scale — each system does different "
+        "work for the same request (databases README, Caveat 19); their ratios to "
+        "3DCityDB compare what each system pays for the request, not one operation.",
+        "Write tier: runs once, under threads=single, after every read row.",
     ]
     areas = sorted(
         {
@@ -1130,7 +1140,7 @@ def database_conditions(db: dict) -> dict[str, list[str]]:
             write_lines.append(
                 f"{r['scenario']} on {_system_name(r['format'])}: {m.group(1)} {m.group(2)}."
             )
-    return {"databases": read_lines, "databases-write": write_lines}
+    return {"databases": read_lines + write_lines}
 
 
 def _system_name(system: str) -> str:

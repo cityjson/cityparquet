@@ -29,7 +29,7 @@ TIER2: tuple[str, ...] = (
     "parts-per-building-join",
 )
 
-#: The write tier, reported in its own table. These are NOT points on one
+#: The write tier, reported as rows below the reads under Caveat 19. These are NOT points on one
 #: scale with the read scenarios or with each other: PostgreSQL rewrites
 #: half a million MVCC tuples in place while CityParquet adds or drops a
 #: column of an in-memory table and, on the write-back rows, re-encodes the

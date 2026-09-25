@@ -876,7 +876,9 @@ def _missing(
     return _save(fig, name.lower().replace(" ", "-"), out)
 
 
-# Column order of the database figures: CityParquet first, the baseline last.
+# Column order of the database figure: CityParquet first, the baseline last.
+# The write-back tag is not a column: its write cells are stacked inside the
+# `duckdb-cityparquet` cell (`DATABASE_STACKED`).
 DATABASE_READ_SYSTEMS = (
     "duckdb-cityparquet",
     "duckdb-cityparquet-source",
@@ -885,7 +887,9 @@ DATABASE_READ_SYSTEMS = (
     "cjdb",
     "3dcitydb",
 )
-DATABASE_WRITE_SYSTEMS = ("duckdb-cityparquet", "duckdb-cityparquet-writeback", "cjdb", "3dcitydb")
+DATABASE_STACKED = {"duckdb-cityparquet": "duckdb-cityparquet-writeback"}
+# The blank band between the read rows and the write tier.
+DB_WRITE_SEPARATOR = ""
 THREAD_TITLES = {
     "single": "threads=single (primary)",
     "parallel": "threads=parallel (disclosed second pass)",
@@ -919,75 +923,160 @@ def _notes_axis(ax: Axes, lines: list[str]) -> None:
     )
 
 
-def databases(data: dict[str, Any], out: Path) -> list[Path]:
-    """The read comparison: storage, then time and memory per thread configuration.
+# A database cell: the colour ratio, the printed text, whether it is a stacked
+# CityParquet write cell, and that cell's write-back ratio (its lower half).
+DbCell = tuple[float | None, str, bool, float | None]
 
-    Ratios are to 3DCityDB within ONE thread configuration; `single` is the
-    left, primary column and `parallel` the disclosed second pass beside it.
-    The write tier is a different figure (`databases_write`).
+
+def database_blocks(data: dict[str, Any]) -> dict[str, Any]:
+    """The database heatmap cells, reads then the write tier, per configuration.
+
+    Rows are the read scenarios, a blank separator, then the write tier; the
+    write tier runs once under `threads=single`, so any other configuration
+    shows `n/a` there. Ratios are to the baseline within ONE configuration.
+    Each `duckdb-cityparquet` write cell stacks the in-engine value over the
+    `duckdb-cityparquet-writeback` value, each with its own ratio.
     """
     db = data.get("databases") or {}
-    records = [r for r in db.get("records", []) if r.get("tier", "read") == "read"]
-    sizes = db.get("sizes", [])
-    if not records:
-        return _missing("databases", out)
+    records = db.get("records", [])
+    reads = [r for r in records if r.get("tier", "read") == "read"]
+    writes = [r for r in records if r.get("tier") == "write"]
     baseline = db.get("baseline") or prep.DB_BASELINE
-    present = {r.get("format") for r in records}
+    stacked = set(DATABASE_STACKED.values())
+    present = {r.get("format") for r in reads}
     systems = [s for s in DATABASE_READ_SYSTEMS if s in present]
     systems += sorted(s for s in present - set(systems) if s)
-    found = {r.get("scenario") for r in records if r.get("scenario")}
+    for record in writes:
+        system = record.get("format")
+        if system and system not in stacked and system not in systems:
+            systems.append(system)
+    found = {r.get("scenario") for r in reads if r.get("scenario")}
     queries = [q for q in prep.DB_READ_SCENARIOS if q in found]
     queries += sorted(found - set(queries))
-    configs = [t for t in prep.DB_THREADS if any(r.get("threads") == t for r in records)]
-    if any(r.get("threads") not in prep.DB_THREADS for r in records):
+    found = {r.get("scenario") for r in writes if r.get("scenario")}
+    write_rows = [q for q in prep.DB_WRITE_SCENARIOS if q in found]
+    write_rows += sorted(found - set(write_rows))
+    rows = queries + ([DB_WRITE_SEPARATOR, *write_rows] if write_rows else [])
+    configs = [t for t in prep.DB_THREADS if any(r.get("threads") == t for r in reads)]
+    if any(r.get("threads") not in prep.DB_THREADS for r in reads):
         configs.append(None)
     index = {(r.get("format"), r.get("scenario"), r.get("threads")): r for r in records}
-
     footnotes: dict[tuple[str, str | None, str], int] = {}
 
-    def cell(system: str, query: str, config: str | None, field: str, formatter) -> tuple:
+    def value(system: str, query: str, config: str | None, field: str, formatter, sep: str):
+        """(ratio, text) for one system's value; `sep` joins value and ratio."""
         record = index.get((system, query, config))
         base = index.get((baseline, query, config))
         citable = record is not None and record.get("status") in prep.DB_CITABLE
         metric = record.get(field) if citable else None
         if metric is None:
+            if citable and query in write_rows and field == "peak_rss_bytes":
+                return (None, "not sampled")
             return (None, "—" if citable else _db_status_text(record))
         base_metric = (
             base.get(field) if base is not None and base.get("status") in prep.DB_CITABLE else None
         )
         ratio = _ratio(metric, base_metric)
-        text = formatter(metric) + (f"\n{_ratio_short(ratio)}" if ratio else "")
+        text = formatter(metric) + (f"{sep}{_ratio_short(ratio)}" if ratio else "")
         if record.get("status") == "ok-deviation":
             key = (query, config, record.get("deviation") or record.get("notes", ""))
             number = footnotes.setdefault(key, len(footnotes) + 1)
             text += f" *{number}"
         return (ratio, text)
 
-    heat_specs = (
-        ("time_s", "Mean query time", _seconds),
-        ("peak_rss_bytes", "Peak execution-process RSS", _mib),
-    )
+    def cell(system: str, query: str, config: str | None, field: str, formatter) -> DbCell:
+        if query == DB_WRITE_SEPARATOR:
+            return (None, "", False, None)
+        writeback = DATABASE_STACKED.get(system)
+        if query in write_rows and config == "single" and writeback:
+            top_ratio, top = value(system, query, config, field, formatter, " · ")
+            low_ratio, low = value(writeback, query, config, field, formatter, " · ")
+            return (top_ratio, f"{top}\n+wb {low}", True, low_ratio)
+        ratio, text = value(system, query, config, field, formatter, "\n")
+        return (ratio, text, False, None)
+
     blocks = {
         (field, config): [
             [cell(system, query, config, field, formatter) for system in systems]
-            for query in queries
+            for query in rows
         ]
-        for field, _title, formatter in heat_specs
+        for field, _title, formatter in DB_HEAT_SPECS
         for config in configs
     }
+    return {
+        "baseline": baseline,
+        "systems": systems,
+        "rows": rows,
+        "write_rows": write_rows,
+        "configs": configs,
+        "blocks": blocks,
+        "footnotes": footnotes,
+    }
+
+
+DB_HEAT_SPECS = (
+    ("time_s", "Mean query time", _seconds),
+    ("peak_rss_bytes", "Peak execution-process RSS", _mib),
+)
+
+
+def databases(data: dict[str, Any], out: Path) -> list[Path]:
+    """The database comparison: storage, then time and memory per thread configuration.
+
+    Ratios are to 3DCityDB within ONE thread configuration; `single` is the
+    left, primary column and `parallel` the disclosed second pass beside it.
+    The write tier sits below the reads under a rule, in the `single` panels
+    only, and carries Caveat 19 as a footnote.
+    """
+    db = data.get("databases") or {}
+    if not [r for r in db.get("records", []) if r.get("tier", "read") == "read"]:
+        return _missing("databases", out)
+    layout = database_blocks(data)
+    systems, rows, configs = layout["systems"], layout["rows"], layout["configs"]
+    blocks, footnotes = layout["blocks"], layout["footnotes"]
+    sizes = db.get("sizes", [])
+    baseline = layout["baseline"]
     bounds = {
         field: _cell_bound(
-            [row for config in configs for row in blocks[(field, config)]], "diverging"
+            [
+                [(ratio, "") for c in row for ratio in (c[0], c[3])]
+                for config in configs
+                for row in blocks[(field, config)]
+            ],
+            "diverging",
         )
-        for field, _title, _formatter in heat_specs
+        for field, _title, _formatter in DB_HEAT_SPECS
     }
+
+    notes = [
+        "Ratios to 3DCityDB within one thread configuration only; never read a "
+        "threads=single cell against a threads=parallel one.",
+        "Uncoloured: no citable baseline or no citable value. n/a: the system does not "
+        "run this scenario. error / skipped / mismatch: the row's status; not citable.",
+    ]
+    conditions = data.get("meta", {}).get("conditions", {}).get("databases", [])
+    notes += [line for line in conditions if line.startswith("Spatial windows")]
+    if layout["write_rows"]:
+        notes.append(
+            "CityParquet (DuckDB) write cells are stacked: the upper line and upper half "
+            "are in-engine (the table inside DuckDB), the lower line (+wb) and lower half "
+            "add the package write-back (duckdb-cityparquet-writeback); each carries its own "
+            "ratio. The write tier runs once, under threads=single, so its "
+            "threads=parallel cells are n/a."
+        )
+        notes += [line for line in conditions if line.startswith(prep.DB_WRITE_NOTE_PREFIXES)]
+    for (query, config, deviation), number in sorted(footnotes.items(), key=lambda kv: kv[1]):
+        notes.append(f"*{number} ok-deviation, {_label(query)}, threads={config}: {deviation}")
 
     n_cols = len(configs)
     width = max(8.5, 1.1 * len(systems) * n_cols + 3.0)
-    row_height = 0.3 * len(queries) + 0.9
-    fig = plt.figure(figsize=(width, 1.9 + 2 * row_height + 1.2), layout="constrained")
+    row_height = 0.3 * len(rows) + 0.9
+    notes_height = 0.2 + 0.13 * sum(1 + len(line) // 170 for line in notes)
+    fig = plt.figure(
+        figsize=(width, 1.9 + 2 * row_height + notes_height + 0.2), layout="constrained"
+    )
     grid = fig.add_gridspec(
-        4, n_cols, height_ratios=(1.9, row_height, row_height, 1.0), wspace=0.05
+        4, n_cols, height_ratios=(1.9, row_height, row_height, notes_height), wspace=0.05
     )
     storage = fig.add_subplot(grid[0, :])
     by_size = {r.get("format"): r.get("size_bytes") for r in sizes}
@@ -1015,15 +1104,18 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
             detail = _mib(value) + (f" · {ratio:.2g}×" if ratio else "")
             storage.text(x, bar.get_height(), detail, ha="center", va="bottom", fontsize=6)
 
-    for mi, (field, title, _formatter) in enumerate(heat_specs):
+    separator = rows.index(DB_WRITE_SEPARATOR) if DB_WRITE_SEPARATOR in rows else None
+    for mi, (field, title, _formatter) in enumerate(DB_HEAT_SPECS):
         axes = []
+        cmap, norm = _heat_colors("diverging", bounds[field])
         for ci, config in enumerate(configs):
             ax = fig.add_subplot(grid[1 + mi, ci])
             axes.append(ax)
+            block = blocks[(field, config)]
             _heat(
                 ax,
-                blocks[(field, config)],
-                queries,
+                [[(c[0], c[1]) for c in row] for row in block],
+                rows,
                 systems,
                 f"{title} — {THREAD_TITLES.get(config, config)}",
                 vmax=bounds[field],
@@ -1033,6 +1125,36 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
             ax.set_xticks(range(len(systems)), [_db_label(s) for s in systems], fontsize=5.5)
             for text in ax.texts:
                 text.set_fontsize(5.5)
+            # A stacked write cell: the lower half takes the write-back ratio's colour.
+            for y, row in enumerate(block):
+                for x, (_ratio_top, _text, stacked, low) in enumerate(row):
+                    if not stacked:
+                        continue
+                    colour = cmap(norm(math.log2(low))) if low and low > 0 else BAD_CELL
+                    ax.add_patch(
+                        plt.Rectangle((x - 0.5, y), 1, 0.5, color=colour, linewidth=0, zorder=1)
+                    )
+                    ax.plot([x - 0.5, x + 0.5], [y, y], color=CELL_EDGE, lw=0.4, zorder=2)
+            if separator is not None:
+                ax.add_patch(
+                    plt.Rectangle(
+                        (-0.5, separator - 0.5), len(systems), 1, color=BG, linewidth=0, zorder=2.5
+                    )
+                )
+                ax.axhline(separator - 0.5, color=INK, linewidth=0.9, zorder=3)
+                ax.yaxis.get_major_ticks()[separator].tick1line.set_visible(False)
+                if ci == 0:
+                    ax.text(
+                        -0.45,
+                        separator + 0.1,
+                        "write tier",
+                        ha="left",
+                        va="center",
+                        fontsize=6,
+                        style="italic",
+                        color=MUTED,
+                        zorder=4,
+                    )
             ax.tick_params(axis="y", labelsize=6.5)
             if ci:
                 ax.set_yticks([])
@@ -1046,92 +1168,12 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
         cbar.outline.set_visible(False)
         cbar.set_label("Ratio to 3DCityDB; lower is better", fontsize=6)
 
-    notes = [
-        "Ratios to 3DCityDB within one thread configuration only; never read a "
-        "threads=single cell against a threads=parallel one.",
-        "Uncoloured: no citable baseline or no citable value. n/a: the system does not "
-        "run this scenario. error / skipped / mismatch: the row's status; not citable.",
-    ]
-    conditions = data.get("meta", {}).get("conditions", {}).get("databases", [])
-    notes += [line for line in conditions if line.startswith("Spatial windows")]
-    for (query, config, deviation), number in sorted(footnotes.items(), key=lambda kv: kv[1]):
-        notes.append(
-            f"*{number} ok-deviation, {_label(query)}, threads={config}: {deviation}"
-        )
     _notes_axis(fig.add_subplot(grid[3, :]), notes)
     title = f"Database comparison — {db.get('dataset', '')}"
     if db.get("objects"):
         title += f", {int(db['objects']):,} objects"
     fig.suptitle(title, fontsize=12, x=0.01, ha="left")
     return _save(fig, "databases", out)
-
-
-def databases_write(data: dict[str, Any], out: Path) -> list[Path]:
-    """The write tier as a table of absolute values — never one ratio scale.
-
-    Caveat 19: the systems do different work for each request, so nothing is
-    coloured and nothing is divided by a baseline.
-    """
-    db = data.get("databases") or {}
-    records = [r for r in db.get("records", []) if r.get("tier") == "write"]
-    if not records:
-        return _missing("databases-write", out)
-    present = {r.get("format") for r in records}
-    systems = [s for s in DATABASE_WRITE_SYSTEMS if s in present]
-    systems += sorted(s for s in present - set(systems) if s)
-    found = {r.get("scenario") for r in records}
-    scenarios = [q for q in prep.DB_WRITE_SCENARIOS if q in found]
-    scenarios += sorted(found - set(scenarios))
-    index = {(r.get("format"), r.get("scenario")): r for r in records}
-    cells = []
-    for scenario in scenarios:
-        row = []
-        for system in systems:
-            record = index.get((system, scenario))
-            if record is None or record.get("status") not in prep.DB_CITABLE:
-                row.append(_db_status_text(record))
-                continue
-            lines = [_seconds(record.get("time_s"))]
-            rss = record.get("peak_rss_bytes")
-            lines.append(_mib(rss) if rss is not None else "RSS not sampled")
-            if record.get("result_count") is not None:
-                lines.append(f"{int(record['result_count']):,} rows")
-            row.append("\n".join(lines))
-        cells.append(row)
-    fig = plt.figure(
-        figsize=(max(7.0, 1.6 * len(systems) + 2.2), 0.75 * len(scenarios) + 2.4),
-        layout="constrained",
-    )
-    grid = fig.add_gridspec(2, 1, height_ratios=(0.75 * len(scenarios) + 0.6, 1.2))
-    ax = fig.add_subplot(grid[0])
-    ax.imshow(
-        [[0.0] * len(systems) for _ in scenarios],
-        cmap=colors.ListedColormap([BG]),
-        aspect="auto",
-    )
-    for x in range(1, len(systems)):
-        ax.axvline(x - 0.5, color=CELL_EDGE, linewidth=0.6)
-    for y in range(1, len(scenarios)):
-        ax.axhline(y - 0.5, color=CELL_EDGE, linewidth=0.6)
-    for y, row in enumerate(cells):
-        for x, text in enumerate(row):
-            ax.text(x, y, text, ha="center", va="center", fontsize=6, color=INK)
-    ax.set_xticks(range(len(systems)), [_db_label(s) for s in systems], fontsize=6.5)
-    ax.xaxis.tick_top()
-    ax.set_yticks(range(len(scenarios)), [_label(s) for s in scenarios], fontsize=7)
-    ax.tick_params(length=0)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    notes = ["Cell: mean time over the samples; peak RSS of the executing process; rows touched."]
-    notes += data.get("meta", {}).get("conditions", {}).get("databases-write", [])
-    _notes_axis(fig.add_subplot(grid[1]), notes)
-    fig.suptitle(
-        "Database write tier — different operations, not one scale",
-        fontsize=12,
-        x=0.01,
-        ha="left",
-    )
-    return _save(fig, "databases-write", out)
 
 
 def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
@@ -1158,7 +1200,7 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
     for key in ("codec", "rowgroup", "bloom"):
         written += _axis_main(data, key, out) + _axis_scaling(data, key, out)
         written += _axis_corpus(data, key, out)
-    written += databases(data, out) + databases_write(data, out)
+    written += databases(data, out)
     print(f"benchviz figures -> {out}")
     for path in written:
         print(f"  {path.name}")

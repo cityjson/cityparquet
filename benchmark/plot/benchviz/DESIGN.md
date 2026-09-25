@@ -15,8 +15,8 @@ Run `python -m benchviz summary --data-root ROOT`. A smoke run uses its own
 result and summary directories; it must never be combined with a full run.
 
 The static output set is `sizes`, `heatmap`, `codec`, `codec-scaling`,
-`rowgroup`, `rowgroup-scaling`, `bloom`, `bloom-scaling`, `bloom-corpus`,
-`databases` and `databases-write`, each as SVG and 300 dpi PNG. The HTML index
+`rowgroup`, `rowgroup-scaling`, `bloom`, `bloom-scaling`, `bloom-corpus` and
+`databases`, each as SVG and 300 dpi PNG. The HTML index
 embeds the same SVGs, each followed by the conditions it was measured under
 (`meta.conditions`: attribute predicates, achieved window selectivities, the
 write baseline, thread configurations), and has no external dependencies.
@@ -44,6 +44,13 @@ means peak execution-process RSS, not total database-server memory. Every read
 cell is keyed by system, scenario and thread configuration: `threads=single`
 is the primary column, `threads=parallel` a separately labelled second column,
 and no ratio crosses the two. `ok-deviation` cells are citable and carry a
-`*n` marker whose footnote quotes the count decomposition. The write tier is
-its own uncoloured table (`databases-write`): different operations, not one
-scale, so it has absolute values and no ratios.
+`*n` marker whose footnote quotes the count decomposition. The write tier
+shares the `databases` figure: its four rows sit below the reads, under a rule
+and a "write tier" label, in the `threads=single` panels only (it runs once;
+the `threads=parallel` cells say `n/a`), coloured by ratio to 3DCityDB like
+the reads. Its footnote keeps Caveat 19 — different operations, not one scale
+— with the area expressions and the rows each importer added. The
+`duckdb-cityparquet-writeback` tag has no column of its own: each
+CityParquet (DuckDB) write cell stacks the in-engine value (upper line and
+half) over the value with package write-back (lower line and half), each with
+its own ratio and colour.

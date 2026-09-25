@@ -17,8 +17,9 @@ The harness measures **steady-state performance** — wall-clock time, peak
 resident memory of the executing process and, for PostgreSQL read
 scenarios, server-reported execution time — against a dataset already
 loaded into each system. Ten **read** scenarios run under two disclosed
-thread configurations; four **write** scenarios then run once, reported in
-their own table under their own caveat (Caveat 19). The scenario set is the
+thread configurations; four **write** scenarios then run once, under
+`threads=single`, reported as the write-tier rows below the reads in the
+`databases` figure, under their own caveat (Caveat 19). The scenario set is the
 author's query catalogue, `notes/benchmark-queries.md`, which is the
 specification this harness implements. **Ingest is not compared.** Encoding a CityParquet package and populating an indexed
 relational schema are different operations, not points on one scale.
@@ -295,7 +296,8 @@ would compare different result sets.
 
 ## The write tier
 
-Four scenarios, run **last** and reported in their own table. They are
+Four scenarios, run **last**, once, under `threads=single`, and reported as
+the write-tier rows of the `databases` figure, below the reads. They are
 **different operations, not one scale** (Caveat 19).
 
 | scenario        | `duckdb-cityparquet` / `-writeback`                                                                                                                       | `cjdb`                                                                                              | `3dcitydb`                                                                                                                                                                        |
@@ -1024,9 +1026,13 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     four `append-object` rows as four accounts of "what it costs this
     system to add a building", never as one ratio. The area expressions also differ, inherited
     from the CJDB paper (footprint area on cjdb, envelope area on
-    3DCityDB). Publish the write table beside the read table with this
-    caveat attached, exactly as the ingest section already does — not as
-    points on one axis. `attr-delete`'s CityParquet `result_count` is a
+    3DCityDB). The `databases` figure puts the write rows below the reads
+    and colours them by ratio to 3DCityDB like the reads, so it carries
+    this caveat as its footnote: a write ratio says what each system pays
+    for the same request, not how fast one common operation runs, and is
+    never quoted without this caveat. The CityParquet (DuckDB) write cell
+    stacks the in-engine value over the `-writeback` value (marked `+wb`),
+    each with its own ratio. `attr-delete`'s CityParquet `result_count` is a
     definition rather than a measurement (see "The write tier").
 
 20. **`EXPLAIN (ANALYZE, BUFFERS)` doubles the per-sample work on both
