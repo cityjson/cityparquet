@@ -29,17 +29,18 @@ from citybench.scenarios.sql_citydb import (
     CAPTURED_LOD_TARGET,
     _cityobject_predicate,
     _static_predicate,
+    append_reset_sql,
+    append_watermark_sql,
     index_ddl,
     sql_for,
+    write_reset_sql,
+    write_sql,
 )
+from conftest import ge_attr_filter, make_params, make_probes
 
-PARAMS = Params(
-    bbox_full=BBox(0.0, 0.0, 0.0, 100.0, 100.0, 10.0),
-    attr_column="object_type",
-    attr_eq="BuildingPart",
+PARAMS = make_params(
     numeric_column="b3_h_dak_50p",
-    target_id="NL.IMBAG.Pand.0503100000000010",
-    parent_id="NL.IMBAG.Pand.0503100000000010",
+    id_probes=make_probes("NL.IMBAG.Pand.0503100000000010"),
     total_city_objects=2231,
 )
 
@@ -54,21 +55,27 @@ PARAMS = Params(
 IDS = (901, 100, 902)
 
 
-def _params(*, parent_id: str | None = "NL.IMBAG.Pand.0503100000000010",
-            numeric_column: str | None = "b3_h_dak_50p") -> Params:
-    return Params(
-        bbox_full=BBox(minx=0.0, miny=0.0, minz=0.0, maxx=100.0, maxy=100.0, maxz=10.0),
-        attr_column="object_type",
-        attr_eq="BuildingPart",
-        numeric_column=numeric_column,
-        target_id="NL.IMBAG.Pand.0503100000000010",
-        parent_id=parent_id,
+#: A stand-in for the live-resolved `objectclass_id` of `Building`, which a
+#: real run reads once per ingest via `resolve_class_id`.
+BUILDING_ID = 901
+
+
+def _params(**overrides) -> Params:
+    defaults = dict(
+        numeric_column="b3_h_dak_50p",
+        id_probes=make_probes("NL.IMBAG.Pand.0503100000000010"),
         total_city_objects=2231,
     )
+    defaults.update(overrides)
+    return make_params(**defaults)
+
+
+def _window(params: Params, tag: str = "bbox-25pct"):
+    return params.window(tag)
 
 
 def test_attr_stats_raises_scenario_unavailable_when_dataset_has_no_numeric_column():
-    # Mirrors this module's own hierarchy parent_id-is-None guard: a
+    # Mirrors the guards the other two SQL modules apply: a
     # dataset with no numeric attribute at all (Montreal, lod3_railway —
     # see params.py's derive()) is a legitimate dataset property, not a
     # query bug.
@@ -103,17 +110,45 @@ def test_count_targets_feature_and_uses_a_static_resolved_id_list():
 
 
 def test_bbox_query_uses_postgis_operator_for_index_use():
-    sql, args = sql_for("bbox-query", PARAMS, selectivity=0.25, cityobject_class_ids=IDS)
+    sql, args = sql_for("bbox-query", PARAMS, _window(PARAMS),
+                        cityobject_class_ids=IDS)
     assert "&&" in sql
     assert "envelope" in sql
     assert len(args) == 5  # four ordinates plus the SRID
 
 
-def test_attr_filter_resolves_classname_via_objectclass():
+def test_attr_filter_joins_property_on_name_and_val_string():
     sql, args = sql_for("attr-filter", PARAMS, cityobject_class_ids=IDS)
-    assert "objectclass" in sql
-    assert "classname" in sql
-    assert args == ("BuildingPart",)
+    assert "citydb.property" in sql
+    assert "pr.name = %s" in sql
+    assert "pr.val_string = %s" in sql
+    assert sql.strip().startswith("SELECT f.objectid")
+    assert args == ("b3_dak_type", "slanted")
+    # The retired form resolved a CLASSNAME through `objectclass`, because
+    # `attr-filter` used to filter on `object_type`. It now filters on a
+    # real CityJSON attribute, like the other two systems.
+    assert "classname" not in sql
+
+
+def test_attr_filter_numeric_bound_form_coalesces_the_typed_value_columns():
+    sql, args = sql_for("attr-filter", _params(attr_filter=ge_attr_filter()),
+                        cityobject_class_ids=IDS)
+    assert "coalesce(pr.val_double, pr.val_int) >= %s" in sql
+    assert args == ("TerrainHeight", 2.45)
+
+
+def test_attr_range_is_cjdb_q1_over_the_eav_property_table():
+    sql, args = sql_for("attr-range", PARAMS, cityobject_class_ids=IDS)
+    assert "coalesce(pr.val_double, pr.val_int) > %s" in sql
+    assert sql.strip().startswith("SELECT f.objectid")
+    assert args == ("b3_h_dak_max", 20.0)
+
+
+def test_parts_per_building_without_a_resolved_building_class_is_a_loud_failure():
+    # A silently wrong class id would make every Building-grained scenario
+    # match nothing while still producing a plausible-looking zero.
+    with pytest.raises(ValueError, match="Building objectclass_id"):
+        sql_for("parts-per-building", PARAMS, cityobject_class_ids=IDS)
 
 
 def test_attr_stats_joins_property_to_feature():
@@ -136,10 +171,14 @@ def test_attr_stats_coalesces_val_double_and_val_int():
     assert "coalesce(pr.val_double, pr.val_int)" in sql
 
 
-def test_hierarchy_joins_property_via_val_feature_id():
-    sql, args = sql_for("hierarchy", PARAMS, cityobject_class_ids=IDS)
+def test_parts_per_building_left_joins_property_via_val_feature_id():
+    sql, args = sql_for("parts-per-building", PARAMS,
+                        cityobject_class_ids=IDS, building_class_id=BUILDING_ID)
     assert "val_feature_id" in sql
-    assert args == ("NL.IMBAG.Pand.0503100000000010",)
+    assert sql.count("LEFT JOIN") == 2      # childless Buildings are kept
+    assert "count(child.id)" in sql         # NOT count(*), which reports 1
+    assert "GROUP BY parent.objectid" in sql
+    assert args == (BUILDING_ID,)
 
 
 def test_unknown_scenario_raises():
@@ -197,19 +236,19 @@ def test_static_predicate_never_emits_a_correlated_subquery():
 # applies the CityObject-granularity predicate.
 
 
-@pytest.mark.parametrize("scenario, kwargs", [
-    ("count", {}),
-    ("full-read", {}),
-    ("bbox-query", {"selectivity": 0.25}),
-    ("attr-filter", {}),
-    ("attr-stats", {}),
-    ("project", {}),
-    ("lod-extract", {}),
+@pytest.mark.parametrize("scenario, args", [
+    ("count", ()),
+    ("geometry-scan", ()),
+    ("bbox-query", (PARAMS.window("bbox-25pct"),)),
+    ("attr-filter", ()),
+    ("attr-range", ()),
+    ("attr-stats", ()),
+    ("lod-query", ()),
 ])
 def test_scenario_uses_a_static_resolved_id_list_not_a_correlated_subquery(
-    scenario, kwargs,
+    scenario, args,
 ):
-    sql, _ = sql_for(scenario, PARAMS, cityobject_class_ids=IDS, **kwargs)
+    sql, _ = sql_for(scenario, PARAMS, *args, cityobject_class_ids=IDS)
     assert "objectclass_id IN (100, 901, 902)" in sql
     # None of the OLD, correlated-subquery predicate's own vocabulary may
     # appear anywhere in a scenario query any more — that shape is what
@@ -220,90 +259,68 @@ def test_scenario_uses_a_static_resolved_id_list_not_a_correlated_subquery(
     assert "NOT IN" not in sql
 
 
-def test_semantic_surface_uses_a_static_resolved_id_list_qualified_to_owner():
-    sql, args = sql_for("semantic-surface", PARAMS, cityobject_class_ids=IDS)
-    assert "owner.objectclass_id IN (100, 901, 902)" in sql
-    assert "is_toplevel" not in sql
-    assert "WITH RECURSIVE" not in sql
-    assert args == ("RoofSurface",)
-
-
-def test_hierarchy_uses_a_static_resolved_id_list_qualified_to_child():
-    sql, args = sql_for("hierarchy", _params(), cityobject_class_ids=IDS)
+def test_parts_per_building_uses_a_static_resolved_id_list_qualified_to_child():
+    sql, args = sql_for("parts-per-building", _params(),
+                        cityobject_class_ids=IDS, building_class_id=BUILDING_ID)
     assert "child.objectclass_id IN (100, 901, 902)" in sql
     assert "is_toplevel" not in sql
     assert "WITH RECURSIVE" not in sql
-    assert args == ("NL.IMBAG.Pand.0503100000000010",)
+    assert args == (BUILDING_ID,)
 
 
 def test_id_lookup_does_not_reference_the_granularity_predicate_at_all():
     # A known CityObject id is already CityObject-granular by construction
     # (see sql_citydb.py's comment on this branch) — no predicate needed,
     # static or otherwise.
-    sql, _ = sql_for("id-lookup", PARAMS, cityobject_class_ids=IDS)
+    sql, _ = sql_for("id-lookup", PARAMS, cityobject_class_ids=IDS,
+                     probe=PARAMS.id_probes[0])
     assert "objectclass_id IN" not in sql
     assert "is_toplevel" not in sql
 
 
-def test_full_read_selects_count_first_then_a_forcing_checksum():
-    # count_mode("full-read") == "first-column": the registry's
-    # cross-system comparison depends on count(*) being the FIRST selected
-    # column. This query has a leading WITH clause (geom_len/prop_len), so
-    # count(*) is not the first TOKEN of the string — instead, assert it is
-    # the outer query's SELECT (paren-depth 0, i.e. not inside one of the
-    # WITH clause's own subqueries).
-    sql, args = sql_for("full-read", _params(), cityobject_class_ids=IDS)
-    idx = sql.upper().index("SELECT COUNT(*)")
-    depth = sql[:idx].count("(") - sql[:idx].count(")")
-    assert depth == 0, f"count(*) is nested {depth} parens deep, not the outer SELECT"
-    # And it must be the FIRST such occurrence at depth 0 — i.e. nothing
-    # else is selected before it in the outer query.
-    assert "SELECT count(*)" in sql
+def test_geometry_scan_selects_a_cityobject_grain_count_first():
+    """count_mode("geometry-scan") == "first-column", and the count must be
+    CityObject-grain. One CityObject owns several `geometry_data` rows (one
+    per LoD), so a plain `count(*)` over this join would report geometry
+    rows and every row of the scenario would be a false count-mismatch."""
+    sql, args = sql_for("geometry-scan", _params(), cityobject_class_ids=IDS)
+    assert sql.strip().upper().startswith("SELECT COUNT(DISTINCT F.ID)")
     assert args == ()
 
 
-def test_full_read_forces_geometry_and_property_and_envelope():
-    # Parity with sql_cjdb's full-read (geometry + attributes +
-    # ground_geometry) and sql_duckdb's (hash of every column): 3DCityDB's
-    # normalised schema splits "attributes" across many property rows and
-    # "geometry" across many geometry_data rows per feature, so both must
-    # be aggregated and forced, not just one.
-    sql, _ = sql_for("full-read", _params(), cityobject_class_ids=IDS)
-    assert "geometry_data" in sql
-    assert "citydb.property" in sql
-    assert "envelope" in sql
-    assert sql.count("::text") >= 3  # envelope, geometry_data row, property row
-
-
-def test_full_read_does_not_explode_the_count_by_joining_geometry_directly():
-    # A naive `JOIN geometry_data` (one CityObject can own several
-    # geometry_data rows, one per LoD) would inflate count(*) past the
-    # CityObject total and mismatch cjdb's/duckdb's own full-read count —
-    # exactly the bug this task's design avoids via pre-aggregating
-    # geometry_data down to one row per feature_id first.
-    sql, _ = sql_for("full-read", _params(), cityobject_class_ids=IDS)
-    assert "GROUP BY feature_id" in sql
-    assert "JOIN citydb.geometry_data" not in sql  # only inside the geom_len CTE
-    assert "LEFT JOIN geom_len" in sql
+def test_geometry_scan_touches_the_geometry_and_not_the_property_records():
+    """The retired `full-read` cast every `property` row's whole COMPOSITE
+    RECORD to text through two GROUP BY CTEs over the entire tables — ~20
+    NULL fields per row, and 276 s against DuckDB's 1.2 s. That was largely
+    artefact, not architecture."""
+    sql, _ = sql_for("geometry-scan", _params(), cityobject_class_ids=IDS)
+    assert "length(gd.geometry::text)" in sql
+    assert "citydb.property" not in sql
+    assert "WITH " not in sql.upper()          # no CTEs at all
+    assert "envelope::text" not in sql
 
 
 def test_bbox_query_parameterises_the_window_and_srid_in_order():
+    params = _params()
+    window = _window(params)
     sql, args = sql_for(
-        "bbox-query", _params(), selectivity=0.25, srid=7415, cityobject_class_ids=IDS,
+        "bbox-query", params, window, 7415, cityobject_class_ids=IDS,
     )
-    win = _params().bbox_full.window(0.25)
-    assert args == (win.minx, win.miny, win.maxx, win.maxy, 7415)
+    w = window.window
+    assert args == (w.minx, w.miny, w.maxx, w.maxy, 7415)
 
 
 def test_bbox_query_defaults_to_zero_srid_when_none_is_given():
-    _, args = sql_for("bbox-query", _params(), selectivity=0.25, cityobject_class_ids=IDS)
+    params = _params()
+    _, args = sql_for("bbox-query", params, _window(params),
+                      cityobject_class_ids=IDS)
     assert args[-1] == 0
 
 
 def test_attr_filter_parameterises_rather_than_interpolating_the_value():
     sql, args = sql_for("attr-filter", _params(), cityobject_class_ids=IDS)
-    assert args == ("BuildingPart",)
-    assert "'BuildingPart'" not in sql  # would be a SQL-injection-shaped bug if it were
+    assert args == ("b3_dak_type", "slanted")
+    assert "'slanted'" not in sql  # would be a SQL-injection-shaped bug if it were
 
 
 def test_attr_stats_selects_count_first_per_registry_convention():
@@ -313,125 +330,142 @@ def test_attr_stats_selects_count_first_per_registry_convention():
     )
 
 
-def test_id_lookup_filters_on_objectid_not_the_internal_pk():
-    sql, args = sql_for("id-lookup", _params(), cityobject_class_ids=IDS)
-    assert "objectid" in sql
-    assert args == ("NL.IMBAG.Pand.0503100000000010",)
-    assert "NL.IMBAG.Pand.0503100000000010" not in sql  # bound parameter, not a literal
+def test_id_lookup_asks_for_the_probe_it_was_handed_on_objectid():
+    """One call per probe — 10/50/90 % of the canonical stream order plus a
+    verified-absent id — against `objectid`, the CityObject identifier,
+    never the internal integer `id`."""
+    params = _params()
+    for probe in params.id_probes:
+        sql, args = sql_for("id-lookup", params, cityobject_class_ids=IDS,
+                            probe=probe)
+        assert "objectid" in sql
+        assert args == (probe.id,)
+        assert probe.id not in sql   # bound parameter, not a literal
 
 
-def test_project_counts_objectclass_id():
-    sql, args = sql_for("project", _params(), cityobject_class_ids=IDS)
-    assert "count(objectclass_id)" in sql
-    assert args == ()
+def test_id_lookup_without_a_probe_is_a_loud_failure():
+    with pytest.raises(ValueError):
+        sql_for("id-lookup", _params(), cityobject_class_ids=IDS)
 
 
-def test_lod_extract_targets_the_truncated_integer_lod_not_the_cityjson_notation():
+def test_write_tier_inserts_updates_and_deletes_a_property_row():
+    """v5 has no `cityobject_genericattrib` table, so CJDB's Q6 becomes an
+    INSERT into the EAV `property` table. `datatype_id` is NOT NULL and is
+    resolved live; `namespace_id` is nullable and left unset."""
+    add, add_args = write_sql("attr-add", BUILDING_ID, 7)
+    assert "INSERT INTO citydb.property" in add
+    assert "(feature_id, name, datatype_id, val_double)" in add
+    # The CJDB paper's own Q6 computes ENVELOPE area on 3DCityDB against
+    # FOOTPRINT area on cjdb; the asymmetry is inherited and disclosed.
+    assert "ST_Area(envelope)" in add
+    assert "namespace_id" not in add
+    assert add_args == (7, BUILDING_ID)
+
+    update, _ = write_sql("attr-update", BUILDING_ID, 7)
+    assert "SET val_double = val_double + 10" in update
+
+    delete, _ = write_sql("attr-delete", BUILDING_ID, 7)
+    assert delete.startswith("DELETE FROM citydb.property")
+
+
+def test_write_resets_undo_the_non_idempotent_insert():
+    """`attr-add`'s INSERT is not idempotent: without the reset a second
+    sample would leave two `footprint_area` rows per Building and make
+    `attr-update` touch twice as many rows."""
+    reset = write_reset_sql("attr-add", BUILDING_ID, 7)
+    assert reset[0][0].startswith("DELETE FROM citydb.property")
+    assert write_reset_sql("attr-update", BUILDING_ID, 7) == []
+    assert write_reset_sql("attr-delete", BUILDING_ID, 7) == [
+        write_sql("attr-add", BUILDING_ID, 7)
+    ]
+
+
+def test_lod_query_targets_the_truncated_integer_lod_not_the_cityjson_notation():
     # v5's importer truncates "1.2"/"1.3" to "1" (docs/3dcitydb-v5-schema.md,
     # "LoD value format") — querying the literal CityJSON tag "1.2" here
-    # would silently match zero rows.
-    sql, args = sql_for("lod-extract", _params(), cityobject_class_ids=IDS)
+    # would silently match zero rows. The tier-collapsing is disclosed in
+    # the README, not corrected: 3DCityDB's "LoD 1" covers 1.2 AND 1.3.
+    sql, args = sql_for("lod-query", _params(), cityobject_class_ids=IDS)
     assert CAPTURED_LOD_TARGET == "1"
     assert args == ("1",)
     assert "1.2" not in sql
 
 
-def test_lod_extract_filters_on_val_lod_and_val_geometry_id():
-    sql, _ = sql_for("lod-extract", _params(), cityobject_class_ids=IDS)
+def test_lod_query_filters_on_val_lod_and_val_geometry_id():
+    sql, _ = sql_for("lod-query", _params(), cityobject_class_ids=IDS)
     assert "val_lod" in sql
     assert "val_geometry_id IS NOT NULL" in sql
 
 
-def test_lod_extract_does_not_reach_for_a_geometry_data_lod_column():
+def test_lod_query_does_not_reach_for_a_geometry_data_lod_column():
     # geometry_data has no `lod` column at all (Task 5, re-confirmed here).
-    sql, _ = sql_for("lod-extract", _params(), cityobject_class_ids=IDS)
-    assert "g.lod" not in sql
+    sql, _ = sql_for("lod-query", _params(), cityobject_class_ids=IDS)
+    assert "gd.lod" not in sql
     assert "geometry_data.lod" not in sql
 
 
-def test_semantic_surface_filters_on_roofsurface_via_objectclass():
-    sql, args = sql_for("semantic-surface", _params(), cityobject_class_ids=IDS)
-    assert "objectclass" in sql
-    assert "classname" in sql
-    assert args == ("RoofSurface",)
+def test_lod_query_returns_the_whole_feature_row_and_its_lod1_geometry():
+    """The other two systems hand back the object WITH its geometry; a
+    `feature` row alone would be a different amount of object. The
+    attributes still are not joined — that asymmetry is README Caveat
+    16."""
+    sql, _ = sql_for("lod-query", _params(), cityobject_class_ids=IDS)
+    assert "f.*" in sql
+    assert "gd.geometry" in sql
+    assert "citydb.geometry_data gd ON gd.id = pr.val_geometry_id" in sql
 
 
-def test_semantic_surface_is_not_restricted_to_a_single_lod():
-    # Cross-system comparability requirement (review-caught): this query
-    # must ask the SAME any-LoD question sql_cjdb.py's and (the fixed)
-    # sql_duckdb.py's semantic-surface both ask — see
-    # tests/test_semantic_surface_lod_scope.py for the live-data proof
-    # against cjdb.
-    #
-    # This is a DELIBERATE CHOICE, not the only option 3DCityDB v5's schema
-    # allows — an earlier version of this comment claimed the latter, and
-    # that was an overclaim caught by a second review round. A LoD-scoped
-    # query genuinely IS expressible here: `lod1MultiSurface`/
-    # `lod2MultiSurface` `property` rows are owned DIRECTLY by the
-    # boundary-surface feature itself (`property.feature_id = <the
-    # RoofSurface's own id>`, not the Solid) and DO carry `val_lod` —
-    # confirmed live, 1116 `lod1MultiSurface` + 1116 `lod2MultiSurface`
-    # rows, one of each per RoofSurface feature. A query joining on
-    # `lod_pr.feature_id = rs.id AND lod_pr.val_lod = ?` was written and
-    # run; it returns 1116 for LoD1 and 1116 for LoD2 — both sensible. See
-    # `sql_duckdb.py`'s own `semantic-surface` comment for the full
-    # investigation and the real reason any-LoD was still chosen: it is
-    # the more natural question ("does this object have a roof surface
-    # classified at all"), and picking one specific LoD to scope to would
-    # mean picking WHICH LoD — a choice that risks privileging whichever
-    # tier each system's own storage model happens to represent most
-    # naturally, an easy way for a benchmark to be self-serving toward its
-    # own format without meaning to.
-    sql, _ = sql_for("semantic-surface", _params(), cityobject_class_ids=IDS)
-    assert "val_lod" not in sql
+def test_lod_query_stays_one_row_per_cityobject():
+    """`DISTINCT ON (f.id)` is this query's `SELECT DISTINCT f.*`: several
+    matching `property` rows of one feature must not become several rows,
+    or the count would not be comparable with the other two systems'. It
+    is scoped to the key rather than to the whole row so PostgreSQL never
+    compares WKB geometries for equality."""
+    sql, _ = sql_for("lod-query", _params(), cityobject_class_ids=IDS)
+    assert sql.strip().startswith("SELECT DISTINCT ON (f.id)")
+    assert sql.rstrip().endswith("ORDER BY f.id")
 
 
-def test_semantic_surface_is_a_cityobject_granular_presence_count():
-    # A real cross-system count-mismatch (3dcitydb=2232 vs
-    # cjdb=duckdb-cityparquet=1116), caught by this task's smoke target
-    # the first time all three ran together: 3DCityDB gives every
-    # BuildingPart two solids (lod1Solid + lod2Solid), each with its own
-    # boundary-linked RoofSurface feature, so a raw `feature`-row count is
-    # NOT the same question cjdb/duckdb-cityparquet ask ("does this
-    # CityObject have >=1 RoofSurface"). Fixed to count DISTINCT owning
-    # features instead, and gated by the canonical CityObject-granularity
-    # predicate — applied to the OWNER, not to the RoofSurface feature
-    # itself (which would legitimately return 0: a RoofSurface descends
-    # from AbstractSpaceBoundary and never itself passes the predicate).
-    sql, args = sql_for("semantic-surface", _params(), cityobject_class_ids=IDS)
-    assert "count(DISTINCT pr.feature_id)" in sql
-    assert "owner.objectclass_id IN" in sql
-    assert args == ("RoofSurface",)
+def test_the_append_reset_empties_the_tables_the_importer_writes_to():
+    """`append-object`'s untimed reset. A watermark, not a predicate on
+    `objectid`: citydb-tool also writes a `feature` row per boundary
+    surface, whose `objectid` it invents, so no id-shaped predicate can
+    name them."""
+    marks = {table: 7 for table, _ in append_watermark_sql()}
+    statements = append_reset_sql(marks)
+    tables = [sql for sql, _ in statements]
+    # property references both feature and geometry_data; geometry_data
+    # references feature. Deleting in any other order fails the FK.
+    assert "citydb.property" in tables[0]
+    assert "citydb.geometry_data" in tables[1]
+    assert "citydb.feature" in tables[2]
+    assert all(args == (7,) for _, args in statements)
+    assert all(sql.count("%s") == 1 for sql, _ in statements)
 
 
-def test_hierarchy_joins_parent_via_the_property_fk_and_child_via_val_feature_id():
-    sql, args = sql_for("hierarchy", _params(), cityobject_class_ids=IDS)
+def test_parts_per_building_joins_parent_via_the_property_fk_and_child_via_val_feature_id():
+    sql, args = sql_for("parts-per-building", _params(),
+                        cityobject_class_ids=IDS, building_class_id=BUILDING_ID)
     assert "citydb.feature child" in sql
     assert "citydb.feature parent" in sql
-    assert "pr.val_feature_id = child.id" in sql
-    assert "parent.id = pr.feature_id" in sql
-    assert args == ("NL.IMBAG.Pand.0503100000000010",)
+    assert "child.id = pr.val_feature_id" in sql
+    assert "pr.feature_id = parent.id" in sql
+    assert args == (BUILDING_ID,)
 
 
-def test_hierarchy_raises_scenario_unavailable_when_dataset_has_no_parent_id():
-    with pytest.raises(ScenarioUnavailable, match="dataset has no parent/child hierarchy"):
-        sql_for("hierarchy", _params(parent_id=None), cityobject_class_ids=IDS)
-
-
-def test_hierarchy_applies_the_resolved_predicate_qualified_to_child_only():
-    # Fix, coordinator review round 1: an undefended "no predicate needed"
-    # relied on a delft-specific fact (params.parent_id is always
-    # Building-typed, and no 'boundary'-named association ever originates
-    # from a Building) with nothing in code to protect a dataset where
-    # that does not hold. The predicate must be qualified to `child`
-    # specifically — `parent` also has an unqualified `objectclass_id` in
-    # scope, so a bare, unqualified predicate here would be ambiguous SQL,
-    # not merely imprecise.
-    sql, args = sql_for("hierarchy", _params(), cityobject_class_ids=IDS)
+def test_parts_per_building_qualifies_the_granularity_predicate_to_child_only():
+    # The predicate must be qualified to `child` specifically — `parent`
+    # also has an unqualified `objectclass_id` in scope, so a bare
+    # predicate here would be ambiguous SQL, not merely imprecise. It also
+    # replaces any dependency on which `name` a given importer gives the
+    # parent -> child association: boundary surfaces are excluded by CLASS.
+    sql, args = sql_for("parts-per-building", _params(),
+                        cityobject_class_ids=IDS, building_class_id=BUILDING_ID)
     assert "child.objectclass_id IN (100, 901, 902)" in sql
-    # `parent` must never carry an unqualified or wrongly-qualified copy.
+    # `parent` is restricted by the Building class alone, as CJDB's Q4 is.
     assert "parent.objectclass_id IN" not in sql
-    assert args == ("NL.IMBAG.Pand.0503100000000010",)
+    assert "parent.objectclass_id = %s" in sql
+    assert args == (BUILDING_ID,)
 
 
 # --- _cityobject_predicate: kept as the resolution-time primitive ---------

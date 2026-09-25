@@ -6,9 +6,9 @@
     "query_tag": "",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 7.174773,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685226,
+    "time_s": 6.765682,
+    "peak_rss_bytes": 11956224,
+    "peak_heap_bytes": 4703719,
     "result_count": 23777
   },
   {
@@ -18,9 +18,9 @@
     "query_tag": "",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 7.108171,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685226,
+    "time_s": 7.88863,
+    "peak_rss_bytes": 12419072,
+    "peak_heap_bytes": 4703719,
     "result_count": 23777
   },
   {
@@ -30,9 +30,9 @@
     "query_tag": "",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 8.44422,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685226,
+    "time_s": 7.354601,
+    "peak_rss_bytes": 11988992,
+    "peak_heap_bytes": 4703719,
     "result_count": 23777
   },
   {
@@ -42,9 +42,9 @@
     "query_tag": "",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 7.066646,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685226,
+    "time_s": 7.243043,
+    "peak_rss_bytes": 11993088,
+    "peak_heap_bytes": 4703719,
     "result_count": 23777
   },
   {
@@ -54,9 +54,9 @@
     "query_tag": "",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 7.585016,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685226,
+    "time_s": 7.228636,
+    "peak_rss_bytes": 11853824,
+    "peak_heap_bytes": 4703719,
     "result_count": 23777
   },
   {
@@ -66,9 +66,9 @@
     "query_tag": "",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 7.124853,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685226,
+    "time_s": 7.930502,
+    "peak_rss_bytes": 12234752,
+    "peak_heap_bytes": 4703719,
     "result_count": 23777
   },
   {
@@ -78,9 +78,9 @@
     "query_tag": "",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 7.110207,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685226,
+    "time_s": 7.22795,
+    "peak_rss_bytes": 12050432,
+    "peak_heap_bytes": 4703719,
     "result_count": 23777
   },
   {
@@ -90,9 +90,9 @@
     "query_tag": "",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 7.159098,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685226,
+    "time_s": 7.040562,
+    "peak_rss_bytes": 11923456,
+    "peak_heap_bytes": 4703719,
     "result_count": 23777
   },
   {
@@ -102,9 +102,9 @@
     "query_tag": "",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 7.09613,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685222,
+    "time_s": 7.326205,
+    "peak_rss_bytes": 12341248,
+    "peak_heap_bytes": 4703715,
     "result_count": 23777
   },
   {
@@ -114,9 +114,9 @@
     "query_tag": "",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 7.129606,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685222,
+    "time_s": 7.315432,
+    "peak_rss_bytes": 11919360,
+    "peak_heap_bytes": 4703715,
     "result_count": 23777
   },
   {
@@ -126,9 +126,9 @@
     "query_tag": "",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 7.141265,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685222,
+    "time_s": 7.302552,
+    "peak_rss_bytes": 12042240,
+    "peak_heap_bytes": 4703715,
     "result_count": 23777
   },
   {
@@ -138,9 +138,9 @@
     "query_tag": "",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 7.174322,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685222,
+    "time_s": 8.144127,
+    "peak_rss_bytes": 11984896,
+    "peak_heap_bytes": 4703715,
     "result_count": 23777
   },
   {
@@ -150,9 +150,9 @@
     "query_tag": "",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 7.109046,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685222,
+    "time_s": 7.330704,
+    "peak_rss_bytes": 12111872,
+    "peak_heap_bytes": 4703715,
     "result_count": 23777
   },
   {
@@ -162,9 +162,9 @@
     "query_tag": "",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 7.667349,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685222,
+    "time_s": 8.219883,
+    "peak_rss_bytes": 11943936,
+    "peak_heap_bytes": 4703715,
     "result_count": 23777
   },
   {
@@ -174,9 +174,9 @@
     "query_tag": "",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 7.915905,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685222,
+    "time_s": 8.310235,
+    "peak_rss_bytes": 12234752,
+    "peak_heap_bytes": 4703715,
     "result_count": 23777
   },
   {
@@ -186,9 +186,9 @@
     "query_tag": "",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 8.64386,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685222,
+    "time_s": 9.085654,
+    "peak_rss_bytes": 12058624,
+    "peak_heap_bytes": 4703715,
     "result_count": 23777
   },
   {
@@ -198,9 +198,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 7.288181,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.264474,
+    "peak_rss_bytes": 12050432,
+    "peak_heap_bytes": 4703720,
     "result_count": 238
   },
   {
@@ -210,9 +210,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 8.534718,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 8.025099,
+    "peak_rss_bytes": 11993088,
+    "peak_heap_bytes": 4703720,
     "result_count": 238
   },
   {
@@ -222,9 +222,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 7.110786,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.298652,
+    "peak_rss_bytes": 12124160,
+    "peak_heap_bytes": 4703720,
     "result_count": 238
   },
   {
@@ -234,9 +234,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 7.126446,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 6.689378,
+    "peak_rss_bytes": 12046336,
+    "peak_heap_bytes": 4703720,
     "result_count": 238
   },
   {
@@ -246,9 +246,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 7.096836,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 8.221433,
+    "peak_rss_bytes": 12152832,
+    "peak_heap_bytes": 4703720,
     "result_count": 238
   },
   {
@@ -258,9 +258,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 7.961657,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.300055,
+    "peak_rss_bytes": 12038144,
+    "peak_heap_bytes": 4703720,
     "result_count": 238
   },
   {
@@ -270,9 +270,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 8.171258,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.299538,
+    "peak_rss_bytes": 11984896,
+    "peak_heap_bytes": 4703720,
     "result_count": 238
   },
   {
@@ -282,9 +282,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 7.12366,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.287478,
+    "peak_rss_bytes": 12062720,
+    "peak_heap_bytes": 4703720,
     "result_count": 238
   },
   {
@@ -294,9 +294,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 7.124761,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.011032,
+    "peak_rss_bytes": 12034048,
+    "peak_heap_bytes": 4703720,
     "result_count": 1189
   },
   {
@@ -306,9 +306,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 7.0757,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.240655,
+    "peak_rss_bytes": 12161024,
+    "peak_heap_bytes": 4703720,
     "result_count": 1189
   },
   {
@@ -318,9 +318,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 7.159046,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.190876,
+    "peak_rss_bytes": 12169216,
+    "peak_heap_bytes": 4703720,
     "result_count": 1189
   },
   {
@@ -330,9 +330,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 7.103471,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.768478,
+    "peak_rss_bytes": 12042240,
+    "peak_heap_bytes": 4703720,
     "result_count": 1189
   },
   {
@@ -342,9 +342,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 7.087883,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.241684,
+    "peak_rss_bytes": 11984896,
+    "peak_heap_bytes": 4703720,
     "result_count": 1189
   },
   {
@@ -354,9 +354,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 7.102174,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.258912,
+    "peak_rss_bytes": 12046336,
+    "peak_heap_bytes": 4703720,
     "result_count": 1189
   },
   {
@@ -366,9 +366,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 7.091987,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.307728,
+    "peak_rss_bytes": 11984896,
+    "peak_heap_bytes": 4703720,
     "result_count": 1189
   },
   {
@@ -378,9 +378,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 7.141941,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 8.05337,
+    "peak_rss_bytes": 12058624,
+    "peak_heap_bytes": 4703720,
     "result_count": 1189
   },
   {
@@ -390,9 +390,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 8.06588,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.933435,
+    "peak_rss_bytes": 11988992,
+    "peak_heap_bytes": 4703720,
     "result_count": 5944
   },
   {
@@ -402,9 +402,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 6.980596,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.226532,
+    "peak_rss_bytes": 12214272,
+    "peak_heap_bytes": 4703720,
     "result_count": 5944
   },
   {
@@ -414,9 +414,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 7.104399,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.247655,
+    "peak_rss_bytes": 11976704,
+    "peak_heap_bytes": 4703720,
     "result_count": 5944
   },
   {
@@ -426,9 +426,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 7.139634,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.225721,
+    "peak_rss_bytes": 12173312,
+    "peak_heap_bytes": 4703720,
     "result_count": 5944
   },
   {
@@ -438,9 +438,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 6.823429,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.22343,
+    "peak_rss_bytes": 12177408,
+    "peak_heap_bytes": 4703720,
     "result_count": 5944
   },
   {
@@ -450,9 +450,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 7.144733,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 9.100236,
+    "peak_rss_bytes": 12189696,
+    "peak_heap_bytes": 4703720,
     "result_count": 5944
   },
   {
@@ -462,9 +462,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 7.145328,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 6.959584,
+    "peak_rss_bytes": 12091392,
+    "peak_heap_bytes": 4703720,
     "result_count": 5944
   },
   {
@@ -474,106 +474,106 @@
     "query_tag": "bbox-25pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 8.010362,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685227,
+    "time_s": 7.293708,
+    "peak_rss_bytes": 12103680,
+    "peak_heap_bytes": 4703720,
     "result_count": 5944
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "citygml",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 7.133669,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685255,
-    "result_count": 23777
+    "time_s": 7.179643,
+    "peak_rss_bytes": 11980800,
+    "peak_heap_bytes": 4703738,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "citygml",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 7.102766,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685255,
-    "result_count": 23777
+    "time_s": 8.60792,
+    "peak_rss_bytes": 11988992,
+    "peak_heap_bytes": 4703738,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "citygml",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 8.180778,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685255,
-    "result_count": 23777
+    "time_s": 8.06085,
+    "peak_rss_bytes": 12013568,
+    "peak_heap_bytes": 4703738,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "citygml",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 7.139229,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685255,
-    "result_count": 23777
+    "time_s": 8.626319,
+    "peak_rss_bytes": 12075008,
+    "peak_heap_bytes": 4703738,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "citygml",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 8.128509,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685255,
-    "result_count": 23777
+    "time_s": 7.413043,
+    "peak_rss_bytes": 12103680,
+    "peak_heap_bytes": 4703738,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "citygml",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 7.10629,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685255,
-    "result_count": 23777
+    "time_s": 8.250602,
+    "peak_rss_bytes": 12140544,
+    "peak_heap_bytes": 4703738,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "citygml",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 7.099233,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685255,
-    "result_count": 23777
+    "time_s": 7.260593,
+    "peak_rss_bytes": 11980800,
+    "peak_heap_bytes": 4703738,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "citygml",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 7.07606,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685255,
-    "result_count": 23777
+    "time_s": 8.070914,
+    "peak_rss_bytes": 11964416,
+    "peak_heap_bytes": 4703738,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
@@ -582,9 +582,9 @@
     "query_tag": "id-10pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 5.224805,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 5.337558,
+    "peak_rss_bytes": 11276288,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -594,9 +594,9 @@
     "query_tag": "id-10pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 6.442913,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 5.243497,
+    "peak_rss_bytes": 11468800,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -606,9 +606,9 @@
     "query_tag": "id-10pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 6.099157,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 5.314637,
+    "peak_rss_bytes": 11202560,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -618,9 +618,9 @@
     "query_tag": "id-10pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 5.203872,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 5.325494,
+    "peak_rss_bytes": 11481088,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -630,9 +630,9 @@
     "query_tag": "id-10pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 6.217241,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 6.036368,
+    "peak_rss_bytes": 11534336,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -642,9 +642,9 @@
     "query_tag": "id-10pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 5.23791,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 7.62196,
+    "peak_rss_bytes": 11317248,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -654,9 +654,9 @@
     "query_tag": "id-10pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 5.921368,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 6.153843,
+    "peak_rss_bytes": 11186176,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -666,9 +666,9 @@
     "query_tag": "id-10pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 5.174031,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 6.194173,
+    "peak_rss_bytes": 11538432,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -678,9 +678,9 @@
     "query_tag": "id-50pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 2.112249,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 2.231384,
+    "peak_rss_bytes": 11464704,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -690,9 +690,9 @@
     "query_tag": "id-50pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 2.208588,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 2.374591,
+    "peak_rss_bytes": 11182080,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -702,9 +702,9 @@
     "query_tag": "id-50pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 2.176662,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 2.214653,
+    "peak_rss_bytes": 11440128,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -714,9 +714,9 @@
     "query_tag": "id-50pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 2.212675,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 2.191202,
+    "peak_rss_bytes": 11239424,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -726,9 +726,9 @@
     "query_tag": "id-50pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 2.20347,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 2.104615,
+    "peak_rss_bytes": 11407360,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -738,9 +738,9 @@
     "query_tag": "id-50pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 2.207369,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 2.185064,
+    "peak_rss_bytes": 11198464,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -750,9 +750,9 @@
     "query_tag": "id-50pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 2.204591,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 1.878071,
+    "peak_rss_bytes": 11186176,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -762,9 +762,9 @@
     "query_tag": "id-50pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 2.213594,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 1.870553,
+    "peak_rss_bytes": 11444224,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -774,9 +774,9 @@
     "query_tag": "id-90pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 1.115893,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 1.165343,
+    "peak_rss_bytes": 11190272,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -786,9 +786,9 @@
     "query_tag": "id-90pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 1.117732,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 1.160251,
+    "peak_rss_bytes": 11268096,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -798,9 +798,9 @@
     "query_tag": "id-90pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 1.118327,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 1.154094,
+    "peak_rss_bytes": 11427840,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -810,9 +810,9 @@
     "query_tag": "id-90pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 1.111378,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 1.161357,
+    "peak_rss_bytes": 11239424,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -822,9 +822,9 @@
     "query_tag": "id-90pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 1.118568,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 1.158187,
+    "peak_rss_bytes": 11300864,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -834,9 +834,9 @@
     "query_tag": "id-90pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 1.048745,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 1.167466,
+    "peak_rss_bytes": 11190272,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -846,9 +846,9 @@
     "query_tag": "id-90pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 1.123721,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 1.155909,
+    "peak_rss_bytes": 11173888,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -858,9 +858,9 @@
     "query_tag": "id-90pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 1.122638,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4196969,
+    "time_s": 1.161799,
+    "peak_rss_bytes": 11223040,
+    "peak_heap_bytes": 4215462,
     "result_count": 1
   },
   {
@@ -870,9 +870,9 @@
     "query_tag": "id-miss",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 7.116279,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685283,
+    "time_s": 8.85913,
+    "peak_rss_bytes": 11988992,
+    "peak_heap_bytes": 4703776,
     "result_count": 0
   },
   {
@@ -882,9 +882,9 @@
     "query_tag": "id-miss",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 7.804886,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685283,
+    "time_s": 8.014137,
+    "peak_rss_bytes": 12029952,
+    "peak_heap_bytes": 4703776,
     "result_count": 0
   },
   {
@@ -894,9 +894,9 @@
     "query_tag": "id-miss",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 7.290375,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685283,
+    "time_s": 7.335197,
+    "peak_rss_bytes": 12025856,
+    "peak_heap_bytes": 4703776,
     "result_count": 0
   },
   {
@@ -906,9 +906,9 @@
     "query_tag": "id-miss",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 7.151017,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685283,
+    "time_s": 7.336328,
+    "peak_rss_bytes": 12079104,
+    "peak_heap_bytes": 4703776,
     "result_count": 0
   },
   {
@@ -918,9 +918,9 @@
     "query_tag": "id-miss",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 9.421007,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685283,
+    "time_s": 7.872793,
+    "peak_rss_bytes": 12152832,
+    "peak_heap_bytes": 4703776,
     "result_count": 0
   },
   {
@@ -930,9 +930,9 @@
     "query_tag": "id-miss",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 8.813854,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685283,
+    "time_s": 8.362288,
+    "peak_rss_bytes": 11911168,
+    "peak_heap_bytes": 4703776,
     "result_count": 0
   },
   {
@@ -942,9 +942,9 @@
     "query_tag": "id-miss",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 7.127439,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685283,
+    "time_s": 7.261232,
+    "peak_rss_bytes": 12046336,
+    "peak_heap_bytes": 4703776,
     "result_count": 0
   },
   {
@@ -954,9 +954,9 @@
     "query_tag": "id-miss",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 7.172485,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 4685283,
+    "time_s": 7.297244,
+    "peak_rss_bytes": 11964416,
+    "peak_heap_bytes": 4703776,
     "result_count": 0
   },
   {
@@ -966,945 +966,945 @@
     "query_tag": "",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 3.476457,
-    "peak_rss_bytes": 1557712896,
-    "peak_heap_bytes": 1382038917,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "full-read",
-    "query_tag": "",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 3.468718,
-    "peak_rss_bytes": 1557778432,
-    "peak_heap_bytes": 1382038917,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "full-read",
-    "query_tag": "",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 3.486875,
-    "peak_rss_bytes": 1557168128,
-    "peak_heap_bytes": 1382038917,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "full-read",
-    "query_tag": "",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 3.58438,
-    "peak_rss_bytes": 1557721088,
-    "peak_heap_bytes": 1382038917,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "full-read",
-    "query_tag": "",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 3.463538,
-    "peak_rss_bytes": 1557716992,
-    "peak_heap_bytes": 1382038917,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "full-read",
-    "query_tag": "",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 3.729901,
-    "peak_rss_bytes": 1557794816,
-    "peak_heap_bytes": 1382038917,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "full-read",
-    "query_tag": "",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 3.545515,
-    "peak_rss_bytes": 1557774336,
-    "peak_heap_bytes": 1382038917,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "full-read",
-    "query_tag": "",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 3.453037,
-    "peak_rss_bytes": 1557798912,
-    "peak_heap_bytes": 1382038917,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "count",
-    "query_tag": "",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 4.540436,
-    "peak_rss_bytes": 1557504000,
-    "peak_heap_bytes": 1382038913,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "count",
-    "query_tag": "",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 3.776037,
-    "peak_rss_bytes": 1556926464,
-    "peak_heap_bytes": 1382038913,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "count",
-    "query_tag": "",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 3.926996,
-    "peak_rss_bytes": 1557610496,
-    "peak_heap_bytes": 1382038913,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "count",
-    "query_tag": "",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 3.205383,
-    "peak_rss_bytes": 1557704704,
-    "peak_heap_bytes": 1382038913,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "count",
-    "query_tag": "",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 4.225566,
-    "peak_rss_bytes": 1557716992,
-    "peak_heap_bytes": 1382038913,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "count",
-    "query_tag": "",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 4.230976,
-    "peak_rss_bytes": 1557774336,
-    "peak_heap_bytes": 1382038913,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "count",
-    "query_tag": "",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 3.532081,
-    "peak_rss_bytes": 1557790720,
-    "peak_heap_bytes": 1382038913,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "count",
-    "query_tag": "",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 3.242049,
-    "peak_rss_bytes": 1557782528,
-    "peak_heap_bytes": 1382038913,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-1pct",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 3.889852,
-    "peak_rss_bytes": 1557729280,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 238
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-1pct",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 3.641696,
-    "peak_rss_bytes": 1557725184,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 238
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-1pct",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 3.539419,
-    "peak_rss_bytes": 1557778432,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 238
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-1pct",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 3.647525,
-    "peak_rss_bytes": 1557704704,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 238
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-1pct",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 3.587315,
-    "peak_rss_bytes": 1557712896,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 238
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-1pct",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 3.584549,
-    "peak_rss_bytes": 1557786624,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 238
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-1pct",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 3.585657,
-    "peak_rss_bytes": 1557712896,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 238
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-1pct",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 3.653334,
-    "peak_rss_bytes": 1557712896,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 238
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 3.779079,
-    "peak_rss_bytes": 1557721088,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 3.462428,
-    "peak_rss_bytes": 1557778432,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 4.779269,
-    "peak_rss_bytes": 1557716992,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 3.417758,
+    "time_s": 2.439309,
     "peak_rss_bytes": 1557696512,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 1189
+    "peak_heap_bytes": 1382038947,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 3.478767,
-    "peak_rss_bytes": 1557790720,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 3.470798,
-    "peak_rss_bytes": 1557712896,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 3.744054,
-    "peak_rss_bytes": 1557704704,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 4.864172,
-    "peak_rss_bytes": 1557782528,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 3.670525,
-    "peak_rss_bytes": 1557774336,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
+    "scenario": "full-read",
+    "query_tag": "",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 4.800288,
-    "peak_rss_bytes": 1557712896,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 5944
+    "time_s": 3.507961,
+    "peak_rss_bytes": 1557757952,
+    "peak_heap_bytes": 1382038947,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
+    "scenario": "full-read",
+    "query_tag": "",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 4.56014,
-    "peak_rss_bytes": 1557716992,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 5944
+    "time_s": 3.955785,
+    "peak_rss_bytes": 1557221376,
+    "peak_heap_bytes": 1382038947,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
+    "scenario": "full-read",
+    "query_tag": "",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 3.630506,
-    "peak_rss_bytes": 1557774336,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 3.618909,
-    "peak_rss_bytes": 1557721088,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 3.504765,
-    "peak_rss_bytes": 1557708800,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 3.568239,
-    "peak_rss_bytes": 1557778432,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 5.008412,
-    "peak_rss_bytes": 1557712896,
-    "peak_heap_bytes": 1382038918,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 4.290445,
-    "peak_rss_bytes": 1557712896,
-    "peak_heap_bytes": 1382038946,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 5.251775,
-    "peak_rss_bytes": 1555570688,
-    "peak_heap_bytes": 1382038946,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 5.127729,
-    "peak_rss_bytes": 1557102592,
-    "peak_heap_bytes": 1382038946,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 4.345567,
-    "peak_rss_bytes": 1557716992,
-    "peak_heap_bytes": 1382038946,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 3.352268,
+    "time_s": 3.341648,
     "peak_rss_bytes": 1557766144,
-    "peak_heap_bytes": 1382038946,
+    "peak_heap_bytes": 1382038947,
     "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 5,
+    "scenario": "full-read",
+    "query_tag": "",
+    "sample_index": 4,
     "warmup": false,
-    "time_s": 3.253372,
-    "peak_rss_bytes": 1557770240,
-    "peak_heap_bytes": 1382038946,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 3.137158,
-    "peak_rss_bytes": 1557786624,
-    "peak_heap_bytes": 1382038946,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 3.362292,
+    "time_s": 3.467663,
     "peak_rss_bytes": 1557700608,
-    "peak_heap_bytes": 1382038946,
+    "peak_heap_bytes": 1382038947,
     "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-10pct",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 3.282576,
-    "peak_rss_bytes": 1557786624,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-10pct",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 3.708383,
-    "peak_rss_bytes": 1557430272,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-10pct",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 3.838222,
-    "peak_rss_bytes": 1557352448,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-10pct",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 3.31903,
-    "peak_rss_bytes": 1557786624,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-10pct",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 3.358443,
-    "peak_rss_bytes": 1557721088,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-10pct",
+    "scenario": "full-read",
+    "query_tag": "",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 4.177234,
-    "peak_rss_bytes": 1557823488,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
+    "time_s": 3.182631,
+    "peak_rss_bytes": 1557700608,
+    "peak_heap_bytes": 1382038947,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-10pct",
+    "scenario": "full-read",
+    "query_tag": "",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 5.519115,
-    "peak_rss_bytes": 1555910656,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
+    "time_s": 3.51068,
+    "peak_rss_bytes": 1557774336,
+    "peak_heap_bytes": 1382038947,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-10pct",
+    "scenario": "full-read",
+    "query_tag": "",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 4.912256,
-    "peak_rss_bytes": 1556770816,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
+    "time_s": 4.275333,
+    "peak_rss_bytes": 1556877312,
+    "peak_heap_bytes": 1382038947,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
+    "scenario": "count",
+    "query_tag": "",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 3.45651,
-    "peak_rss_bytes": 1557708800,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
+    "time_s": 2.346362,
+    "peak_rss_bytes": 1557700608,
+    "peak_heap_bytes": 1382038943,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
+    "scenario": "count",
+    "query_tag": "",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 3.258677,
-    "peak_rss_bytes": 1557721088,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
+    "time_s": 3.198928,
+    "peak_rss_bytes": 1557684224,
+    "peak_heap_bytes": 1382038943,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
+    "scenario": "count",
+    "query_tag": "",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 3.352315,
-    "peak_rss_bytes": 1557790720,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
+    "time_s": 3.364849,
+    "peak_rss_bytes": 1557676032,
+    "peak_heap_bytes": 1382038943,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
+    "scenario": "count",
+    "query_tag": "",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 3.214143,
-    "peak_rss_bytes": 1557803008,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
+    "time_s": 3.133247,
+    "peak_rss_bytes": 1557766144,
+    "peak_heap_bytes": 1382038943,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
+    "scenario": "count",
+    "query_tag": "",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 3.275546,
-    "peak_rss_bytes": 1557725184,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
+    "time_s": 3.133653,
+    "peak_rss_bytes": 1557774336,
+    "peak_heap_bytes": 1382038943,
+    "result_count": 23777
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
+    "scenario": "count",
+    "query_tag": "",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 3.393515,
-    "peak_rss_bytes": 1557803008,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 3.400139,
-    "peak_rss_bytes": 1557729280,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 4.085669,
-    "peak_rss_bytes": 1556172800,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 3.318252,
-    "peak_rss_bytes": 1557790720,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 4.421859,
-    "peak_rss_bytes": 1557790720,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 4.223557,
-    "peak_rss_bytes": 1557798912,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 4.271745,
-    "peak_rss_bytes": 1557716992,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 2.868745,
-    "peak_rss_bytes": 1557778432,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 4.644534,
-    "peak_rss_bytes": 1557733376,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 4.451578,
-    "peak_rss_bytes": 1557729280,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 4.308935,
-    "peak_rss_bytes": 1557798912,
-    "peak_heap_bytes": 1382038957,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 4.706534,
-    "peak_rss_bytes": 1557557248,
-    "peak_heap_bytes": 1382038974,
-    "result_count": 0
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 4.56154,
-    "peak_rss_bytes": 1556652032,
-    "peak_heap_bytes": 1382038974,
-    "result_count": 0
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 5.132616,
-    "peak_rss_bytes": 1556832256,
-    "peak_heap_bytes": 1382038974,
-    "result_count": 0
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 4.190949,
-    "peak_rss_bytes": 1557741568,
-    "peak_heap_bytes": 1382038974,
-    "result_count": 0
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 3.319674,
-    "peak_rss_bytes": 1557663744,
-    "peak_heap_bytes": 1382038974,
-    "result_count": 0
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 3.331042,
-    "peak_rss_bytes": 1557590016,
-    "peak_heap_bytes": 1382038974,
-    "result_count": 0
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjson",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 3.328318,
+    "time_s": 3.275593,
     "peak_rss_bytes": 1557688320,
-    "peak_heap_bytes": 1382038974,
+    "peak_heap_bytes": 1382038943,
+    "result_count": 23777
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "count",
+    "query_tag": "",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 3.57096,
+    "peak_rss_bytes": 1557331968,
+    "peak_heap_bytes": 1382038943,
+    "result_count": 23777
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "count",
+    "query_tag": "",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 3.284037,
+    "peak_rss_bytes": 1557774336,
+    "peak_heap_bytes": 1382038943,
+    "result_count": 23777
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-1pct",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 4.587166,
+    "peak_rss_bytes": 1557569536,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 238
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-1pct",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 3.347509,
+    "peak_rss_bytes": 1556975616,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 238
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-1pct",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 3.452297,
+    "peak_rss_bytes": 1557794816,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 238
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-1pct",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 3.487891,
+    "peak_rss_bytes": 1557811200,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 238
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-1pct",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 3.574025,
+    "peak_rss_bytes": 1557803008,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 238
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-1pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 3.384761,
+    "peak_rss_bytes": 1557811200,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 238
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-1pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 3.3859,
+    "peak_rss_bytes": 1557872640,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 238
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-1pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 3.610749,
+    "peak_rss_bytes": 1557807104,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 238
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 3.40852,
+    "peak_rss_bytes": 1557880832,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 3.429201,
+    "peak_rss_bytes": 1557798912,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 3.541417,
+    "peak_rss_bytes": 1557794816,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 3.305337,
+    "peak_rss_bytes": 1557803008,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 3.654906,
+    "peak_rss_bytes": 1557811200,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 3.406169,
+    "peak_rss_bytes": 1557860352,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 3.407387,
+    "peak_rss_bytes": 1557790720,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 4.965126,
+    "peak_rss_bytes": 1557667840,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 3.486231,
+    "peak_rss_bytes": 1557790720,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 3.392462,
+    "peak_rss_bytes": 1557798912,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 3.472124,
+    "peak_rss_bytes": 1557893120,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 3.422447,
+    "peak_rss_bytes": 1557872640,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 3.506338,
+    "peak_rss_bytes": 1557798912,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 3.36439,
+    "peak_rss_bytes": 1557794816,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 3.149773,
+    "peak_rss_bytes": 1557794816,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 3.4594,
+    "peak_rss_bytes": 1557876736,
+    "peak_heap_bytes": 1382038948,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 3.234511,
+    "peak_rss_bytes": 1557884928,
+    "peak_heap_bytes": 1382038966,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 3.297376,
+    "peak_rss_bytes": 1557815296,
+    "peak_heap_bytes": 1382038966,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 3.323172,
+    "peak_rss_bytes": 1557807104,
+    "peak_heap_bytes": 1382038966,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 4.034223,
+    "peak_rss_bytes": 1557479424,
+    "peak_heap_bytes": 1382038966,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 3.68636,
+    "peak_rss_bytes": 1556971520,
+    "peak_heap_bytes": 1382038966,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 2.71616,
+    "peak_rss_bytes": 1557794816,
+    "peak_heap_bytes": 1382038966,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 3.214928,
+    "peak_rss_bytes": 1557798912,
+    "peak_heap_bytes": 1382038966,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 3.780247,
+    "peak_rss_bytes": 1556934656,
+    "peak_heap_bytes": 1382038966,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-10pct",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 3.180717,
+    "peak_rss_bytes": 1557774336,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-10pct",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 3.785007,
+    "peak_rss_bytes": 1556815872,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-10pct",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 3.252165,
+    "peak_rss_bytes": 1557708800,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-10pct",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 2.553841,
+    "peak_rss_bytes": 1557770240,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-10pct",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 3.407834,
+    "peak_rss_bytes": 1557704704,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-10pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 3.894151,
+    "peak_rss_bytes": 1557708800,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-10pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 3.177401,
+    "peak_rss_bytes": 1557708800,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-10pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 2.782477,
+    "peak_rss_bytes": 1557557248,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 3.033181,
+    "peak_rss_bytes": 1557770240,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 3.231421,
+    "peak_rss_bytes": 1557704704,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 2.874438,
+    "peak_rss_bytes": 1557774336,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 3.227871,
+    "peak_rss_bytes": 1557712896,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 3.239178,
+    "peak_rss_bytes": 1557688320,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 3.33377,
+    "peak_rss_bytes": 1557766144,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 3.009146,
+    "peak_rss_bytes": 1557696512,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 3.158344,
+    "peak_rss_bytes": 1557716992,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 3.409031,
+    "peak_rss_bytes": 1556742144,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 2.821809,
+    "peak_rss_bytes": 1557766144,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 3.225594,
+    "peak_rss_bytes": 1557704704,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 3.296157,
+    "peak_rss_bytes": 1557708800,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 3.177603,
+    "peak_rss_bytes": 1557774336,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 3.136199,
+    "peak_rss_bytes": 1557704704,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 2.692892,
+    "peak_rss_bytes": 1557766144,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 3.282683,
+    "peak_rss_bytes": 1557774336,
+    "peak_heap_bytes": 1382038987,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-miss",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 3.964885,
+    "peak_rss_bytes": 1557155840,
+    "peak_heap_bytes": 1382039004,
+    "result_count": 0
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-miss",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 3.188281,
+    "peak_rss_bytes": 1557725184,
+    "peak_heap_bytes": 1382039004,
+    "result_count": 0
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-miss",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 3.265494,
+    "peak_rss_bytes": 1557725184,
+    "peak_heap_bytes": 1382039004,
+    "result_count": 0
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-miss",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 3.220305,
+    "peak_rss_bytes": 1557708800,
+    "peak_heap_bytes": 1382039004,
+    "result_count": 0
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-miss",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 3.276553,
+    "peak_rss_bytes": 1557716992,
+    "peak_heap_bytes": 1382039004,
+    "result_count": 0
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-miss",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 3.287043,
+    "peak_rss_bytes": 1557704704,
+    "peak_heap_bytes": 1382039004,
+    "result_count": 0
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjson",
+    "scenario": "id-lookup",
+    "query_tag": "id-miss",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 3.15319,
+    "peak_rss_bytes": 1557700608,
+    "peak_heap_bytes": 1382039004,
     "result_count": 0
   },
   {
@@ -1914,9 +1914,9 @@
     "query_tag": "id-miss",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 3.301525,
-    "peak_rss_bytes": 1557745664,
-    "peak_heap_bytes": 1382038974,
+    "time_s": 3.758555,
+    "peak_rss_bytes": 1556856832,
+    "peak_heap_bytes": 1382039004,
     "result_count": 0
   },
   {
@@ -1926,9 +1926,9 @@
     "query_tag": "",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 2.411717,
+    "time_s": 2.257334,
     "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335658,
+    "peak_heap_bytes": 201335673,
     "result_count": 23777
   },
   {
@@ -1938,9 +1938,9 @@
     "query_tag": "",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 2.324543,
+    "time_s": 2.235764,
     "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335658,
+    "peak_heap_bytes": 201335673,
     "result_count": 23777
   },
   {
@@ -1950,33 +1950,33 @@
     "query_tag": "",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 2.379907,
+    "time_s": 2.442188,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335673,
+    "result_count": 23777
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "full-read",
+    "query_tag": "",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 2.34442,
+    "peak_rss_bytes": 140537856,
+    "peak_heap_bytes": 201335673,
+    "result_count": 23777
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "full-read",
+    "query_tag": "",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 2.006337,
     "peak_rss_bytes": 140533760,
-    "peak_heap_bytes": 201335658,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "full-read",
-    "query_tag": "",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 2.44836,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335658,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "full-read",
-    "query_tag": "",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 2.439694,
-    "peak_rss_bytes": 140529664,
-    "peak_heap_bytes": 201335658,
+    "peak_heap_bytes": 201335673,
     "result_count": 23777
   },
   {
@@ -1986,9 +1986,9 @@
     "query_tag": "",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 2.491342,
-    "peak_rss_bytes": 140529664,
-    "peak_heap_bytes": 201335658,
+    "time_s": 2.428778,
+    "peak_rss_bytes": 140537856,
+    "peak_heap_bytes": 201335673,
     "result_count": 23777
   },
   {
@@ -1998,9 +1998,9 @@
     "query_tag": "",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 2.479715,
-    "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335658,
+    "time_s": 2.434365,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335673,
     "result_count": 23777
   },
   {
@@ -2010,21 +2010,21 @@
     "query_tag": "",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 2.748211,
+    "time_s": 2.679688,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335673,
+    "result_count": 23777
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "count",
+    "query_tag": "",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 2.394675,
     "peak_rss_bytes": 140533760,
-    "peak_heap_bytes": 201335658,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "count",
-    "query_tag": "",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 2.473016,
-    "peak_rss_bytes": 140550144,
-    "peak_heap_bytes": 201335654,
+    "peak_heap_bytes": 201335669,
     "result_count": 23777
   },
   {
@@ -2034,9 +2034,9 @@
     "query_tag": "",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 2.456164,
-    "peak_rss_bytes": 140525568,
-    "peak_heap_bytes": 201335654,
+    "time_s": 2.405214,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335669,
     "result_count": 23777
   },
   {
@@ -2046,9 +2046,9 @@
     "query_tag": "",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 2.448075,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335654,
+    "time_s": 2.825188,
+    "peak_rss_bytes": 140533760,
+    "peak_heap_bytes": 201335669,
     "result_count": 23777
   },
   {
@@ -2058,9 +2058,9 @@
     "query_tag": "",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 2.802804,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335654,
+    "time_s": 2.378081,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335669,
     "result_count": 23777
   },
   {
@@ -2070,9 +2070,9 @@
     "query_tag": "",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 2.843197,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335654,
+    "time_s": 2.405379,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335669,
     "result_count": 23777
   },
   {
@@ -2082,9 +2082,9 @@
     "query_tag": "",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 2.323354,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335654,
+    "time_s": 2.381822,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335669,
     "result_count": 23777
   },
   {
@@ -2094,9 +2094,9 @@
     "query_tag": "",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 2.470042,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335654,
+    "time_s": 2.391181,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335669,
     "result_count": 23777
   },
   {
@@ -2106,9 +2106,9 @@
     "query_tag": "",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 2.474633,
-    "peak_rss_bytes": 140509184,
-    "peak_heap_bytes": 201335654,
+    "time_s": 2.407802,
+    "peak_rss_bytes": 140517376,
+    "peak_heap_bytes": 201335669,
     "result_count": 23777
   },
   {
@@ -2118,9 +2118,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 2.464933,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335659,
+    "time_s": 2.031947,
+    "peak_rss_bytes": 139939840,
+    "peak_heap_bytes": 201335674,
     "result_count": 238
   },
   {
@@ -2130,9 +2130,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 2.473017,
-    "peak_rss_bytes": 140529664,
-    "peak_heap_bytes": 201335659,
+    "time_s": 2.409046,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335674,
     "result_count": 238
   },
   {
@@ -2142,9 +2142,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 2.442518,
-    "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335659,
+    "time_s": 2.402399,
+    "peak_rss_bytes": 140537856,
+    "peak_heap_bytes": 201335674,
     "result_count": 238
   },
   {
@@ -2154,9 +2154,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 2.407723,
-    "peak_rss_bytes": 140525568,
-    "peak_heap_bytes": 201335659,
+    "time_s": 2.297303,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335674,
     "result_count": 238
   },
   {
@@ -2166,9 +2166,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 2.484276,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335659,
+    "time_s": 2.376303,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335674,
     "result_count": 238
   },
   {
@@ -2178,9 +2178,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 2.42437,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335659,
+    "time_s": 2.862584,
+    "peak_rss_bytes": 140537856,
+    "peak_heap_bytes": 201335674,
     "result_count": 238
   },
   {
@@ -2190,9 +2190,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 2.79294,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335659,
+    "time_s": 2.510011,
+    "peak_rss_bytes": 140550144,
+    "peak_heap_bytes": 201335674,
     "result_count": 238
   },
   {
@@ -2202,9 +2202,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 2.462432,
+    "time_s": 2.409295,
     "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335659,
+    "peak_heap_bytes": 201335674,
     "result_count": 238
   },
   {
@@ -2214,9 +2214,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 2.443856,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335659,
+    "time_s": 2.414995,
+    "peak_rss_bytes": 140218368,
+    "peak_heap_bytes": 201335674,
     "result_count": 1189
   },
   {
@@ -2226,9 +2226,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 2.466445,
-    "peak_rss_bytes": 140550144,
-    "peak_heap_bytes": 201335659,
+    "time_s": 2.61723,
+    "peak_rss_bytes": 140554240,
+    "peak_heap_bytes": 201335674,
     "result_count": 1189
   },
   {
@@ -2238,9 +2238,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 2.464668,
-    "peak_rss_bytes": 140550144,
-    "peak_heap_bytes": 201335659,
+    "time_s": 2.339517,
+    "peak_rss_bytes": 140537856,
+    "peak_heap_bytes": 201335674,
     "result_count": 1189
   },
   {
@@ -2250,250 +2250,250 @@
     "query_tag": "bbox-5pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 2.479999,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335659,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 2.428174,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335659,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 2.47984,
-    "peak_rss_bytes": 140550144,
-    "peak_heap_bytes": 201335659,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 2.440786,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335659,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-5pct",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 2.17211,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335659,
-    "result_count": 1189
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 2.409696,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335659,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 2.451822,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335659,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 2.408494,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335659,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 2.181671,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335659,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 2.47178,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335659,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 2.139603,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335659,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 2.436276,
-    "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335659,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "bbox-query",
-    "query_tag": "bbox-25pct",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 2.473667,
-    "peak_rss_bytes": 140529664,
-    "peak_heap_bytes": 201335659,
-    "result_count": 5944
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 2.473571,
-    "peak_rss_bytes": 140558336,
-    "peak_heap_bytes": 201335687,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 2.535368,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335687,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 2.481065,
-    "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335687,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 2.965109,
-    "peak_rss_bytes": 140566528,
-    "peak_heap_bytes": 201335687,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 2.45841,
-    "peak_rss_bytes": 140550144,
-    "peak_heap_bytes": 201335687,
-    "result_count": 23777
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 2.375299,
+    "time_s": 2.411696,
     "peak_rss_bytes": 140562432,
-    "peak_heap_bytes": 201335687,
-    "result_count": 23777
+    "peak_heap_bytes": 201335674,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 2.408363,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335674,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 2.302258,
+    "peak_rss_bytes": 140533760,
+    "peak_heap_bytes": 201335674,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 2.188672,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335674,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-5pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 2.273,
+    "peak_rss_bytes": 140537856,
+    "peak_heap_bytes": 201335674,
+    "result_count": 1189
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 2.412881,
+    "peak_rss_bytes": 140562432,
+    "peak_heap_bytes": 201335674,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 2.59384,
+    "peak_rss_bytes": 140558336,
+    "peak_heap_bytes": 201335674,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 2.635938,
+    "peak_rss_bytes": 140554240,
+    "peak_heap_bytes": 201335674,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 2.603065,
+    "peak_rss_bytes": 140537856,
+    "peak_heap_bytes": 201335674,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 2.411883,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335674,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 2.429397,
+    "peak_rss_bytes": 140533760,
+    "peak_heap_bytes": 201335674,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 2.397198,
+    "peak_rss_bytes": 140554240,
+    "peak_heap_bytes": 201335674,
+    "result_count": 5944
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "bbox-query",
+    "query_tag": "bbox-25pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 2.739199,
+    "peak_rss_bytes": 140562432,
+    "peak_heap_bytes": 201335674,
+    "result_count": 5944
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjsonseq",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
-    "sample_index": 6,
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 2.428101,
+    "peak_rss_bytes": 140570624,
+    "peak_heap_bytes": 201335692,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 1,
     "warmup": false,
-    "time_s": 2.48127,
+    "time_s": 2.422612,
     "peak_rss_bytes": 140566528,
-    "peak_heap_bytes": 201335687,
-    "result_count": 23777
+    "peak_heap_bytes": 201335692,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjsonseq",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 2.40375,
+    "peak_rss_bytes": 140562432,
+    "peak_heap_bytes": 201335692,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 2.765224,
+    "peak_rss_bytes": 140558336,
+    "peak_heap_bytes": 201335692,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 2.438312,
+    "peak_rss_bytes": 140566528,
+    "peak_heap_bytes": 201335692,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 2.434674,
+    "peak_rss_bytes": 140554240,
+    "peak_heap_bytes": 201335692,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 2.418505,
+    "peak_rss_bytes": 140570624,
+    "peak_heap_bytes": 201335692,
+    "result_count": 173
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "attr-filter",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 2.463013,
-    "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335687,
-    "result_count": 23777
+    "time_s": 2.448563,
+    "peak_rss_bytes": 140570624,
+    "peak_heap_bytes": 201335692,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
@@ -2502,9 +2502,9 @@
     "query_tag": "id-10pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 1.032526,
-    "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335698,
+    "time_s": 0.901224,
+    "peak_rss_bytes": 140554240,
+    "peak_heap_bytes": 201335713,
     "result_count": 1
   },
   {
@@ -2514,9 +2514,9 @@
     "query_tag": "id-10pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 1.033908,
-    "peak_rss_bytes": 140550144,
-    "peak_heap_bytes": 201335698,
+    "time_s": 0.885802,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335713,
     "result_count": 1
   },
   {
@@ -2526,9 +2526,9 @@
     "query_tag": "id-10pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.92111,
-    "peak_rss_bytes": 140533760,
-    "peak_heap_bytes": 201335698,
+    "time_s": 0.882887,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335713,
     "result_count": 1
   },
   {
@@ -2538,9 +2538,9 @@
     "query_tag": "id-10pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.88965,
+    "time_s": 0.873486,
     "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335698,
+    "peak_heap_bytes": 201335713,
     "result_count": 1
   },
   {
@@ -2550,9 +2550,9 @@
     "query_tag": "id-10pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 1.027396,
-    "peak_rss_bytes": 140533760,
-    "peak_heap_bytes": 201335698,
+    "time_s": 0.899206,
+    "peak_rss_bytes": 140537856,
+    "peak_heap_bytes": 201335713,
     "result_count": 1
   },
   {
@@ -2562,9 +2562,9 @@
     "query_tag": "id-10pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 1.036278,
-    "peak_rss_bytes": 139100160,
-    "peak_heap_bytes": 201335698,
+    "time_s": 0.887542,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335713,
     "result_count": 1
   },
   {
@@ -2574,9 +2574,9 @@
     "query_tag": "id-10pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 1.03145,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335698,
+    "time_s": 0.897101,
+    "peak_rss_bytes": 140550144,
+    "peak_heap_bytes": 201335713,
     "result_count": 1
   },
   {
@@ -2586,9 +2586,9 @@
     "query_tag": "id-10pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 1.038635,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335698,
+    "time_s": 0.893055,
+    "peak_rss_bytes": 138637312,
+    "peak_heap_bytes": 201335713,
     "result_count": 1
   },
   {
@@ -2598,9 +2598,9 @@
     "query_tag": "id-50pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 1.811029,
-    "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335698,
+    "time_s": 1.681132,
+    "peak_rss_bytes": 140554240,
+    "peak_heap_bytes": 201335713,
     "result_count": 1
   },
   {
@@ -2610,225 +2610,225 @@
     "query_tag": "id-50pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 1.678341,
+    "time_s": 1.685203,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 1.714923,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 1.709585,
+    "peak_rss_bytes": 140554240,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 1.499553,
+    "peak_rss_bytes": 140558336,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 1.682192,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 1.719331,
+    "peak_rss_bytes": 140537856,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 1.689548,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 2.308581,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 2.290145,
+    "peak_rss_bytes": 140554240,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 2.165514,
+    "peak_rss_bytes": 140550144,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 2.571786,
+    "peak_rss_bytes": 140070912,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 4,
+    "warmup": false,
+    "time_s": 2.261856,
+    "peak_rss_bytes": 140550144,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 2.286483,
+    "peak_rss_bytes": 140533760,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 2.326406,
+    "peak_rss_bytes": 140537856,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-90pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 2.300593,
+    "peak_rss_bytes": 140546048,
+    "peak_heap_bytes": 201335713,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-miss",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 2.679991,
     "peak_rss_bytes": 140525568,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
+    "peak_heap_bytes": 201335730,
+    "result_count": 0
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjsonseq",
     "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 2,
+    "query_tag": "id-miss",
+    "sample_index": 1,
     "warmup": false,
-    "time_s": 1.722615,
-    "peak_rss_bytes": 140550144,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 1.752053,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 1.667147,
-    "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 1.743492,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 1.837631,
-    "peak_rss_bytes": 139890688,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 1.85018,
-    "peak_rss_bytes": 140533760,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 2.356755,
+    "time_s": 2.70779,
     "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 2.751845,
-    "peak_rss_bytes": 140554240,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 2.128157,
-    "peak_rss_bytes": 140550144,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 2.423691,
-    "peak_rss_bytes": 140525568,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 2.692848,
-    "peak_rss_bytes": 140529664,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 5,
-    "warmup": false,
-    "time_s": 2.740651,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 2.174437,
-    "peak_rss_bytes": 140529664,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-90pct",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 2.403922,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335698,
-    "result_count": 1
+    "peak_heap_bytes": 201335730,
+    "result_count": 0
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityjsonseq",
     "scenario": "id-lookup",
     "query_tag": "id-miss",
-    "sample_index": 0,
-    "warmup": true,
-    "time_s": 2.538958,
+    "sample_index": 2,
+    "warmup": false,
+    "time_s": 2.368425,
+    "peak_rss_bytes": 140554240,
+    "peak_heap_bytes": 201335730,
+    "result_count": 0
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-miss",
+    "sample_index": 3,
+    "warmup": false,
+    "time_s": 2.439434,
     "peak_rss_bytes": 140541952,
-    "peak_heap_bytes": 201335715,
-    "result_count": 0
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 1,
-    "warmup": false,
-    "time_s": 2.55099,
-    "peak_rss_bytes": 140533760,
-    "peak_heap_bytes": 201335715,
-    "result_count": 0
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 2,
-    "warmup": false,
-    "time_s": 2.469759,
-    "peak_rss_bytes": 140533760,
-    "peak_heap_bytes": 201335715,
-    "result_count": 0
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 2.530442,
-    "peak_rss_bytes": 140537856,
-    "peak_heap_bytes": 201335715,
+    "peak_heap_bytes": 201335730,
     "result_count": 0
   },
   {
@@ -2838,9 +2838,9 @@
     "query_tag": "id-miss",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 2.553029,
-    "peak_rss_bytes": 140554240,
-    "peak_heap_bytes": 201335715,
+    "time_s": 2.182654,
+    "peak_rss_bytes": 140541952,
+    "peak_heap_bytes": 201335730,
     "result_count": 0
   },
   {
@@ -2850,21 +2850,21 @@
     "query_tag": "id-miss",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 2.52897,
-    "peak_rss_bytes": 140554240,
-    "peak_heap_bytes": 201335715,
-    "result_count": 0
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityjsonseq",
-    "scenario": "id-lookup",
-    "query_tag": "id-miss",
-    "sample_index": 6,
-    "warmup": false,
-    "time_s": 2.475543,
+    "time_s": 2.443547,
     "peak_rss_bytes": 140546048,
-    "peak_heap_bytes": 201335715,
+    "peak_heap_bytes": 201335730,
+    "result_count": 0
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityjsonseq",
+    "scenario": "id-lookup",
+    "query_tag": "id-miss",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 2.374687,
+    "peak_rss_bytes": 140550144,
+    "peak_heap_bytes": 201335730,
     "result_count": 0
   },
   {
@@ -2874,9 +2874,9 @@
     "query_tag": "id-miss",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 2.466768,
-    "peak_rss_bytes": 140533760,
-    "peak_heap_bytes": 201335715,
+    "time_s": 2.414295,
+    "peak_rss_bytes": 140554240,
+    "peak_heap_bytes": 201335730,
     "result_count": 0
   },
   {
@@ -2886,9 +2886,9 @@
     "query_tag": "",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 1.483146,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582765,
+    "time_s": 0.239673,
+    "peak_rss_bytes": 6324224,
+    "peak_heap_bytes": 317899,
     "result_count": 23777
   },
   {
@@ -2898,9 +2898,9 @@
     "query_tag": "",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 1.382315,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582765,
+    "time_s": 0.141051,
+    "peak_rss_bytes": 6311936,
+    "peak_heap_bytes": 317899,
     "result_count": 23777
   },
   {
@@ -2910,9 +2910,9 @@
     "query_tag": "",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 1.412396,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582765,
+    "time_s": 0.141116,
+    "peak_rss_bytes": 6303744,
+    "peak_heap_bytes": 317899,
     "result_count": 23777
   },
   {
@@ -2922,9 +2922,9 @@
     "query_tag": "",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 1.416415,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582765,
+    "time_s": 0.142554,
+    "peak_rss_bytes": 6189056,
+    "peak_heap_bytes": 317899,
     "result_count": 23777
   },
   {
@@ -2934,9 +2934,9 @@
     "query_tag": "",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 1.429915,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582765,
+    "time_s": 0.141113,
+    "peak_rss_bytes": 6307840,
+    "peak_heap_bytes": 317899,
     "result_count": 23777
   },
   {
@@ -2946,9 +2946,9 @@
     "query_tag": "",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 1.41617,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582765,
+    "time_s": 0.141429,
+    "peak_rss_bytes": 6324224,
+    "peak_heap_bytes": 317899,
     "result_count": 23777
   },
   {
@@ -2958,9 +2958,9 @@
     "query_tag": "",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 1.400126,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582765,
+    "time_s": 0.143459,
+    "peak_rss_bytes": 6328320,
+    "peak_heap_bytes": 317899,
     "result_count": 23777
   },
   {
@@ -2970,9 +2970,9 @@
     "query_tag": "",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 1.40949,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582765,
+    "time_s": 0.145664,
+    "peak_rss_bytes": 6324224,
+    "peak_heap_bytes": 317899,
     "result_count": 23777
   },
   {
@@ -2982,9 +2982,9 @@
     "query_tag": "",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.000084,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 9312,
+    "time_s": 0.000174,
+    "peak_rss_bytes": 6221824,
+    "peak_heap_bytes": 9327,
     "result_count": 23777
   },
   {
@@ -2994,9 +2994,9 @@
     "query_tag": "",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.000074,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 9312,
+    "time_s": 0.00012,
+    "peak_rss_bytes": 6221824,
+    "peak_heap_bytes": 9327,
     "result_count": 23777
   },
   {
@@ -3006,9 +3006,9 @@
     "query_tag": "",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.000097,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 9312,
+    "time_s": 0.000094,
+    "peak_rss_bytes": 6139904,
+    "peak_heap_bytes": 9327,
     "result_count": 23777
   },
   {
@@ -3018,9 +3018,9 @@
     "query_tag": "",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.00007,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 9312,
+    "time_s": 0.000142,
+    "peak_rss_bytes": 6221824,
+    "peak_heap_bytes": 9327,
     "result_count": 23777
   },
   {
@@ -3030,9 +3030,9 @@
     "query_tag": "",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.000077,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 9312,
+    "time_s": 0.000168,
+    "peak_rss_bytes": 6205440,
+    "peak_heap_bytes": 9327,
     "result_count": 23777
   },
   {
@@ -3042,9 +3042,9 @@
     "query_tag": "",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.000081,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 9312,
+    "time_s": 0.00013,
+    "peak_rss_bytes": 6152192,
+    "peak_heap_bytes": 9327,
     "result_count": 23777
   },
   {
@@ -3054,9 +3054,9 @@
     "query_tag": "",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.000073,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 9312,
+    "time_s": 0.000126,
+    "peak_rss_bytes": 6217728,
+    "peak_heap_bytes": 9327,
     "result_count": 23777
   },
   {
@@ -3066,9 +3066,9 @@
     "query_tag": "",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.000075,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 9312,
+    "time_s": 0.000104,
+    "peak_rss_bytes": 6217728,
+    "peak_heap_bytes": 9327,
     "result_count": 23777
   },
   {
@@ -3078,9 +3078,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.017253,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 16693,
+    "time_s": 0.016412,
+    "peak_rss_bytes": 6279168,
+    "peak_heap_bytes": 16708,
     "result_count": 238
   },
   {
@@ -3090,9 +3090,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.000279,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 16693,
+    "time_s": 0.000332,
+    "peak_rss_bytes": 6266880,
+    "peak_heap_bytes": 16708,
     "result_count": 238
   },
   {
@@ -3102,9 +3102,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.00023,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 16693,
+    "time_s": 0.000314,
+    "peak_rss_bytes": 6152192,
+    "peak_heap_bytes": 16708,
     "result_count": 238
   },
   {
@@ -3114,9 +3114,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.000269,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 16693,
+    "time_s": 0.000276,
+    "peak_rss_bytes": 6283264,
+    "peak_heap_bytes": 16708,
     "result_count": 238
   },
   {
@@ -3126,9 +3126,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.000279,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 16693,
+    "time_s": 0.000301,
+    "peak_rss_bytes": 6410240,
+    "peak_heap_bytes": 16708,
     "result_count": 238
   },
   {
@@ -3138,9 +3138,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.000247,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 16693,
+    "time_s": 0.00027,
+    "peak_rss_bytes": 6316032,
+    "peak_heap_bytes": 16708,
     "result_count": 238
   },
   {
@@ -3150,9 +3150,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.000299,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 16693,
+    "time_s": 0.0003,
+    "peak_rss_bytes": 6402048,
+    "peak_heap_bytes": 16708,
     "result_count": 238
   },
   {
@@ -3162,9 +3162,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.000268,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 16693,
+    "time_s": 0.000264,
+    "peak_rss_bytes": 6352896,
+    "peak_heap_bytes": 16708,
     "result_count": 238
   },
   {
@@ -3174,9 +3174,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.01949,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 61237,
+    "time_s": 0.01512,
+    "peak_rss_bytes": 6443008,
+    "peak_heap_bytes": 61252,
     "result_count": 1189
   },
   {
@@ -3186,9 +3186,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.000514,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 61237,
+    "time_s": 0.000563,
+    "peak_rss_bytes": 6385664,
+    "peak_heap_bytes": 61252,
     "result_count": 1189
   },
   {
@@ -3198,9 +3198,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.000538,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 61237,
+    "time_s": 0.000706,
+    "peak_rss_bytes": 6316032,
+    "peak_heap_bytes": 61252,
     "result_count": 1189
   },
   {
@@ -3210,9 +3210,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.000588,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 61237,
+    "time_s": 0.000715,
+    "peak_rss_bytes": 6311936,
+    "peak_heap_bytes": 61252,
     "result_count": 1189
   },
   {
@@ -3222,9 +3222,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.000583,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 61237,
+    "time_s": 0.000703,
+    "peak_rss_bytes": 6299648,
+    "peak_heap_bytes": 61252,
     "result_count": 1189
   },
   {
@@ -3234,9 +3234,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.0005,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 61237,
+    "time_s": 0.000576,
+    "peak_rss_bytes": 6373376,
+    "peak_heap_bytes": 61252,
     "result_count": 1189
   },
   {
@@ -3246,9 +3246,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.000609,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 61237,
+    "time_s": 0.000569,
+    "peak_rss_bytes": 6303744,
+    "peak_heap_bytes": 61252,
     "result_count": 1189
   },
   {
@@ -3258,9 +3258,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.000609,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 61237,
+    "time_s": 0.00074,
+    "peak_rss_bytes": 6295552,
+    "peak_heap_bytes": 61252,
     "result_count": 1189
   },
   {
@@ -3270,9 +3270,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.003508,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 214837,
+    "time_s": 0.002813,
+    "peak_rss_bytes": 6307840,
+    "peak_heap_bytes": 214852,
     "result_count": 5944
   },
   {
@@ -3282,9 +3282,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.002048,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 214837,
+    "time_s": 0.003223,
+    "peak_rss_bytes": 6434816,
+    "peak_heap_bytes": 214852,
     "result_count": 5944
   },
   {
@@ -3294,9 +3294,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.002052,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 214837,
+    "time_s": 0.002345,
+    "peak_rss_bytes": 6467584,
+    "peak_heap_bytes": 214852,
     "result_count": 5944
   },
   {
@@ -3306,9 +3306,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.00205,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 214837,
+    "time_s": 0.00237,
+    "peak_rss_bytes": 6402048,
+    "peak_heap_bytes": 214852,
     "result_count": 5944
   },
   {
@@ -3318,9 +3318,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.002053,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 214837,
+    "time_s": 0.002502,
+    "peak_rss_bytes": 6500352,
+    "peak_heap_bytes": 214852,
     "result_count": 5944
   },
   {
@@ -3330,9 +3330,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.002416,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 214837,
+    "time_s": 0.002467,
+    "peak_rss_bytes": 6438912,
+    "peak_heap_bytes": 214852,
     "result_count": 5944
   },
   {
@@ -3342,9 +3342,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.002135,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 214837,
+    "time_s": 0.002374,
+    "peak_rss_bytes": 6467584,
+    "peak_heap_bytes": 214852,
     "result_count": 5944
   },
   {
@@ -3354,106 +3354,106 @@
     "query_tag": "bbox-25pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.002182,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 214837,
+    "time_s": 0.002102,
+    "peak_rss_bytes": 6463488,
+    "peak_heap_bytes": 214852,
     "result_count": 5944
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "flatcitybuf",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 1.426017,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582794,
-    "result_count": 23777
+    "time_s": 0.01992,
+    "peak_rss_bytes": 6324224,
+    "peak_heap_bytes": 34396,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "flatcitybuf",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 1.423364,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582794,
-    "result_count": 23777
+    "time_s": 0.000243,
+    "peak_rss_bytes": 6262784,
+    "peak_heap_bytes": 34396,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "flatcitybuf",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 1.431424,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582794,
-    "result_count": 23777
+    "time_s": 0.000261,
+    "peak_rss_bytes": 6389760,
+    "peak_heap_bytes": 34396,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "flatcitybuf",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 1.445657,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582794,
-    "result_count": 23777
+    "time_s": 0.000275,
+    "peak_rss_bytes": 6291456,
+    "peak_heap_bytes": 34396,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "flatcitybuf",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 1.433642,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582794,
-    "result_count": 23777
+    "time_s": 0.000177,
+    "peak_rss_bytes": 6291456,
+    "peak_heap_bytes": 34396,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "flatcitybuf",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 1.429929,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582794,
-    "result_count": 23777
+    "time_s": 0.000316,
+    "peak_rss_bytes": 6287360,
+    "peak_heap_bytes": 34396,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "flatcitybuf",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 1.425259,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582794,
-    "result_count": 23777
+    "time_s": 0.00026,
+    "peak_rss_bytes": 6246400,
+    "peak_heap_bytes": 34396,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "flatcitybuf",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 1.430833,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582794,
-    "result_count": 23777
+    "time_s": 0.000199,
+    "peak_rss_bytes": 6209536,
+    "peak_heap_bytes": 34396,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
@@ -3462,9 +3462,9 @@
     "query_tag": "id-10pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.731294,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.071435,
+    "peak_rss_bytes": 6307840,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3474,9 +3474,9 @@
     "query_tag": "id-10pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.731457,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.071458,
+    "peak_rss_bytes": 6328320,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3486,9 +3486,9 @@
     "query_tag": "id-10pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.736114,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.072625,
+    "peak_rss_bytes": 6332416,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3498,9 +3498,9 @@
     "query_tag": "id-10pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.734671,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.069841,
+    "peak_rss_bytes": 6352896,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3510,9 +3510,9 @@
     "query_tag": "id-10pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.731383,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.073276,
+    "peak_rss_bytes": 6316032,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3522,9 +3522,9 @@
     "query_tag": "id-10pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.726917,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.073176,
+    "peak_rss_bytes": 6332416,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3534,9 +3534,9 @@
     "query_tag": "id-10pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.727421,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.072422,
+    "peak_rss_bytes": 6221824,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3546,9 +3546,9 @@
     "query_tag": "id-10pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.731977,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.074605,
+    "peak_rss_bytes": 6328320,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3558,9 +3558,9 @@
     "query_tag": "id-50pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.374774,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.037969,
+    "peak_rss_bytes": 6328320,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3570,9 +3570,9 @@
     "query_tag": "id-50pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.377929,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.039403,
+    "peak_rss_bytes": 6328320,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3582,9 +3582,9 @@
     "query_tag": "id-50pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.374797,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.038222,
+    "peak_rss_bytes": 6283264,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3594,9 +3594,9 @@
     "query_tag": "id-50pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.378456,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.039936,
+    "peak_rss_bytes": 6266880,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3606,9 +3606,9 @@
     "query_tag": "id-50pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.375917,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.037574,
+    "peak_rss_bytes": 6311936,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3618,9 +3618,9 @@
     "query_tag": "id-50pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.376261,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.037925,
+    "peak_rss_bytes": 6369280,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3630,9 +3630,9 @@
     "query_tag": "id-50pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.377377,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.038162,
+    "peak_rss_bytes": 6352896,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3642,9 +3642,9 @@
     "query_tag": "id-50pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.377929,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 827267,
+    "time_s": 0.038069,
+    "peak_rss_bytes": 6332416,
+    "peak_heap_bytes": 134411,
     "result_count": 1
   },
   {
@@ -3654,9 +3654,9 @@
     "query_tag": "id-90pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 1.344734,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582845,
+    "time_s": 0.126163,
+    "peak_rss_bytes": 6328320,
+    "peak_heap_bytes": 317979,
     "result_count": 1
   },
   {
@@ -3666,9 +3666,9 @@
     "query_tag": "id-90pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 1.366091,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582845,
+    "time_s": 0.127848,
+    "peak_rss_bytes": 6270976,
+    "peak_heap_bytes": 317979,
     "result_count": 1
   },
   {
@@ -3678,9 +3678,9 @@
     "query_tag": "id-90pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 1.382222,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582845,
+    "time_s": 0.126663,
+    "peak_rss_bytes": 6262784,
+    "peak_heap_bytes": 317979,
     "result_count": 1
   },
   {
@@ -3690,9 +3690,9 @@
     "query_tag": "id-90pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 1.379531,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582845,
+    "time_s": 0.127978,
+    "peak_rss_bytes": 6316032,
+    "peak_heap_bytes": 317979,
     "result_count": 1
   },
   {
@@ -3702,9 +3702,9 @@
     "query_tag": "id-90pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 1.378771,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582845,
+    "time_s": 0.129934,
+    "peak_rss_bytes": 6303744,
+    "peak_heap_bytes": 317979,
     "result_count": 1
   },
   {
@@ -3714,9 +3714,9 @@
     "query_tag": "id-90pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 1.387112,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582845,
+    "time_s": 0.130765,
+    "peak_rss_bytes": 6148096,
+    "peak_heap_bytes": 317979,
     "result_count": 1
   },
   {
@@ -3726,9 +3726,9 @@
     "query_tag": "id-90pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 1.376796,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582845,
+    "time_s": 0.133533,
+    "peak_rss_bytes": 6332416,
+    "peak_heap_bytes": 317979,
     "result_count": 1
   },
   {
@@ -3738,9 +3738,9 @@
     "query_tag": "id-90pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 1.472746,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582845,
+    "time_s": 0.127415,
+    "peak_rss_bytes": 6332416,
+    "peak_heap_bytes": 317979,
     "result_count": 1
   },
   {
@@ -3750,9 +3750,9 @@
     "query_tag": "id-miss",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 1.429322,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582879,
+    "time_s": 0.133977,
+    "peak_rss_bytes": 6303744,
+    "peak_heap_bytes": 318013,
     "result_count": 0
   },
   {
@@ -3762,9 +3762,9 @@
     "query_tag": "id-miss",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 1.425522,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582879,
+    "time_s": 0.132885,
+    "peak_rss_bytes": 6328320,
+    "peak_heap_bytes": 318013,
     "result_count": 0
   },
   {
@@ -3774,9 +3774,9 @@
     "query_tag": "id-miss",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 1.415189,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582879,
+    "time_s": 0.129307,
+    "peak_rss_bytes": 6365184,
+    "peak_heap_bytes": 318013,
     "result_count": 0
   },
   {
@@ -3786,9 +3786,9 @@
     "query_tag": "id-miss",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 1.419389,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582879,
+    "time_s": 0.131943,
+    "peak_rss_bytes": 6356992,
+    "peak_heap_bytes": 318013,
     "result_count": 0
   },
   {
@@ -3798,9 +3798,9 @@
     "query_tag": "id-miss",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 1.415042,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582879,
+    "time_s": 0.132552,
+    "peak_rss_bytes": 6332416,
+    "peak_heap_bytes": 318013,
     "result_count": 0
   },
   {
@@ -3810,9 +3810,9 @@
     "query_tag": "id-miss",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 1.426506,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582879,
+    "time_s": 0.132654,
+    "peak_rss_bytes": 6332416,
+    "peak_heap_bytes": 318013,
     "result_count": 0
   },
   {
@@ -3822,9 +3822,9 @@
     "query_tag": "id-miss",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 1.410405,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582879,
+    "time_s": 0.131853,
+    "peak_rss_bytes": 6320128,
+    "peak_heap_bytes": 318013,
     "result_count": 0
   },
   {
@@ -3834,9 +3834,9 @@
     "query_tag": "id-miss",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 1.405373,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 1582879,
+    "time_s": 0.135306,
+    "peak_rss_bytes": 6332416,
+    "peak_heap_bytes": 318013,
     "result_count": 0
   },
   {
@@ -3846,9 +3846,9 @@
     "query_tag": "",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 2.707392,
-    "peak_rss_bytes": 121593856,
-    "peak_heap_bytes": 94716465,
+    "time_s": 2.983568,
+    "peak_rss_bytes": 121303040,
+    "peak_heap_bytes": 94716495,
     "result_count": 23777
   },
   {
@@ -3858,9 +3858,9 @@
     "query_tag": "",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 3.316927,
-    "peak_rss_bytes": 120557568,
-    "peak_heap_bytes": 94716465,
+    "time_s": 2.622213,
+    "peak_rss_bytes": 121843712,
+    "peak_heap_bytes": 94716495,
     "result_count": 23777
   },
   {
@@ -3870,9 +3870,9 @@
     "query_tag": "",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 2.896996,
-    "peak_rss_bytes": 121606144,
-    "peak_heap_bytes": 94716465,
+    "time_s": 2.567674,
+    "peak_rss_bytes": 121430016,
+    "peak_heap_bytes": 94716495,
     "result_count": 23777
   },
   {
@@ -3882,9 +3882,9 @@
     "query_tag": "",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 3.658457,
-    "peak_rss_bytes": 119709696,
-    "peak_heap_bytes": 94716465,
+    "time_s": 2.58286,
+    "peak_rss_bytes": 121638912,
+    "peak_heap_bytes": 94716495,
     "result_count": 23777
   },
   {
@@ -3894,9 +3894,9 @@
     "query_tag": "",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 2.724144,
+    "time_s": 2.389656,
     "peak_rss_bytes": 121589760,
-    "peak_heap_bytes": 94716465,
+    "peak_heap_bytes": 94716495,
     "result_count": 23777
   },
   {
@@ -3906,9 +3906,9 @@
     "query_tag": "",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 2.609465,
-    "peak_rss_bytes": 120582144,
-    "peak_heap_bytes": 94716465,
+    "time_s": 2.449046,
+    "peak_rss_bytes": 121622528,
+    "peak_heap_bytes": 94716495,
     "result_count": 23777
   },
   {
@@ -3918,9 +3918,9 @@
     "query_tag": "",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 2.649736,
-    "peak_rss_bytes": 121593856,
-    "peak_heap_bytes": 94716465,
+    "time_s": 2.559358,
+    "peak_rss_bytes": 121237504,
+    "peak_heap_bytes": 94716495,
     "result_count": 23777
   },
   {
@@ -3930,9 +3930,9 @@
     "query_tag": "",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 3.179726,
-    "peak_rss_bytes": 121589760,
-    "peak_heap_bytes": 94716465,
+    "time_s": 3.114115,
+    "peak_rss_bytes": 121630720,
+    "peak_heap_bytes": 94716495,
     "result_count": 23777
   },
   {
@@ -3942,9 +3942,9 @@
     "query_tag": "",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.001171,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 97547,
+    "time_s": 0.00118,
+    "peak_rss_bytes": 9441280,
+    "peak_heap_bytes": 97577,
     "result_count": 23777
   },
   {
@@ -3954,9 +3954,9 @@
     "query_tag": "",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.001169,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 97547,
+    "time_s": 0.001231,
+    "peak_rss_bytes": 9732096,
+    "peak_heap_bytes": 97577,
     "result_count": 23777
   },
   {
@@ -3966,9 +3966,9 @@
     "query_tag": "",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.001121,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 97547,
+    "time_s": 0.001295,
+    "peak_rss_bytes": 9707520,
+    "peak_heap_bytes": 97577,
     "result_count": 23777
   },
   {
@@ -3978,9 +3978,9 @@
     "query_tag": "",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.001084,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 97547,
+    "time_s": 0.001292,
+    "peak_rss_bytes": 9756672,
+    "peak_heap_bytes": 97577,
     "result_count": 23777
   },
   {
@@ -3990,9 +3990,9 @@
     "query_tag": "",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.001067,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 97547,
+    "time_s": 0.001376,
+    "peak_rss_bytes": 9392128,
+    "peak_heap_bytes": 97577,
     "result_count": 23777
   },
   {
@@ -4002,9 +4002,9 @@
     "query_tag": "",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.001052,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 97547,
+    "time_s": 0.001226,
+    "peak_rss_bytes": 9437184,
+    "peak_heap_bytes": 97577,
     "result_count": 23777
   },
   {
@@ -4014,9 +4014,9 @@
     "query_tag": "",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.001032,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 97547,
+    "time_s": 0.001065,
+    "peak_rss_bytes": 9830400,
+    "peak_heap_bytes": 97577,
     "result_count": 23777
   },
   {
@@ -4026,9 +4026,9 @@
     "query_tag": "",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.00116,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 97547,
+    "time_s": 0.001229,
+    "peak_rss_bytes": 9441280,
+    "peak_heap_bytes": 97577,
     "result_count": 23777
   },
   {
@@ -4038,9 +4038,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.025859,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2365628,
+    "time_s": 0.023452,
+    "peak_rss_bytes": 14508032,
+    "peak_heap_bytes": 2365658,
     "result_count": 238
   },
   {
@@ -4050,9 +4050,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.025978,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2365628,
+    "time_s": 0.021726,
+    "peak_rss_bytes": 14499840,
+    "peak_heap_bytes": 2365658,
     "result_count": 238
   },
   {
@@ -4062,9 +4062,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.023985,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2365628,
+    "time_s": 0.021523,
+    "peak_rss_bytes": 14512128,
+    "peak_heap_bytes": 2365658,
     "result_count": 238
   },
   {
@@ -4074,9 +4074,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.025446,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2365628,
+    "time_s": 0.024281,
+    "peak_rss_bytes": 13778944,
+    "peak_heap_bytes": 2365658,
     "result_count": 238
   },
   {
@@ -4086,9 +4086,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.023124,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2365628,
+    "time_s": 0.024396,
+    "peak_rss_bytes": 14508032,
+    "peak_heap_bytes": 2365658,
     "result_count": 238
   },
   {
@@ -4098,9 +4098,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.022786,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2365628,
+    "time_s": 0.024232,
+    "peak_rss_bytes": 14532608,
+    "peak_heap_bytes": 2365658,
     "result_count": 238
   },
   {
@@ -4110,9 +4110,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.024612,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2365628,
+    "time_s": 0.024421,
+    "peak_rss_bytes": 14553088,
+    "peak_heap_bytes": 2365658,
     "result_count": 238
   },
   {
@@ -4122,9 +4122,9 @@
     "query_tag": "bbox-1pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.022912,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2365628,
+    "time_s": 0.023119,
+    "peak_rss_bytes": 13799424,
+    "peak_heap_bytes": 2365658,
     "result_count": 238
   },
   {
@@ -4134,9 +4134,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.02293,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2396060,
+    "time_s": 0.0269,
+    "peak_rss_bytes": 14516224,
+    "peak_heap_bytes": 2396090,
     "result_count": 1189
   },
   {
@@ -4146,9 +4146,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.022587,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2396060,
+    "time_s": 0.022983,
+    "peak_rss_bytes": 14499840,
+    "peak_heap_bytes": 2396090,
     "result_count": 1189
   },
   {
@@ -4158,9 +4158,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.022549,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2396060,
+    "time_s": 0.024237,
+    "peak_rss_bytes": 14516224,
+    "peak_heap_bytes": 2396090,
     "result_count": 1189
   },
   {
@@ -4170,9 +4170,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.022715,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2396060,
+    "time_s": 0.024274,
+    "peak_rss_bytes": 14512128,
+    "peak_heap_bytes": 2396090,
     "result_count": 1189
   },
   {
@@ -4182,9 +4182,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.024845,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2396060,
+    "time_s": 0.022638,
+    "peak_rss_bytes": 14520320,
+    "peak_heap_bytes": 2396090,
     "result_count": 1189
   },
   {
@@ -4194,9 +4194,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.022943,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2396060,
+    "time_s": 0.022911,
+    "peak_rss_bytes": 14516224,
+    "peak_heap_bytes": 2396090,
     "result_count": 1189
   },
   {
@@ -4206,9 +4206,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.02408,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2396060,
+    "time_s": 0.024088,
+    "peak_rss_bytes": 14516224,
+    "peak_heap_bytes": 2396090,
     "result_count": 1189
   },
   {
@@ -4218,9 +4218,9 @@
     "query_tag": "bbox-5pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.024152,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2396060,
+    "time_s": 0.024106,
+    "peak_rss_bytes": 13926400,
+    "peak_heap_bytes": 2396090,
     "result_count": 1189
   },
   {
@@ -4230,9 +4230,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.026125,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2701356,
+    "time_s": 0.023212,
+    "peak_rss_bytes": 14520320,
+    "peak_heap_bytes": 2701386,
     "result_count": 5944
   },
   {
@@ -4242,9 +4242,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.025892,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2701356,
+    "time_s": 0.02465,
+    "peak_rss_bytes": 14573568,
+    "peak_heap_bytes": 2701386,
     "result_count": 5944
   },
   {
@@ -4254,9 +4254,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.02601,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2701356,
+    "time_s": 0.023274,
+    "peak_rss_bytes": 14573568,
+    "peak_heap_bytes": 2701386,
     "result_count": 5944
   },
   {
@@ -4266,9 +4266,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.02522,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2701356,
+    "time_s": 0.025377,
+    "peak_rss_bytes": 14094336,
+    "peak_heap_bytes": 2701386,
     "result_count": 5944
   },
   {
@@ -4278,9 +4278,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.023576,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2701356,
+    "time_s": 0.024993,
+    "peak_rss_bytes": 14606336,
+    "peak_heap_bytes": 2701386,
     "result_count": 5944
   },
   {
@@ -4290,9 +4290,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.025498,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2701356,
+    "time_s": 0.025128,
+    "peak_rss_bytes": 14528512,
+    "peak_heap_bytes": 2701386,
     "result_count": 5944
   },
   {
@@ -4302,9 +4302,9 @@
     "query_tag": "bbox-25pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.026295,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2701356,
+    "time_s": 0.025012,
+    "peak_rss_bytes": 14516224,
+    "peak_heap_bytes": 2701386,
     "result_count": 5944
   },
   {
@@ -4314,106 +4314,106 @@
     "query_tag": "bbox-25pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.025543,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2701356,
+    "time_s": 0.024716,
+    "peak_rss_bytes": 14528512,
+    "peak_heap_bytes": 2701386,
     "result_count": 5944
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityparquet-hilbert",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.002171,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 101061,
-    "result_count": 23777
+    "time_s": 0.007438,
+    "peak_rss_bytes": 11800576,
+    "peak_heap_bytes": 698640,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityparquet-hilbert",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.002129,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 101061,
-    "result_count": 23777
+    "time_s": 0.007647,
+    "peak_rss_bytes": 11993088,
+    "peak_heap_bytes": 698640,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityparquet-hilbert",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.002088,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 101061,
-    "result_count": 23777
+    "time_s": 0.007377,
+    "peak_rss_bytes": 12062720,
+    "peak_heap_bytes": 698640,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityparquet-hilbert",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.002207,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 101061,
-    "result_count": 23777
+    "time_s": 0.00723,
+    "peak_rss_bytes": 11632640,
+    "peak_heap_bytes": 698640,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityparquet-hilbert",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.002123,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 101061,
-    "result_count": 23777
+    "time_s": 0.007432,
+    "peak_rss_bytes": 11968512,
+    "peak_heap_bytes": 698640,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityparquet-hilbert",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.002138,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 101061,
-    "result_count": 23777
+    "time_s": 0.007224,
+    "peak_rss_bytes": 11665408,
+    "peak_heap_bytes": 698640,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityparquet-hilbert",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.002062,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 101061,
-    "result_count": 23777
+    "time_s": 0.00753,
+    "peak_rss_bytes": 12062720,
+    "peak_heap_bytes": 698640,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
     "format": "cityparquet-hilbert",
     "scenario": "attr-filter",
-    "query_tag": "object_type=Building",
+    "query_tag": "attr=BIN=1000000",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.002112,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 101061,
-    "result_count": 23777
+    "time_s": 0.007375,
+    "peak_rss_bytes": 12103680,
+    "peak_heap_bytes": 698640,
+    "result_count": 173
   },
   {
     "dataset": "nyc_da13_buildings.city.json",
@@ -4422,9 +4422,9 @@
     "query_tag": "id-10pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.069463,
-    "peak_rss_bytes": 34529280,
-    "peak_heap_bytes": 17411930,
+    "time_s": 0.068047,
+    "peak_rss_bytes": 33476608,
+    "peak_heap_bytes": 17411968,
     "result_count": 1
   },
   {
@@ -4434,9 +4434,9 @@
     "query_tag": "id-10pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.068377,
+    "time_s": 0.070104,
     "peak_rss_bytes": 34533376,
-    "peak_heap_bytes": 17411930,
+    "peak_heap_bytes": 17411968,
     "result_count": 1
   },
   {
@@ -4446,9 +4446,9 @@
     "query_tag": "id-10pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.075876,
-    "peak_rss_bytes": 34533376,
-    "peak_heap_bytes": 17411930,
+    "time_s": 0.065474,
+    "peak_rss_bytes": 34549760,
+    "peak_heap_bytes": 17411968,
     "result_count": 1
   },
   {
@@ -4458,9 +4458,9 @@
     "query_tag": "id-10pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.077801,
-    "peak_rss_bytes": 33472512,
-    "peak_heap_bytes": 17411930,
+    "time_s": 0.068574,
+    "peak_rss_bytes": 34512896,
+    "peak_heap_bytes": 17411968,
     "result_count": 1
   },
   {
@@ -4470,9 +4470,9 @@
     "query_tag": "id-10pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.073738,
-    "peak_rss_bytes": 33464320,
-    "peak_heap_bytes": 17411930,
+    "time_s": 0.068188,
+    "peak_rss_bytes": 34562048,
+    "peak_heap_bytes": 17411968,
     "result_count": 1
   },
   {
@@ -4482,9 +4482,9 @@
     "query_tag": "id-10pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.076335,
-    "peak_rss_bytes": 34529280,
-    "peak_heap_bytes": 17411930,
+    "time_s": 0.067161,
+    "peak_rss_bytes": 34533376,
+    "peak_heap_bytes": 17411968,
     "result_count": 1
   },
   {
@@ -4494,9 +4494,9 @@
     "query_tag": "id-10pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.073883,
-    "peak_rss_bytes": 34525184,
-    "peak_heap_bytes": 17411930,
+    "time_s": 0.066108,
+    "peak_rss_bytes": 34545664,
+    "peak_heap_bytes": 17411968,
     "result_count": 1
   },
   {
@@ -4506,9 +4506,9 @@
     "query_tag": "id-10pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.074276,
-    "peak_rss_bytes": 34529280,
-    "peak_heap_bytes": 17411930,
+    "time_s": 0.06673,
+    "peak_rss_bytes": 33513472,
+    "peak_heap_bytes": 17411968,
     "result_count": 1
   },
   {
@@ -4518,9 +4518,9 @@
     "query_tag": "id-50pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.077866,
-    "peak_rss_bytes": 32894976,
-    "peak_heap_bytes": 15774736,
+    "time_s": 0.067115,
+    "peak_rss_bytes": 32919552,
+    "peak_heap_bytes": 15774774,
     "result_count": 1
   },
   {
@@ -4530,9 +4530,9 @@
     "query_tag": "id-50pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.075549,
-    "peak_rss_bytes": 32935936,
-    "peak_heap_bytes": 15774736,
+    "time_s": 0.068667,
+    "peak_rss_bytes": 32919552,
+    "peak_heap_bytes": 15774774,
     "result_count": 1
   },
   {
@@ -4542,33 +4542,9 @@
     "query_tag": "id-50pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.079465,
-    "peak_rss_bytes": 32894976,
-    "peak_heap_bytes": 15774736,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityparquet-hilbert",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 3,
-    "warmup": false,
-    "time_s": 0.077763,
-    "peak_rss_bytes": 32894976,
-    "peak_heap_bytes": 15774736,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityparquet-hilbert",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 4,
-    "warmup": false,
-    "time_s": 0.075863,
+    "time_s": 0.068807,
     "peak_rss_bytes": 32915456,
-    "peak_heap_bytes": 15774736,
+    "peak_heap_bytes": 15774774,
     "result_count": 1
   },
   {
@@ -4576,11 +4552,11 @@
     "format": "cityparquet-hilbert",
     "scenario": "id-lookup",
     "query_tag": "id-50pct",
-    "sample_index": 5,
+    "sample_index": 3,
     "warmup": false,
-    "time_s": 0.065015,
-    "peak_rss_bytes": 32907264,
-    "peak_heap_bytes": 15774736,
+    "time_s": 0.067286,
+    "peak_rss_bytes": 32641024,
+    "peak_heap_bytes": 15774774,
     "result_count": 1
   },
   {
@@ -4588,23 +4564,47 @@
     "format": "cityparquet-hilbert",
     "scenario": "id-lookup",
     "query_tag": "id-50pct",
-    "sample_index": 6,
+    "sample_index": 4,
     "warmup": false,
-    "time_s": 0.069142,
-    "peak_rss_bytes": 31858688,
-    "peak_heap_bytes": 15774736,
-    "result_count": 1
-  },
-  {
-    "dataset": "nyc_da13_buildings.city.json",
-    "format": "cityparquet-hilbert",
-    "scenario": "id-lookup",
-    "query_tag": "id-50pct",
-    "sample_index": 7,
-    "warmup": false,
-    "time_s": 0.071151,
+    "time_s": 0.069302,
     "peak_rss_bytes": 32899072,
-    "peak_heap_bytes": 15774736,
+    "peak_heap_bytes": 15774774,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityparquet-hilbert",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 5,
+    "warmup": false,
+    "time_s": 0.069796,
+    "peak_rss_bytes": 32919552,
+    "peak_heap_bytes": 15774774,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityparquet-hilbert",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 6,
+    "warmup": false,
+    "time_s": 0.069291,
+    "peak_rss_bytes": 32903168,
+    "peak_heap_bytes": 15774774,
+    "result_count": 1
+  },
+  {
+    "dataset": "nyc_da13_buildings.city.json",
+    "format": "cityparquet-hilbert",
+    "scenario": "id-lookup",
+    "query_tag": "id-50pct",
+    "sample_index": 7,
+    "warmup": false,
+    "time_s": 0.066739,
+    "peak_rss_bytes": 32919552,
+    "peak_heap_bytes": 15774774,
     "result_count": 1
   },
   {
@@ -4614,9 +4614,9 @@
     "query_tag": "id-90pct",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.068373,
-    "peak_rss_bytes": 30621696,
-    "peak_heap_bytes": 16711391,
+    "time_s": 0.065812,
+    "peak_rss_bytes": 31682560,
+    "peak_heap_bytes": 16711429,
     "result_count": 1
   },
   {
@@ -4626,9 +4626,9 @@
     "query_tag": "id-90pct",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.067929,
+    "time_s": 0.062752,
     "peak_rss_bytes": 31690752,
-    "peak_heap_bytes": 16711391,
+    "peak_heap_bytes": 16711429,
     "result_count": 1
   },
   {
@@ -4638,9 +4638,9 @@
     "query_tag": "id-90pct",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.072551,
-    "peak_rss_bytes": 30642176,
-    "peak_heap_bytes": 16711391,
+    "time_s": 0.06504,
+    "peak_rss_bytes": 31698944,
+    "peak_heap_bytes": 16711429,
     "result_count": 1
   },
   {
@@ -4650,9 +4650,9 @@
     "query_tag": "id-90pct",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.070803,
+    "time_s": 0.062593,
     "peak_rss_bytes": 31678464,
-    "peak_heap_bytes": 16711391,
+    "peak_heap_bytes": 16711429,
     "result_count": 1
   },
   {
@@ -4662,9 +4662,9 @@
     "query_tag": "id-90pct",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.070063,
-    "peak_rss_bytes": 30638080,
-    "peak_heap_bytes": 16711391,
+    "time_s": 0.064877,
+    "peak_rss_bytes": 31711232,
+    "peak_heap_bytes": 16711429,
     "result_count": 1
   },
   {
@@ -4674,9 +4674,9 @@
     "query_tag": "id-90pct",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.070611,
-    "peak_rss_bytes": 30633984,
-    "peak_heap_bytes": 16711391,
+    "time_s": 0.065058,
+    "peak_rss_bytes": 31686656,
+    "peak_heap_bytes": 16711429,
     "result_count": 1
   },
   {
@@ -4686,9 +4686,9 @@
     "query_tag": "id-90pct",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.071618,
-    "peak_rss_bytes": 31686656,
-    "peak_heap_bytes": 16711391,
+    "time_s": 0.065294,
+    "peak_rss_bytes": 30289920,
+    "peak_heap_bytes": 16711429,
     "result_count": 1
   },
   {
@@ -4698,9 +4698,9 @@
     "query_tag": "id-90pct",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.07062,
-    "peak_rss_bytes": 31670272,
-    "peak_heap_bytes": 16711391,
+    "time_s": 0.062609,
+    "peak_rss_bytes": 31707136,
+    "peak_heap_bytes": 16711429,
     "result_count": 1
   },
   {
@@ -4710,9 +4710,9 @@
     "query_tag": "id-miss",
     "sample_index": 0,
     "warmup": true,
-    "time_s": 0.008804,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2086728,
+    "time_s": 0.002313,
+    "peak_rss_bytes": 11579392,
+    "peak_heap_bytes": 161613,
     "result_count": 0
   },
   {
@@ -4722,9 +4722,9 @@
     "query_tag": "id-miss",
     "sample_index": 1,
     "warmup": false,
-    "time_s": 0.009413,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2086728,
+    "time_s": 0.002764,
+    "peak_rss_bytes": 12107776,
+    "peak_heap_bytes": 161613,
     "result_count": 0
   },
   {
@@ -4734,9 +4734,9 @@
     "query_tag": "id-miss",
     "sample_index": 2,
     "warmup": false,
-    "time_s": 0.00915,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2086728,
+    "time_s": 0.002044,
+    "peak_rss_bytes": 11923456,
+    "peak_heap_bytes": 161613,
     "result_count": 0
   },
   {
@@ -4746,9 +4746,9 @@
     "query_tag": "id-miss",
     "sample_index": 3,
     "warmup": false,
-    "time_s": 0.009148,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2086728,
+    "time_s": 0.002185,
+    "peak_rss_bytes": 11722752,
+    "peak_heap_bytes": 161613,
     "result_count": 0
   },
   {
@@ -4758,9 +4758,9 @@
     "query_tag": "id-miss",
     "sample_index": 4,
     "warmup": false,
-    "time_s": 0.009075,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2086728,
+    "time_s": 0.002358,
+    "peak_rss_bytes": 11595776,
+    "peak_heap_bytes": 161613,
     "result_count": 0
   },
   {
@@ -4770,9 +4770,9 @@
     "query_tag": "id-miss",
     "sample_index": 5,
     "warmup": false,
-    "time_s": 0.009672,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2086728,
+    "time_s": 0.002403,
+    "peak_rss_bytes": 11907072,
+    "peak_heap_bytes": 161613,
     "result_count": 0
   },
   {
@@ -4782,9 +4782,9 @@
     "query_tag": "id-miss",
     "sample_index": 6,
     "warmup": false,
-    "time_s": 0.009354,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2086728,
+    "time_s": 0.002377,
+    "peak_rss_bytes": 11964416,
+    "peak_heap_bytes": 161613,
     "result_count": 0
   },
   {
@@ -4794,9 +4794,9 @@
     "query_tag": "id-miss",
     "sample_index": 7,
     "warmup": false,
-    "time_s": 0.009146,
-    "peak_rss_bytes": 23326720,
-    "peak_heap_bytes": 2086728,
+    "time_s": 0.002675,
+    "peak_rss_bytes": 11960320,
+    "peak_heap_bytes": 161613,
     "result_count": 0
   }
 ]

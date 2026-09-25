@@ -441,7 +441,7 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
 # `cityparquet` artefact the query parameters derive from (and the
 # CityJSONSeq the writes convert from), then run the coordinator's
 # `--variants` path: per variant a timed write in a child process (peak RSS,
-# median of 3 warm repeats after a warmup), the package kept as
+# mean of 3 warm repeats after a warmup), the package kept as
 # `PREPARED/<name>.<variant>.parquet`, then `full-read` and the three bbox
 # windows against it (the default SCENARIOS/ID_PROBES; the bloom axis passes
 # the lookups instead). One OUT/<name>.csv per input in the read run's exact

@@ -23,8 +23,11 @@ import subprocess
 import time
 from pathlib import Path
 
-from citybench.config import Dataset, IngestResult, Measurement, Params, SizeReport
+from citybench.config import (
+    AppendSpec, Dataset, IngestResult, Measurement, Params, SizeReport,
+)
 from citybench.scenarios import registry, sql_cjdb
+from citybench.scenarios.registry import ScenarioUnavailable
 from citybench.systems import pg
 from citybench.systems.base import register
 
@@ -113,15 +116,25 @@ def patch_disclosure() -> dict[str, str]:
     }
 
 
+def _append(append: AppendSpec | None) -> AppendSpec:
+    if append is None:
+        raise ScenarioUnavailable(
+            "no one-feature append file was derived for this dataset"
+        )
+    return append
+
+
 @register
 class CjdbSystem:
     tag = "cjdb"
 
-    def __init__(self, *, port: int = 55432, schema: str = "cjdb") -> None:
+    def __init__(self, *, port: int = 55432, schema: str = "cjdb",
+                 parallel_workers: int = 0) -> None:
         self._port = port
         self._schema = schema
         self._conn = None
         self._srid: int = 0
+        self._parallel_workers = parallel_workers
 
     def prepare(self) -> None:
         # Fail fast, before touching the database, if the patched cjdb
@@ -129,21 +142,50 @@ class CjdbSystem:
         # docstring) has not been built yet.
         patched_cjdb_source()
         self._conn = pg.connect(self._port)
-        pg.disable_parallel_query(self._conn)
+        pg.set_parallel_query(self._conn, self._parallel_workers)
 
-    def ingest(self, dataset: Dataset) -> IngestResult:
+    def set_parallel_workers(self, workers: int) -> None:
+        """Switch the benchmark session between thread configurations
+        without re-ingesting. `citybench run` measures both."""
+        self._parallel_workers = workers
+        if self._conn is not None:
+            pg.set_parallel_query(self._conn, workers)
+
+    def session_settings(self) -> dict[str, str]:
+        assert self._conn is not None
+        return pg.parallel_settings(self._conn)
+
+    def _import(self, path: str, *, overwrite: bool) -> None:
+        """One `cjdb import` of one file — the ingest path, reused verbatim
+        by `append-object` on the derived one-feature file.
+
+        `--overwrite` on the full ingest, none on the append: cjdb keys its
+        already-imported check on the SOURCE FILE NAME
+        (`cjdb/modules/importer.py`), so importing a differently-named file
+        into a populated schema simply adds its objects under a new
+        `cj_metadata` row. Without `--overwrite` and WITH a name it has
+        seen before it prompts on stdin instead, which in a benchmark is a
+        hang rather than a question — `stdin` is closed so that case fails
+        loudly instead, and `append-object`'s untimed reset removes the
+        `cj_metadata` row that would cause it.
+        """
         cjdb_source = patched_cjdb_source()
-        start = time.perf_counter()
         subprocess.run(
             [
                 "uv", "run", "--with", str(cjdb_source), "cjdb", "import",
                 "-H", _HOST, "-p", str(self._port),
                 "-U", _USER, "-d", _DATABASE, "-s", self._schema,
-                "--overwrite", "-f", str(dataset.source),
+                *(("--overwrite",) if overwrite else ()),
+                "-f", path,
             ],
             check=True,
+            stdin=subprocess.DEVNULL,
             env={**os.environ, "PGPASSWORD": _PASSWORD},
         )
+
+    def ingest(self, dataset: Dataset) -> IngestResult:
+        start = time.perf_counter()
+        self._import(str(dataset.source), overwrite=True)
         elapsed = time.perf_counter() - start
 
         assert self._conn is not None
@@ -157,11 +199,17 @@ class CjdbSystem:
         return IngestResult(wall_clock_s=elapsed)
 
     def run(self, scenario: str, params: Params, repeat: int,
-            selectivity: float | None = None) -> Measurement:
+            window=None, probe=None) -> Measurement:
         assert self._conn is not None
-        sql, args = sql_cjdb.sql_for(scenario, params, selectivity, self._srid)
         mode = registry.count_mode(scenario)
+        if mode == "write-rowcount":
+            if scenario == "append-object":
+                return self._run_append(params, repeat)
+            return self._run_write(scenario, repeat)
 
+        sql, args = sql_cjdb.sql_for(
+            scenario, params, window, self._srid, probe=probe
+        )
         pg.time_query(self._conn, sql, args, count_mode=mode)  # discarded warm-up
         samples = [
             pg.time_query(self._conn, sql, args, count_mode=mode)
@@ -173,7 +221,123 @@ class CjdbSystem:
             server_times_s=[s[2] for s in samples],
             peak_rss_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
             peak_heap_bytes=None,
-            notes="memory-scope: postgresql-backend-rss",
+            notes="memory-scope: postgresql-backend-rss fetch: text",
+        )
+
+    def _run_write(self, scenario: str, repeat: int) -> Measurement:
+        """One write-tier scenario: CJDB's own Q6/Q7/Q8.
+
+        No discarded warm-up, unlike every read scenario: a warm-up here
+        would be a real mutation, and the reset that undoes it is exactly
+        what the timed samples already pay for. `VACUUM ANALYZE` runs after
+        the last sample, never between the reset and the timed statement, so
+        no sample's number includes it — but it does run, so the dead tuples
+        `attr-add` leaves behind are not silently charged to `attr-update`.
+        """
+        assert self._conn is not None
+        sql, args = sql_cjdb.write_sql(scenario)
+        reset = tuple(sql_cjdb.write_reset_sql(scenario))
+        samples = [
+            pg.time_write(self._conn, sql, args, reset=reset if index else ())
+            for index in range(repeat)
+        ]
+        pg.vacuum_analyze(self._conn, self._schema)
+        return Measurement(
+            result_count=samples[0][0],
+            times_s=[s[1] for s in samples],
+            # Write rows carry no server_time_s: obtaining it would mean a
+            # second EXPLAIN ANALYZE execution of the mutation itself.
+            server_times_s=[],
+            peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
+            peak_heap_bytes=None,
+            notes="memory-scope: postgresql-backend-rss write-tier: no-explain",
+        )
+
+    def _watermarks(self) -> dict[str, int]:
+        assert self._conn is not None
+        marks: dict[str, int] = {}
+        with self._conn.cursor() as cur:
+            for table, sql in sql_cjdb.append_watermark_sql():
+                cur.execute(sql)
+                marks[table] = int(cur.fetchone()[0])
+        return marks
+
+    def _reset_append(self, watermarks: dict[str, int]) -> None:
+        assert self._conn is not None
+        with self._conn.cursor() as cur:
+            for sql, args in sql_cjdb.append_reset_sql(watermarks):
+                cur.execute(sql, args)
+
+    def _run_append(self, params: Params, repeat: int) -> Measurement:
+        """Catalogue B18, through cjdb's OWN importer on the one-feature file.
+
+        Timed as an external process, so the number includes what a cjdb
+        user genuinely pays to add an object: `uv`'s resolution of the
+        patched source, the interpreter start, the connection, the
+        footprint derivation and the inserts. The first two are launcher
+        cost rather than database work, so a non-mutating `cjdb --version`
+        runs first, UNTIMED, to take the cold resolve out of sample 1 — a
+        warm-up of the launcher, not of the mutation, which stays
+        un-warmed-up like every other write row.
+
+        Between samples the appended rows are deleted untimed, by
+        watermark, and once more after the last sample so the schema ends
+        as it began.
+        """
+        append = _append(params.append)
+        self._warm_launcher()
+        watermarks = self._watermarks()
+        added = 0
+        samples: list[tuple[float, int | None]] = []
+        for index in range(repeat):
+            if index:
+                self._reset_append(watermarks)
+            start = time.perf_counter()
+            self._import(append.path, overwrite=False)
+            samples.append((time.perf_counter() - start, None))
+            if index == 0:
+                added = self._rows_added(watermarks)
+        self._reset_append(watermarks)
+        pg.vacuum_analyze(self._conn, self._schema)
+        return Measurement(
+            result_count=append.object_count,
+            times_s=[s[0] for s in samples],
+            server_times_s=[],
+            # The importer is a separate process this harness starts and
+            # waits on; it is not the PostgreSQL backend the other rows
+            # sample, and sampling the backend would report only the part of
+            # the work that reached it.
+            peak_rss_bytes=None,
+            peak_heap_bytes=None,
+            notes=("write-tier: external-importer importer: cjdb-import "
+                   f"objects: {append.object_count} "
+                   f"city-object-rows-added: {added} "
+                   "memory-scope: not-sampled"),
+        )
+
+    def _rows_added(self, watermarks: dict[str, int]) -> int:
+        """`city_object` rows the import wrote — the importer's own grain.
+
+        cjdb stores one row per CityObject, so this should equal the file's
+        CityObject count; it is measured rather than assumed, because "what
+        each importer actually writes" is the disclosure this row exists
+        for.
+        """
+        assert self._conn is not None
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"SELECT count(*) FROM {self._schema}.city_object WHERE id > %s",
+                (watermarks["city_object"],),
+            )
+            return int(cur.fetchone()[0])
+
+    def _warm_launcher(self) -> None:
+        """Resolve the patched cjdb source once, UNTIMED and non-mutating."""
+        subprocess.run(
+            ["uv", "run", "--with", str(patched_cjdb_source()), "cjdb",
+             "--help"],
+            check=False, stdin=subprocess.DEVNULL,
+            capture_output=True,
         )
 
     def size(self) -> SizeReport:

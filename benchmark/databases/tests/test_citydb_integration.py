@@ -11,6 +11,16 @@ from citybench.systems.citydb import CityDbSystem
 pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).parent.parent / "data" / "delft.city.jsonl"
+# Parameter derivation reads the CityParquet package as well as the source:
+# the query windows are searched over the package's own `bbox` column and
+# the attribute picks come from its `city` footer, exactly as the format
+# harness derives its own (see `citybench.params.derive`). So these tests
+# need a converted delft package as well as a running container.
+PACKAGE = Path(__file__).parent.parent / "data" / "cityparquet" / "delft"
+
+
+def _params():
+    return derive(FIXTURE, PACKAGE)
 
 
 @pytest.fixture(scope="module")
@@ -21,7 +31,7 @@ def system():
         Dataset(
             name="delft",
             source=FIXTURE,
-            cityparquet_dir=Path("data/cityparquet/delft"),
+            cityparquet_dir=PACKAGE,
             hilbert_dir=Path("data/cityparquet-hilbert/delft"),
         )
     )
@@ -31,7 +41,7 @@ def system():
 
 def test_count_is_city_object_granular(system):
     """The spec's blocking item, asserted rather than assumed."""
-    params = derive(FIXTURE)
+    params = _params()
     m = system.run("count", params, repeat=1)
     assert m.result_count == params.total_city_objects, (
         "3DCityDB count is not CityObject-granular; the restricting predicate "
@@ -39,35 +49,68 @@ def test_count_is_city_object_granular(system):
     )
 
 
-def test_every_tier1_scenario_runs_and_reports_server_time(system):
-    params = derive(FIXTURE)
-    for scenario in ("full-read", "count", "attr-filter", "attr-stats",
-                     "id-lookup", "project"):
+def test_every_non_windowed_read_scenario_runs_and_reports_server_time(system):
+    params = _params()
+    for scenario in ("geometry-scan", "count", "attr-filter", "attr-range",
+                     "attr-stats"):
         m = system.run(scenario, params, repeat=1)
         assert m.times_s[0] > 0
         assert m.server_times_s[0] > 0
 
 
-def test_bbox_query_selectivity_is_monotonic(system):
-    params = derive(FIXTURE)
-    counts = [
-        system.run("bbox-query", params, repeat=1, selectivity=s).result_count
-        for s in (0.01, 0.05, 0.25)
-    ]
-    assert counts[0] <= counts[1] <= counts[2]
+def test_bbox_scenarios_are_monotonic_in_the_window(system):
+    params = _params()
+    for scenario in ("bbox-query",):
+        counts = [
+            system.run(scenario, params, repeat=1, window=w).result_count
+            for w in params.windows
+        ]
+        assert counts[0] <= counts[1] <= counts[2], scenario
 
 
 def test_tier2_scenarios_run(system):
-    params = derive(FIXTURE)
-    for scenario in ("lod-extract", "semantic-surface", "hierarchy"):
+    params = _params()
+    for scenario in ("lod-query", "parts-per-building"):
         m = system.run(scenario, params, repeat=1)
         assert m.times_s[0] > 0
+
+
+def test_the_write_tier_runs_and_carries_no_server_time(system):
+    """CJDB's Q6/Q7/Q8 in order: each leaves the state the next expects.
+    `server_time_s` is deliberately empty — obtaining it would mean a second
+    `EXPLAIN ANALYZE` execution of the mutation itself."""
+    params = _params()
+    for scenario in ("attr-add", "attr-update", "attr-delete"):
+        m = system.run(scenario, params, repeat=1)
+        assert m.times_s[0] > 0
+        assert m.server_times_s == []
+        assert m.result_count is not None and m.result_count > 0
+
+
+def test_append_object_adds_and_then_removes_everything_the_importer_wrote(system):
+    """B18 through `citydb-tool import cityjson`, twice, so the untimed
+    watermark reset between samples is exercised. v5 writes more `feature`
+    rows than the file has CityObjects — a row per boundary surface — and
+    all of them must go again."""
+    params = _params()
+    before = _feature_count(system)
+    m = system.run("append-object", params, repeat=2)
+    assert len(m.times_s) == 2 and all(t > 0 for t in m.times_s)
+    assert m.result_count == params.append.object_count
+    assert "external-importer" in m.notes
+    assert _feature_count(system) == before
+
+
+def _feature_count(system) -> int:
+    with system._conn.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM {system._schema}.feature")
+        return int(cur.fetchone()[0])
 
 
 # --- Beyond the brief -----------------------------------------------------
 #
 # The tests above are the brief's floor. The ones below exercise the
-# whole-window bbox-query's exact count against ground truth, full-read's
+# whole-window bbox-query's exact count against ground truth, geometry-scan's
 # own CityObject-granular count, every filtered query's actual EXPLAIN
 # plan (not just that it runs without error), the empty index_ddl()
 # against a live schema, and the size report — all real, all only
@@ -80,24 +123,26 @@ def test_bbox_query_at_full_window_matches_the_city_object_count(system):
     # equal the same 2231 `count` reports — not 10045 (every feature,
     # verified without the predicate: see docs/3dcitydb-v5-schema.md's
     # "Index coverage" section and the Task 9 report's EXPLAIN evidence).
-    params = derive(FIXTURE)
-    m = system.run("bbox-query", params, repeat=1, selectivity=1.0)
+    from citybench.config import BboxWindow
+
+    params = _params()
+    whole = BboxWindow(tag="bbox-100pct", target=1.0, achieved=1.0,
+                       window=params.bbox_full, approx=False)
+    m = system.run("bbox-query", params, repeat=1, window=whole)
     assert m.result_count == params.total_city_objects
 
 
-def test_full_read_result_count_is_city_object_granular_not_exploded_by_lod(system):
-    # Each CityObject can own several geometry_data rows (one per LoD).
-    # full-read's count(*) must stay at the CityObject total (matching
-    # cjdb's and duckdb-cityparquet's own full-read count(*)), not the
-    # exploded per-geometry row count — the bug this task's design
-    # specifically avoids by pre-aggregating geometry_data/property down
-    # to one row per feature_id before joining back to `feature`.
-    params = derive(FIXTURE)
-    m = system.run("full-read", params, repeat=1)
+def test_geometry_scan_result_count_is_city_object_granular_not_exploded_by_lod(system):
+    # Each CityObject owns several geometry_data rows (one per LoD), so a
+    # plain count(*) over the join would report geometry rows and every row
+    # of this scenario would be a false cross-system count-mismatch. The
+    # query uses count(DISTINCT f.id) for exactly this reason.
+    params = _params()
+    m = system.run("geometry-scan", params, repeat=1)
     assert m.result_count == params.total_city_objects
 
 
-def test_lod_extract_matches_the_known_buildingpart_lod1_solid_count(system):
+def test_lod_query_matches_the_known_buildingpart_lod1_solid_count(system):
     # Verified directly against a live import (Task 9 report, and
     # docs/3dcitydb-v5-schema.md's "LoD value format" section): with the
     # CityObject-granularity predicate applied, val_lod='1' AND
@@ -105,26 +150,8 @@ def test_lod_extract_matches_the_known_buildingpart_lod1_solid_count(system):
     # BuildingPart — 1116 on this fixture, not the 4929 an unrestricted
     # query would return by also counting each solid's own boundary
     # surfaces' LoD1 geometry.
-    params = derive(FIXTURE)
-    m = system.run("lod-extract", params, repeat=1)
-    assert m.result_count == 1116
-
-
-def test_semantic_surface_matches_the_cityobject_granular_presence_count(system):
-    # From the captured class breakdown (docs/3dcitydb-v5-schema.md):
-    # objectclass 712 RoofSurface has 2232 rows in `feature` for this
-    # fixture — but that raw feature count is NOT what this scenario
-    # reports (a real count-mismatch caught by Task 12's smoke target: an
-    # earlier version of this branch counted RoofSurface rows directly and
-    # got 2232, while cjdb and duckdb-cityparquet both report 1116 for the
-    # "same" scenario). Every BuildingPart genuinely owns two RoofSurface
-    # rows (one from `lod1Solid`, one from `lod2Solid`), so the raw count
-    # answers "how many RoofSurface features exist", not cjdb's/
-    # duckdb-cityparquet's "how many CityObjects have >=1 RoofSurface".
-    # Fixed to count DISTINCT owning CityObjects instead — see
-    # sql_citydb.py's comment on this branch for the full investigation.
-    params = derive(FIXTURE)
-    m = system.run("semantic-surface", params, repeat=1)
+    params = _params()
+    m = system.run("lod-query", params, repeat=1)
     assert m.result_count == 1116
 
 
@@ -154,13 +181,13 @@ def test_index_ddl_is_empty_and_all_expected_default_indexes_are_present(system)
         assert name in existing, f"{name} missing from pg_indexes after ingest"
 
 
-def test_hierarchy_runs_when_the_dataset_has_a_parent_child_pair(system):
-    params = derive(FIXTURE)
-    if params.parent_id is None:
-        pytest.skip("delft fixture has no parent/child pair to exercise hierarchy with")
-    m = system.run("hierarchy", params, repeat=1)
+def test_parts_per_building_reports_one_row_per_building(system):
+    """CJDB Q4 keeps childless Buildings, so this is a row count of the
+    Buildings themselves, never of the parent/child pairs."""
+    params = _params()
+    m = system.run("parts-per-building", params, repeat=1)
     assert m.result_count is not None
-    assert m.result_count >= 0
+    assert m.result_count > 0
 
 
 def test_size_reports_a_positive_byte_count(system):
@@ -173,7 +200,7 @@ def test_size_reports_a_positive_byte_count(system):
 # --- EXPLAIN-based regression guards --------------------------------------
 #
 # Mirrors test_cjdb_integration.py's
-# test_lod_extract_and_semantic_surface_plans_use_a_bitmap_index_scan: the
+# test_lod_query_plans_use_a_bitmap_index_scan: the
 # point is that the planner CHOOSES an index-based plan on its own under
 # DEFAULT settings, not that it can be coerced into one. A regression that
 # dropped an index, let statistics go stale, or reintroduced a
@@ -190,9 +217,10 @@ def _explain_text(system, sql: str, args: tuple) -> str:
 def test_id_lookup_uses_the_objectid_index(system):
     from citybench.scenarios import sql_citydb
 
-    params = derive(FIXTURE)
+    params = _params()
     sql, args = sql_citydb.sql_for(
-        "id-lookup", params, cityobject_class_ids=system._cityobject_class_ids,
+        "id-lookup", params, probe=params.id_probes[0],
+        cityobject_class_ids=system._cityobject_class_ids,
     )
     plan = _explain_text(system, sql, args)
     assert "feature_objectid_inx" in plan
@@ -202,9 +230,9 @@ def test_id_lookup_uses_the_objectid_index(system):
 def test_bbox_query_uses_the_envelope_gist_index(system):
     from citybench.scenarios import sql_citydb
 
-    params = derive(FIXTURE)
+    params = _params()
     sql, args = sql_citydb.sql_for(
-        "bbox-query", params, selectivity=0.01, srid=7415,
+        "bbox-query", params, params.window("bbox-1pct"), 7415,
         cityobject_class_ids=system._cityobject_class_ids,
     )
     plan = _explain_text(system, sql, args)
@@ -212,25 +240,23 @@ def test_bbox_query_uses_the_envelope_gist_index(system):
     assert "Seq Scan on feature" not in plan
 
 
-def test_count_and_project_and_attr_filter_route_the_predicate_through_an_index(system):
+def test_count_and_attr_range_route_the_predicate_through_an_index(system):
     # The CityObject-granularity predicate's own supporting index
     # (feature_objectclass_inx) must be reachable, not merely present —
     # confirmed as an Index Cond for these three scenarios, all of which
     # apply the resolved static predicate standalone (no JOIN in the same
     # query). C1 fix (final whole-branch review): the OLD correlated
     # predicate genuinely could not reach this index inside a JOIN
-    # (attr-stats/lod-extract/hierarchy's child side); the NEW static,
+    # (attr-stats/lod-query/parts-per-building's child side); the NEW static,
     # pre-resolved `objectclass_id IN (...)` form is sargable everywhere,
     # including inside a JOIN — see the scenarios below and
     # sql_citydb.index_ddl()'s docstring for the full, corrected picture.
     from citybench.scenarios import sql_citydb
 
-    params = derive(FIXTURE)
-    for scenario, kwargs in (
-        ("count", {}), ("project", {}), ("attr-filter", {}),
-    ):
+    params = _params()
+    for scenario in ("count", "attr-range", "attr-filter"):
         sql, args = sql_citydb.sql_for(
-            scenario, params, cityobject_class_ids=system._cityobject_class_ids, **kwargs,
+            scenario, params, cityobject_class_ids=system._cityobject_class_ids,
         )
         plan = _explain_text(system, sql, args)
         assert "feature_objectclass_inx" in plan, f"{scenario}: {plan}"
@@ -243,7 +269,7 @@ def test_attr_stats_property_side_uses_the_name_index(system):
     # independent of the C1 fix below.
     from citybench.scenarios import sql_citydb
 
-    params = derive(FIXTURE)
+    params = _params()
     sql, args = sql_citydb.sql_for(
         "attr-stats", params, cityobject_class_ids=system._cityobject_class_ids,
     )
@@ -270,7 +296,7 @@ def test_attr_stats_feature_side_no_longer_seq_scans_after_the_c1_fix(system):
     # picture.
     from citybench.scenarios import sql_citydb
 
-    params = derive(FIXTURE)
+    params = _params()
     sql, args = sql_citydb.sql_for(
         "attr-stats", params, cityobject_class_ids=system._cityobject_class_ids,
     )
@@ -278,12 +304,12 @@ def test_attr_stats_feature_side_no_longer_seq_scans_after_the_c1_fix(system):
     assert "Seq Scan on feature" not in plan, plan
 
 
-def test_lod_extract_uses_an_index_and_no_longer_seq_scans_feature(system):
+def test_lod_query_uses_an_index_and_no_longer_seq_scans_feature(system):
     from citybench.scenarios import sql_citydb
 
-    params = derive(FIXTURE)
+    params = _params()
     sql, args = sql_citydb.sql_for(
-        "lod-extract", params, cityobject_class_ids=system._cityobject_class_ids,
+        "lod-query", params, cityobject_class_ids=system._cityobject_class_ids,
     )
     plan = _explain_text(system, sql, args)
     # The property-side driving index: either is a legitimate plan choice
@@ -298,55 +324,46 @@ def test_lod_extract_uses_an_index_and_no_longer_seq_scans_feature(system):
     assert "Seq Scan on feature" not in plan, plan
 
 
-def test_hierarchy_uses_indexes_for_the_parent_lookup_and_join(system):
-    # The `parent` half of the join chain — the lookup by objectid and the
-    # property_feature_fkx join — stays fully index-driven regardless of
+def test_parts_per_building_uses_indexes_for_the_parent_side_of_the_join(system):
+    # The `parent` half of the join chain — the Building class restriction
+    # and the property_feature_fkx join — stays index-driven regardless of
     # the child-side predicate.
     from citybench.scenarios import sql_citydb
 
-    params = derive(FIXTURE)
-    if params.parent_id is None:
-        pytest.skip("delft fixture has no parent/child pair to exercise hierarchy with")
+    params = _params()
     sql, args = sql_citydb.sql_for(
-        "hierarchy", params, cityobject_class_ids=system._cityobject_class_ids,
+        "parts-per-building", params,
+        cityobject_class_ids=system._cityobject_class_ids,
+        building_class_id=system._building_class_id,
     )
     plan = _explain_text(system, sql, args)
-    assert "feature_objectid_inx" in plan
-    assert "property_feature_fkx" in plan
+    assert "feature_objectclass_inx" in plan, plan
+    assert "property_feature_fkx" in plan, plan
 
 
-def test_hierarchy_result_is_unchanged_by_the_child_granularity_predicate(system):
-    # Coordinator review round 1, IMPORTANT 2: hierarchy's omission of the
-    # CityObject-granularity predicate on `child` was previously safeguarded
-    # only by a delft-specific fact recorded in a comment, not enforced in
-    # code — a dataset where that fact doesn't hold could have silently
-    # overcounted. Fixed by applying the predicate to `child`. This pins
-    # that the fix does not change the answer on delft (where it was
-    # already a no-op, per the investigation in sql_citydb.py's comment on
-    # this branch) — a regression test for the fix itself, distinct from
-    # `test_hierarchy_runs_when_the_dataset_has_a_parent_child_pair` above,
-    # which only checks the scenario runs at all.
-    params = derive(FIXTURE)
-    if params.parent_id is None:
-        pytest.skip("delft fixture has no parent/child pair to exercise hierarchy with")
-    m = system.run("hierarchy", params, repeat=1)
-    assert m.result_count == 1
-
-
-def test_hierarchy_child_side_no_longer_seq_scans_after_the_c1_fix(system):
+def test_parts_per_building_child_side_no_longer_seq_scans_after_the_c1_fix(system):
     # C1 fix (final whole-branch review): an earlier version of this test
     # asserted the OPPOSITE — "Seq Scan on feature child" IS in the plan —
-    # as an accepted, understood trade-off of the OLD correlated predicate
-    # shape. That predicate shape is gone; the resolved static id-list
-    # predicate applied to `child` is sargable, so this now asserts the
-    # fix actually landed here too, not just on the standalone scenarios.
+    # as an accepted trade-off of the OLD correlated predicate shape. That
+    # shape is gone; the resolved static id-list predicate applied to
+    # `child` is sargable, so this asserts the fix landed inside the join
+    # too, not just on the standalone scenarios.
     from citybench.scenarios import sql_citydb
 
-    params = derive(FIXTURE)
-    if params.parent_id is None:
-        pytest.skip("delft fixture has no parent/child pair to exercise hierarchy with")
+    params = _params()
     sql, args = sql_citydb.sql_for(
-        "hierarchy", params, cityobject_class_ids=system._cityobject_class_ids,
+        "parts-per-building", params,
+        cityobject_class_ids=system._cityobject_class_ids,
+        building_class_id=system._building_class_id,
     )
     plan = _explain_text(system, sql, args)
     assert "Seq Scan on feature child" not in plan, plan
+
+
+def test_the_building_class_and_double_datatype_are_resolved_live(system):
+    """Both are schema-version facts read from the shipped catalogues at
+    ingest, never hard-coded: a silently wrong class id would make every
+    Building-grained scenario match nothing while still producing a
+    plausible-looking zero."""
+    assert system._building_class_id is not None and system._building_class_id > 0
+    assert system._datatype_id is not None and system._datatype_id > 0

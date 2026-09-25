@@ -44,7 +44,83 @@ pub struct RunOutcome {
     pub result_count: u64,
     pub io: Option<IoStats>,
     pub lookup: Option<LookupCounters>,
+    /// The four aggregates of an [`Scenario::AttrStats`] run; `None` for
+    /// every other scenario.
+    pub attr_stats: Option<AttrAggregates>,
 }
+
+/// `(min, max, sum, count)` of one numeric attribute over every CityObject
+/// carrying a numeric value for it — the four aggregates
+/// [`Scenario::AttrStats`] computes in EVERY format, so that no format's row
+/// is timing a cheaper question than another's.
+///
+/// One accumulation rule for every runner that walks values itself: each
+/// value is taken as `f64` (`serde_json::Value::as_f64`, so integers and
+/// floats alike) and folded with `f64::min`/`f64::max`/`+=`. A NaN never
+/// occurs in the fixtures; if one did, `min`/`max` would ignore it and `sum`
+/// would become NaN — never a panic. `count` is the scenario's
+/// `result_count`. With `count == 0`, `min`/`max` stay at `+inf`/`-inf`.
+///
+/// CityParquet fills this from `cityparquet::query::attr_stats` instead (min
+/// and max from column-chunk statistics, sum and count from a projected
+/// scan): that is the format's own mechanism, not this accumulator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AttrAggregates {
+    pub min: f64,
+    pub max: f64,
+    pub sum: f64,
+    pub count: u64,
+}
+
+impl AttrAggregates {
+    /// The aggregates of no values at all.
+    pub const EMPTY: Self = Self {
+        min: f64::INFINITY,
+        max: f64::NEG_INFINITY,
+        sum: 0.0,
+        count: 0,
+    };
+
+    /// Folds one numeric value in.
+    pub fn push(&mut self, value: f64) {
+        self.min = self.min.min(value);
+        self.max = self.max.max(value);
+        self.sum += value;
+        self.count += 1;
+    }
+}
+
+/// What a scenario body answers before its transport adds [`IoStats`]: the
+/// `result_count`, plus the aggregates when the scenario was
+/// [`Scenario::AttrStats`].
+pub(crate) struct Answer {
+    pub result_count: u64,
+    pub attr_stats: Option<AttrAggregates>,
+}
+
+impl From<u64> for Answer {
+    fn from(result_count: u64) -> Self {
+        Self {
+            result_count,
+            attr_stats: None,
+        }
+    }
+}
+
+impl From<AttrAggregates> for Answer {
+    fn from(stats: AttrAggregates) -> Self {
+        Self {
+            result_count: stats.count,
+            attr_stats: Some(stats),
+        }
+    }
+}
+
+/// A child reports its [`AttrAggregates`] on stderr, after its timed stdout
+/// line, as `<marker> <min> <max> <sum> <count>`, so the aggregates can be
+/// checked across formats without changing the timed stdout protocol or the
+/// results CSV.
+pub const ATTR_STATS_MARKER: &str = "cityparquet-readbench: attr-stats";
 
 /// What the bloom filters did for one CityParquet identifier lookup —
 /// `cityparquet::query::LookupStats` as the child reports it.
@@ -155,5 +231,40 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod attr_aggregates_tests {
+    use super::AttrAggregates;
+
+    #[test]
+    fn integers_and_floats_fold_into_one_f64_accumulation() {
+        let mut stats = AttrAggregates::EMPTY;
+        for v in [
+            serde_json::json!(3),
+            serde_json::json!(-1.5),
+            serde_json::json!(10),
+        ] {
+            stats.push(v.as_f64().unwrap());
+        }
+        assert_eq!(
+            stats,
+            AttrAggregates {
+                min: -1.5,
+                max: 10.0,
+                sum: 11.5,
+                count: 3
+            }
+        );
+    }
+
+    #[test]
+    fn a_nan_does_not_panic() {
+        let mut stats = AttrAggregates::EMPTY;
+        stats.push(1.0);
+        stats.push(f64::NAN);
+        assert_eq!((stats.min, stats.max, stats.count), (1.0, 1.0, 2));
+        assert!(stats.sum.is_nan());
     }
 }

@@ -736,8 +736,8 @@ with:
 In `lib/cityparquet-rs/README.md`, in the convert flag table, after the `--zstd-level` row add:
 
 ```markdown
-| `--no-bloom`                    | off           | write no Parquet bloom filter (by default `id`, `feature_id` and high-cardinality string attributes carry one) |
-| `--bloom-fpp`                   | `0.01`        | target false-positive probability of every bloom filter, strictly between 0 and 1                               |
+| `--no-bloom` | off | write no Parquet bloom filter (by default `id`, `feature_id` and high-cardinality string attributes carry one) |
+| `--bloom-fpp` | `0.01` | target false-positive probability of every bloom filter, strictly between 0 and 1 |
 ```
 
 Then run `npx --yes prettier@3.9.6 --write lib/cityparquet-rs/README.md` from the repository root.
@@ -1156,7 +1156,7 @@ with:
             }
 ```
 
-and update the block's leading comment's first sentence to: `// Bloom filters: `id` and `feature_id` in every object table — the two identifier columns whose min/max statistics cannot prune — plus the high-cardinality string attributes.`
+and update the block's leading comment's first sentence to: `// Bloom filters: `id`and`feature_id` in every object table — the two identifier columns whose min/max statistics cannot prune — plus the high-cardinality string attributes.`
 
 - [ ] **Step 9: Thread the set through the package writer**
 
@@ -3921,9 +3921,13 @@ measured by the `bloom` benchmark family.
 In `04-design-decisions/meta.ts`, add `"bloom-filters",` after `"extensions",` in `pages`. In `04-design-decisions/index.mdx`, after the `F · Extensions` card, add:
 
 ```mdx
-  <Card title="G · Bloom filters" href="/design-decisions/bloom-filters" icon="filter">
-    Filters on the identifiers, placed after the last row group.
-  </Card>
+<Card
+  title="G · Bloom filters"
+  href="/design-decisions/bloom-filters"
+  icon="filter"
+>
+  Filters on the identifiers, placed after the last row group.
+</Card>
 ```
 
 - [ ] **Step 4: Implementation status and the divergence**
@@ -4399,7 +4403,7 @@ and in `resolve`, before `let meta = open_metadata(cp_table)?;` add `let feature
 In `coordinator.rs`:
 
 - Imports: `use crate::formats::{IoStats, LOOKUP_STATS_MARKER, LookupCounters, Source};`
-- Module doc, after the sentence ending `(`id-10pct`, `id-50pct`, `id-90pct`, `id-miss`).` add: `//! [`Scenario::FeatureLookup`] (CityParquet only, and only when named) emits two: `feature-50pct` and `feature-miss`. Every CityParquet lookup row carries its [`LookupCounters`] in the three trailing CSV columns.`
+- Module doc, after the sentence ending `(`id-10pct`, `id-50pct`, `id-90pct`, `id-miss`).` add: `//! [`Scenario::FeatureLookup`] (CityParquet only, and only when named) emits two: `feature-50pct`and`feature-miss`. Every CityParquet lookup row carries its [`LookupCounters`] in the three trailing CSV columns.`
 - `RunOptions`, after `id_probes`:
 
 ```rust
@@ -4574,7 +4578,7 @@ fn child_lookup_counters(stderr: &str) -> Result<Option<LookupCounters>> {
         };
 ```
 
-  ending the `format!` with `{bytes_field},{requests_field},{lookup_fields}"`.
+ending the `format!` with `{bytes_field},{requests_field},{lookup_fields}"`.
 
 In `main.rs` `RunArgs`, after `id_probes`:
 
@@ -4936,7 +4940,7 @@ replace its `cargo run` invocation with:
             --variants "{{VARIANTS}}"
 ```
 
-and extend its comment block's second sentence to: `…then \`full-read\` and the three bbox windows against it (the default SCENARIOS/ID_PROBES; the bloom axis passes the lookups instead).` After `rowgroup-bench`, add:
+and extend its comment block's second sentence to: `…then \`full-read\` and the three bbox windows against it (the default SCENARIOS/ID_PROBES; the bloom axis passes the lookups instead).`After`rowgroup-bench`, add:
 
 ```just
 # The BLOOM axis: the default package, which carries bloom filters, against
@@ -5090,7 +5094,7 @@ In `benchmark/README.md`:
 | `bloom` | Nested 3DBAG scaling slices and the corpus | Size and write time/memory; lookup time, memory and row-group counters | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
 ```
 
-- Figures table: `| \`codec\`, \`rowgroup\`, \`bloom\` | Five metric panels for the largest measured scaling dataset |` and `| \`codec-scaling\`, \`rowgroup-scaling\`, \`bloom-scaling\` | Absolute metrics against actual CityObject counts |`.
+- Figures table: `| \`codec\`, \`rowgroup\`, \`bloom\` | Five metric panels for the largest measured scaling dataset |`and`| \`codec-scaling\`, \`rowgroup-scaling\`, \`bloom-scaling\` | Absolute metrics against actual CityObject counts |`.
 
 In `benchmark/formats/README.md`, after the paragraph ending `…so those columns are empty in every package they measured.` (line 29), add:
 
@@ -5336,7 +5340,7 @@ Replace the `variant_seq` binding and the `if let Some(list) = &variants { .. }`
 
 At the end of `run`, replace `if variants.is_some() {` (before `write_sizes`) with `if variants.is_some() && opts.transport == Transport::Local {`, and change its `let seq = variant_seq.as_deref().expect("set together with `variants`");` message to `"set for every local variants run"`.
 
-In the module doc's `**--variants: the configuration run.**` paragraph, append: `//! Over `--transport http` the run is read-only: it reads the `<base>.<id>.parquet` packages a local run wrote, uploaded beside the prepared artefacts, and writes no `write` row and no `sizes.csv`.` In `RunOptions::variants`, replace `Exclusive with `formats`; local transport only.` with `Exclusive with `formats`. Over HTTP the packages are read, never written.`
+In the module doc's `**--variants: the configuration run.**` paragraph, append: `//! Over `--transport http`the run is read-only: it reads the`<base>.<id>.parquet`packages a local run wrote, uploaded beside the prepared artefacts, and writes no`write`row and no`sizes.csv`.` In `RunOptions::variants`, replace `Exclusive with `formats`; local transport only.` with `Exclusive with `formats`. Over HTTP the packages are read, never written.`
 
 - [ ] **Step 4: Run the harness suite**
 
@@ -5455,7 +5459,7 @@ The spec's Acceptance list, item by item. Items 2, 3, 4 and 4b are `#[ignore]` t
 
 Create `lib/cityparquet-rs/crates/core/tests/bloom_corpus.rs`:
 
-```rust
+````rust
 //! Bloom-filter acceptance at corpus scale (spec Acceptance 2, 3, 4, 4b).
 //! Ignored by default: they need the 3DBAG scaling slices and minutes of
 //! conversion. Run from the repository root with
@@ -5691,7 +5695,7 @@ fn feature_lookup_returns_every_part_of_multi_part_3dbag_features() {
         }
     }
 }
-```
+````
 
 - [ ] **Step 2: Run them**
 
@@ -5821,31 +5825,31 @@ Then record in the pull-request description (or the review hand-off): the printe
 
 ## Spec coverage
 
-| Spec section | Task |
-|---|---|
-| Decisions 1-2 (columns, FPP) | 1, 2 |
-| Decision 3 (End placement, lengths) | 1 |
-| Decision 4 (async one coalesced request) | 4 |
-| Decision 5 (default on, disableable) | 1 |
-| Decision 6 (both writers; `feature_id` lookup) | 5, 6 |
-| Decision 7 (one `bloom` family, one pair) | 9, 10 |
-| Decision 8 (crates, not hand-rolled) | 2 (HLL crate), 3-4 (`Sbbf`) |
-| Writer — column policy, numeric exclusion | 1, 2 |
-| Writer — high-cardinality rule, `ScanResult`, diversion, `writer_properties` signature, dotted names | 2 |
-| Writer — properties, NDV, memory | 1 (properties), 9 (write-row RSS caveat) |
-| Writer — `BloomPolicy`, `ParquetDefaults` | 1 |
-| Surfaces — CLI flags, `+nobloom` | 1 |
-| Reader — `bloom_targets`, sync/async prune, leaf by path, IN semantics, raw bytes, exact `RowFilter` | 3, 4 |
-| Reader — fallback without length | 4 |
-| Reader — `LookupStats`, `_with_stats`, readbench adapter | 3, 4, 8 |
-| `feature_id` lookup (table, async, package; CLI) | 5 (CLI: none exists, resolved note 5) |
-| Call sites incl. `attr_filter` and its doc comment | 3, 4 |
-| Specification (documents/) | 7 |
-| duckdb-cityjson writer | 6 |
-| Benchmark — variants, scenarios, probes, datasets, metrics | 8, 9, 10 |
-| Benchmark — disclosed caveats, knock-on for codec/rowgroup | 9 |
-| Outputs under `benchmark/runs/` only | 9, 10, 11 |
-| Acceptance 1-6 | 11 (2, 3, 4, 4b also on fixtures in 3-5; 4c in 6) |
-| Out of scope (numeric, sidecars, page index, FPP sweep) | not implemented; sidecars pinned filter-free in 1 and 6 |
-| Superseding the 2026-08-25 out-of-scope note | 7 |
-| Review fixes: exact column names, dictionary-typed identifiers, column-typed probe eligibility, one reader per lookup, bitset `filter_bytes` | 3, 4, 5 |
+| Spec section                                                                                                                                 | Task                                                    |
+| -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Decisions 1-2 (columns, FPP)                                                                                                                 | 1, 2                                                    |
+| Decision 3 (End placement, lengths)                                                                                                          | 1                                                       |
+| Decision 4 (async one coalesced request)                                                                                                     | 4                                                       |
+| Decision 5 (default on, disableable)                                                                                                         | 1                                                       |
+| Decision 6 (both writers; `feature_id` lookup)                                                                                               | 5, 6                                                    |
+| Decision 7 (one `bloom` family, one pair)                                                                                                    | 9, 10                                                   |
+| Decision 8 (crates, not hand-rolled)                                                                                                         | 2 (HLL crate), 3-4 (`Sbbf`)                             |
+| Writer — column policy, numeric exclusion                                                                                                    | 1, 2                                                    |
+| Writer — high-cardinality rule, `ScanResult`, diversion, `writer_properties` signature, dotted names                                         | 2                                                       |
+| Writer — properties, NDV, memory                                                                                                             | 1 (properties), 9 (write-row RSS caveat)                |
+| Writer — `BloomPolicy`, `ParquetDefaults`                                                                                                    | 1                                                       |
+| Surfaces — CLI flags, `+nobloom`                                                                                                             | 1                                                       |
+| Reader — `bloom_targets`, sync/async prune, leaf by path, IN semantics, raw bytes, exact `RowFilter`                                         | 3, 4                                                    |
+| Reader — fallback without length                                                                                                             | 4                                                       |
+| Reader — `LookupStats`, `_with_stats`, readbench adapter                                                                                     | 3, 4, 8                                                 |
+| `feature_id` lookup (table, async, package; CLI)                                                                                             | 5 (CLI: none exists, resolved note 5)                   |
+| Call sites incl. `attr_filter` and its doc comment                                                                                           | 3, 4                                                    |
+| Specification (documents/)                                                                                                                   | 7                                                       |
+| duckdb-cityjson writer                                                                                                                       | 6                                                       |
+| Benchmark — variants, scenarios, probes, datasets, metrics                                                                                   | 8, 9, 10                                                |
+| Benchmark — disclosed caveats, knock-on for codec/rowgroup                                                                                   | 9                                                       |
+| Outputs under `benchmark/runs/` only                                                                                                         | 9, 10, 11                                               |
+| Acceptance 1-6                                                                                                                               | 11 (2, 3, 4, 4b also on fixtures in 3-5; 4c in 6)       |
+| Out of scope (numeric, sidecars, page index, FPP sweep)                                                                                      | not implemented; sidecars pinned filter-free in 1 and 6 |
+| Superseding the 2026-08-25 out-of-scope note                                                                                                 | 7                                                       |
+| Review fixes: exact column names, dictionary-typed identifiers, column-typed probe eligibility, one reader per lookup, bitset `filter_bytes` | 3, 4, 5                                                 |

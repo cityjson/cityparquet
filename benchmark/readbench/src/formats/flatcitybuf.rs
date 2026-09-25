@@ -40,25 +40,63 @@
 //!   (the fixture only has 38 features total; empirically confirmed in
 //!   this module's own tests, not merely asserted). A feature with two
 //!   matching CityObjects contributes its offset TWICE to the result.
-//! - [`Scenario::AttrStats`]/[`Scenario::Project`] have no B+-tree fallback
+//! - [`Scenario::AttrStats`] has no B+-tree fallback
 //!   in FCB at all regardless of indexing (see below) — this runner's own
-//!   `select_all` walk deliberately flattens to CityObject level too (one
-//!   count per CityObject carrying the attribute, not one per feature),
+//!   `select_all` walk deliberately flattens to CityObject level too (every
+//!   CityObject's numeric value is folded into `(min, max, sum, count)`, not
+//!   one value per feature),
 //!   matching [`Scenario::AttrFilter`]'s own now-established granularity
-//!   and [`super::cityjsonseq`]'s convention for these same four
+//!   and [`super::cityjsonseq`]'s convention for these same three
 //!   scenarios.
 //!
 //! Net effect: [`Scenario::Count`]/[`Scenario::FullRead`]/
 //! [`Scenario::BBoxQuery`] are feature-level (their own genuinely-native
 //! FCB mechanism); [`Scenario::AttrFilter`]/[`Scenario::AttrStats`]/
-//! [`Scenario::Project`]/[`Scenario::IdLookup`] are CityObject-level (either
+//! [`Scenario::IdLookup`] are CityObject-level (either
 //! because that's what FCB's own B+-tree naturally returns, or — for the
-//! two scenarios with no index at all — this runner's own deliberate
+//! scenario with no index at all — this runner's own deliberate
 //! choice to match that same granularity). This still does NOT reproduce
 //! CityParquet's own CityObject-row counts (2231 on delft, vs. FCB's own
 //! 1115 features) — the milestone's methodology doc is responsible for
 //! disclosing the feature-vs-object split alongside the numbers, not this
 //! runner papering over it.
+//!
+//! **What the full walks actually materialise.** Every walk below reads
+//! the RAW FlatBuffers `CityFeature` (`FeatureIter::cur_feature`), never
+//! `cur_cj_feature`: FCB is a zero-copy format, and a comparison baseline
+//! is owed its own best natural implementation. `cur_cj_feature` runs
+//! `fcb_core`'s `to_cj_feature`, which decodes every geometry into nested
+//! `serde_json` boundary arrays, converts every vertex, decodes every
+//! attribute into a `serde_json::Map` and allocates a `String` id per
+//! CityObject — to answer questions that need one enum comparison, one
+//! borrowed `&str` comparison or one column. Measured on `3dbag_n10000`, a
+//! type walk cost 0.389 s that way against 0.033 s through the raw
+//! accessors, which made FCB's `attr-filter`/`attr-stats`/
+//! `id-lookup` rows cost the same as its `full-read` row and measured the
+//! conversion, not the format. So:
+//!
+//! - [`Scenario::FullRead`] reads every feature's geometry: for every
+//!   CityObject, every standard geometry's five flattened index arrays
+//!   (`solids`/`shells`/`surfaces`/`strings`/`boundaries`) plus its
+//!   per-surface `semantics` indices, every template instance's own
+//!   boundary array, and every one of the feature's quantised vertices.
+//!   Those arrays ARE the nesting a CityJSON `boundaries` tree encodes, so
+//!   this is the same read work `fcb_core`'s own `decode` does without the
+//!   nested `Vec` it allocates on top. NOT read: `semantics_objects`,
+//!   `material`, `texture` and the feature `appearance` — semantic-surface
+//!   attribute tables and appearance mappings, not geometry.
+//! - [`Scenario::AttrFilter`]'s fallback tests the reserved `object_type`
+//!   column against `co.type_()` (a flatbuffer enum, mapped to its
+//!   CityJSON type string exactly as `to_cj_feature`'s own `to_cj_co_type`
+//!   does), and any other column by decoding ONLY that column's value out
+//!   of the CityObject's packed attribute blob.
+//! - [`Scenario::IdLookup`]'s fallback compares `co.id()`, a borrowed
+//!   `&str`, and exits at the first hit.
+//! - [`Scenario::AttrStats`] decodes that one attribute column and nothing
+//!   else — no geometry at all — and aggregates it (`super::AttrAggregates`).
+//!
+//! The RESULT of every one of those is unchanged — same counting unit,
+//! same predicate semantics, same numbers — only the work behind it is.
 //!
 //! **Attribute B+-tree vs. full scan.** FCB's B+-tree only indexes the
 //! CityJSON `attributes` map (built by `fcb ser -A`); reserved/structural
@@ -66,8 +104,8 @@
 //! part of that schema, so a query against either always falls back to a
 //! full [`fcb_core::FcbReader::select_all`] walk here (checked once per
 //! call via the header's own column schema, not assumed) — this is
-//! expected given `-A`, not a bug. [`Scenario::AttrStats`] and
-//! [`Scenario::Project`] always use that same full walk regardless of
+//! expected given `-A`, not a bug. [`Scenario::AttrStats`]
+//! always uses that same full walk regardless of
 //! whether the column is indexed: FCB's B+-tree only supports point/range
 //! *filtering*, not columnar aggregation, so there is no faster native
 //! mechanism to measure — the full scan IS the honest cost.
@@ -85,18 +123,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use bytes::Bytes;
-// fcb_core 0.7's own `CityJSONFeature`/`CityObject` come from the `cjseq2`
-// crate (aliased internally to `cjseq` inside `fcb_core`'s own source), NOT
-// the `cjseq` 0.4 crate `super::cityjsonseq` uses — see this crate's own
-// `Cargo.toml` comment on the `cjseq2` dependency.
-use cjseq2::CityObject;
+// `CityObject`/`CityFeature`/`Geometry` here are FCB's own FLATBUFFER
+// tables, not the `cjseq2` CityJSON types `fcb_core`'s `to_cj_feature`
+// builds — every walk below reads the flatbuffer directly (see this
+// module's own doc comment on what each scenario materialises).
 use fcb_core::{
-    AttrQuery, ColumnType, FcbReader, FixedStringKey, Float, Header, HttpFcbReader, KeyType,
-    Operator, SpatialQuery,
+    AttrQuery, CityObject, CityObjectType, ColumnType, FcbReader, FixedStringKey, Float, Geometry,
+    GeometryInstance, Header, HttpFcbReader, KeyType, Operator, SpatialQuery,
 };
 use http_range_client::{AsyncBufferedHttpRangeClient, AsyncHttpRangeClient};
 
-use super::{FormatRunner, IoStats, RunOutcome, Source};
+use super::{AttrAggregates, FormatRunner, IoStats, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// The markers every index-fallback message below carries, and the exact
@@ -125,22 +162,364 @@ fn open(input: &Path) -> Result<FcbReader<BufReader<File>>> {
     Ok(FcbReader::open(BufReader::new(file))?)
 }
 
-/// `column`'s value on `co`: the reserved `object_type` column reads
-/// `co.thetype` (never part of FCB's attribute schema); every other column
-/// name is looked up in `co.attributes`, with a JSON-`null` entry treated
-/// the same as an absent one. This is the CityObject-level analogue of
-/// [`super::cityjsonseq`]'s own `column_value` — kept as its own copy per
-/// this module's own doc convention, since the two runners walk different
-/// underlying feature types.
-fn column_value(co: &CityObject, column: &str) -> Option<serde_json::Value> {
-    if column == "object_type" {
-        return Some(serde_json::Value::String(co.thetype.clone()));
+/// One attribute column of FCB's header schema, copied out of the
+/// flatbuffer so it outlives the [`FcbReader`] the header was read from —
+/// [`FcbReader::select_all`] consumes the reader, and the walks below need
+/// the schema for every feature they then visit. Copying it once per call
+/// costs one small `Vec` where borrowing would cost a second file open.
+#[derive(Clone, Debug)]
+struct ColumnMeta {
+    /// The column's own `index` field, which is what the packed
+    /// attribute blob's per-value tag carries — NOT its position in the
+    /// schema vector (FCB's own `decode_attributes` looks it up the same
+    /// way).
+    index: u16,
+    kind: ColumnType,
+    name: String,
+}
+
+/// `header`'s attribute schema, owned. `None` when the header carries no
+/// column schema at all (in which case only a CityObject's own
+/// `columns()` override can describe its attribute blob — see
+/// [`attribute_value`], which mirrors `to_cj_feature`'s own rule).
+fn owned_columns(header: &Header<'_>) -> Option<Vec<ColumnMeta>> {
+    header.columns().map(|columns| {
+        columns
+            .iter()
+            .map(|c| ColumnMeta {
+                index: c.index(),
+                kind: c.type_(),
+                name: c.name().to_string(),
+            })
+            .collect()
+    })
+}
+
+/// `co`'s CityJSON type string, straight off the flatbuffer enum — the
+/// zero-decode equivalent of the `to_cj_co_type(co.type_(),
+/// co.extension_type())` call `fcb_core`'s own `to_cj_feature` makes, and
+/// deliberately identical to it in every branch: an `ExtensionObject`
+/// reads its `extension_type` string and falls back to `"Unknown"` when it
+/// has none, and an enum discriminant `fcb_core` itself does not recognise
+/// is `"Unknown"` too. Borrowed, never allocated: this is evaluated once
+/// per CityObject on a full walk.
+fn co_type_str<'a>(co: &CityObject<'a>) -> &'a str {
+    if co.type_() == CityObjectType::ExtensionObject {
+        return co.extension_type().unwrap_or("Unknown");
     }
-    co.attributes
-        .as_ref()?
-        .get(column)
-        .filter(|v| !v.is_null())
-        .cloned()
+    match co.type_().variant_name() {
+        Some(name) => name,
+        None => "Unknown",
+    }
+}
+
+/// The reserved `object_type` column's predicate evaluation: exactly what
+/// [`matches_predicate`] would return for `serde_json::Value::String(s)`,
+/// without allocating that `Value` once per CityObject.
+fn matches_str_predicate(s: &str, pred: &AttrPred) -> bool {
+    match pred {
+        AttrPred::Eq(want) => {
+            if let Some(want_str) = want.as_str() {
+                s == want_str
+            } else if let Some(want_num) = want.as_f64() {
+                // A JSON-string value's own `as_f64()` is always `None`, so
+                // only the re-parse branch of `matches_predicate` can fire.
+                s.parse::<f64>().ok() == Some(want_num)
+            } else {
+                false
+            }
+        }
+        // Every remaining predicate goes through `Value::as_f64()`, which
+        // is `None` for a string — a type string never matches a range.
+        AttrPred::Ge(_) | AttrPred::Le(_) | AttrPred::Range(_, _) => false,
+    }
+}
+
+/// Reads `target`'s value out of one CityObject's packed attribute blob,
+/// decoding ONLY that column: every other column's value is skipped by its
+/// encoded width, so nothing but the one answer is ever allocated. This is
+/// the targeted counterpart of `fcb_core`'s own
+/// [`fcb_core::reader::deserializer::decode_attributes`], whose layout it
+/// follows byte for byte — a `u16` column tag followed by that column's
+/// fixed-width value, or a `u32` length followed by that many bytes for the
+/// variable-width `String`/`DateTime`/`Json` types.
+///
+/// The whole blob is scanned even after a hit, so a column encoded twice
+/// resolves to its LAST occurrence — which is what `decode_attributes`'
+/// own `serde_json::Map::insert` does. Skipping costs pointer arithmetic
+/// only.
+///
+/// `type_of` maps a column tag to its type against whichever schema
+/// applies (the header's, or the CityObject's own `columns()` override);
+/// `column_count` is that schema's length, the same bound
+/// `decode_attributes` checks. Where `decode_attributes` panics — an
+/// out-of-range tag, an unhandled column type, malformed JSON — this
+/// returns an error instead, so a malformed file fails the run with a
+/// message rather than aborting the child process.
+fn scan_attribute(
+    bytes: &[u8],
+    target: u16,
+    column_count: usize,
+    type_of: &dyn Fn(u16) -> Option<ColumnType>,
+) -> Result<Option<serde_json::Value>> {
+    /// `len` bytes at `offset`, or an error naming the truncation.
+    fn take(bytes: &[u8], offset: usize, len: usize) -> Result<&[u8]> {
+        bytes
+            .get(offset..offset + len)
+            .ok_or_else(|| anyhow!("attribute blob truncated at byte {offset} (wanted {len})"))
+    }
+
+    let mut found = None;
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let tag = take(bytes, offset, 2)?;
+        let col_index = u16::from_le_bytes([tag[0], tag[1]]);
+        offset += 2;
+        if col_index as usize >= column_count {
+            bail!("attribute column index {col_index} out of range ({column_count} columns)");
+        }
+        let kind = type_of(col_index)
+            .ok_or_else(|| anyhow!("attribute column index {col_index} is not in the schema"))?;
+        let wanted = col_index == target;
+
+        macro_rules! fixed {
+            ($width:expr, $decode:expr) => {{
+                let raw = take(bytes, offset, $width)?;
+                if wanted {
+                    let decode: fn(&[u8]) -> Option<serde_json::Value> = $decode;
+                    found = Some(decode(raw));
+                }
+                offset += $width;
+            }};
+        }
+
+        match kind {
+            ColumnType::Bool => fixed!(1, |b| Some(serde_json::Value::Bool(b[0] != 0))),
+            ColumnType::Short => fixed!(2, |b| Some(serde_json::Value::from(i16::from_le_bytes(
+                b.try_into().expect("2 bytes")
+            )))),
+            ColumnType::UShort => fixed!(2, |b| Some(serde_json::Value::from(u16::from_le_bytes(
+                b.try_into().expect("2 bytes")
+            )))),
+            ColumnType::Int => fixed!(4, |b| Some(serde_json::Value::from(i32::from_le_bytes(
+                b.try_into().expect("4 bytes")
+            )))),
+            ColumnType::UInt => fixed!(4, |b| Some(serde_json::Value::from(u32::from_le_bytes(
+                b.try_into().expect("4 bytes")
+            )))),
+            ColumnType::Long => fixed!(8, |b| Some(serde_json::Value::from(i64::from_le_bytes(
+                b.try_into().expect("8 bytes")
+            )))),
+            ColumnType::ULong => fixed!(8, |b| Some(serde_json::Value::from(u64::from_le_bytes(
+                b.try_into().expect("8 bytes")
+            )))),
+            // A non-finite float has no `serde_json::Number`, so
+            // `decode_attributes` leaves the key out of the map entirely —
+            // i.e. the column reads as ABSENT, which `None` says here.
+            ColumnType::Float => fixed!(4, |b| {
+                let f = f32::from_le_bytes(b.try_into().expect("4 bytes"));
+                serde_json::Number::from_f64(f as f64).map(serde_json::Value::Number)
+            }),
+            ColumnType::Double => fixed!(8, |b| {
+                let f = f64::from_le_bytes(b.try_into().expect("8 bytes"));
+                serde_json::Number::from_f64(f).map(serde_json::Value::Number)
+            }),
+            ColumnType::String | ColumnType::DateTime | ColumnType::Json => {
+                let len_bytes = take(bytes, offset, 4)?;
+                let len = u32::from_le_bytes(len_bytes.try_into().expect("4 bytes")) as usize;
+                offset += 4;
+                let raw = take(bytes, offset, len)?;
+                if wanted {
+                    // `decode_attributes` is lossy the same way here: an
+                    // invalid UTF-8 payload becomes the empty string.
+                    let s = String::from_utf8(raw.to_vec()).unwrap_or_default();
+                    found = Some(if kind == ColumnType::Json {
+                        Some(serde_json::from_str(&s).with_context(|| {
+                            format!("parsing a Json-typed attribute column's value: {s}")
+                        })?)
+                    } else {
+                        Some(serde_json::Value::String(s))
+                    });
+                }
+                offset += len;
+            }
+            other => bail!(
+                "attribute column type {other:?} has no decoding in fcb_core 0.7.6 \
+                 (its own `decode_attributes` panics on it)"
+            ),
+        }
+    }
+    Ok(found.flatten())
+}
+
+/// `column`'s value on the flatbuffer CityObject `co`, decoded from `co`'s
+/// own attribute blob alone — the raw-accessor replacement for the
+/// `to_cj_feature` round trip the full walks used to make. `root` is the
+/// header's own schema (see [`owned_columns`]).
+///
+/// The reserved `object_type` column is NOT handled here: it is never part
+/// of FCB's attribute schema, and its callers read [`co_type_str`]
+/// directly.
+///
+/// Every branch mirrors `to_cj_feature`'s own attribute handling: no
+/// schema at all (neither header nor per-object) means no attributes; a
+/// CityObject carrying its own `columns()` is decoded against THAT schema;
+/// an empty blob is an empty map; and a JSON-`null` value reads as absent,
+/// as [`super::cityjsonseq`]'s own `column_value` also has it.
+fn attribute_value(
+    co: &CityObject<'_>,
+    root: Option<&[ColumnMeta]>,
+    column: &str,
+) -> Result<Option<serde_json::Value>> {
+    let own_columns = co.columns();
+    if root.is_none() && own_columns.is_none() {
+        return Ok(None);
+    }
+    let Some(attributes) = co.attributes() else {
+        return Ok(None);
+    };
+    if attributes.is_empty() {
+        return Ok(None);
+    }
+    let value = if let Some(columns) = own_columns {
+        let Some(target) = columns
+            .iter()
+            .find(|c| c.name() == column)
+            .map(|c| c.index())
+        else {
+            return Ok(None);
+        };
+        scan_attribute(attributes.bytes(), target, columns.len(), &|index| {
+            columns
+                .iter()
+                .find(|c| c.index() == index)
+                .map(|c| c.type_())
+        })?
+    } else {
+        let columns = root.expect("checked above");
+        let Some(target) = columns.iter().find(|c| c.name == column).map(|c| c.index) else {
+            return Ok(None);
+        };
+        scan_attribute(attributes.bytes(), target, columns.len(), &|index| {
+            columns.iter().find(|c| c.index == index).map(|c| c.kind)
+        })?
+    };
+    Ok(value.filter(|v| !v.is_null()))
+}
+
+/// Whether `co` matches `pred` on `column`, reading only what the answer
+/// needs: one flatbuffer enum for the reserved `object_type` column, one
+/// targeted blob scan for anything else.
+fn co_matches(
+    co: &CityObject<'_>,
+    root: Option<&[ColumnMeta]>,
+    column: &str,
+    pred: &AttrPred,
+) -> Result<bool> {
+    if column == "object_type" {
+        return Ok(matches_str_predicate(co_type_str(co), pred));
+    }
+    Ok(matches_predicate(
+        attribute_value(co, root, column)?.as_ref(),
+        pred,
+    ))
+}
+
+/// Folds every index of one flatbuffer `u32` vector into a checksum: the
+/// point is the TOUCH, not the sum — every element is read off the buffer
+/// (little-endian, one at a time, exactly as a decoder would), and the
+/// result is `black_box`ed by [`full_read`] so the traversal cannot be
+/// optimised away as dead code.
+fn touch_indices(values: impl Iterator<Item = u32>) -> u64 {
+    values.fold(0u64, |acc, n| acc.wrapping_add(u64::from(n)))
+}
+
+/// One geometry's full boundary traversal: `(leaves, checksum)`, where
+/// `leaves` is the number of vertex indices in its `boundaries` array —
+/// the flattened equivalent of [`super::cityjsonseq::count_boundary_leaves`]
+/// over the nested CityJSON form — and `checksum` folds every element of
+/// EVERY one of FCB's five flattened arrays (`solids`, `shells`,
+/// `surfaces`, `strings`, `boundaries`) plus the per-surface `semantics`
+/// index array. Between them those arrays ARE the nesting structure a
+/// CityJSON `boundaries` tree encodes, so touching all of them is the same
+/// read work `fcb_core`'s own `decode` does, minus the nested `Vec`
+/// allocation it builds on top.
+///
+/// Deliberately NOT touched: `semantics_objects`, `material` and `texture`.
+/// Those are semantic-surface attribute tables and appearance mappings, not
+/// geometry — see this module's own doc comment, which states exactly what
+/// [`Scenario::FullRead`] materialises.
+fn geometry_work(geom: &Geometry<'_>) -> (u64, u64) {
+    let mut checksum = 0u64;
+    let mut leaves = 0u64;
+    if let Some(solids) = geom.solids() {
+        checksum = checksum.wrapping_add(touch_indices(solids.iter()));
+    }
+    if let Some(shells) = geom.shells() {
+        checksum = checksum.wrapping_add(touch_indices(shells.iter()));
+    }
+    if let Some(surfaces) = geom.surfaces() {
+        checksum = checksum.wrapping_add(touch_indices(surfaces.iter()));
+    }
+    if let Some(strings) = geom.strings() {
+        checksum = checksum.wrapping_add(touch_indices(strings.iter()));
+    }
+    if let Some(semantics) = geom.semantics() {
+        checksum = checksum.wrapping_add(touch_indices(semantics.iter()));
+    }
+    if let Some(boundaries) = geom.boundaries() {
+        leaves += boundaries.len() as u64;
+        checksum = checksum.wrapping_add(touch_indices(boundaries.iter()));
+    }
+    (leaves, checksum)
+}
+
+/// A template instance's own boundary array (its single reference point),
+/// counted and touched exactly as [`geometry_work`] counts a standard
+/// geometry's — `to_cj_feature` decodes instances alongside standard
+/// geometries, so a full read that skipped them would read less than the
+/// path it replaces.
+fn geometry_instance_work(instance: &GeometryInstance<'_>) -> (u64, u64) {
+    match instance.boundaries() {
+        Some(boundaries) => (boundaries.len() as u64, touch_indices(boundaries.iter())),
+        None => (0, 0),
+    }
+}
+
+/// One feature's whole geometry traversal: every CityObject's standard
+/// geometries and template instances, plus every one of the feature's own
+/// quantised vertices (read as the three `i32`s FCB stores, the same
+/// coordinates `to_cj_vertices` would copy into a `Vec<Vec<i64>>`).
+fn feature_geometry_work(feature: &fcb_core::CityFeature<'_>) -> (u64, u64) {
+    let mut leaves = 0u64;
+    let mut checksum = 0u64;
+    if let Some(vertices) = feature.vertices() {
+        for v in vertices.iter() {
+            checksum = checksum
+                .wrapping_add(v.x() as i64 as u64)
+                .wrapping_add(v.y() as i64 as u64)
+                .wrapping_add(v.z() as i64 as u64);
+        }
+    }
+    if let Some(objects) = feature.objects() {
+        for co in objects.iter() {
+            if let Some(geometries) = co.geometry() {
+                for geom in geometries.iter() {
+                    let (l, c) = geometry_work(&geom);
+                    leaves += l;
+                    checksum = checksum.wrapping_add(c);
+                }
+            }
+            if let Some(instances) = co.geometry_instances() {
+                for instance in instances.iter() {
+                    let (l, c) = geometry_instance_work(&instance);
+                    leaves += l;
+                    checksum = checksum.wrapping_add(c);
+                }
+            }
+        }
+    }
+    (leaves, checksum)
 }
 
 /// This runner's own attribute-predicate evaluation, used only by the
@@ -321,23 +700,26 @@ fn attr_query_for(input: &Path, column: &str, pred: &AttrPred) -> Result<Option<
     Ok(build_attr_query(column, pred, column_type).ok())
 }
 
-/// Every feature in `input`, counting one FEATURE per successfully decoded
-/// `cur_cj_feature`; `touch` (the total number of CityObjects across every
-/// feature) forces the CityJSON-feature deserialisation to actually
-/// complete rather than being optimised away, but is otherwise discarded —
-/// the returned metric stays feature-level per this module's own doc
-/// comment.
+/// Every feature in `input`, counting one FEATURE per record and decoding
+/// every one of its geometries through the raw flatbuffer accessors (see
+/// [`feature_geometry_work`] for exactly which arrays are read). The
+/// boundary-leaf and checksum totals are `black_box`ed rather than
+/// returned: they exist to force the traversal to happen, and the returned
+/// metric stays feature-level per this module's own doc comment — the same
+/// arrangement [`super::cityjsonseq`]'s own `FullRead` uses.
 fn full_read(input: &Path) -> Result<u64> {
     let reader = open(input)?;
     let mut iter = reader.select_all()?;
     let mut feature_count = 0u64;
-    let mut touch = 0u64;
+    let mut leaves = 0u64;
+    let mut checksum = 0u64;
     while let Some(feat) = iter.next()? {
-        let cj = feat.cur_cj_feature()?;
+        let (l, c) = feature_geometry_work(&feat.cur_feature());
         feature_count += 1;
-        touch += cj.city_objects.len() as u64;
+        leaves += l;
+        checksum = checksum.wrapping_add(c);
     }
-    let _ = touch;
+    std::hint::black_box((leaves, checksum));
     Ok(feature_count)
 }
 
@@ -347,29 +729,39 @@ fn full_read(input: &Path) -> Result<u64> {
 /// module's own doc comment) and [`super::cityjsonseq`]'s convention for
 /// this same scenario. Used as [`Scenario::AttrFilter`]'s fallback when
 /// `column` isn't indexed.
+///
+/// No geometry is decoded and no CityJSON feature is built: each CityObject
+/// is tested through [`co_matches`], which reads one flatbuffer enum for
+/// the reserved `object_type` column and otherwise decodes only `column`'s
+/// own value out of that object's attribute blob.
 fn full_walk_attr_filter(input: &Path, column: &str, pred: &AttrPred) -> Result<u64> {
     let reader = open(input)?;
+    let root = owned_columns(&reader.header());
     let mut iter = reader.select_all()?;
     let mut matched = 0u64;
     while let Some(feat) = iter.next()? {
-        let cj = feat.cur_cj_feature()?;
-        matched += cj
-            .city_objects
-            .values()
-            .filter(|co| matches_predicate(column_value(co, column).as_ref(), pred))
-            .count() as u64;
+        let Some(objects) = feat.cur_feature().objects() else {
+            continue;
+        };
+        for co in objects.iter() {
+            if co_matches(&co, root.as_deref(), column, pred)? {
+                matched += 1;
+            }
+        }
     }
     Ok(matched)
 }
 
-/// A full `select_all` walk, short-circuiting as soon as `id` is found
-/// among any feature's `city_objects` keys.
+/// A full `select_all` walk, short-circuiting as soon as a CityObject whose
+/// own `id` is `id` is found — one borrowed `&str` comparison per object,
+/// no decoding of anything else.
 fn full_walk_id_lookup(input: &Path, id: &str) -> Result<u64> {
     let reader = open(input)?;
     let mut iter = reader.select_all()?;
     while let Some(feat) = iter.next()? {
-        let cj = feat.cur_cj_feature()?;
-        if cj.city_objects.contains_key(id) {
+        if let Some(objects) = feat.cur_feature().objects()
+            && objects.iter().any(|co| co.id() == id)
+        {
             return Ok(1);
         }
     }
@@ -428,40 +820,46 @@ fn id_lookup(input: &Path, id: &str) -> Result<u64> {
 
 /// [`Scenario::AttrStats`]: always a full `select_all` walk (FCB's B+-tree
 /// has no columnar aggregation mechanism — see this module's own doc
-/// comment), counting every CityObject (across every feature) carrying a
-/// numeric value for `column` — CityObject level, matching [`attr_filter`]'s
-/// own granularity.
-fn attr_stats(input: &Path, column: &str) -> Result<u64> {
+/// comment), aggregating `(min, max, sum, count)` over every CityObject
+/// (across every feature) carrying a numeric value for `column` —
+/// CityObject level, matching [`attr_filter`]'s own granularity.
+///
+/// Attributes only: no geometry is decoded, and only `column`'s own value
+/// is read out of each object's attribute blob.
+fn attr_stats(input: &Path, column: &str) -> Result<AttrAggregates> {
     let reader = open(input)?;
+    let root = owned_columns(&reader.header());
     let mut iter = reader.select_all()?;
-    let mut count = 0u64;
+    let mut stats = AttrAggregates::EMPTY;
     while let Some(feat) = iter.next()? {
-        let cj = feat.cur_cj_feature()?;
-        count += cj
-            .city_objects
-            .values()
-            .filter(|co| column_value(co, column).and_then(|v| v.as_f64()).is_some())
-            .count() as u64;
+        let Some(objects) = feat.cur_feature().objects() else {
+            continue;
+        };
+        for co in objects.iter() {
+            push_numeric(&mut stats, &co, root.as_deref(), column)?;
+        }
     }
-    Ok(count)
+    // Pinned so the aggregation cannot be reduced to the count.
+    Ok(std::hint::black_box(stats))
 }
 
-/// [`Scenario::Project`]: always a full `select_all` walk (same rationale
-/// as [`attr_stats`]), counting every CityObject (across every feature)
-/// carrying a non-null value for `column` — CityObject level.
-fn project(input: &Path, column: &str) -> Result<u64> {
-    let reader = open(input)?;
-    let mut iter = reader.select_all()?;
-    let mut count = 0u64;
-    while let Some(feat) = iter.next()? {
-        let cj = feat.cur_cj_feature()?;
-        count += cj
-            .city_objects
-            .values()
-            .filter(|co| column_value(co, column).is_some())
-            .count() as u64;
+/// Folds `co`'s value for `column` into `stats` when it is numeric, with the
+/// same `as_f64` rule as [`super::cityjsonseq`]'s own `push_numeric`. The
+/// reserved `object_type` column shadows any same-named attribute and is a
+/// type STRING, never numeric — so it contributes nothing.
+fn push_numeric(
+    stats: &mut AttrAggregates,
+    co: &CityObject<'_>,
+    root: Option<&[ColumnMeta]>,
+    column: &str,
+) -> Result<()> {
+    if column == "object_type" {
+        return Ok(());
     }
-    Ok(count)
+    if let Some(value) = attribute_value(co, root, column)?.and_then(|v| v.as_f64()) {
+        stats.push(value);
+    }
+    Ok(())
 }
 
 /// Request count + bytes tally shared (via `Arc`) across every
@@ -530,18 +928,21 @@ async fn open_http(
     Ok(HttpFcbReader::new(buffered).await?)
 }
 
-/// The async, HTTP-sourced mirror of [`full_read`].
+/// The async, HTTP-sourced mirror of [`full_read`] — the same raw-accessor
+/// traversal, so the two transports measure the same decode work.
 async fn full_read_http(url: &str, tally: RangeTally) -> Result<u64> {
     let reader = open_http(url, tally).await?;
     let mut iter = reader.select_all().await?;
     let mut feature_count = 0u64;
-    let mut touch = 0u64;
+    let mut leaves = 0u64;
+    let mut checksum = 0u64;
     while iter.next().await?.is_some() {
-        let cj = iter.cur_cj_feature()?;
+        let (l, c) = feature_geometry_work(&iter.cur_feature().feature());
         feature_count += 1;
-        touch += cj.city_objects.len() as u64;
+        leaves += l;
+        checksum = checksum.wrapping_add(c);
     }
-    let _ = touch;
+    std::hint::black_box((leaves, checksum));
     Ok(feature_count)
 }
 
@@ -553,15 +954,19 @@ async fn full_walk_attr_filter_http(
     pred: &AttrPred,
 ) -> Result<u64> {
     let reader = open_http(url, tally).await?;
+    let root = owned_columns(&reader.header());
     let mut iter = reader.select_all().await?;
     let mut matched = 0u64;
     while iter.next().await?.is_some() {
-        let cj = iter.cur_cj_feature()?;
-        matched += cj
-            .city_objects
-            .values()
-            .filter(|co| matches_predicate(column_value(co, column).as_ref(), pred))
-            .count() as u64;
+        let feature = iter.cur_feature().feature();
+        let Some(objects) = feature.objects() else {
+            continue;
+        };
+        for co in objects.iter() {
+            if co_matches(&co, root.as_deref(), column, pred)? {
+                matched += 1;
+            }
+        }
     }
     Ok(matched)
 }
@@ -571,8 +976,10 @@ async fn full_walk_id_lookup_http(url: &str, tally: RangeTally, id: &str) -> Res
     let reader = open_http(url, tally).await?;
     let mut iter = reader.select_all().await?;
     while iter.next().await?.is_some() {
-        let cj = iter.cur_cj_feature()?;
-        if cj.city_objects.contains_key(id) {
+        let feature = iter.cur_feature().feature();
+        if let Some(objects) = feature.objects()
+            && objects.iter().any(|co| co.id() == id)
+        {
             return Ok(1);
         }
     }
@@ -644,35 +1051,21 @@ async fn id_lookup_http(url: &str, tally: RangeTally, id: &str) -> Result<u64> {
 }
 
 /// The async, HTTP-sourced mirror of [`attr_stats`].
-async fn attr_stats_http(url: &str, tally: RangeTally, column: &str) -> Result<u64> {
+async fn attr_stats_http(url: &str, tally: RangeTally, column: &str) -> Result<AttrAggregates> {
     let reader = open_http(url, tally).await?;
+    let root = owned_columns(&reader.header());
     let mut iter = reader.select_all().await?;
-    let mut count = 0u64;
+    let mut stats = AttrAggregates::EMPTY;
     while iter.next().await?.is_some() {
-        let cj = iter.cur_cj_feature()?;
-        count += cj
-            .city_objects
-            .values()
-            .filter(|co| column_value(co, column).and_then(|v| v.as_f64()).is_some())
-            .count() as u64;
+        let feature = iter.cur_feature().feature();
+        let Some(objects) = feature.objects() else {
+            continue;
+        };
+        for co in objects.iter() {
+            push_numeric(&mut stats, &co, root.as_deref(), column)?;
+        }
     }
-    Ok(count)
-}
-
-/// The async, HTTP-sourced mirror of [`project`].
-async fn project_http(url: &str, tally: RangeTally, column: &str) -> Result<u64> {
-    let reader = open_http(url, tally).await?;
-    let mut iter = reader.select_all().await?;
-    let mut count = 0u64;
-    while iter.next().await?.is_some() {
-        let cj = iter.cur_cj_feature()?;
-        count += cj
-            .city_objects
-            .values()
-            .filter(|co| column_value(co, column).is_some())
-            .count() as u64;
-    }
-    Ok(count)
+    Ok(std::hint::black_box(stats))
 }
 
 /// Joins `base_url`/`key` into one URL via `Url::path_segments_mut`
@@ -706,6 +1099,7 @@ async fn run_http(
     let url = join_url(base_url, key)?;
     let tally = RangeTally::default();
 
+    let mut aggregates = None;
     let result_count = match scenario {
         Scenario::Count => {
             let reader = open_http(&url, tally.clone()).await?;
@@ -718,14 +1112,8 @@ async fn run_http(
             // FCB's packed R-tree is 2D; drop the z components (indices
             // 2/5) rather than approximate them — same as the local branch.
             let query = SpatialQuery::BBox(bbox[0], bbox[1], bbox[3], bbox[4]);
-            // Read every hit as a FlatBuffers feature, without decoding it to
-            // in-memory CityJSON (D-RB-11) — same as the local branch.
-            let mut iter = reader.select_query(query).await?;
-            let mut count = 0u64;
-            while iter.next().await?.is_some() {
-                count += 1;
-            }
-            count
+            let iter = reader.select_query(query).await?;
+            iter.features_count().unwrap_or(0) as u64
         }
         Scenario::AttrFilter => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
@@ -734,17 +1122,15 @@ async fn run_http(
         }
         Scenario::AttrStats => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
-            attr_stats_http(&url, tally.clone(), column).await?
+            let stats = attr_stats_http(&url, tally.clone(), column).await?;
+            aggregates = Some(stats);
+            stats.count
         }
         Scenario::IdLookup => {
             let id = require(&params.target_id, "target-id", scenario)?;
             id_lookup_http(&url, tally.clone(), id).await?
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
-        Scenario::Project => {
-            let column = require(&params.attr_column, "attr-column", scenario)?;
-            project_http(&url, tally.clone(), column).await?
-        }
     };
 
     let (bytes, requests) = tally.snapshot();
@@ -752,6 +1138,7 @@ async fn run_http(
         result_count,
         io: Some(IoStats { bytes, requests }),
         lookup: None,
+        attr_stats: aggregates,
     })
 }
 
@@ -764,6 +1151,7 @@ impl FormatRunner for FlatCityBufRunner {
         let (base_url, key) = match source {
             Source::Local(path) => {
                 let input = path.as_path();
+                let mut aggregates = None;
                 let result_count = match scenario {
                     Scenario::Count => {
                         let reader = open(input)?;
@@ -776,17 +1164,8 @@ impl FormatRunner for FlatCityBufRunner {
                         // FCB's packed R-tree is 2D; drop the z components
                         // (indices 2/5) rather than approximate them.
                         let query = SpatialQuery::BBox(bbox[0], bbox[1], bbox[3], bbox[4]);
-                        // Read every hit as a FlatBuffers feature, without
-                        // decoding it to in-memory CityJSON: counting the
-                        // R-tree hits alone would measure a different amount
-                        // of work than CityParquet's `bbox_query`, which reads
-                        // the `id` column (D-RB-11).
-                        let mut iter = reader.select_query(query, None, None)?;
-                        let mut count = 0u64;
-                        while iter.next()?.is_some() {
-                            count += 1;
-                        }
-                        count
+                        let iter = reader.select_query(query, None, None)?;
+                        iter.features_count().unwrap_or(0) as u64
                     }
                     Scenario::AttrFilter => {
                         let column = require(&params.attr_column, "attr-column", scenario)?;
@@ -796,22 +1175,21 @@ impl FormatRunner for FlatCityBufRunner {
                     }
                     Scenario::AttrStats => {
                         let column = require(&params.attr_column, "attr-column", scenario)?;
-                        attr_stats(input, column)?
+                        let stats = attr_stats(input, column)?;
+                        aggregates = Some(stats);
+                        stats.count
                     }
                     Scenario::IdLookup => {
                         let id = require(&params.target_id, "target-id", scenario)?;
                         id_lookup(input, id)?
                     }
                     Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
-                    Scenario::Project => {
-                        let column = require(&params.attr_column, "attr-column", scenario)?;
-                        project(input, column)?
-                    }
                 };
                 return Ok(RunOutcome {
                     result_count,
                     io: None,
                     lookup: None,
+                    attr_stats: aggregates,
                 });
             }
             Source::Http { base_url, key } => (base_url, key),
@@ -824,7 +1202,267 @@ impl FormatRunner for FlatCityBufRunner {
 
 #[cfg(test)]
 mod tests {
-    use super::join_url;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use anyhow::Result;
+
+    use super::{
+        AttrPred, attr_stats, full_read, full_walk_attr_filter, full_walk_id_lookup, join_url,
+        matches_predicate, open,
+    };
+
+    // ---------------------------------------------------------------
+    // The `cur_cj_feature` path these walks replaced, kept HERE and only
+    // here: it is the oracle the raw-accessor walks are checked against,
+    // not a fallback anything ships. Every helper below is a verbatim copy
+    // of what the runner did before, so "the new walk agrees with the old
+    // one" is a claim about this file's own history, not a restatement of
+    // the new code.
+    // ---------------------------------------------------------------
+
+    /// The OLD `column_value`: `object_type` reads the decoded CityJSON
+    /// type string, every other column the decoded `attributes` map, with a
+    /// JSON-`null` entry treated as absent.
+    fn column_value_cj(co: &cjseq2::CityObject, column: &str) -> Option<serde_json::Value> {
+        if column == "object_type" {
+            return Some(serde_json::Value::String(co.thetype.clone()));
+        }
+        co.attributes
+            .as_ref()?
+            .get(column)
+            .filter(|v| !v.is_null())
+            .cloned()
+    }
+
+    /// The OLD `full_walk_attr_filter`.
+    fn cj_walk_attr_filter(input: &Path, column: &str, pred: &AttrPred) -> Result<u64> {
+        let reader = open(input)?;
+        let mut iter = reader.select_all()?;
+        let mut matched = 0u64;
+        while let Some(feat) = iter.next()? {
+            let cj = feat.cur_cj_feature()?;
+            matched += cj
+                .city_objects
+                .values()
+                .filter(|co| matches_predicate(column_value_cj(co, column).as_ref(), pred))
+                .count() as u64;
+        }
+        Ok(matched)
+    }
+
+    /// The OLD `attr_stats`.
+    fn cj_attr_stats(input: &Path, column: &str) -> Result<u64> {
+        let reader = open(input)?;
+        let mut iter = reader.select_all()?;
+        let mut count = 0u64;
+        while let Some(feat) = iter.next()? {
+            let cj = feat.cur_cj_feature()?;
+            count += cj
+                .city_objects
+                .values()
+                .filter(|co| {
+                    column_value_cj(co, column)
+                        .and_then(|v| v.as_f64())
+                        .is_some()
+                })
+                .count() as u64;
+        }
+        Ok(count)
+    }
+
+    /// The OLD `full_walk_id_lookup`.
+    fn cj_id_lookup(input: &Path, id: &str) -> Result<u64> {
+        let reader = open(input)?;
+        let mut iter = reader.select_all()?;
+        while let Some(feat) = iter.next()? {
+            let cj = feat.cur_cj_feature()?;
+            if cj.city_objects.contains_key(id) {
+                return Ok(1);
+            }
+        }
+        Ok(0)
+    }
+
+    /// The OLD `full_read`.
+    fn cj_full_read(input: &Path) -> Result<u64> {
+        let reader = open(input)?;
+        let mut iter = reader.select_all()?;
+        let mut feature_count = 0u64;
+        while let Some(feat) = iter.next()? {
+            let _ = feat.cur_cj_feature()?;
+            feature_count += 1;
+        }
+        Ok(feature_count)
+    }
+
+    /// `delft.city.jsonl` — the one fixture `just fixtures` always
+    /// fetches, and the file Caveat 1 of `benchmark/formats/READ_BENCHMARK.md`
+    /// quotes its counting-grain numbers from (1115 features, 2231
+    /// CityObjects, 1116 of them `BuildingPart`s).
+    fn delft_fixture() -> Option<PathBuf> {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../lib/cityparquet-rs/tests/fixtures/delft.city.jsonl");
+        p.exists().then_some(p)
+    }
+
+    /// Whether the `fcb` CLI is on PATH — mirrors
+    /// `tests/flatcitybuf_runner.rs`'s own guard, so these tests skip
+    /// gracefully rather than fail when the optional external tool is not
+    /// installed.
+    fn fcb_cli_missing() -> bool {
+        Command::new("fcb")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+    }
+
+    /// Builds a `.fcb` from `src` with the same `fcb ser -A` invocation
+    /// `readbench_prepare.sh` uses. `.fcb` files are never committed.
+    fn generate_fcb(src: &Path, out_dir: &Path) -> PathBuf {
+        let out = out_dir.join("fixture.fcb");
+        let output = Command::new("fcb")
+            .arg("ser")
+            .arg(src)
+            .arg(&out)
+            .arg("-A")
+            .output()
+            .expect("failed to run `fcb ser` (PATH availability already checked)");
+        assert!(
+            output.status.success(),
+            "fcb ser failed; stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        out
+    }
+
+    /// A `.fcb` cut from `delft.city.jsonl`, or `None` when either the
+    /// fixture or the `fcb` CLI is missing (both are fetched, neither is
+    /// committed). The [`tempfile::TempDir`] is returned alongside so the
+    /// caller keeps it alive for the test's duration.
+    fn delft_fcb() -> Option<(tempfile::TempDir, PathBuf)> {
+        let src = delft_fixture()?;
+        if fcb_cli_missing() {
+            eprintln!("skipping: `fcb` CLI not found on PATH");
+            return None;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let fcb = generate_fcb(&src, tmp.path());
+        Some((tmp, fcb))
+    }
+
+    #[test]
+    fn raw_attr_filter_agrees_with_the_cityjson_feature_walk() {
+        let Some((_tmp, input)) = delft_fcb() else {
+            eprintln!("skipping: delft fixture or `fcb` CLI unavailable");
+            return;
+        };
+
+        // Every column shape the blob scanner has to handle: the reserved
+        // type enum, an indexed String attribute, a Double, a Bool, an
+        // attribute that is JSON-`null` on many objects, and a column that
+        // is not in the schema at all.
+        let cases: [(&str, AttrPred); 6] = [
+            (
+                "object_type",
+                AttrPred::Eq(serde_json::Value::String("BuildingPart".into())),
+            ),
+            (
+                "b3_dak_type",
+                AttrPred::Eq(serde_json::Value::String("horizontal".into())),
+            ),
+            ("b3_h_dak_50p", AttrPred::Ge(3.0)),
+            (
+                "b3_kas_warenhuis",
+                AttrPred::Eq(serde_json::Value::String("false".into())),
+            ),
+            ("b3_bouwlagen", AttrPred::Ge(1.0)),
+            (
+                "no_such_column",
+                AttrPred::Eq(serde_json::Value::String("x".into())),
+            ),
+        ];
+
+        for (column, pred) in &cases {
+            let raw = full_walk_attr_filter(&input, column, pred).unwrap();
+            let cj = cj_walk_attr_filter(&input, column, pred).unwrap();
+            assert_eq!(
+                raw, cj,
+                "attr-filter on '{column}' must count the same CityObjects \
+                 through the raw flatbuffer accessors as through \
+                 `cur_cj_feature` (raw {raw}, cur_cj_feature {cj})"
+            );
+        }
+
+        // One absolute anchor, so the pair cannot agree on a wrong number:
+        // delft's own 1116 BuildingParts (Caveat 1 of READ_BENCHMARK.md).
+        let building_parts = full_walk_attr_filter(
+            &input,
+            "object_type",
+            &AttrPred::Eq(serde_json::Value::String("BuildingPart".into())),
+        )
+        .unwrap();
+        assert_eq!(
+            building_parts, 1116,
+            "delft carries 1116 BuildingParts across its 1115 features"
+        );
+    }
+
+    #[test]
+    fn raw_attr_stats_agrees_with_the_cityjson_feature_walk() {
+        let Some((_tmp, input)) = delft_fcb() else {
+            eprintln!("skipping: delft fixture or `fcb` CLI unavailable");
+            return;
+        };
+
+        for column in [
+            "object_type",
+            "b3_h_dak_50p",
+            "b3_dak_type",
+            "b3_bouwlagen",
+            "no_such_column",
+        ] {
+            let raw = attr_stats(&input, column).unwrap().count;
+            let cj = cj_attr_stats(&input, column).unwrap();
+            assert_eq!(
+                raw, cj,
+                "attr-stats on '{column}' must count the same CityObjects \
+                 (raw {raw}, cur_cj_feature {cj})"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_id_lookup_and_full_read_agree_with_the_cityjson_feature_walk() {
+        let Some((_tmp, input)) = delft_fcb() else {
+            eprintln!("skipping: delft fixture or `fcb` CLI unavailable");
+            return;
+        };
+
+        // A parent Building id, one of its BuildingPart children, and a
+        // miss (which drains the whole file).
+        for id in [
+            "NL.IMBAG.Pand.0503100000012869",
+            "NL.IMBAG.Pand.0503100000012869-0",
+            "NL.IMBAG.Pand.0503100000012869-absent",
+        ] {
+            let raw = full_walk_id_lookup(&input, id).unwrap();
+            let cj = cj_id_lookup(&input, id).unwrap();
+            assert_eq!(
+                raw, cj,
+                "id-lookup for '{id}' must agree (raw {raw}, cur_cj_feature {cj})"
+            );
+        }
+
+        let raw = full_read(&input).unwrap();
+        let cj = cj_full_read(&input).unwrap();
+        assert_eq!(
+            raw, cj,
+            "full-read must count the same features (raw {raw}, cur_cj_feature {cj})"
+        );
+        assert_eq!(raw, 1115, "delft's FCB carries 1115 features");
+    }
 
     #[test]
     fn join_url_appends_a_plain_key_under_the_base() {

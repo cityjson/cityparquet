@@ -32,8 +32,8 @@
 //!   same file reports its 38 top-level FEATURES. Both are honest answers to
 //!   different questions. This runner's grain matches
 //!   [`super::cityparquet`]'s own one-row-per-CityObject grain.
-//! - [`Scenario::AttrFilter`], [`Scenario::AttrStats`],
-//!   [`Scenario::Project`] and [`Scenario::IdLookup`] are CityObject-level
+//! - [`Scenario::AttrFilter`], [`Scenario::AttrStats`] and
+//!   [`Scenario::IdLookup`] are CityObject-level
 //!   too, and reuse [`super::cityjsonseq`]'s own attribute helpers verbatim,
 //!   so the two JSON runners agree exactly on the same document by
 //!   construction rather than by coincidence.
@@ -64,8 +64,8 @@
 //! - [`Scenario::AttrStats`] aggregates NUMERIC values only, so a
 //!   string-typed column (the railway fixture's numeric-LOOKING `function`
 //!   codes, e.g. `"1070"`) counts 0 — identical to
-//!   [`super::cityjsonseq`]'s own behaviour on the same data, and the reason
-//!   `attr-stats` and `project` can legitimately disagree.
+//!   [`super::cityjsonseq`]'s own behaviour on the same data. A column that
+//!   is present is therefore not necessarily a column `attr-stats` counts.
 //!
 //! None of this is silently normalised to match another format; the
 //! methodology doc is responsible for disclosing it alongside the numbers.
@@ -79,8 +79,8 @@ use object_store::ObjectStoreExt;
 use object_store::http::HttpBuilder;
 use object_store::path::Path as ObjectPath;
 
-use super::cityjsonseq::{column_value, intersects, matches_predicate, require};
-use super::{FormatRunner, IoStats, RunOutcome, Source as TransportSource};
+use super::cityjsonseq::{column_value, intersects, matches_predicate, push_numeric, require};
+use super::{Answer, AttrAggregates, FormatRunner, IoStats, RunOutcome, Source as TransportSource};
 use crate::scenario::{QueryParams, Scenario};
 
 /// A parsed whole CityJSON document, with its `transform` validated once so
@@ -216,13 +216,13 @@ fn object_bounds(
 /// The scenario dispatch shared by the local and HTTP branches of
 /// [`FormatRunner::run`]: everything below the parse (which only differs in
 /// WHERE the bytes come from) is transport-independent.
-fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -> Result<u64> {
+fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -> Result<Answer> {
     let doc = &document.doc;
     match scenario {
         // The `CityObjects` map is already fully materialised by the parse
         // this format cannot avoid, so `count` IS its size — there is no
         // cheaper path to pretend otherwise.
-        Scenario::Count => Ok(doc.city_objects.len() as u64),
+        Scenario::Count => Ok((doc.city_objects.len() as u64).into()),
         Scenario::FullRead => {
             let mut object_count = 0u64;
             for co in document.objects() {
@@ -237,7 +237,7 @@ fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -
                 // measuring a walk that never happened.
                 std::hint::black_box(object_bounds(co, &doc.vertices, &doc.transform)?);
             }
-            Ok(object_count)
+            Ok(object_count.into())
         }
         Scenario::BBoxQuery => {
             let query_bbox = *require(&params.bbox, "bbox", scenario)?;
@@ -249,38 +249,35 @@ fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -
                     matched += 1;
                 }
             }
-            Ok(matched)
+            Ok(matched.into())
         }
         Scenario::AttrFilter => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
             let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-            Ok(document
+            Ok((document
                 .objects()
                 .filter(|co| matches_predicate(column_value(co, column).as_ref(), pred))
                 .count() as u64)
+                .into())
         }
         Scenario::AttrStats => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
-            Ok(document
-                .objects()
-                .filter(|co| column_value(co, column).and_then(|v| v.as_f64()).is_some())
-                .count() as u64)
+            let mut stats = AttrAggregates::EMPTY;
+            for co in document.objects() {
+                push_numeric(&mut stats, co, column);
+            }
+            // Pinned like `FullRead`'s leaf resolution: the aggregates are
+            // the answer, so the arithmetic must not be reduced to a count.
+            Ok(std::hint::black_box(stats).into())
         }
         // The map is a `HashMap`, but a lookup still costs the whole parse
         // that built it — which is precisely the cost this scenario is meant
         // to expose for an unindexed format.
         Scenario::IdLookup => {
             let id = require(&params.target_id, "target-id", scenario)?;
-            Ok(doc.city_objects.contains_key(id) as u64)
+            Ok((doc.city_objects.contains_key(id) as u64).into())
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
-        Scenario::Project => {
-            let column = require(&params.attr_column, "attr-column", scenario)?;
-            Ok(document
-                .objects()
-                .filter(|co| column_value(co, column).is_some())
-                .count() as u64)
-        }
     }
 }
 
@@ -321,14 +318,15 @@ async fn run_http(
 
     let text = std::str::from_utf8(&bytes).with_context(|| format!("{key} is not valid UTF-8"))?;
     let document = Document::parse(text, key)?;
-    let result_count = run_scenario(&document, scenario, params)?;
+    let answer = run_scenario(&document, scenario, params)?;
     Ok(RunOutcome {
-        result_count,
+        result_count: answer.result_count,
         io: Some(IoStats {
             bytes: stats.bytes,
             requests: stats.requests,
         }),
         lookup: None,
+        attr_stats: answer.attr_stats,
     })
 }
 
@@ -348,11 +346,12 @@ impl FormatRunner for CityJsonRunner {
         let (base_url, key) = match source {
             TransportSource::Local(path) => {
                 let document = Document::open(path)?;
-                let result_count = run_scenario(&document, scenario, params)?;
+                let answer = run_scenario(&document, scenario, params)?;
                 return Ok(RunOutcome {
-                    result_count,
+                    result_count: answer.result_count,
                     io: None,
                     lookup: None,
+                    attr_stats: answer.attr_stats,
                 });
             }
             TransportSource::Http { base_url, key } => (base_url, key),

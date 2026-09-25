@@ -34,6 +34,7 @@ def required_keys() -> tuple[str, ...]:
     return (
         "dataset", "source", "baseline", "host", "versions", "pg_settings", "ingest", "sizes",
         "patches", "srid", "memory_measurement", "temporary_storage",
+        "execution", "count_check",
     )
 
 
@@ -41,7 +42,9 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
             sizes: dict[str, tuple[int, int]], versions: dict[str, str],
             pg_settings: dict[str, str],
             patches: dict[str, dict[str, str]] | None = None,
-            srid: dict[str, int] | None = None) -> dict[str, Any]:
+            srid: dict[str, int] | None = None,
+            execution: dict[str, Any] | None = None,
+            count_check: dict[str, Any] | None = None) -> dict[str, Any]:
     """``srid`` — the SRID each PostgreSQL-backed system actually landed on.
 
     Added for Task 14 (the heterogeneity corpus): 3DCityDB's SRID is baked
@@ -73,10 +76,19 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
         },
         "patches": patches or {},
         "srid": srid or {},
+        # Both thread configurations of this run, and what each system's
+        # session actually resolved them to — asking PostgreSQL for eight
+        # workers and getting fewer, because `max_worker_processes` bounds
+        # the pool, is a fact about the run rather than a detail to leave
+        # implicit.
+        "execution": execution or {},
+        # The tolerance the cross-system count check was run with, and what
+        # a status of `ok-deviation` means in the CSV it produced.
+        "count_check": count_check or {},
         "memory_measurement": {
             "metric": "peak_rss_bytes",
             "scope": "execution process only",
-            "postgresql": "query backend PID after disabling parallel workers; excludes other backend, background-worker, and idle-server processes; mapped shared pages can contribute to RSS; blank if procfs namespace mapping cannot be verified",
+            "postgresql": "query backend PID; excludes other backend, background-worker, and idle-server processes; mapped shared pages can contribute to RSS; blank if procfs namespace mapping cannot be verified. Under the `parallel` configuration only the LEADER backend is sampled, so any worker's resident memory is excluded",
             "duckdb": "process executing the embedded engine; includes its idle baseline",
             "cityparquet": "fresh reader child process; includes its idle baseline",
             "sampling_interval_ms": 5,

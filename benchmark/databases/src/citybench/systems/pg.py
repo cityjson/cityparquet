@@ -29,10 +29,13 @@ not subtracted from one another.
 
 from __future__ import annotations
 
+import json
+
 import time
 import os
 
 import psycopg
+import psycopg.types.string
 
 from citybench.config import SizeReport
 from citybench.stats import container_init_host_pid, host_pid_for_namespace_pid, host_pid_from_podman, peak_resident_bytes
@@ -40,17 +43,51 @@ from citybench.stats import container_init_host_pid, host_pid_for_namespace_pid,
 
 def connect(port: int, *, dbname: str = "bench", user: str = "bench",
             password: str = "bench", host: str = "localhost") -> psycopg.Connection:
-    return psycopg.connect(
+    conn = psycopg.connect(
         host=host, port=port, dbname=dbname, user=user, password=password,
         autocommit=True,
     )
+    register_text_passthrough(conn)
+    return conn
 
 
-def parse_explain_execution_time(plan: list) -> float:
+def register_text_passthrough(conn: psycopg.Connection) -> None:
+    """Hand JSON back as TEXT rather than parsed into Python objects.
+
+    Not a tuning knob: a consistency fix, and it works AGAINST the system
+    it is applied to being flattered. The DuckDB adapter materialises a
+    row-returning scenario to Arrow rather than to Python objects,
+    precisely so the number is the engine's and not the client's per-value
+    object construction (measured at about 72 us/row on `SELECT *` —
+    `duckdb_cp._arrow`). Without this, the PostgreSQL side of the same
+    comparison would pay exactly that cost and more: psycopg parses every
+    `jsonb` value into Python dicts and lists, and on cjdb the geometry IS
+    a JSONB document with its vertices resolved inline. `lod-query` on the
+    1M slice returns half a million such rows; parsed, they are tens of
+    gigabytes of Python objects in the harness process, which is a client
+    measurement and an out-of-memory risk rather than a database one.
+
+    The rows are still transferred in full and still read to exhaustion
+    inside the timed window — the server does all of its own work, and the
+    bytes all cross the socket. Only the client-side object construction is
+    skipped, on the side that would otherwise be the only one paying it.
+    Disclosed as `fetch: text` in every PostgreSQL row's `notes`, beside
+    the DuckDB rows' `fetch: arrow`.
+    """
+    for name in ("json", "jsonb"):
+        conn.adapters.register_loader(name, psycopg.types.string.TextLoader)
+
+
+def parse_explain_execution_time(plan: list | str) -> float:
     """Seconds, from an ``EXPLAIN (ANALYZE, FORMAT JSON)`` payload.
 
-    PostgreSQL reports 'Execution Time' in milliseconds.
+    PostgreSQL reports 'Execution Time' in milliseconds. The payload arrives
+    as TEXT on a connection with `register_text_passthrough` applied (the
+    benchmark connections), so a string is decoded here; a connection with
+    psycopg's default loaders hands the list over already parsed.
     """
+    if isinstance(plan, str):
+        plan = json.loads(plan)
     if not plan:
         raise ValueError("empty EXPLAIN payload")
     root = plan[0]
@@ -78,9 +115,7 @@ def time_query(conn: psycopg.Connection, sql: str, args: tuple = (),
     README Caveat 4 and this module's own docstring (I3, final
     whole-branch review).
     """
-    with conn.cursor() as cur:
-        cur.execute("SELECT pg_backend_pid()")
-        backend_pid = int(cur.fetchone()[0])
+    pid = backend_pid(conn)
 
     def execute() -> tuple[list, float]:
         with conn.cursor() as cur:
@@ -89,18 +124,7 @@ def time_query(conn: psycopg.Connection, sql: str, args: tuple = (),
             rows = cur.fetchall() if cur.description is not None else []
             return rows, time.perf_counter() - start
 
-    port = getattr(getattr(conn, "info", None), "port", None)
-    container_by_port = {
-        int(os.environ.get("CITYBENCH_CJDB_PORT", "55432")): os.environ.get("CITYBENCH_CJDB_CONTAINER", "citybench-cjdb"),
-        int(os.environ.get("CITYBENCH_CITYDB_PORT", "55433")): os.environ.get("CITYBENCH_CITYDB_CONTAINER", "citybench-citydb"),
-    }
-    container = container_by_port.get(port)
-    host_pid = host_pid_from_podman(container, backend_pid) if container else None
-    if host_pid is None:
-        host_pid = host_pid_for_namespace_pid(
-            backend_pid,
-            container_init_pid=container_init_host_pid(container) if container else None,
-        )
+    host_pid = host_pid_of(conn, pid)
     if host_pid is None:
         # A container PID is not safe to interpret as a host PID. Preserve an
         # unavailable measurement as blank rather than sampling another process.
@@ -119,14 +143,112 @@ def time_query(conn: psycopg.Connection, sql: str, args: tuple = (),
     return count, wall, server, peak_rss
 
 
-def disable_parallel_query(conn: psycopg.Connection) -> None:
-    """Keep query execution in its measured backend process.
+def backend_pid(conn: psycopg.Connection) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_backend_pid()")
+        return int(cur.fetchone()[0])
 
-    This makes the per-query RSS boundary unambiguous; without it PostgreSQL
-    could add parallel workers whose resident memory is outside that PID.
+
+def host_pid_of(conn: psycopg.Connection, pid: int) -> int | None:
+    """The host PID for a backend PID inside a container, or None.
+
+    A container PID is not safe to interpret as a host PID, so an
+    unresolvable one yields None and the caller records a blank memory
+    figure rather than sampling some other process.
+    """
+    port = getattr(getattr(conn, "info", None), "port", None)
+    container_by_port = {
+        int(os.environ.get("CITYBENCH_CJDB_PORT", "55432")):
+            os.environ.get("CITYBENCH_CJDB_CONTAINER", "citybench-cjdb"),
+        int(os.environ.get("CITYBENCH_CITYDB_PORT", "55433")):
+            os.environ.get("CITYBENCH_CITYDB_CONTAINER", "citybench-citydb"),
+    }
+    container = container_by_port.get(port)
+    host_pid = host_pid_from_podman(container, pid) if container else None
+    if host_pid is None:
+        host_pid = host_pid_for_namespace_pid(
+            pid,
+            container_init_pid=container_init_host_pid(container) if container else None,
+        )
+    return host_pid
+
+
+def time_write(conn: psycopg.Connection, sql: str, args: tuple = (),
+               *, reset: tuple[tuple[str, tuple], ...] = ()
+               ) -> tuple[int, float, int | None]:
+    """Run one MUTATING statement once, timed, and report rows touched.
+
+    Deliberately NOT `time_query`: that function re-runs its statement under
+    `EXPLAIN (ANALYZE, BUFFERS)` to obtain `server_time_s`, and
+    `EXPLAIN ANALYZE` on an INSERT/UPDATE/DELETE **executes** it. Reusing it
+    here would apply CJDB's Q6 twice (two `footprint_area` property rows per
+    Building on 3DCityDB), increment Q7 by 20 rather than 10, and rewrite
+    half a million cjdb tuples a second time per sample. Write rows
+    therefore carry no `server_time_s`, and the README's CSV contract says
+    so.
+
+    ``reset`` runs first, UNTIMED, so every sample measures the same work
+    even though the statements themselves are not idempotent.
+    """
+    for reset_sql, reset_args in reset:
+        with conn.cursor() as cur:
+            cur.execute(reset_sql, reset_args)
+
+    pid = backend_pid(conn)
+
+    def execute() -> tuple[int, float]:
+        with conn.cursor() as cur:
+            start = time.perf_counter()
+            cur.execute(sql, args)
+            touched = cur.rowcount
+            return touched, time.perf_counter() - start
+
+    host_pid = host_pid_of(conn, pid)
+    if host_pid is None:
+        (touched, wall), peak_rss = execute(), None
+    else:
+        (touched, wall), peak_rss = peak_resident_bytes(execute, pid=host_pid)
+    return int(touched), wall, peak_rss
+
+
+def set_parallel_query(conn: psycopg.Connection, workers: int) -> None:
+    """Set the per-query parallel-worker budget on the benchmark session.
+
+    ``workers = 0`` keeps execution in the one measured backend process,
+    which makes the per-query RSS boundary unambiguous: without it
+    PostgreSQL could add parallel workers whose resident memory is outside
+    that PID. That is the PRIMARY configuration.
+
+    A non-zero value is the disclosed second configuration. `parallel_setup_cost`
+    and `min_parallel_table_scan_size` are deliberately left at their
+    defaults: raising the worker cap is a resource decision, lowering the
+    planner's thresholds would be tuning the query, and only the first is
+    what "give PostgreSQL the CPU budget DuckDB gets" means.
+
+    The actual number of workers a query receives is also bounded by the
+    cluster-wide `max_worker_processes` pool, which the manifest records
+    alongside this setting — asking for eight and getting fewer is a fact
+    about the run, not a detail to leave implicit.
     """
     with conn.cursor() as cur:
-        cur.execute("SET max_parallel_workers_per_gather = 0")
+        cur.execute(f"SET max_parallel_workers_per_gather = {int(workers)}")
+
+
+def parallel_settings(conn: psycopg.Connection) -> dict[str, str]:
+    """What the benchmark session's parallelism actually resolves to.
+
+    Read back from the session itself rather than from the configuration
+    file, because `set_parallel_query` overrides the file's value.
+    """
+    names = ("max_parallel_workers_per_gather", "max_parallel_workers",
+             "max_worker_processes", "parallel_setup_cost",
+             "min_parallel_table_scan_size")
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT name, current_setting(name) FROM pg_settings "
+            "WHERE name = ANY(%s)", (list(names),)
+        )
+        return dict(cur.fetchall())
 
 
 def extract_count(rows: list, mode: str) -> int:
@@ -141,6 +263,11 @@ def extract_count(rows: list, mode: str) -> int:
     """
     if mode == "rowcount":
         return len(rows)
+    if mode == "write-rowcount":
+        raise ValueError(
+            "write scenarios report the cursor's rowcount, not a result "
+            "set; use time_write(), not extract_count()"
+        )
     if mode != "first-column":
         raise ValueError(f"unknown count mode: {mode!r}")
     if not rows:

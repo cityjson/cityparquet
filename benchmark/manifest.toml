@@ -7,6 +7,10 @@ version = 1
 families = ["sizes", "formats", "codec", "rowgroup", "bloom", "databases"]
 scaling_sizes = [1000, 5000, 10000, 50000, 100000, 500000, 1000000]
 largest_scaling_dataset = "3dbag_n1000000"
+# The `short` profile's stand-in for the largest slice: the same families,
+# the same repetitions, one slice small enough to iterate on in an hour
+# rather than a day. Never the paper's figure; that is the largest slice.
+short_scaling_dataset = "3dbag_n100000"
 
 [datasets.rotterdam]
 source = "rotterdam_delfshaven.city.json"

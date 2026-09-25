@@ -5,7 +5,7 @@
 //! artificial CityJSON).
 //!
 //! The critical cross-format assertions here are the CityOBJECT-level
-//! scenarios (`attr-filter`, `attr-stats`, `project`, `id-lookup`): they must
+//! scenarios (`attr-filter`, `attr-stats`, `id-lookup`): they must
 //! return EXACTLY the same `result_count` the CityParquet runner returns for
 //! the same fixture (`crates/core/tests/query_real_data.rs` pins
 //! delft's known split at `BuildingPart: 1116`, `Building: 1115`, and
@@ -113,20 +113,8 @@ fn attr_filter_object_type_matches_cityparquets_known_buildingpart_count() {
 }
 
 #[test]
-fn project_and_attr_stats_oorspronkelijkbouwjaar_match_cityparquets_known_count() {
+fn attr_stats_oorspronkelijkbouwjaar_matches_cityparquets_known_count() {
     let input = fixture("delft.city.jsonl");
-
-    let project_count = run_child(
-        "cityjsonseq",
-        "project",
-        &input,
-        &["--attr-column", "oorspronkelijkbouwjaar"],
-    );
-    assert_eq!(
-        project_count, 1115,
-        "project is CityObject-level: oorspronkelijkbouwjaar is present on \
-         exactly delft's 1115 Building rows, matching CityParquet exactly"
-    );
 
     let stats_count = run_child(
         "cityjsonseq",
@@ -136,7 +124,8 @@ fn project_and_attr_stats_oorspronkelijkbouwjaar_match_cityparquets_known_count(
     );
     assert_eq!(
         stats_count, 1115,
-        "attr-stats' non-null count must also match CityParquet's 1115"
+        "attr-stats is CityObject-level: oorspronkelijkbouwjaar is numeric on \
+         exactly delft's 1115 Building rows, matching CityParquet exactly"
     );
 }
 
@@ -212,15 +201,15 @@ fn gzip_variant_matches_the_plain_variant_on_the_same_cityobject_level_scenarios
         "gzip variant's attr-filter must match CityParquet's known BuildingPart count"
     );
 
-    let project_count = run_child(
+    let stats_count = run_child(
         "cityjsonseq-gz",
-        "project",
+        "attr-stats",
         &gz_input,
         &["--attr-column", "oorspronkelijkbouwjaar"],
     );
     assert_eq!(
-        project_count, 1115,
-        "gzip variant's project count must match CityParquet's known count"
+        stats_count, 1115,
+        "gzip variant's attr-stats count must match CityParquet's known count"
     );
 
     let id_found = run_child(

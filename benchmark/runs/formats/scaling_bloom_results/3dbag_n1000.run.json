@@ -1,0 +1,42 @@
+{
+  "code": {
+    "git_head": "5c54e510b45fe7c66751da4295ef43c7524150f1",
+    "tracked_diff_sha256": "74b7ca026ba91f14257520908baa231559d98d6161277596331d682ea339050c",
+    "untracked_sources_sha256": {}
+  },
+  "family": "bloom",
+  "machine": {
+    "machine": "x86_64",
+    "processor": "x86_64",
+    "python": "3.12.3",
+    "release": "6.8.0-136-generic",
+    "system": "Linux"
+  },
+  "measurement": {
+    "fixed_configuration": "bloom/zstd-3/default-row-groups; time_s/time_std_s recomputed on 2026-09-25 as mean and population standard deviation from the run's own raw samples (the run wrote median/MAD)",
+    "read_repeat": 7,
+    "write_repeat": 3
+  },
+  "profile": "full",
+  "result": {
+    "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/scaling_bloom_results/3dbag_n1000.csv",
+    "files_sha256": {
+      "3dbag_n1000.csv": "52810a8e7e6c62272eb9bad9afa3517fc94db91983d1f547e3843b9f9d1fce7a",
+      "3dbag_n1000.csv.params.json": "5c063091264dcfd82c44cbc56711443be77f9044ff871e1659a8627fcf395a43",
+      "3dbag_n1000.csv.samples.json": "33360e6347d84aeab17f7cb97ccdd17e71e1ee9b947b58c3dc5e786204f65ccd"
+    },
+    "params_sha256": "5c063091264dcfd82c44cbc56711443be77f9044ff871e1659a8627fcf395a43"
+  },
+  "schema": 1,
+  "smoke": false,
+  "source": {
+    "path": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/data/scaling/3dbag_n1000.city.jsonl",
+    "sha256": "011eb901e9d429c0cdbac77e9ff6ac52d21e2976e6e6130ce5d73e2a584ccf98"
+  },
+  "tools": {
+    "cityparquet": "unavailable",
+    "cjseq": "cjseq 0.3.1",
+    "fcb": "fcb 0.7.8",
+    "rust": "rustc 1.93.1 (01f6ddf75 2026-02-11)"
+  }
+}

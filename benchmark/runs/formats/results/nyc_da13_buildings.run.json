@@ -1,18 +1,8 @@
 {
   "code": {
-    "git_head": "454928f0e0984f163511bcfc44aa67ccf1f7fa3c",
-    "tracked_diff_sha256": "9854d9c4efe777879c2a51827710351e652c2201e23bb85b1da128def66ac408",
-    "untracked_sources_sha256": {
-      "benchmark/databases/src/citybench/lifecycle.py": "67a5114f9764b271ca7ed4b65b028abd71ad898e218005fe643c1efc1b07eabe",
-      "benchmark/databases/tests/test_lifecycle.py": "5bcad544fa6fe3a114b1a9a0720168d6bedad097f8b9cdfc91ddb43c7974c413",
-      "benchmark/manifest.toml": "01b317ff729aabeac203fc90382f2d0a45cbbe13c5d92d992ca5e985def2a550",
-      "benchmark/plot/tests/test_axis_validity.py": "610d186ee53151e464ed21358493593fa28fcc09650284716f464716a4fc9cf1",
-      "benchmark/plot/tests/test_cli_selection.py": "3d1cec6f9dcb9542ecdcc8a8556a8fa41f5d337a82862c6002900a1b94f97fb3",
-      "benchmark/scripts/bench_suite.py": "739709c28cdd7c85474f7e1008445e84eef8384c121f4196e890aba39d95c950",
-      "benchmark/scripts/format_write.py": "81d032753f0043095dc1821703a79dbd4e196b9ac63f978c89c10dbabae94bdf",
-      "benchmark/scripts/measure_sizes.py": "afb88c3ee1bb6afc46ffa21e5927490f7f8f3f76f4c2a6b1e7bc1dcdc3819cc6",
-      "benchmark/scripts/tests/test_bench_suite.py": "d571d4fe83b1a6a4cefdfe7c7c88a3b9f7f64adc22119dc21d6d476bb2c5bfd2"
-    }
+    "git_head": "5c54e510b45fe7c66751da4295ef43c7524150f1",
+    "tracked_diff_sha256": "8e1b122682c311a4e5834009ba7caff9824c25c68e43878367f08c87a92a1c84",
+    "untracked_sources_sha256": {}
   },
   "family": "formats",
   "machine": {
@@ -23,19 +13,20 @@
     "system": "Linux"
   },
   "measurement": {
-    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq",
+    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq; time_s/time_std_s recomputed on 2026-09-25 as mean and population standard deviation from the run's own raw samples (the run wrote median/MAD)",
     "read_repeat": 7,
     "write_repeat": 3
   },
+  "profile": "full",
   "result": {
-    "csv": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/formats/results/nyc_da13_buildings.csv",
+    "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/results/nyc_da13_buildings.csv",
     "files_sha256": {
-      "nyc_da13_buildings.csv": "476f902245f81acea8cc5810ebf85a001bca0acb759f3f41270bbe758078a83f",
-      "nyc_da13_buildings.csv.params.json": "b010c13a75eac962c00039e60fbc258921cb8fb2205d9270b05001023326fee0",
-      "nyc_da13_buildings.csv.samples.json": "723625af5a97c3467a9822b2354f65b334eeb30ac89e30905584e48cd1c6bad0",
-      "nyc_da13_buildings.write.samples.csv": "b6a179aa9db5a6e0a9547537dd82f25213eedb11bd4aa421c7bd2f3caee5b900"
+      "nyc_da13_buildings.csv": "b010c5e2f0cb9c0cce7e5cb26b4b023762b14ba8e7c823aa38c7530528b9a752",
+      "nyc_da13_buildings.csv.params.json": "b23a805f8a8cf877bcbbe2e03d20be196db7e6a9e051c9e8c0e5ec7b12770f80",
+      "nyc_da13_buildings.csv.samples.json": "eea97a80771eebbce7483d6bb2ac1ddc9a41c6dbba2b63bf1e9b1c84f57c194c",
+      "nyc_da13_buildings.write.samples.csv": "cd6d3cd7edc1b375cd90c2e145a85d43e8c9b3bcc4faade0f254189451d858aa"
     },
-    "params_sha256": "b010c13a75eac962c00039e60fbc258921cb8fb2205d9270b05001023326fee0"
+    "params_sha256": "b23a805f8a8cf877bcbbe2e03d20be196db7e6a9e051c9e8c0e5ec7b12770f80"
   },
   "schema": 1,
   "smoke": false,

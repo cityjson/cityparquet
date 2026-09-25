@@ -1,0 +1,11 @@
+dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
+zurich_building_lod2.city.json,cityparquet,write,,198699,18.791599,1.452154,402662408,274747392,3,,,,,,
+zurich_building_lod2.city.json,cityparquet,id-lookup,0.000005,1,0.070227,0.012049,12883524,28983296,7,id-50pct,,,4,3,397312
+zurich_building_lod2.city.json,cityparquet,id-lookup,0.000000,0,0.003717,0.000205,439761,12279808,7,id-miss,,,4,4,397312
+zurich_building_lod2.city.json,cityparquet,feature-lookup,0.000060,12,0.070097,0.001676,12883529,29003776,7,feature-50pct,,,4,3,99328
+zurich_building_lod2.city.json,cityparquet,feature-lookup,0.000000,0,0.003014,0.000178,250000,12148736,7,feature-miss,,,4,4,99328
+zurich_building_lod2.city.json,cityparquet+nobloom,write,,198699,20.261591,2.394564,402662424,274767872,3,,,,,,
+zurich_building_lod2.city.json,cityparquet+nobloom,id-lookup,0.000005,1,0.121667,0.002232,12884812,30072832,7,id-50pct,,,4,0,0
+zurich_building_lod2.city.json,cityparquet+nobloom,id-lookup,0.000000,0,0.041425,0.003086,3048400,15163392,7,id-miss,,,4,0,0
+zurich_building_lod2.city.json,cityparquet+nobloom,feature-lookup,0.000060,12,0.111652,0.003064,12884817,29712384,7,feature-50pct,,,4,0,0
+zurich_building_lod2.city.json,cityparquet+nobloom,feature-lookup,0.000000,0,0.025378,0.002369,1224807,13787136,7,feature-miss,,,4,0,0

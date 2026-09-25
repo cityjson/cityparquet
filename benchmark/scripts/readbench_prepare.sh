@@ -96,10 +96,33 @@
 # A CityGML INPUT is still COPIED, never round-tripped: where the source data
 # is already CityGML, that is what gets measured.
 #
-# The `-A` (index-all-attributes) flag on `fcb ser` is REQUIRED, not
-# cosmetic: the later attribute-filter benchmark needs FCB's B+-tree
-# attribute index to exist, and the spatial (R-tree) index is on by default
-# so both of FCB's indexed-query paths are available for comparison.
+# THE FLATCITYBUF CONFIGURATION IS `fcb ser -A`, AND NOTHING ELSE — one
+# configuration, chosen once, not a swept axis. `-A` (index-all-attributes)
+# is REQUIRED, not cosmetic: the attribute-filter benchmark needs FCB's
+# B+-tree attribute index to exist, and the spatial (R-tree) index is on by
+# default, so both of FCB's indexed-query paths are available for
+# comparison. Every other index knob keeps its `fcb ser` default — attribute
+# B+-tree branching factor 256, R-tree node size 16 — and that is a measured
+# choice:
+#
+#   - Branching factor. `3dbag_n100000` was written at 16 / 64 / 128 / 256
+#     and read back with the read benchmark's own child (3 repeats each):
+#     `count`, all three `bbox-query` windows, the indexed `attr-filter`
+#     (`b3_dak_type == slanted`) and the `id-lookup` miss were within noise
+#     of one another at every factor (the indexed filter sits at ~5.3 ms on
+#     all four, the file sizes within 0.5%). No factor wins, so the default
+#     stands.
+#   - R-tree node size. `--index-node-size` MUST be left alone. `fcb_core`
+#     0.7.6's own `FcbReader::select_query` — the seekable path this
+#     benchmark reads through — passes `PackedRTree::DEFAULT_NODE_SIZE`
+#     instead of the header's `index_node_size` (its streaming sibling
+#     `select_query_seq` reads the header correctly), so a file written
+#     `--index-node-size 64` panics on every `bbox-query` with a capacity
+#     overflow. Measured, not assumed.
+#
+# The write benchmark's own FlatCityBuf variant must pass the SAME flags:
+# a read artefact and a write artefact built differently are not the same
+# measurement.
 #
 # EXTERNAL TOOLS ARE GUARDED PER FORMAT, not up front: `fcb` is only required
 # when `flatcitybuf` was requested, `citygml-tools`/`cjseq`/`jq` only when the
@@ -594,7 +617,22 @@ same_file() {
 #      all, and fcb/cityparquet/gz were derived from INPUT itself.
 #   2  the CityJSONSeq artefact is always materialised, and everything
 #      downstream derives from IT.
-CHAIN_VERSION=2
+CHAIN_VERSION=3
+# The chain version at which each STAGE last changed what it writes. An
+# artefact is stale when its stage changed after the version that built it,
+# so a bump that touches one stage does not force the hours-long stages it
+# left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#   3  `cityparquet convert` writes bloom filters by default (id, feature_id,
+#      high-cardinality string attributes). A package built before carries
+#      none, and every lookup row measured on it is a different artefact.
+#   2  the CityJSONSeq stage became a real artefact for every input kind
+#      (the gz baseline case above); FlatCityBuf and CityGML derive from it.
+stage_version() {
+  case "$1" in
+    "$PARQUET_OUT"|"$HILBERT_OUT") echo 3 ;;
+    *) echo 2 ;;
+  esac
+}
 CHAIN_DIR="$OUTDIR/.readbench-chain"
 CHAIN_STAMP="$CHAIN_DIR/$BASE"
 
@@ -610,12 +648,24 @@ if [[ -f "$CHAIN_STAMP" ]]; then
   STAMPED="$(cat "$CHAIN_STAMP")"
   STAMPED=${STAMPED%%$'\n'*}
 fi
-if [[ "$STAMPED" != "$CHAIN_VERSION" ]]; then
+# An absent or unparseable stamp is version 0: unknown provenance is stale
+# for every stage, exactly as before.
+STAMPED_NUM=0
+if [[ "$STAMPED" =~ ^[0-9]+$ ]]; then
+  STAMPED_NUM=$STAMPED
+fi
+if [[ "$STAMPED_NUM" != "$CHAIN_VERSION" ]]; then
   for out in "${ALL_OUTPUTS[@]}"; do
     # INPUT sitting in OUTDIR under an artefact's own name was not built by
     # any run of this script, so it is not evidence of an older chain (block
     # 1/2/3 each report it as "the input is already the artefact").
     if same_file "$INPUT" "$out"; then
+      continue
+    fi
+    # Only the stages that changed since the stamped version are stale; an
+    # artefact of an unchanged stage is byte-for-byte what this chain would
+    # write again.
+    if [[ "$(stage_version "$out")" -le "$STAMPED_NUM" ]]; then
       continue
     fi
     if file_is_valid "$out" || dir_is_valid "$out"; then
@@ -627,8 +677,9 @@ if [[ ${#STALE[@]} -gt 0 ]]; then
   echo "error: $OUTDIR holds artefacts for '$BASE' built by an older derivation chain" >&2
   echo "       (chain version ${STAMPED:-none recorded}; this script builds version $CHAIN_VERSION)." >&2
   echo "       Reusing them would measure a stage this chain no longer produces, and the" >&2
-  echo "       numbers would look entirely plausible. Delete them and re-run:" >&2
-  echo "         rm -rf ${STALE[*]} $CHAIN_STAMP" >&2
+  echo "       numbers would look entirely plausible. Delete them and re-run (the stamp is" >&2
+  echo "       rewritten by the run; artefacts of unchanged stages are kept):" >&2
+  echo "         rm -rf ${STALE[*]}" >&2
   exit 1
 fi
 

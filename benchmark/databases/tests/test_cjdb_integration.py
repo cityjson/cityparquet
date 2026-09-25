@@ -11,6 +11,16 @@ from citybench.systems.cjdb import CjdbSystem
 pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).parent.parent / "data" / "delft.city.jsonl"
+# Parameter derivation reads the CityParquet package as well as the source:
+# the query windows are searched over the package's own `bbox` column and
+# the attribute picks come from its `city` footer, exactly as the format
+# harness derives its own (see `citybench.params.derive`). So these tests
+# need a converted delft package as well as a running container.
+PACKAGE = Path(__file__).parent.parent / "data" / "cityparquet" / "delft"
+
+
+def _params():
+    return derive(FIXTURE, PACKAGE)
 
 
 @pytest.fixture(scope="module")
@@ -21,7 +31,7 @@ def system():
         Dataset(
             name="delft",
             source=FIXTURE,
-            cityparquet_dir=Path("data/cityparquet/delft"),
+            cityparquet_dir=PACKAGE,
             hilbert_dir=Path("data/cityparquet-hilbert/delft"),
         )
     )
@@ -30,27 +40,71 @@ def system():
 
 
 def test_count_matches_source_city_object_total(system):
-    params = derive(FIXTURE)
+    params = _params()
     m = system.run("count", params, repeat=1)
     assert m.result_count == params.total_city_objects
 
 
-def test_every_tier1_scenario_runs(system):
-    params = derive(FIXTURE)
-    for scenario in ("full-read", "count", "attr-filter", "attr-stats",
-                     "id-lookup", "project"):
+def test_every_non_windowed_read_scenario_runs(system):
+    params = _params()
+    for scenario in ("geometry-scan", "count", "attr-filter", "attr-range",
+                     "attr-stats"):
         m = system.run(scenario, params, repeat=1)
         assert m.times_s and m.times_s[0] > 0
         assert m.server_times_s and m.server_times_s[0] > 0
 
 
-def test_bbox_query_selectivity_increases_with_window(system):
-    params = derive(FIXTURE)
+def test_every_id_probe_runs_and_the_miss_finds_nothing(system):
+    """Three positioned hits and one verified-absent id. The miss is the
+    probe that actually separates a store with an id index from one
+    without, so it must genuinely miss."""
+    params = _params()
+    for probe in params.id_probes:
+        m = system.run("id-lookup", params, repeat=1, probe=probe)
+        assert m.times_s and m.times_s[0] > 0
+        assert m.result_count == (1 if probe.present else 0), probe.tag
+
+
+def test_bbox_scenarios_increase_with_the_window(system):
+    params = _params()
     counts = [
-        system.run("bbox-query", params, repeat=1, selectivity=s).result_count
-        for s in (0.01, 0.05, 0.25)
+        system.run("bbox-query", params, repeat=1, window=w).result_count
+        for w in params.windows
     ]
     assert counts[0] <= counts[1] <= counts[2]
+
+
+def test_the_write_tier_runs_cjdbs_own_queries_and_carries_no_server_time(system):
+    """Q6/Q7/Q8 in order: each leaves the state the next expects.
+    `server_time_s` is deliberately empty — obtaining it would mean a second
+    `EXPLAIN ANALYZE` execution of the mutation itself, which would apply
+    Q6 twice and increment Q7 by 20 rather than 10."""
+    params = _params()
+    for scenario in ("attr-add", "attr-update", "attr-delete"):
+        m = system.run(scenario, params, repeat=1)
+        assert m.times_s[0] > 0
+        assert m.server_times_s == []
+        assert m.result_count is not None and m.result_count > 0
+
+
+def test_append_object_adds_and_then_removes_the_appended_objects(system):
+    """B18 through cjdb's own importer, twice, so the untimed reset between
+    samples is exercised: a second sample would otherwise import a second
+    copy, or prompt on stdin for the repeated file name. Afterwards the
+    schema must hold exactly what it held before."""
+    params = _params()
+    before = _city_object_count(system)
+    m = system.run("append-object", params, repeat=2)
+    assert len(m.times_s) == 2 and all(t > 0 for t in m.times_s)
+    assert m.result_count == params.append.object_count
+    assert "external-importer" in m.notes
+    assert _city_object_count(system) == before
+
+
+def _city_object_count(system) -> int:
+    with system._conn.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM {system._schema}.city_object")
+        return int(cur.fetchone()[0])
 
 
 # --- Beyond the brief -----------------------------------------------------
@@ -76,21 +130,20 @@ def test_index_ddl_actually_creates_every_declared_index(system):
         assert name in existing, f"{name} missing from pg_indexes after ingest"
 
 
-def test_hierarchy_runs_when_the_dataset_has_a_parent_child_pair(system):
-    params = derive(FIXTURE)
-    if params.parent_id is None:
-        pytest.skip("delft fixture has no parent/child pair to exercise hierarchy with")
-    m = system.run("hierarchy", params, repeat=1)
+def test_parts_per_building_reports_one_row_per_building(system):
+    """CJDB Q4 keeps childless Buildings, so this is a row count of the
+    Buildings themselves, never of the parent/child pairs."""
+    params = _params()
+    m = system.run("parts-per-building", params, repeat=1)
+    assert m.result_count is not None
+    assert m.result_count > 0
+
+
+def test_lod_query_runs_and_returns_whole_rows(system):
+    params = _params()
+    m = system.run("lod-query", params, repeat=1)
     assert m.result_count is not None
     assert m.result_count >= 0
-
-
-def test_lod_extract_and_semantic_surface_run_without_error(system):
-    params = derive(FIXTURE)
-    for scenario in ("lod-extract", "semantic-surface"):
-        m = system.run(scenario, params, repeat=1)
-        assert m.result_count is not None
-        assert m.result_count >= 0
 
 
 def test_size_reports_a_positive_byte_count_including_the_new_indexes(system):
@@ -102,18 +155,18 @@ def test_size_reports_a_positive_byte_count_including_the_new_indexes(system):
     assert report.size_bytes >= report.size_bytes_no_index
 
 
-def test_full_read_result_count_is_unchanged_by_forcing_more_columns(system):
-    # Widening full-read's checksum to cover attributes and ground_geometry
-    # as well as geometry must not change WHAT is counted — only how much
-    # is decoded to produce the checksum. A different count here would mean
-    # the widened predicate silently dropped or duplicated rows, which
-    # would be a new correctness bug, not a fairness fix.
-    params = derive(FIXTURE)
-    m = system.run("full-read", params, repeat=1)
+def test_geometry_scan_counts_every_city_object(system):
+    # `geometry-scan` narrows what is DECODED (the geometry column alone,
+    # not also attributes and ground_geometry) but must not change WHAT is
+    # counted. A different count here would mean the narrowed query
+    # silently dropped rows — `coalesce` on the length keeps a NULL
+    # geometry's row in the count.
+    params = _params()
+    m = system.run("geometry-scan", params, repeat=1)
     assert m.result_count == params.total_city_objects
 
 
-def test_lod_extract_and_semantic_surface_plans_use_a_bitmap_index_scan(system):
+def test_lod_query_plans_use_a_bitmap_index_scan(system):
     # The point of the @? rewrite (see the fix report) is that the planner
     # CHOOSES an index-based plan on its own — not that it can be coerced
     # into one with enable_seqscan=off. Default planner settings only, so a
@@ -123,8 +176,8 @@ def test_lod_extract_and_semantic_surface_plans_use_a_bitmap_index_scan(system):
     # purely textual assertion in test_sql_cjdb.py would still pass.
     from citybench.scenarios import sql_cjdb
 
-    params = derive(FIXTURE)
-    for scenario in ("lod-extract", "semantic-surface"):
+    params = _params()
+    for scenario in ("lod-query",):
         sql, args = sql_cjdb.sql_for(scenario, params)
         with system._conn.cursor() as cur:
             cur.execute(f"EXPLAIN {sql}", args)

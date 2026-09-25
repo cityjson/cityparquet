@@ -3,7 +3,9 @@ mod coordinator;
 mod formats;
 mod scenario;
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{BufRead as _, BufReader, BufWriter, Write as _};
+use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 use std::time::Instant;
 
@@ -15,14 +17,16 @@ use scenario::{AttrPred, QueryParams, Scenario};
 
 /// Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParquet, etc.).
 ///
-/// This binary has two entry points sharing one CLI surface: the `run`
+/// This binary has three entry points sharing one CLI surface: the `run`
 /// subcommand (the coordinator — drives a whole (format x scenario) matrix,
-/// medians the repeats, and writes the results CSV; see [`coordinator`]) and
+/// means the repeats, and writes the results CSV; see [`coordinator`]);
 /// `--child` (a plain top-level flag, no subcommand keyword) — a
 /// single-scenario worker the coordinator spawns once per (format, scenario,
-/// dataset, repeat) measurement. `--child` resets the heap allocator, times
+/// dataset, repeat) measurement, which resets the heap allocator, times
 /// exactly one `FormatRunner::run` call, and prints one line to stdout:
-/// `time_s peak_heap_bytes ru_maxrss_bytes result_count`.
+/// `time_s peak_heap_bytes ru_maxrss_bytes result_count`; and
+/// `write-cityjsonseq` (see [`write_cityjsonseq`]) — the CityJSONSeq WRITER
+/// the cross-format write benchmark needs, which does no timing of its own.
 #[derive(Parser, Debug)]
 #[command(name = "cityparquet-readbench", version, about)]
 struct Cli {
@@ -61,7 +65,7 @@ struct Cli {
     format: Option<Format>,
 
     /// Scenario to run: full-read, count, bbox-query, attr-filter,
-    /// attr-stats, id-lookup, project.
+    /// attr-stats, id-lookup, feature-lookup (CityParquet only).
     #[arg(long)]
     scenario: Option<String>,
 
@@ -76,7 +80,7 @@ struct Cli {
     #[arg(long, value_delimiter = ',')]
     bbox: Option<Vec<f64>>,
 
-    /// Attribute column for `attr-filter` / `attr-stats` / `project`.
+    /// Attribute column for `attr-filter` / `attr-stats`.
     #[arg(long)]
     attr_column: Option<String>,
 
@@ -127,7 +131,25 @@ struct Cli {
 enum Command {
     /// Drive a whole (format x scenario) benchmark matrix and write the
     /// results CSV (see [`coordinator::run`]).
-    Run(RunArgs),
+    Run(Box<RunArgs>),
+
+    /// Re-serialise a canonical CityJSONSeq stream into a fresh one (see
+    /// [`write_cityjsonseq`]). The name is pinned because clap's derived
+    /// kebab-casing would otherwise split it into `write-city-json-seq`.
+    #[command(name = "write-cityjsonseq")]
+    WriteCityJsonSeq(WriteCityJsonSeqArgs),
+}
+
+/// `cityparquet-readbench write-cityjsonseq`'s own flags.
+#[derive(Args, Debug)]
+struct WriteCityJsonSeqArgs {
+    /// The canonical `.city.jsonl` stream to read.
+    #[arg(long)]
+    input: PathBuf,
+
+    /// Where the re-serialised stream is written (truncated if it exists).
+    #[arg(long)]
+    output: PathBuf,
 }
 
 /// `cityparquet-readbench run`'s own flags — the CLI-facing mirror of
@@ -178,9 +200,9 @@ struct RunArgs {
     write_repeat: usize,
 
     /// Comma-separated scenario names, or their [`Scenario::from_str`]
-    /// aliases. Omitting this selects [`Scenario::ALL`] — the seven
+    /// aliases. Omitting this selects [`Scenario::ALL`] — the six
     /// format-comparison scenarios `full-read`, `count`, `bbox-query`,
-    /// `attr-filter`, `attr-stats`, `id-lookup` and `project`. `feature-lookup`
+    /// `attr-filter`, `attr-stats` and `id-lookup`. `feature-lookup`
     /// is CityParquet-only, so it is not in that set and has to be named here.
     #[arg(long, value_delimiter = ',')]
     scenarios: Option<Vec<String>>,
@@ -220,7 +242,11 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    if let Some(Command::WriteCityJsonSeq(args)) = &cli.command {
+        return write_cityjsonseq(&args.input, &args.output);
+    }
     if let Some(Command::Run(run_args)) = cli.command {
+        let run_args = *run_args;
         let transport = match run_args.transport.as_str() {
             "local" => coordinator::Transport::Local,
             "http" => coordinator::Transport::Http,
@@ -354,6 +380,18 @@ fn run(cli: Cli) -> Result<()> {
             lookup.filter_bytes
         );
     }
+    // After the timed line, like the lookup counters: the aggregates are what
+    // lets a test hold every format's `attr-stats` to the same four numbers.
+    if let Some(stats) = outcome.attr_stats {
+        eprintln!(
+            "{} {} {} {} {}",
+            formats::ATTR_STATS_MARKER,
+            stats.min,
+            stats.max,
+            stats.sum,
+            stats.count
+        );
+    }
     Ok(())
 }
 
@@ -392,6 +430,99 @@ fn run_write_child(cli: Cli) -> Result<()> {
         "{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {}",
         report.object_count
     );
+    Ok(())
+}
+
+/// The CityJSONSeq **writer** of the cross-format write benchmark: reads a
+/// canonical `.city.jsonl` stream and writes an equivalent one out again.
+///
+/// It exists because the benchmark's cityjsonseq write row has to be the same
+/// KIND of work every other row is. Each of those parses the canonical stream
+/// into the target format's own typed model and serialises that model out
+/// (`cjseq collect` for cityjson, `+ citygml-tools` for citygml, `fcb ser -A`
+/// for flatcitybuf, `cityparquet convert` for cityparquet). The row that
+/// divides all of them — cityjsonseq — used to be a plain `cat`, which on a
+/// reflink-capable filesystem is a metadata-only extent clone: nothing is
+/// parsed, nothing is serialised, and the "write" costs milliseconds at any
+/// dataset size. This subcommand does for CityJSONSeq exactly what the other
+/// four writers do for their formats, and nothing more.
+///
+/// Streaming, by construction: the header line is parsed into a
+/// [`cityparquet::cjseq::CityJSON`] and every following line into a
+/// [`cityparquet::cjseq::CityJSONFeature`], each written straight back out
+/// through a [`BufWriter`] before the next is read, so at most one feature is
+/// ever live. Any line that does not parse is an error — the timing would be
+/// meaningless if malformed input were passed through untouched, which is what
+/// `cjseq filter` does (it parses to a `serde_json::Value` and writes the
+/// ORIGINAL line bytes back, so it is not a writer either).
+///
+/// Blank lines are dropped, matching every reader in `formats::cityjsonseq`.
+///
+/// Fidelity is that of cjseq's own model, and the model is the point: unknown
+/// keys survive on `CityJSON` and on every `CityObject` (both carry
+/// `#[serde(flatten)]`), but cjseq's typed `Metadata` names its keys and has
+/// no catch-all, so an unnamed one — `fullMetadataUrl` and `version` in the
+/// 3DBAG-derived streams — is dropped. That is confined to the single header
+/// line and never touches a feature's geometry or attributes; `cjseq collect`,
+/// the writer behind the benchmark's neighbouring `cityjson` row, parses
+/// through the same struct and drops the same keys, so the two rows are
+/// equally faithful by construction rather than by coincidence. See
+/// `tests/write_cityjsonseq.rs`, which pins the gap to exactly that.
+///
+/// **Allocator caveat.** This binary installs `peak_alloc` as its
+/// `#[global_allocator]` (see [`alloc`]), so every allocation here pays two
+/// atomics that `cjseq`, `fcb` and the `cityparquet` CLI do not. Measured on
+/// `3dbag_n10000` — this loop built with and without `peak_alloc`, 25
+/// interleaved runs each — the difference is below the run-to-run noise floor
+/// (medians 0.81 s without, 0.80 s with), the counters being relaxed atomics
+/// on a single-threaded workload. Disclosed in `benchmark/formats/README.md`
+/// because this row is the divisor, not because it moves it.
+fn write_cityjsonseq(input: &Path, output: &Path) -> Result<()> {
+    use cityparquet::cjseq::{CityJSON, CityJSONFeature};
+
+    let reader =
+        BufReader::new(File::open(input).with_context(|| format!("opening {}", input.display()))?);
+    let mut writer = BufWriter::new(
+        File::create(output).with_context(|| format!("creating {}", output.display()))?,
+    );
+
+    let mut lines = reader.lines();
+    let header_line = lines
+        .next()
+        .with_context(|| {
+            format!(
+                "{} is empty; a CityJSONSeq stream needs a header line",
+                input.display()
+            )
+        })?
+        .with_context(|| format!("reading the header line of {}", input.display()))?;
+    let header = CityJSON::from_str(&header_line)
+        .with_context(|| format!("invalid CityJSONSeq header in {}", input.display()))?;
+    serde_json::to_writer(&mut writer, &header)
+        .with_context(|| format!("writing the header line to {}", output.display()))?;
+    writer.write_all(b"\n")?;
+
+    for (index, line) in lines.enumerate() {
+        let line = line.with_context(|| format!("reading {}", input.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        // Line numbers are 1-based and the header is line 1.
+        let feature = CityJSONFeature::from_str(&line).with_context(|| {
+            format!(
+                "invalid CityJSONFeature on line {} of {}",
+                index + 2,
+                input.display()
+            )
+        })?;
+        serde_json::to_writer(&mut writer, &feature)
+            .with_context(|| format!("writing feature {} to {}", index + 1, output.display()))?;
+        writer.write_all(b"\n")?;
+    }
+
+    writer
+        .flush()
+        .with_context(|| format!("flushing {}", output.display()))?;
     Ok(())
 }
 
@@ -457,6 +588,7 @@ fn build_attr_pred(eq: Option<&str>, ge: Option<f64>, le: Option<f64>) -> Result
 /// function so the conversion itself is unit-testable. Non-Linux, non-macOS
 /// platforms fall through to the raw value (BSD-lineage bytes) — this crate
 /// only ever runs on the two.
+#[cfg(any(not(target_os = "linux"), test))]
 fn rss_to_bytes(raw: i64) -> u64 {
     #[cfg(target_os = "linux")]
     {
@@ -468,9 +600,59 @@ fn rss_to_bytes(raw: i64) -> u64 {
     }
 }
 
-/// `getrusage(RUSAGE_SELF).ru_maxrss`, normalised to BYTES on every
-/// platform via [`rss_to_bytes`].
+/// The child's own peak resident set size, in BYTES.
+///
+/// On Linux this is `VmHWM` from `/proc/self/status`, NOT
+/// `getrusage(RUSAGE_SELF).ru_maxrss`. The two differ for an exec'd child:
+/// `exec_mmap` folds the high-water mark of the PRE-exec address space —
+/// under `posix_spawn`/`vfork` that is the PARENT's — into the task's
+/// `signal->maxrss`, which is what `getrusage` and `wait4` report, so a
+/// child could never report less than the coordinator's own peak. Every
+/// committed read CSV before this change carries that floor: on the 1M
+/// 3DBAG slice 36 read rows across four formats share the value
+/// 269 963 264, the coordinator's RSS after deriving the query parameters
+/// (see `READ_BENCHMARK.md`, Caveat 34). `VmHWM` is the high-water mark of
+/// the child's OWN `mm`, created fresh by exec, and is not inherited
+/// (measured: a `/proc/self/status` child under a 420 MB parent reports
+/// 10.5 MB, while `ru_maxrss` reports 419 MB). Other platforms fall back to
+/// `getrusage` via [`rss_to_bytes`].
 fn max_rss_bytes() -> Result<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status")
+            .context("reading /proc/self/status for VmHWM")?;
+        vm_hwm_bytes(&status)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        max_rss_bytes_getrusage()
+    }
+}
+
+/// Parse the `VmHWM:` line of a `/proc/<pid>/status` document into bytes.
+/// The kernel prints it in kB (units of 1024 bytes).
+#[cfg(any(target_os = "linux", test))]
+fn vm_hwm_bytes(status: &str) -> Result<u64> {
+    let line = status
+        .lines()
+        .find(|l| l.starts_with("VmHWM:"))
+        .ok_or_else(|| anyhow::anyhow!("no VmHWM line in /proc/self/status"))?;
+    let mut fields = line.split_whitespace().skip(1);
+    let value: u64 = fields
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("VmHWM line has no value: '{line}'"))?
+        .parse()
+        .with_context(|| format!("parsing VmHWM from '{line}'"))?;
+    match fields.next() {
+        Some("kB") => Ok(value.saturating_mul(1024)),
+        other => bail!("unexpected VmHWM unit {other:?} in '{line}'"),
+    }
+}
+
+/// `getrusage(RUSAGE_SELF).ru_maxrss`, normalised to BYTES on every
+/// platform via [`rss_to_bytes`]. Not used on Linux (see [`max_rss_bytes`]).
+#[cfg(not(target_os = "linux"))]
+fn max_rss_bytes_getrusage() -> Result<u64> {
     // SAFETY: `usage` is zero-initialized and only read after `getrusage`
     // returns success; `RUSAGE_SELF` and a valid `&mut rusage` are exactly
     // what this libc binding requires.
@@ -487,7 +669,7 @@ fn max_rss_bytes() -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::rss_to_bytes;
+    use super::{rss_to_bytes, vm_hwm_bytes};
 
     /// P1 regression: `ru_maxrss`'s unit is platform-defined — KiB on Linux
     /// (`getrusage(2)`), bytes on macOS/BSD. Before `rss_to_bytes` existed
@@ -499,5 +681,40 @@ mod tests {
         assert_eq!(rss_to_bytes(2048), 2048 * 1024, "Linux ru_maxrss is KiB");
         #[cfg(not(target_os = "linux"))]
         assert_eq!(rss_to_bytes(2048), 2048, "macOS/BSD ru_maxrss is bytes");
+    }
+
+    #[test]
+    fn vm_hwm_is_parsed_from_the_status_document_in_kib() {
+        let status = "Name:\tx\nVmPeak:\t  20 kB\nVmHWM:\t   10556 kB\nVmRSS:\t 9000 kB\n";
+        assert_eq!(vm_hwm_bytes(status).unwrap(), 10556 * 1024);
+        assert!(
+            vm_hwm_bytes("Name:\tx\n").is_err(),
+            "a document without VmHWM is an error"
+        );
+        assert!(
+            vm_hwm_bytes("VmHWM:\t 12 MB\n").is_err(),
+            "an unexpected unit is an error"
+        );
+    }
+
+    /// The point of `VmHWM`: an exec'd child must not inherit this process's
+    /// high-water mark. Spawn `cat /proc/self/status` from the test binary
+    /// (whose own VmHWM is tens of MB) and check the child's VmHWM is its
+    /// own few MB, below the parent's. No ballast is allocated here on
+    /// purpose: the `alloc` module's peak-tracking test shares this process
+    /// and a large allocation would disturb it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_spawned_child_reports_its_own_high_water_mark() {
+        let parent = vm_hwm_bytes(&std::fs::read_to_string("/proc/self/status").unwrap()).unwrap();
+        let out = std::process::Command::new("cat")
+            .arg("/proc/self/status")
+            .output()
+            .expect("spawning cat");
+        let child = vm_hwm_bytes(&String::from_utf8_lossy(&out.stdout)).unwrap();
+        assert!(
+            child < parent && child < 16 * 1024 * 1024,
+            "child VmHWM {child} is not below the parent's {parent}"
+        );
     }
 }

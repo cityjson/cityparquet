@@ -151,24 +151,13 @@ fn attr_filter_matches_the_other_runners_on_the_string_typed_numeric_code() {
     );
 }
 
-/// `project` counts every non-null value of a column; `attr-stats` counts
-/// only the NUMERIC ones. `function` is a string column here (its values are
-/// numeric-looking codes such as `"1070"`, not numbers), so the two answers
-/// legitimately differ — pinned rather than papered over.
+/// `attr-stats` counts only NUMERIC values. `function` is a string column
+/// here (94 of the fixture's 121 CityObjects carry it, as numeric-looking
+/// codes such as `"1070"`, not numbers), so a present column still counts 0 —
+/// pinned rather than papered over.
 #[test]
-fn project_counts_non_null_values_and_attr_stats_counts_only_numeric_ones() {
+fn attr_stats_counts_only_numeric_values() {
     let input = fixture("lod3_railway.city.json");
-
-    let project_count = run_child(
-        "cityjson",
-        "project",
-        &input,
-        &["--attr-column", "function"],
-    );
-    assert_eq!(
-        project_count, 94,
-        "94 of the fixture's 121 CityObjects carry a non-null `function`"
-    );
 
     let stats_count = run_child(
         "cityjson",
@@ -181,12 +170,6 @@ fn project_counts_non_null_values_and_attr_stats_counts_only_numeric_ones() {
         "attr-stats aggregates NUMERIC values only, and this fixture's \
          `function` is a string column — 0 is the honest answer, matching the \
          cityjsonseq runner's own semantics on the same data"
-    );
-
-    let species_count = run_child("cityjson", "project", &input, &["--attr-column", "species"]);
-    assert_eq!(
-        species_count, 15,
-        "the 15 SolitaryVegetationObjects are the only carriers of `species`"
     );
 }
 

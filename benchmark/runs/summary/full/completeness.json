@@ -14,7 +14,6 @@
         "id-50pct",
         "id-90pct",
         "id-miss",
-        "project",
         "write"
       ]
     },
@@ -25,42 +24,60 @@
       ]
     },
     "codec": {
-      "present": true,
-      "metrics": [
-        "bbox-1pct",
-        "bbox-25pct",
-        "bbox-5pct",
-        "full-read",
-        "id-50pct",
-        "write"
-      ]
+      "present": false,
+      "metrics": []
     },
     "rowgroup": {
+      "present": false,
+      "metrics": []
+    },
+    "bloom": {
       "present": true,
       "metrics": [
-        "bbox-1pct",
-        "bbox-25pct",
-        "bbox-5pct",
-        "full-read",
+        "feature-50pct",
+        "feature-miss",
         "id-50pct",
+        "id-miss",
         "write"
       ]
     },
     "databases": {
       "present": true,
       "metrics": [
-        "attr-filter",
-        "attr-stats",
-        "bbox-1pct",
-        "bbox-25pct",
-        "bbox-5pct",
-        "count",
-        "full-read",
-        "hierarchy",
-        "id-lookup",
-        "lod-extract",
-        "project",
-        "semantic-surface"
+        "append-object",
+        "attr-add",
+        "attr-delete",
+        "attr-filter threads=parallel",
+        "attr-filter threads=single",
+        "attr-range threads=parallel",
+        "attr-range threads=single",
+        "attr-stats threads=parallel",
+        "attr-stats threads=single",
+        "attr-update",
+        "bbox-1pct threads=parallel",
+        "bbox-1pct threads=single",
+        "bbox-25pct threads=parallel",
+        "bbox-25pct threads=single",
+        "bbox-5pct threads=parallel",
+        "bbox-5pct threads=single",
+        "count threads=parallel",
+        "count threads=single",
+        "geometry-scan threads=parallel",
+        "geometry-scan threads=single",
+        "id-10pct threads=parallel",
+        "id-10pct threads=single",
+        "id-50pct threads=parallel",
+        "id-50pct threads=single",
+        "id-90pct threads=parallel",
+        "id-90pct threads=single",
+        "id-miss threads=parallel",
+        "id-miss threads=single",
+        "lod-query threads=parallel",
+        "lod-query threads=single",
+        "parts-per-building threads=parallel",
+        "parts-per-building threads=single",
+        "parts-per-building-join threads=parallel",
+        "parts-per-building-join threads=single"
       ]
     }
   }

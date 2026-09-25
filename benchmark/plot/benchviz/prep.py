@@ -145,6 +145,10 @@ READ_COLUMNS = [
 ]
 SIZES_COLUMNS = ["dataset", "format", "bytes", "mb", "ratio_vs_cityjsonseq"]
 
+# Scenarios the format harness no longer runs. An older CSV may still carry
+# their rows; they are ignored (and counted), never charted and never fatal.
+RETIRED_SCENARIOS = frozenset({"project"})
+
 BBOX_NOTE_RE = re.compile(r"^bbox-\d+pct$")
 # The positional id probes READ_BENCHMARK.md's id-lookup table defines: the id
 # at 10/50/90% of the canonical order, plus one verified absent. Caveat 20 reads
@@ -238,6 +242,16 @@ def _check_columns(path: Path, got: list[str] | None, want: list[str]) -> list[s
             f"  found:             {columns}"
         )
     return columns[len(want) :]
+
+
+def _is_legacy_timing(path: Path) -> bool:
+    """A read CSV from before 2026-09-24, when `time_s` was a median and its
+    dispersion column `time_mad_s` the median absolute deviation. Only the
+    configuration axes still hold committed CSVs in that shape;
+    `load_scaling_axis` reports them as gaps."""
+    with path.open(newline="", encoding="utf-8") as fh:
+        header = next(csv.reader(fh), [])
+    return "time_mad_s" in header and "time_std_s" not in header
 
 
 def _read_rows(path: Path, want: list[str]) -> list[dict[str, str]]:
@@ -400,6 +414,7 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
     """Return (read records, anomaly notes)."""
     anomalies: list[str] = []
     cold_rows = 0
+    retired: dict[str, int] = {}
     per_dataset: dict[str, list[dict[str, str]]] = {}
 
     for path in _dataset_csvs(inputs.read_dir):
@@ -410,6 +425,9 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
             if COLD_RE.search(row["notes"]):
                 cold_rows += 1
                 continue
+            if row["scenario"] in RETIRED_SCENARIOS:
+                retired[row["scenario"]] = retired.get(row["scenario"], 0) + 1
+                continue
             if row["format"] not in KNOWN_FORMATS:
                 excluded.record(row["format"], "read")
                 continue
@@ -418,6 +436,8 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
 
     if cold_rows:
         anomalies.append(f"excluded {cold_rows} cold-tagged read row(s) (warm-only policy)")
+    for scenario, n in sorted(retired.items()):
+        anomalies.append(f"ignored {n} row(s) of the retired scenario {scenario!r}")
 
     records: list[dict] = []
     for dataset, rows in per_dataset.items():
@@ -535,6 +555,12 @@ def load_scaling_axis(
 
     for path in _dataset_csvs(directory):
         name = path.stem
+        if _is_legacy_timing(path):
+            # A configuration axis measured under the median/MAD contract
+            # (its directory carries LEGACY.md). Reported, never plotted: a
+            # median and a mean on one axis would not be the same statistic.
+            gaps.append({"dataset": name, "issue": "legacy median/time_mad_s CSV; not rendered"})
+            continue
         rows = _read_rows(path, READ_COLUMNS)
         if not rows:
             gaps.append({"dataset": name, "issue": "CSV present but header-only"})
@@ -577,7 +603,7 @@ def load_scaling_axis(
             # The dispersion travels with the time it belongs to: a headline
             # that names one variant the fastest has to be able to check the
             # lead against the two runs' own spread, not against a fixed floor.
-            base_mad = _float(base["time_std_s"]) if base_valid else None
+            base_std = _float(base["time_std_s"]) if base_valid else None
             base_rss = _int(base["peak_rss_bytes"]) if base_valid else None
             if base is not None and not base_valid:
                 gaps.append({"dataset": name, "issue": f"{baseline} {key} status={base_status}"})
@@ -594,7 +620,7 @@ def load_scaling_axis(
                 # Failed, skipped and mismatched probes remain visible to the
                 # renderer as labelled empty cells; they never become ratios.
                 t = _float(row["time_s"]) if valid else None
-                mad = _float(row["time_std_s"]) if valid else None
+                std = _float(row["time_std_s"]) if valid else None
                 rss = _int(row["peak_rss_bytes"]) if valid else None
                 records.append(
                     {
@@ -605,10 +631,10 @@ def load_scaling_axis(
                         "kind": "default" if variant == baseline else "variant",
                         "measure": key,
                         "time_s": t,
-                        "time_std_s": mad,
+                        "time_std_s": std,
                         "rss_b": rss,
                         "base_time_s": base_t,
-                        "base_time_std_s": base_mad,
+                        "base_time_std_s": base_std,
                         "base_rss_b": base_rss,
                         "time_ratio": _ratio(t, base_t),
                         "rss_ratio": _ratio(
@@ -792,8 +818,58 @@ def _require_read_results(inputs: Inputs) -> None:
     )
 
 
+# The database family's scenario vocabulary (benchmark/databases/README.md).
+# Reads run under both thread configurations; the write tier runs once and is
+# a different kind of operation (Caveat 19), so it never shares a figure with
+# the reads.
+DB_BASELINE = "3dcitydb"
+DB_READ_SCENARIOS = (
+    "geometry-scan",
+    "count",
+    "bbox-1pct",
+    "bbox-5pct",
+    "bbox-25pct",
+    "attr-filter",
+    "attr-range",
+    "attr-stats",
+    "id-10pct",
+    "id-50pct",
+    "id-90pct",
+    "id-miss",
+    "lod-query",
+    "parts-per-building",
+    "parts-per-building-join",
+)
+DB_WRITE_SCENARIOS = ("attr-add", "attr-update", "attr-delete", "append-object")
+# `single` is the primary figure; `parallel` is the disclosed second pass.
+# Never read one against the other (databases README, Caveat 5).
+DB_THREADS = ("single", "parallel")
+# Statuses whose numbers are citable. `ok-deviation` is a count spread below
+# the harness's tolerance: citable, but marked and footnoted.
+DB_CITABLE = frozenset({"ok", "ok-deviation"})
+
+DB_THREADS_RE = re.compile(r"\bthreads=(\w+)")
+DB_BBOX_RE = re.compile(r"\b(bbox-\d+pct)(-approx)?\b")
+DB_ID_RE = re.compile(r"\b(id-(?:\d+pct|miss))\b")
+DB_ACHIEVED_RE = re.compile(r"\bachieved=([0-9.eE+-]+)")
+# `count-mismatch: <system=count ...> spread=<fraction>` — the decomposition an
+# `ok-deviation` or `mismatch` row carries.
+DB_DEVIATION_RE = re.compile(r"count-mismatch:.*?spread=[0-9.eE+-]+")
+DB_ROWS_ADDED_RE = re.compile(r"\b((?:city-object|feature)-rows-added): (\d+)")
+DB_AREA_RE = re.compile(r"\barea: (\S+)")
+
+
+def _db_empty() -> dict:
+    return {"baseline": DB_BASELINE, "records": [], "sizes": []}
+
+
 def load_databases(inputs: Inputs) -> dict:
-    """Load one selected database result set, preserving unavailable cells."""
+    """Load one selected database result set, preserving unavailable cells.
+
+    Every record is keyed by (system, scenario, threads): the CSV carries both
+    thread configurations and, for `bbox-query`/`id-lookup`, one row per window
+    or probe, so a key without either would let one row overwrite another.
+    """
 
     def safe_float(value: str | None) -> float | None:
         try:
@@ -807,57 +883,266 @@ def load_databases(inputs: Inputs) -> dict:
         except ValueError:
             return None
 
-    smoke = inputs.bench_dir.name == "smoke"
-    data_root = inputs.bench_dir.parent.parent if smoke else inputs.bench_dir.parent
-    directory = data_root / "databases" / ("smoke" if smoke else "results")
+    # A profile run keeps its formats under `formats/<profile>/` and its
+    # databases under `databases/<profile>/` (bench_suite.py's `short` and
+    # `smoke`); the full run uses `formats/` and `databases/results/`.
+    profile = inputs.bench_dir.name if inputs.bench_dir.name in {"smoke", "short"} else ""
+    data_root = inputs.bench_dir.parent.parent if profile else inputs.bench_dir.parent
+    directory = data_root / "databases" / (profile or "results")
     if not directory.exists():
-        return {"baseline": "3dcitydb", "records": [], "sizes": []}
+        return _db_empty()
     candidates = sorted(
         p for p in directory.glob("*.csv") if not p.name.endswith((".sizes.csv", ".samples.csv"))
     )
-    groups: list[tuple[int, Path, list[dict[str, str]]]] = []
+    groups: list[tuple[int, Path, list[dict[str, str]], dict]] = []
     for path in candidates:
-        rows = list(csv.DictReader(path.open(encoding="utf-8", newline="")))
-        params = path.with_suffix(".params.json")
-        objects = 0
-        if params.exists():
-            objects = int(json.loads(params.read_text()).get("total_city_objects", 0))
-        groups.append((objects, path, rows))
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        params_path = path.with_suffix(".params.json")
+        params = json.loads(params_path.read_text()) if params_path.exists() else {}
+        groups.append((int(params.get("total_city_objects", 0) or 0), path, rows, params))
     if not groups:
-        return {"baseline": "3dcitydb", "records": [], "sizes": []}
-    objects, path, rows = max(groups, key=lambda item: (item[0], item[1].name))
-    records, sizes = [], []
+        return _db_empty()
+    objects, path, rows, params = max(groups, key=lambda item: (item[0], item[1].name))
+    records: list[dict] = []
+    seen: set[tuple[str, str, str | None]] = set()
     for row in rows:
-        note = row.get("notes", "")
-        scenario = row.get("scenario", "")
-        match = re.search(r"\bbbox-(\d+pct)\b", note)
-        query = f"bbox-{match.group(1)}" if match else scenario
+        note = row.get("notes", "") or ""
+        raw = row.get("scenario", "") or ""
+        system = row.get("format") or ""
+        query, approx = raw, False
+        if raw == "bbox-query" and (match := DB_BBOX_RE.search(note)):
+            query, approx = match.group(1), bool(match.group(2))
+        elif raw == "id-lookup" and (match := DB_ID_RE.search(note)):
+            query = match.group(1)
+        threads = match.group(1) if (match := DB_THREADS_RE.search(note)) else None
+        key = (system, query, threads)
+        if key in seen:
+            raise PrepError(
+                f"{path}: duplicate database row for "
+                f"(system={system}, scenario={query}, threads={threads})"
+            )
+        seen.add(key)
+        achieved = DB_ACHIEVED_RE.search(note)
+        deviation = DB_DEVIATION_RE.search(note)
         records.append(
             {
                 "dataset": path.stem,
                 "objects": objects,
-                "format": row.get("format"),
+                "format": system,
+                "raw_scenario": raw,
                 "scenario": query,
+                "tier": "write" if raw in DB_WRITE_SCENARIOS else "read",
+                "threads": threads,
+                "achieved": float(achieved.group(1)) if achieved else None,
+                "approx": approx,
+                "result_count": safe_int(row.get("result_count")),
                 "time_s": safe_float(row.get("time_s")),
+                "time_std_s": safe_float(row.get("time_std_s")),
                 "peak_rss_bytes": safe_int(row.get("peak_rss_bytes")),
+                "server_time_s": safe_float(row.get("server_time_s")),
                 "size_bytes": safe_int(row.get("size_bytes")),
-                "status": row.get("status", ""),
+                "size_bytes_no_index": safe_int(row.get("size_bytes_no_index")),
+                "status": (row.get("status") or "").strip(),
+                "deviation": deviation.group(0) if deviation else None,
                 "notes": note,
             }
         )
-    by_system: dict[str, dict] = {}
+    # Storage describes the system, not the scenario. The write-back tag is the
+    # same package as `duckdb-cityparquet`, so only read rows supply a size.
+    sizes: list[dict] = []
     for row in records:
-        if row["format"] and row["format"] not in by_system:
-            by_system[row["format"]] = row
-    for system, row in by_system.items():
-        sizes.append({"format": system, "size_bytes": row["size_bytes"]})
+        if row["tier"] != "read" or row["size_bytes"] is None:
+            continue
+        if any(s["format"] == row["format"] for s in sizes):
+            continue
+        sizes.append(
+            {
+                "format": row["format"],
+                "size_bytes": row["size_bytes"],
+                "size_bytes_no_index": row["size_bytes_no_index"],
+            }
+        )
     return {
-        "baseline": "3dcitydb",
+        "baseline": DB_BASELINE,
         "records": records,
         "sizes": sizes,
         "dataset": path.stem,
         "objects": objects,
+        "params": params,
     }
+
+
+# --------------------------------------------------------------------------
+# conditions: what each figure's numbers were measured under, for the page
+# --------------------------------------------------------------------------
+
+
+def _percent(value: float | None) -> str:
+    return "?" if value is None else f"{100 * value:.3g} %"
+
+
+def _format_predicate(block: dict) -> str | None:
+    """A params-sidecar `attr_filter` block as a predicate, either shape.
+
+    The format harness writes `pred: {eq|ge: value}`; the database harness
+    writes `op` with `eq_value`/`ge_bound`.
+    """
+    column = block.get("column")
+    if not column:
+        return None
+    pred = block.get("pred") or {}
+    if "eq" in pred:
+        return f"{column} = {pred['eq']!r}"
+    if "ge" in pred:
+        return f"{column} >= {pred['ge']}"
+    if block.get("op") == "eq":
+        return f"{column} = {block.get('eq_value')!r}"
+    if block.get("op") == "ge":
+        return f"{column} >= {block.get('ge_bound')}"
+    return str(column)
+
+
+def _attr_filter_text(block: dict) -> str | None:
+    predicate = _format_predicate(block)
+    if predicate is None:
+        return None
+    extra = []
+    if block.get("matched") is not None:
+        extra.append(f"{block['matched']:,} matched")
+    if block.get("share") is not None:
+        extra.append(f"share {_percent(block['share'])}")
+    if "hand_picked" in block:
+        extra.append("hand-picked" if block["hand_picked"] else "derived")
+    return predicate + (f" ({', '.join(extra)})" if extra else "")
+
+
+def format_conditions(inputs: Inputs, read_records: list[dict]) -> list[str]:
+    """Per-dataset conditions for the format heatmap."""
+    lines: list[str] = []
+    for dataset in sorted({r["dataset"] for r in read_records}):
+        rows = [r for r in read_records if r["dataset"] == dataset]
+        sidecar = inputs.read_dir / f"{dataset}.csv.params.json"
+        params = json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.exists() else {}
+        parts = []
+        predicate = _attr_filter_text(params.get("attr_filter") or {})
+        if predicate is None:
+            note = next(
+                (
+                    token.strip()
+                    for r in rows
+                    if r["scenario_key"] == "attr-filter"
+                    for token in str(r.get("notes", "")).split(";")
+                    if token.strip().startswith(("attr=", "object_type="))
+                ),
+                None,
+            )
+            predicate = note
+        if predicate:
+            parts.append(f"attribute filter {predicate}")
+        windows = [
+            f"{w.get('tag')} achieved {_percent(w.get('achieved'))}"
+            + (" (approx)" if w.get("approx") else "")
+            for w in params.get("windows", [])
+        ]
+        if windows:
+            parts.append("windows " + ", ".join(windows))
+        if any(
+            "cityjsonseq=readbench-reserialise" in str(r.get("notes", ""))
+            for r in rows
+            if r["scenario_key"] == "write"
+        ):
+            parts.append(
+                "write baseline: CityJSONSeq re-serialised by the read harness "
+                "(cityjsonseq=readbench-reserialise)"
+            )
+        if parts:
+            lines.append(f"{dataset}: " + "; ".join(parts))
+    return lines
+
+
+def database_conditions(db: dict) -> dict[str, list[str]]:
+    """Conditions for the database read figure and the write-tier figure."""
+    records = db.get("records", [])
+    if not records:
+        return {"databases": [], "databases-write": []}
+    params = db.get("params") or {}
+    reads = [r for r in records if r["tier"] == "read"]
+    read_lines = [
+        f"{db.get('dataset')}: {db.get('objects') or 0:,} CityObjects; baseline 3DCityDB; "
+        "threads=single is the primary configuration (DuckDB 1 thread, PostgreSQL no "
+        "parallel workers), threads=parallel a disclosed second pass; ratios never "
+        "cross configurations.",
+    ]
+    achieved: dict[str, tuple[float | None, bool]] = {}
+    for r in reads:
+        if r["scenario"].startswith("bbox-") and r["achieved"] is not None:
+            achieved.setdefault(r["scenario"], (r["achieved"], r["approx"]))
+    for w in params.get("windows", []):
+        achieved.setdefault(w.get("tag"), (w.get("achieved"), bool(w.get("approx"))))
+    if achieved:
+        read_lines.append(
+            "Spatial windows (share of rows selected): "
+            + ", ".join(
+                f"{tag} achieved {_percent(value)}" + (" (approx)" if approx else "")
+                for tag, (value, approx) in sorted(
+                    achieved.items(), key=lambda kv: int(re.sub(r"\D", "", kv[0]) or 0)
+                )
+            )
+        )
+    predicate = _attr_filter_text(params.get("attr_filter") or {})
+    if predicate:
+        read_lines.append(f"Attribute filter: {predicate}.")
+    attr_range = params.get("attr_range") or {}
+    if attr_range.get("column"):
+        threshold = attr_range.get("threshold")
+        bound = f"{threshold:.4g}" if isinstance(threshold, (int, float)) else str(threshold)
+        read_lines.append(
+            f"Attribute range: {attr_range['column']} > {bound} "
+            f"(quantile {attr_range.get('quantile')}, {attr_range.get('matched')} matched)."
+        )
+    if params.get("numeric_column"):
+        read_lines.append(f"Attribute stats: count/min/max/sum of {params['numeric_column']}.")
+    probes = params.get("id_probes") or []
+    if probes:
+        read_lines.append(
+            "Id lookups: "
+            + ", ".join(f"{p.get('tag')} {p.get('id')}" for p in probes)
+            + "."
+        )
+    writes = [r for r in records if r["tier"] == "write"]
+    write_lines = [
+        "Different operations, not one scale (databases README, Caveat 19): each "
+        "system does different work for the same request, so no ratio is drawn.",
+        "The write tier runs once, under threads=single, after every read row.",
+    ]
+    areas = sorted(
+        {
+            f"{_system_name(r['format'])}: {m.group(1)}"
+            for r in writes
+            if (m := DB_AREA_RE.search(r["notes"]))
+        }
+    )
+    if areas:
+        write_lines.append("Area expression — " + "; ".join(areas) + ".")
+    for r in writes:
+        if (m := DB_ROWS_ADDED_RE.search(r["notes"])) is not None:
+            write_lines.append(
+                f"{r['scenario']} on {_system_name(r['format'])}: {m.group(1)} {m.group(2)}."
+            )
+    return {"databases": read_lines, "databases-write": write_lines}
+
+
+def _system_name(system: str) -> str:
+    return {
+        "duckdb-cityparquet": "CityParquet (DuckDB)",
+        "duckdb-cityparquet-source": "CityParquet (DuckDB, source order)",
+        "duckdb-cityparquet-writeback": "CityParquet (DuckDB, + package write-back)",
+        "cityparquet": "CityParquet (native reader, source order)",
+        "cityparquet-hilbert": "CityParquet (native reader)",
+        "cjdb": "cjdb",
+        "3dcitydb": "3DCityDB",
+    }.get(system, system)
 
 
 def apply_manifest_titles(inputs: Inputs, datasets: list[dict]) -> None:
@@ -925,6 +1210,10 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
             "object_grain_formats": list(OBJECT_GRAIN_FORMATS),
             "feature_grain_formats": list(FEATURE_GRAIN_FORMATS),
             "excluded_formats": excluded.as_list(),
+            "conditions": {
+                "heatmap": format_conditions(inputs, read_records),
+                **database_conditions(database_data),
+            },
             "machine": {
                 "codec": read_machine(inputs.scaling_codec_dir),
                 "rowgroup": read_machine(inputs.scaling_rowgroup_dir),

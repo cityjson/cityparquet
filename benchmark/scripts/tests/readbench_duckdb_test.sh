@@ -52,17 +52,36 @@ if grep -q -- '--numeric-column' "$code"; then
   fail "readbench_duckdb.sh still takes --numeric-column; the sidecar carries that choice"
 fi
 
-# --- project must use the sidecar's numeric column, not object_type ---
-if grep -q 'count(object_type) FROM read_parquet' "$code"; then
-  fail "project still counts object_type; the coordinator projects the numeric column"
+# --- `project` is retired from the format family: no row may carry it ---
+if grep -q '"project"' "$code"; then
+  fail "readbench_duckdb.sh still appends a project row; the scenario is retired"
 fi
+grep -q '"attr-stats"' "$code" ||
+  fail "the script must still append its attr-stats row"
 
 # --- and it must actually READ the sidecar ---
 grep -q "jq -r '.windows\[\]" "$code" ||
   fail "the script must read its windows from the sidecar with jq"
-grep -q "jq -r '.object_type'" "$code" ||
-  fail "the script must read object_type from the sidecar"
+grep -q "jq -r '.attr_filter.column" "$code" ||
+  fail "the script must read the attr-filter column from the sidecar"
+grep -q "jq -r '.attr_filter.pred.eq" "$code" ||
+  fail "the script must read the attr-filter equality value from the sidecar"
+grep -q "jq -r '.attr_filter.pred.ge" "$code" ||
+  fail "the script must read the attr-filter numeric bound from the sidecar"
 grep -q "jq -r '.numeric_attr" "$code" ||
   fail "the script must read numeric_attr from the sidecar"
+
+# --- the attr-filter predicate must never run against `object_type`: it is a
+# reserved structural column, absent from the CityJSON `attributes` map
+# FlatCityBuf's B+-tree indexes, so the scenario compared an indexed read
+# against nothing ---
+if grep -q "WHERE object_type = " "$code"; then
+  fail "attr-filter still filters on object_type; it must use the sidecar's attribute predicate"
+fi
+
+# --- the column name must be double-quoted: `class` (Zurich) is a reserved
+# SQL word and an unquoted identifier would be a syntax error ---
+grep -q 'QUOTED_COLUMN' "$code" ||
+  fail "the attr-filter column must be quoted as an SQL identifier"
 
 echo "PASS: readbench_duckdb.sh reads the resolved-parameters sidecar"

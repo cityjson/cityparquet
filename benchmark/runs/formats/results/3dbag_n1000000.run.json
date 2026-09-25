@@ -1,7 +1,7 @@
 {
   "code": {
-    "git_head": "68a3f0ac1a75abb46c5d08754be40cfe1a367227",
-    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "git_head": "5c54e510b45fe7c66751da4295ef43c7524150f1",
+    "tracked_diff_sha256": "ef38f238756290b28ad8e0ebacab663c891918f31aa502f162e213950ef646fd",
     "untracked_sources_sha256": {}
   },
   "family": "formats",
@@ -13,25 +13,26 @@
     "system": "Linux"
   },
   "measurement": {
-    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq; write retry after user-requested interruption; reads retained from previous full run",
+    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq; read rows: citygml,cityjsonseq,flatcitybuf,cityparquet-hilbert in one run (2026-09-23) and cityjson one scenario per run (2026-09-24, after memory-commit refusals), merged; write rows: cityjson,cityjsonseq,flatcitybuf,cityparquet-hilbert (2026-09-23) and citygml kept from the 2026-09-11 run, tagged in notes; time_s/time_std_s recomputed on 2026-09-25 as mean and population standard deviation from the run's own raw samples (the run wrote median/MAD)",
     "read_repeat": 7,
     "write_repeat": 3
   },
+  "profile": "full",
   "result": {
-    "csv": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/formats/results/3dbag_n1000000.csv",
+    "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/results/3dbag_n1000000.csv",
     "files_sha256": {
-      "3dbag_n1000000.csv": "24f217a0a53bba7fdf0da18889caf84c687a788735e2a1ce559c75127a15ce29",
-      "3dbag_n1000000.csv.params.json": "29827fe62cd838e88249db37bc57f11bcdd28555316b0c109a077689958e0013",
-      "3dbag_n1000000.csv.samples.json": "9fe0078186d7417118dc41e266580a378f25a22f8e1470b80543df8de7510104",
-      "3dbag_n1000000.write.samples.csv": "629930e0382b2253f762e7d5b55641aecb26820b7f38889926ec70ea7c3e5d79"
+      "3dbag_n1000000.csv": "83a32b8c76bf65ecee2287ffbdb09ed948baa4cd13c3c50f5bbaae2dd4dce55b",
+      "3dbag_n1000000.csv.params.json": "e739199b072799dbfab5bb97cecdc759b25da860d8fb452998373a7be6ae74b9",
+      "3dbag_n1000000.csv.samples.json": "caf37d5c3c8eeb28095b17e60deed4822caf3c2c1672a919302f167108739839",
+      "3dbag_n1000000.write.samples.csv": "7517e11e96aabd423934809f1dba6b86c59c6603ff0db477af84166a25e93738"
     },
-    "params_sha256": "29827fe62cd838e88249db37bc57f11bcdd28555316b0c109a077689958e0013"
+    "params_sha256": "e739199b072799dbfab5bb97cecdc759b25da860d8fb452998373a7be6ae74b9"
   },
   "schema": 1,
   "smoke": false,
   "source": {
     "path": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/data/scaling/3dbag_n1000000.city.jsonl",
-    "sha256": "b20fce5a8c5477eb905c9c4f8a5c15a2c4b1ec18f4c5a5f16c1af9d8cf7f9b29"
+    "sha256": "5a863610c39771440b0fdc28b792088c9fa699960d7050e72a437e7714c000a5"
   },
   "tools": {
     "cityparquet": "unavailable",

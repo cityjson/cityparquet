@@ -14,7 +14,7 @@
 //! **The counting grain is asserted here, not merely documented.** This
 //! runner's grain is `cityjsonseq`'s: `count`/`full-read`/`bbox-query` count
 //! top-level `cityObjectMember`s (one per 1st-level CityObject the reader
-//! supports), while `attr-filter`/`attr-stats`/`project`/`id-lookup` are
+//! supports), while `attr-filter`/`attr-stats`/`id-lookup` are
 //! CityOBJECT-level and therefore also see nested children (BuildingParts,
 //! BuildingInstallations). `railway_lod3_fragment.gml` proves the two grains
 //! genuinely differ: 4 members, but 2 of its CityObjects (both
@@ -125,7 +125,7 @@ fn run_child_expect_failure(
 }
 
 // ---------------------------------------------------------------------------
-// The brief's named fixture: all seven scenarios against one real building.
+// The brief's named fixture: all six scenarios against one real building.
 // ---------------------------------------------------------------------------
 
 /// `b1_lod2_cs_w_sem.gml` is one `cityObjectMember` holding one
@@ -180,8 +180,8 @@ fn every_scenario_answers_the_single_building_fixture() {
         "there is no Bridge in this fixture"
     );
 
-    // attr-stats / project: the fixture declares no attributes whatsoever, so
-    // 0 is the honest answer rather than a skipped scenario.
+    // attr-stats: the fixture declares no attributes whatsoever, so 0 is the
+    // honest answer rather than a skipped scenario.
     assert_eq!(
         run_child(
             "citygml",
@@ -191,11 +191,6 @@ fn every_scenario_answers_the_single_building_fixture() {
         ),
         0,
         "the fixture declares no bldg:measuredHeight (nor any other attribute)"
-    );
-    assert_eq!(
-        run_child("citygml", "project", &input, &["--attr-column", "function"]),
-        0,
-        "the fixture declares no bldg:function"
     );
 
     // id-lookup: no `gml:id` on the building, so the reader synthesises the
@@ -304,18 +299,27 @@ fn count_is_member_level_while_attr_scenarios_reach_nested_city_objects() {
         "exactly one of the four members is a Building"
     );
 
-    // The grain difference itself, asked of the RUNNER rather than of
-    // arithmetic: `project --attr-column object_type` counts every CityObject
-    // (the reserved column is never null), so it reports the object-level
-    // total directly. `members + installations == 6` would have been an inert
-    // tautology — true by construction once the two assertions above pass, and
-    // still green if a seventh CityObject appeared.
-    let city_objects = run_child(
-        "citygml",
-        "project",
-        &input,
-        &["--attr-column", "object_type"],
-    );
+    // The object-level total, asked of the RUNNER one type at a time: every
+    // CityObject carries exactly one `object_type`, so the per-type
+    // `attr-filter` counts partition the document. A CityObject of any other
+    // type would make the sum fall short of the six the fixture holds.
+    let city_objects: u64 = [
+        "Building",
+        "BuildingInstallation",
+        "Bridge",
+        "SolitaryVegetationObject",
+        "CityObjectGroup",
+    ]
+    .iter()
+    .map(|ty| {
+        run_child(
+            "citygml",
+            "attr-filter",
+            &input,
+            &["--attr-column", "object_type", "--attr-eq", ty],
+        )
+    })
+    .sum();
     assert_eq!(
         city_objects, 6,
         "6 CityObjects (4 members + 2 nested BuildingInstallations) against 4 \
@@ -359,7 +363,7 @@ fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
     // Every scenario, not just `count`: a guard that only covered the counting
     // scenarios would still publish a silently-truncated `attr-filter` or
     // `bbox-query` row.
-    let scenarios: [(&str, &[&str]); 7] = [
+    let scenarios: [(&str, &[&str]); 6] = [
         ("count", &[]),
         ("full-read", &[]),
         ("bbox-query", &["--bbox", "0,0,0,1,1,1"]),
@@ -368,7 +372,6 @@ fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
             &["--attr-column", "object_type", "--attr-eq", "Road"],
         ),
         ("attr-stats", &["--attr-column", "function"]),
-        ("project", &["--attr-column", "object_type"]),
         ("id-lookup", &["--target-id", "no-such-id"]),
     ];
 
@@ -554,17 +557,7 @@ fn attribute_scenarios_answer_a_real_export_fragment() {
     assert_eq!(
         run_child(
             "citygml",
-            "project",
-            &input,
-            &["--attr-column", "measuredHeight"],
-        ),
-        3,
-        "all three buildings carry a measuredHeight"
-    );
-    assert_eq!(
-        run_child(
-            "citygml",
-            "project",
+            "attr-stats",
             &input,
             &["--attr-column", "storeysAboveGround"],
         ),

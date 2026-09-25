@@ -70,8 +70,29 @@
       "substituted": false
     }
   ],
-  "object_type": "Building",
-  "object_type_count": 853,
+  "attr_filter": {
+    "column": "TerrainHeight",
+    "pred": {
+      "ge": 2.45
+    },
+    "matched": 217,
+    "share": 0.2543962485345838,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "{A436B734-7334-4BEF-867C-27DF4AB3965E}",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "{A436B734-7334-4BEF-867C-27DF4AB3965E}-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
   "numeric_attr": "TerrainHeight",
   "cp_object_total": 853
 }

@@ -381,3 +381,148 @@ fn all_three_runners_agree_on_the_string_typed_numeric_attr_code() {
         assert_eq!(cityjsonseq_count, fcb_count);
     }
 }
+
+/// The four `attr-stats` aggregates one child reported: `min`/`max`/`sum`
+/// from its `cityparquet-readbench: attr-stats` stderr line, `count` from its
+/// timed stdout `result_count` (asserted equal to the line's own count).
+#[derive(Debug, Clone, Copy)]
+struct Aggregates {
+    min: f64,
+    max: f64,
+    sum: f64,
+    count: u64,
+}
+
+/// Runs one `attr-stats` child and parses both its timed line and its
+/// aggregates line.
+fn run_attr_stats(format: &str, input: &Path, column: &str) -> Aggregates {
+    let output: Output = Command::new(env!("CARGO_BIN_EXE_cityparquet-readbench"))
+        .args(["--child", "--format", format, "--scenario", "attr-stats"])
+        .arg("--input")
+        .arg(input)
+        .args(["--attr-column", column])
+        .output()
+        .expect("failed to run the built cityparquet-readbench binary");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "attr-stats child failed (format={format}, column={column}); stderr:\n{stderr}"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let result_count: u64 = stdout.split_whitespace().nth(3).unwrap().parse().unwrap();
+    let line = stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("cityparquet-readbench: attr-stats"))
+        .unwrap_or_else(|| panic!("{format} reported no aggregates; stderr:\n{stderr}"));
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(fields.len(), 4, "expected min max sum count, got '{line}'");
+    let aggregates = Aggregates {
+        min: fields[0].parse().unwrap(),
+        max: fields[1].parse().unwrap(),
+        sum: fields[2].parse().unwrap(),
+        count: fields[3].parse().unwrap(),
+    };
+    assert_eq!(
+        aggregates.count, result_count,
+        "{format}: the reported count must be the row's result_count"
+    );
+    aggregates
+}
+
+/// `a` and `b` within 1e-6 relative (absolute near zero).
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-6 * a.abs().max(b.abs()).max(1.0)
+}
+
+/// Every format computes the SAME four `attr-stats` aggregates — `(min, max,
+/// sum, count)` over every CityObject carrying a numeric value — on
+/// `delft.city.jsonl`, and they match DuckDB's `min/max/sum/count` over the
+/// converted package's `building.parquet` (run once with DuckDB 1.3.2 on
+/// 2026-09-23 and pinned below, so `cargo test` needs no DuckDB). Before this
+/// was asserted, only CityParquet aggregated; every other runner merely
+/// counted, so its `attr-stats` row timed a cheaper question.
+///
+/// Every artefact comes from the one fixture: CityJSONSeq and its gzip as
+/// is; CityParquet by `convert`; plain CityJSON by exporting that package;
+/// CityGML by writing it with the library's CityGML writer; FlatCityBuf by
+/// `fcb ser -A` (skipped when the CLI is absent). Two integer and two float
+/// columns, two of them sparse. The counts are the ones the per-runner tests
+/// already pin (1115 for `oorspronkelijkbouwjaar`).
+#[test]
+fn every_format_computes_the_same_four_attr_stats_aggregates_on_delft() {
+    // (column, count, min, max, sum) — DuckDB over building.parquet.
+    const EXPECTED: [(&str, u64, f64, f64, f64); 4] = [
+        ("oorspronkelijkbouwjaar", 1115, 1675.0, 2020.0, 2_186_182.0),
+        (
+            "b3_h_dak_50p",
+            1115,
+            1.120_000_004_768_371_6,
+            29.549_999_237_060_547,
+            7_610.660_021_066_666,
+        ),
+        (
+            "b3_bag_bag_overlap",
+            949,
+            0.0,
+            23.355_495_452_880_86,
+            55.537_941_932_678_22,
+        ),
+        ("b3_bouwlagen", 700, 1.0, 5.0, 2073.0),
+    ];
+
+    let delft = fixture("delft.city.jsonl");
+    let tmp = tempfile::tempdir().unwrap();
+
+    let package = tmp.path().join("delft.parquet");
+    convert(&ConvertOptions::new(delft.clone(), package.clone())).unwrap();
+
+    let doc = tmp.path().join("delft.city.json");
+    cityparquet::export::export(&cityparquet::export::ExportOptions {
+        package_dir: package.clone(),
+        output: doc.clone(),
+    })
+    .unwrap();
+
+    let gml = tmp.path().join("delft.gml");
+    cityparquet::citygml::writer::write_package(&cityparquet::citygml::writer::WriteOptions {
+        package_dir: package.clone(),
+        output: gml.clone(),
+    })
+    .unwrap();
+
+    let gz = tmp.path().join("delft.jsonl.gz");
+    {
+        use std::io::Write as _;
+        let mut encoder = flate2::write::GzEncoder::new(
+            std::fs::File::create(&gz).unwrap(),
+            flate2::Compression::default(),
+        );
+        encoder.write_all(&std::fs::read(&delft).unwrap()).unwrap();
+        encoder.finish().unwrap();
+    }
+
+    let mut artefacts: Vec<(&str, PathBuf)> = vec![
+        ("cityparquet", package.clone()),
+        ("cityjson", doc),
+        ("citygml", gml),
+        ("cityjsonseq", delft.clone()),
+        ("cityjsonseq-gz", gz),
+    ];
+    if fcb_cli_missing() {
+        eprintln!("skipping the flatcitybuf leg: `fcb` CLI not found on PATH");
+    } else {
+        artefacts.push(("flatcitybuf", generate_fcb("delft.city.jsonl", tmp.path())));
+    }
+
+    for (column, count, min, max, sum) in EXPECTED {
+        for (format, input) in &artefacts {
+            let got = run_attr_stats(format, input, column);
+            assert_eq!(got.count, count, "{format} count on {column}");
+            assert!(
+                close(got.min, min) && close(got.max, max) && close(got.sum, sum),
+                "{format} on {column}: got {got:?}, DuckDB gives \
+                 min={min} max={max} sum={sum}"
+            );
+        }
+    }
+}

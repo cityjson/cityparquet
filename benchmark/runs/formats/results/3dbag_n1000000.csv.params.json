@@ -70,8 +70,29 @@
       "substituted": false
     }
   ],
-  "object_type": "BuildingPart",
-  "object_type_count": 500298,
+  "attr_filter": {
+    "column": "b3_dak_type",
+    "pred": {
+      "eq": "slanted"
+    },
+    "matched": 338875,
+    "share": 0.33887466112533887,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "NL.IMBAG.Pand.0268100000030371",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "NL.IMBAG.Pand.0268100000030371-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
   "numeric_attr": "b3_bag_bag_overlap",
   "cp_object_total": 1000001
 }
