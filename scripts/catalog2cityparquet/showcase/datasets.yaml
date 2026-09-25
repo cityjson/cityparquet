@@ -24,4 +24,33 @@ collections:
   - name: aura-zae
     source: craig-aura-zae-2024
     packages: showcase-aura/craig-aura-zae-2024/items/*
-    slug: '^(?P<slug>.+)$'
+    slug: "^(?P<slug>.+)$"
+
+  # Montréal's catalogue collection mixes CityGML 1.0 building tiles (2013,
+  # not convertible), CityGML 2.0 terrain and a CityJSON building sample; the
+  # terrain and the buildings are published apart. Neither source declares a
+  # CRS: convert with `--crs montreal-3d=EPSG:2950` (NAD83(CSRS) / MTM zone 8,
+  # the portal's stated planimetric reference).
+  - name: montreal-terrain
+    source: montreal-3d
+    # `tin-2015-westmount` → `westmount`; one item carries a longer prefix
+    # (`vcarto_…-tin-2015-rosemont-la-petite-patrie`).
+    packages: showcase-montreal/montreal-3d/items/*tin-2015-*
+    slug: "tin-2015-(?P<slug>.+)$"
+    overrides:
+      title: Montréal terrain model (TIN, 2015)
+      description: >-
+        Terrain of the Montréal agglomeration as CityGML 2.0 TIN reliefs, one
+        package per borough or municipality.
+
+  # The CityJSON edition ships without its images: the package's
+  # `VM05_2009_Appearance/` is copied from the city's own vm05-2009.zip, named
+  # by a second `rel=via` link in the package's Item.
+  - name: montreal-2009
+    source: montreal-3d
+    packages: showcase-montreal/montreal-3d/items/VM05_2009.city
+    title: VM05 2009
+    overrides:
+      title: Montréal 3D buildings (2009, VM05)
+      description: >-
+        LoD2 buildings of Montréal's 2009 tile VM05, from its CityJSON edition.

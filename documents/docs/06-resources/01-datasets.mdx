@@ -63,9 +63,9 @@ The catalogue itself is plain STAC, so any STAC client can browse it, for exampl
 ## What the conversion keeps
 
 Each collection is converted from its publisher's own files. A package converted
-from the City3D STAC catalogue links its source archive (`rel=via`) and the published
-STAC Item it derives from (`rel=derived_from`); the 3DBAG package, converted from the
-3DBAG tiles directly, carries neither. The licence and provider shown for a
+from the City3D STAC catalogue links its source archive (`rel=via`); PLATEAU's
+packages also link the published STAC Item they derive from (`rel=derived_from`).
+The 3DBAG package, converted from the 3DBAG tiles directly, carries neither. The licence and provider shown for a
 collection are the source's.
 
 - **PLATEAU** (Japan, CityGML 2.0). The 62 municipalities of Tokyo and the city of
@@ -82,6 +82,16 @@ collection are the source's.
   vertical CRS (NGF-IGN69 height, EPSG:5720) over Lambert-93 coordinates; its
   package keeps the declared CRS, so it has no geographic extent and is absent
   from the map.
+- **Montréal** (Canada), as two collections. `montreal-terrain` is the 2015
+  terrain model (CityGML 2.0), one package per borough or municipality, each
+  holding the TIN as `TINRelief` objects whose triangles form one
+  `CompositeSurface`. `montreal-2009` holds the 294 LoD2 buildings of the 2009
+  tile VM05, from its CityJSON edition, with the texture images of the city's
+  own VM05 archive beside it (`VM05_2009_Appearance/`). Neither source declares a CRS; both
+  packages are written in NAD83(CSRS) / MTM zone 8 (EPSG:2950), the reference the
+  city's open-data portal states. The textured 2013 building tiles are CityGML
+  1.0 and are not converted. Heights are the source's own, outliers included:
+  the Anjou terrain's own envelope reaches down to −74.99 m.
 
 Where a source has no LoD0 footprint, the converter derives one from the object's
 ground surfaces — its `GroundSurface` faces, or failing those its downward-facing
