@@ -24,7 +24,20 @@ mix the two.
   system reads the Hilbert package.
 - **Codec and row-group results are unchanged** from the 9 September run
   and were measured on packages without bloom filters; the author decided
-  not to re-run them, as bloom filters are not part of those axes.
+  not to re-run them, as bloom filters are not part of those axes. They
+  still report a median `time_s` with `time_mad_s` and are labelled by
+  their directories' `LEGACY.md`; the summary lists them as gaps.
+
+`time_s` in every CSV above is the arithmetic mean of the warm samples and
+`time_std_s` their population standard deviation. The run itself reported a
+median with `time_mad_s`; on 25 September both columns were recomputed from
+the committed raw samples (`*.csv.samples.json`, `*.write.samples.csv`,
+`raw_time_samples_s`) without re-measuring, every other column unchanged.
+Write rows from `format_write.py` are recomputed from samples rounded to
+six decimals, so their mean can differ from one computed at measurement
+time in the last digit. The `files_sha256` in each `*.run.json` records the
+CSV as the run wrote it and no longer matches the recomputed file;
+`EVIDENCE_SHA256SUMS` is current.
 
 ## Coverage and limitations
 
