@@ -1066,9 +1066,9 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     index miss.** DuckDB does use the bloom filters; what the hit rows
     measure is DuckDB materialising every column of the one surviving row
     group for a `SELECT *`. A diagnostic probe on 25 September 2026, on the
-    committed 1M Hilbert package with the harness's own probe ids, DuckDB
-    1.3 and one thread (not the committed run, which used DuckDB 1.5.5, and
-    not its rows' means) measured:
+    committed 1M Hilbert package with the harness's own probe ids, the same
+    DuckDB 1.5.5 the committed run used, one thread, five samples after a
+    warm-up (a probe, not the committed rows' means) measured:
 
     | query                            | hit            | miss           |
     | -------------------------------- | -------------- | -------------- |
