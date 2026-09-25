@@ -6,7 +6,8 @@
 //! requested (format, scenario) pair it derives real [`QueryParams`] from the
 //! data itself (never a hardcoded id/attribute/bbox), spawns the `--child`
 //! process `repeat` times (plus one discarded warmup) via
-//! [`std::env::current_exe`], medians the timings (+ MAD), takes the MAX
+//! [`std::env::current_exe`], means the timings (+ the population standard
+//! deviation), takes the MAX
 //! peak heap/RSS across the repeats, computes `selectivity`, and holds one
 //! row for the results CSV — which this module owns outright (a fresh
 //! truncate-and-write per run, never an append, so a re-run is always
@@ -150,7 +151,7 @@ pub enum Transport {
 /// http-transport row from the wrapped `ObjectStore`/range-client tally each
 /// `FormatRunner`'s `Source::Http` arm reports (see `formats::IoStats`).
 /// The last three are a CityParquet lookup's [`LookupCounters`], empty on every other row.
-const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,\
+const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_std_s,\
 peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
 bloom_pruned,filter_bytes";
 
@@ -726,7 +727,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 selectivity: None,
                 result_count: line.result_count,
                 time_s: line.time_s,
-                time_mad_s: 0.0,
+                time_std_s: 0.0,
                 peak_heap_bytes: line.peak_heap_bytes,
                 peak_rss_bytes: line.ru_maxrss_bytes,
                 repeat: 1,
@@ -1216,8 +1217,9 @@ fn total_count_for(format: Format, source: &Source) -> Result<u64> {
 }
 
 /// Runs one (format, scenario, params) measurement: `repeat + 1` fresh child
-/// processes (the first discarded as a warmup), then the MEDIAN `time_s` (+
-/// MAD), the MAX `peak_heap_bytes`/`ru_maxrss_bytes` across the `repeat` warm
+/// processes (the first discarded as a warmup), then the MEAN `time_s` (+ the
+/// population standard deviation), the MAX `peak_heap_bytes`/`ru_maxrss_bytes`
+/// across the `repeat` warm
 /// samples, and `result_count` from the first warm sample (every warm sample
 /// measures the identical scenario against the identical unmodified input,
 /// so they always agree on `result_count`; only the timing/memory varies).
@@ -1268,7 +1270,7 @@ fn run_measurement(
             result_count: line.result_count,
         });
         if i == 0 {
-            // Warmup: discarded entirely (never contributes to the median,
+            // Warmup: discarded entirely (never contributes to the mean,
             // the MAX peak metrics, or `result_count`).
             continue;
         }
@@ -1284,8 +1286,8 @@ fn run_measurement(
     }
 
     let result_count = result_count.expect("repeat >= 1 guarantees at least one warm sample");
-    let time_s = median(&times);
-    let time_mad_s = mad(&times, time_s);
+    let time_s = mean(&times);
+    let time_std_s = std_dev(&times, time_s);
 
     let selectivity = match scenario {
         Scenario::Count | Scenario::FullRead => None,
@@ -1306,7 +1308,7 @@ fn run_measurement(
         selectivity,
         result_count,
         time_s,
-        time_mad_s,
+        time_std_s,
         peak_heap_bytes: peak_heap_max,
         peak_rss_bytes: peak_rss_max,
         repeat,
@@ -1421,7 +1423,7 @@ fn run_write(
         .with_context(|| format!("moving the kept package to {}", target.display()))?;
     fs::remove_dir(&scratch).with_context(|| format!("removing {}", scratch.display()))?;
 
-    let time_s = median(&times);
+    let time_s = mean(&times);
     rows.push(Row {
         dataset: dataset.to_string(),
         label: id.to_string(),
@@ -1429,7 +1431,7 @@ fn run_write(
         selectivity: None,
         result_count: object_count.expect("at least one warm repeat"),
         time_s,
-        time_mad_s: mad(&times, time_s),
+        time_std_s: std_dev(&times, time_s),
         peak_heap_bytes: peak_heap_max,
         peak_rss_bytes: peak_rss_max,
         repeat: write_repeat,
@@ -1440,23 +1442,30 @@ fn run_write(
     Ok(target)
 }
 
-/// The median of `values` (must be non-empty).
-fn median(values: &[f64]) -> f64 {
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).expect("time_s is always finite"));
-    let n = sorted.len();
-    let mid = n / 2;
-    if n.is_multiple_of(2) {
-        (sorted[mid - 1] + sorted[mid]) / 2.0
-    } else {
-        sorted[mid]
-    }
+/// The arithmetic mean of `values` (must be non-empty).
+///
+/// `time_s` is the mean in both this harness and `benchmark/databases`, so a
+/// timing quoted from either CSV is the same statistic.
+fn mean(values: &[f64]) -> f64 {
+    debug_assert!(!values.is_empty(), "mean needs at least one sample");
+    values.iter().sum::<f64>() / values.len() as f64
 }
 
-/// The median absolute deviation of `values` from `med` (must be non-empty).
-fn mad(values: &[f64], med: f64) -> f64 {
-    let deviations: Vec<f64> = values.iter().map(|v| (v - med).abs()).collect();
-    median(&deviations)
+/// The population standard deviation of `values` about `centre` (must be
+/// non-empty). Population, not sample: the warm repeats are the whole
+/// measured set, not a draw used to infer a wider one. This is the
+/// dispersion column beside the mean `time_s`.
+fn std_dev(values: &[f64], centre: f64) -> f64 {
+    debug_assert!(!values.is_empty(), "std_dev needs at least one sample");
+    let variance = values
+        .iter()
+        .map(|v| {
+            let d = v - centre;
+            d * d
+        })
+        .sum::<f64>()
+        / values.len() as f64;
+    variance.sqrt()
 }
 
 /// What one CSV row measured: a conversion or one read scenario. `write`
@@ -1494,7 +1503,7 @@ struct Row {
     selectivity: Option<f64>,
     result_count: u64,
     time_s: f64,
-    time_mad_s: f64,
+    time_std_s: f64,
     peak_heap_bytes: u64,
     peak_rss_bytes: u64,
     repeat: usize,
@@ -1525,19 +1534,19 @@ impl Row {
             None => ",,".to_string(),
         };
         let notes = self.notes.join(";");
-        let (dataset, format, scenario, result_count, time_s, time_mad_s) = (
+        let (dataset, format, scenario, result_count, time_s, time_std_s) = (
             &self.dataset,
             &self.label,
             self.measure,
             self.result_count,
             self.time_s,
-            self.time_mad_s,
+            self.time_std_s,
         );
         let (peak_heap_bytes, peak_rss_bytes, repeat) =
             (self.peak_heap_bytes, self.peak_rss_bytes, self.repeat);
         format!(
             "{dataset},{format},{scenario},{selectivity_field},{result_count},{time_s:.6},\
-             {time_mad_s:.6},{peak_heap_bytes},{peak_rss_bytes},{repeat},{notes},\
+             {time_std_s:.6},{peak_heap_bytes},{peak_rss_bytes},{repeat},{notes},\
              {bytes_field},{requests_field},{lookup_fields}"
         )
     }
@@ -1635,7 +1644,7 @@ mod tests {
             selectivity: None,
             result_count: 1116,
             time_s: 0.5,
-            time_mad_s: 0.0,
+            time_std_s: 0.0,
             peak_heap_bytes: 1,
             peak_rss_bytes: 2,
             repeat: 1,

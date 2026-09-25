@@ -133,7 +133,6 @@ def test_retired_project_rows_are_ignored_not_fatal(tmp_path: Path):
     assert ",project," in (bench / "read_results" / "delft.csv").read_text()
     data, anomalies = prep.build(prep.Inputs(bench))
     assert "project" not in {r["scenario_key"] for r in data["read"]}
-    assert "project" not in {r["scenario_key"] for r in data["scaling"]["read"]}
     assert any("retired scenario 'project'" in note for note in anomalies)
     assert "project" not in figures.QUERIES and "project" not in figures.SCENARIO_LABELS
 

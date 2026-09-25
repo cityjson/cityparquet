@@ -1227,10 +1227,9 @@ case_cityjson_input_builds_a_real_seq_artefact() {
 # what the benchmark measures:
 #
 #   --ordering hilbert  without it the "Hilbert" package is byte-identical to
-#                       the source-order one, and `just ordering-bench`
+#                       the source-order one, and the format comparison
 #                       publishes "ordering makes no difference" — a null
-#                       result that reads as a finding, on one of this
-#                       branch's two deliverables.
+#                       result that reads as a finding.
 #   fcb ser -A          without it there is no B+-tree attribute index, so
 #                       FlatCityBuf falls back to a full scan on
 #                       attr-filter/id-lookup and the row is published as an

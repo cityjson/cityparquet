@@ -758,7 +758,7 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
                 label=variant.replace("cityparquet+", "").replace("cityparquet", "default"),
             )
             if field == "time_s":
-                spreads = [float(r.get("time_mad_s") or 0) for r in points]
+                spreads = [float(r.get("time_std_s") or 0) for r in points]
                 ax.fill_between(
                     counts,
                     [v - spread for v, spread in zip(values, spreads, strict=True)],

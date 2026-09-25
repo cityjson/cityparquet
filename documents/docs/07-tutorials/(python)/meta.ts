@@ -1,6 +1,7 @@
 import { defineMeta } from "blume";
 
 export default defineMeta({
-  title: "Tutorials",
-  icon: "graduation-cap",
+  title: "Python",
+  order: 2,
+  pages: ["python-energy"],
 });

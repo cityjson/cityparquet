@@ -4,8 +4,9 @@
 data root is `benchmark/runs/`:
 
 - `formats/results/` holds the format-comparison CSVs and `sizes.csv`.
-- `formats/scaling_codec_results/` and `formats/scaling_rowgroup_results/` hold
-  configuration experiments over the scaling corpus.
+- `formats/scaling_codec_results/`, `formats/scaling_rowgroup_results/` and
+  `formats/scaling_bloom_results/` hold configuration experiments over the
+  scaling corpus.
 - `databases/results/` holds the database summary CSVs and size summaries.
 - `summary/` holds prepared JSON, the self-contained `bench-summary.html`, and
   individual paper figures. `--figures` can export those figures elsewhere.
@@ -46,7 +47,3 @@ and no ratio crosses the two. `ok-deviation` cells are citable and carry a
 `*n` marker whose footnote quotes the count decomposition. The write tier is
 its own uncoloured table (`databases-write`): different operations, not one
 scale, so it has absolute values and no ratios.
-
-Read comparisons retain the counting-grain caveat for full-read and bbox
-queries. Timings at or below 10 ms are shown but must not support a ranking
-claim. Repetitions and raw result artefacts remain the evidence for uncertainty.

@@ -1,4 +1,4 @@
-dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes
+dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes
 delft.city.jsonl,cityjsonseq,full-read,,1115,0.028615,0.000139,3612638,12877824,5,
 delft.city.jsonl,cityjsonseq,count,,1115,0.028152,0.001107,3612634,13238272,5,
 delft.city.jsonl,cityjsonseq,bbox-query,0.000000,0,0.027945,0.000158,3612687,13107200,5,bbox-1pct

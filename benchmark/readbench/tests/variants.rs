@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 
 use cityparquet::package::{ConvertOptions, convert};
 
-const HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,\
+const HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_std_s,\
 peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
 bloom_pruned,filter_bytes";
 

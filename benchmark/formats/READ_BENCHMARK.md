@@ -12,7 +12,7 @@ suite entry points, dataset selection and figure layout are described in
 monorepo root. The format family measures writes as well as these reads.
 
 Result files must be interpreted with their own query-parameter sidecars and
-run provenance. Existing `read_results/` and `ordering_results/` CSVs describe
+run provenance. Existing `read_results/` CSVs describe
 the datasets and configurations named in those files; they do not establish
 measurements for the replacement large 3DBAG dataset. Detailed caveats below
 include observations on those datasets and remain qualifications on that
@@ -93,11 +93,11 @@ just how long it takes locally.
   repo spins up for a real run (only test-only in-process servers inside
   `cargo test`, never part of the measured path).
 - **Network variance is real and disclosed, not hidden.** Unlike the local,
-  same-machine `time_s`/`time_mad_s`, an http-transport row's timing
-  variance includes real network latency/jitter — the MAD (`time_mad_s`)
-  column now also captures that, not just OS/filesystem-cache noise. A
-  committed http-transport run is a snapshot of one network path at one
-  time, not a reproducible local benchmark.
+  same-machine `time_s`/`time_std_s`, an http-transport row's timing
+  variance includes real network latency/jitter — the standard deviation
+  (`time_std_s`) column now also captures that, not just OS/filesystem-cache
+  noise. A committed http-transport run is a snapshot of one network path at
+  one time, not a reproducible local benchmark.
 - **Two extra metrics, per scenario: bytes transferred and HTTP request
   count — successful, LOGICAL reads, not raw wire traffic.** The CSV's
   trailing `bytes_read`/`http_requests` columns (see the CSV contract above)
@@ -265,6 +265,17 @@ whose target was not reachable on the data carries `approx` in `notes`
 alongside its tag; the achieved fraction is always what the `selectivity`
 column records, so target against achieved is checkable per row.
 
+The target is a fraction of rows rather than of area by decision. A fraction
+of the objects is comparable across datasets; a fraction of the area is not,
+because how many objects an area holds depends on where the data sits in its
+own extent. The alternative — a lower-left window covering the target fraction
+of the x/y area — was measured and rejected: on the 1M 3DBAG slice the 1 %
+area window selected 0.49 % of the objects (and the 5 % and 25 % windows
+6.37 % and 22.1 %). `benchmark/databases` builds its windows with the
+identical construction (`citybench/config.py`, `citybench/params.py`, ported
+from `window_for_target`), so `bbox-1pct` means the same thing in both
+families.
+
 `feature-lookup` (CityParquet only, run by name — the `bloom` family) returns
 every object of one `feature_id`, probed at `feature-50pct` (the `id-50pct`
 feature) and `feature-miss`; it is not one of the six comparison scenarios,
@@ -284,12 +295,16 @@ part of the comparison set and must not be read as one.
 [, selectivity target]):
 
 ```
-dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
+dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
 ```
 
-- `time_s` / `time_mad_s` — **warm-cache** median and median-absolute-
-  deviation of `repeat` samples (default 7; one further, discarded warmup
-  precedes them), 6-decimal precision. A fresh child process is spawned per
+- `time_s` / `time_std_s` — **warm-cache** arithmetic mean and population
+  standard deviation of `repeat` samples (default 7; one further, discarded
+  warmup precedes them), 6-decimal precision. The mean is the statistic
+  `benchmark/databases` reports too, so a timing quoted from either CSV is the
+  same statistic; the standard deviation is the population one because the
+  warm repeats are the whole measured set, not a draw used to infer a wider
+  one. A fresh child process is spawned per
   sample (see "Warm vs cold" below) — independent OS page-cache and
   independent `peak_alloc` state per sample, never reused across repeats.
 - `peak_heap_bytes` — the `peak_alloc` global-allocator high-water mark for
@@ -338,7 +353,7 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
 
 ## Warm vs cold protocol
 
-The **headline number is the warm-cache median**: `repeat` fresh child
+The **headline number is the warm-cache mean**: `repeat` fresh child
 processes (default 7), a further discarded warmup beforehand, OS page cache
 and (for the in-process formats) allocator state left however the previous
 sample left them — i.e. "warm" describes the OS/filesystem cache, not a
@@ -478,11 +493,11 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
    extension loading). `benchmark/scripts/readbench_duckdb.sh` measures this via 5
    timed `SELECT 1;` calls and prints it as a `# calibration:` stderr line
    before every run — it is **disclosed, never subtracted**, from any
-   reported `time_s`/`time_mad_s`.
+   reported `time_s`/`time_std_s`.
 
 7. **Warm vs cold — never silently mixed.** The headline numbers everywhere
    in this document and in `benchmark/formats/read_results/*.csv` are warm-cache
-   medians; the single `cold`-tagged row per format (see "Warm vs cold"
+   means; the single `cold`-tagged row per format (see "Warm vs cold"
    above) is a distinct, separately-reported measurement, always
    `full-read` only, never averaged into or compared unlabelled against the
    warm rows.
@@ -887,8 +902,8 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     the timings comparable; the `selectivity` column is not comparable across
     grains. See Caveat 3 on counting grain.
 
-23. **The scaling family's format set is NOT uniform across its seven
-    cardinalities.** `scaling_read_results/` measures 1k, 5k, 10k, 50k and
+23. **The scaling corpus's format set is NOT uniform across its seven
+    cardinalities.** The scaling slices measure 1k, 5k, 10k, 50k and
     100k CityObjects with all five formats, but 500k and 1M with **four** —
     `cityjson`, `cityjsonseq`, `flatcitybuf`, `cityparquet-hilbert`. There is
     no `citygml` row at the two largest sizes.
@@ -942,21 +957,14 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     prune: re-run both families before comparing them with the `bloom`
     family, or with each other across that change.
 
-31. **Every other committed CSV predates bloom filters too.** Caveat 30 names
-    the configuration families; the rest are in the same position, and nothing
-    committed was measured with filters on. Specifically:
-
-    - The read CSVs of `read_results/`, `scaling_read_results/`,
-      `ordering_results/` and `scaling_ordering_results/` are all in the
-      13-column shape that predates the three lookup counters
-      (`row_groups_total`, `bloom_pruned`, `filter_bytes`) — which is the
-      shape's own evidence of their age. So **every** `cityparquet` /
-      `cityparquet-hilbert` `id-lookup` row in them, `id-miss` included, read
-      the `id` column with no filter to prune with.
-    - Every `sizes.csv` beside them, and the `total_bytes` column of the
-      12-column writer matrices in `results/` and `scaling_write_results/`,
-      measures packages that carry no filter bytes. (Neither writer-matrix
-      directory has a `sizes.csv` of its own; its bytes are in the matrix.)
+31. **The committed read CSVs predate bloom filters too.** Caveat 30 names
+    the configuration families; the same applies to the rest of what is
+    committed, and nothing committed was measured with filters on. The read
+    CSVs of `read_results/` are in the 13-column shape that predates the
+    three lookup counters (`row_groups_total`, `bloom_pruned`,
+    `filter_bytes`) — which is the shape's own evidence of their age. So
+    **every** `cityparquet` / `cityparquet-hilbert` `id-lookup` row in them,
+    `id-miss` included, read the `id` column with no filter to prune with.
 
     So the cross-format id-lookup times and the cross-format byte counts the
     paper cites describe a package with no filters: **re-run the `formats` and

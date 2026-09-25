@@ -596,10 +596,9 @@ in their schema (`pg.vacuum_analyze`) before any timed scenario runs.
 Every `run()` performs **one discarded warm-up** call followed by `repeat`
 timed samples of the same query; `--repeat` defaults to **7**.
 
-- `time_s` is the **arithmetic mean** of the samples and `time_mad_s` is the
-  **median absolute deviation** about their median (`report.py`,
-  `stats.py`), both to six decimal places. The raw samples are in
-  `raw_time_samples_s`.
+- `time_s` is the **arithmetic mean** of the samples and `time_std_s` is
+  their **population standard deviation** (`report.py`, `stats.py`), both to
+  six decimal places. The raw samples are in `raw_time_samples_s`.
 - The PostgreSQL adapters time each sample from just before the query is sent
   to just after every row has been fetched. After each timed execution the
   same query runs again, untimed, under `EXPLAIN (ANALYZE, BUFFERS, FORMAT
@@ -678,7 +677,7 @@ the same figures.
 and nineteen columns:
 
 ```
-dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,server_time_s,size_bytes,size_bytes_no_index,status,raw_time_samples_s,raw_server_time_samples_s
+dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,server_time_s,size_bytes,size_bytes_no_index,status,raw_time_samples_s,raw_server_time_samples_s
 ```
 
 The first thirteen columns match, in name and order, the header of the format
@@ -692,7 +691,7 @@ there) and are separate experiments.
 - **`selectivity`** — `result_count / total_city_objects`; empty for
   `count`, `geometry-scan` and the write tier (a mutation's rows-touched is
   not a selection). The window's target is in `notes`, not here.
-- **`time_s` / `time_mad_s`** — see "The warm protocol".
+- **`time_s` / `time_std_s`** — see "The warm protocol".
 - **`peak_heap_bytes`** — populated only for the native readers (the child's
   allocator high-water mark); empty for every SQL system.
 - **`peak_rss_bytes`** — peak resident set size of the process executing the

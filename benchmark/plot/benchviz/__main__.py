@@ -65,7 +65,7 @@ def _cmd_prep(args: argparse.Namespace) -> None:
             }
             datasets |= {aliases[name] for name in list(datasets) if name in aliases}
         payload["datasets"] = [d for d in payload.get("datasets", []) if d.get("id") in datasets]
-        for field in ("read", "sizes", "ordering"):
+        for field in ("read", "sizes"):
             payload[field] = [r for r in payload.get(field, []) if r.get("dataset") in datasets]
         for axis in payload.get("scaling", {}).values():
             if isinstance(axis, dict):

@@ -134,27 +134,19 @@ const mcpTools = [
   },
 ];
 
-// Measured, not illustrative: this is the query below run against the public
-// 3DBAG package — one 16.4 GB file, 21 555 522 objects — windowed to Delft,
-// which leaves 2137 parts carrying LoD 2.2 and 2118 valid solids. The time is
-// the median of three warm repeats. Re-measure before changing them.
+// Illustrative regional aggregation of the stored 3DBAG volume attribute.
+// No timing or result from the former geometry-computation query is reused.
 const result = {
-  volume: "3285792",
-  solids: "2118",
-  status: "1 row · 0.71 s · 2118 solids measured",
-  scanning: "range-reading 4 of 329 row groups · cityparquet.open3d.city",
+  status: "Example query · stored LoD 2.2 volume in cubic metres · not run live",
+  scanning: "Selecting the Delft area from the national dataset…",
 };
 
-const query = `LOAD cityjson; LOAD three_d;
-
-SELECT ROUND(SUM(ST_3DVolume(solid)), 0) AS total_volume_m3
-FROM (SELECT ST_3DTryFromWKB(geometry_lod2_2,
-             geometry_properties_lod2_2) AS solid
-      FROM read_parquet(
-        'https://cityparquet.open3d.city/data/3dbag/building.parquet')
-      WHERE bbox.xmin < 85000 AND bbox.xmax > 84000
-        AND bbox.ymin < 447000 AND bbox.ymax > 446000)
-WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
+const query = `SELECT ROUND(SUM(b3_volume_lod22)) AS total_volume_m3
+FROM read_parquet(
+  'https://cityparquet.open3d.city/data/3dbag/building.parquet')
+WHERE object_type = 'Building'
+  AND bbox.xmin < 85000 AND bbox.xmax > 84000
+  AND bbox.ymin < 447000 AND bbox.ymax > 446000;`;
 
 // A deliberately small SQL tokeniser -- enough for the one query above, on a
 // panel with a hand-built palette. Shiki would emit inline styles and its own
@@ -415,7 +407,7 @@ const queryTokens = tokeniseSql(query);
           <h2>Measured behaviour</h2>
           <span class="cp-heading-note">Benchmark</span>
         </div>
-        <p class="cp-lede">Measured on a 3DBAG slice of <strong>1,000,001 CityObjects</strong>,
+        <p class="cp-lede">Measured on a 3DBAG slice of <strong>1,000,000 CityObjects</strong> (rounded),
           using Hilbert-ordered CityParquet. These are local native reads, not browser timings.</p>
         <div class="cp-stats">
           {
@@ -477,7 +469,7 @@ const queryTokens = tokeniseSql(query);
             server, no conversion. Two community extensions carry the parts
             Parquet has no vocabulary for: <code>cityjson</code> reads the text
             formats, <code>three_d</code> turns stored WKB back into solids you
-            can measure. The panel below is DuckDB doing exactly that.
+            can measure. The example below uses a stored volume attribute, so it needs no geometry extension.
           </p>
         </div>
         <div class="cp-tools">
@@ -496,12 +488,17 @@ const queryTokens = tokeniseSql(query);
             ))
           }
         </div>
-        {/* The query below is real: it was run against the public demo bucket
-            and every figure in the result strip is its actual output. The
-            typing is a replay, not a live connection. */}
-        {/* Server-rendered in its finished state — full query, result showing —
-            so no-JS and reduced-motion readers get the answer, not a blank
-            panel. The replay script rewinds it before it starts. */}
+        <h3>One region, out of a whole country</h3>
+        <p class="cp-lede">
+          “Give me the total building volume in this area of Delft, out of
+          roughly 11 million buildings across the Netherlands.”
+        </p>
+        <p class="cp-lede">
+          This example selects buildings whose bounding boxes overlap a
+          1 km × 1 km area, then adds their recorded LoD 2.2 volumes.
+          The coordinates define the area in the dataset’s Dutch national grid.
+          DuckDB can skip unrelated row groups and read just the columns needed.
+        </p>
         <figure
           class="cp-terminal"
           data-cp-terminal
@@ -512,7 +509,7 @@ const queryTokens = tokeniseSql(query);
             <span class="cp-terminal-dots" aria-hidden="true">
               <i></i><i></i><i></i>
             </span>
-            Total built volume of a tile, without downloading it
+            Total building volume in a selected Delft area
           </figcaption>
           {/* Rendered highlighted and complete: with JS off, or before the
               replay starts, the reader sees the whole query rather than an
@@ -520,18 +517,6 @@ const queryTokens = tokeniseSql(query);
               the panel reserves its full height from the first paint and the
               section below it never shifts as the replay runs. */}
           <pre class="cp-terminal-body"><code><span data-sql-typed>{queryTokens.map((t) => (<span class={t.cls} data-sql-tok>{t.text}</span>))}</span><span class="cp-terminal-cursor" data-sql-cursor aria-hidden="true"></span><span class="cp-terminal-rest" data-sql-rest></span></code></pre>
-          <div class="cp-terminal-result" data-sql-result>
-            <div>
-              <span class="cp-terminal-key">total_volume_m3</span>
-              <span class="cp-terminal-figure">{result.volume}</span>
-            </div>
-            <div>
-              <span class="cp-terminal-key">solids measured</span>
-              <span class="cp-terminal-figure cp-terminal-figure-plain">
-                {result.solids}
-              </span>
-            </div>
-          </div>
           <div class="cp-terminal-status">
             <span class="cp-spinner" data-sql-spinner aria-hidden="true"></span>
             <span data-sql-label>{result.status}</span>
@@ -1111,6 +1096,31 @@ const queryTokens = tokeniseSql(query);
     padding: 4px;
   }
 
+  .cp-format-self {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .cp-format-self::before {
+    content: "";
+    position: absolute;
+    inset: 0 -0.75rem;
+    z-index: -1;
+    border: 1px solid var(--cp-accent);
+    border-radius: var(--cp-radius);
+    background: var(--cp-accent-wash);
+    opacity: 0.3;
+  }
+
+  .cp-format-self.cp-pulse::before {
+    animation: cp-format-pulse 2.4s ease-in-out 2;
+  }
+
+  @keyframes cp-format-pulse {
+    0%, 100% { opacity: 0.3; transform: scale(1); }
+    50% { opacity: 0.85; transform: scale(1.045); }
+  }
+
   .cp-format-self .cp-key {
     color: var(--cp-accent);
     font-weight: 500;
@@ -1620,6 +1630,7 @@ const queryTokens = tokeniseSql(query);
   /* Reduced motion gets the finished state of every loop: no caret, no pulse,
      no spinner, and the query result shown outright rather than replayed. */
   @media (prefers-reduced-motion: reduce) {
+    .cp-format-self.cp-pulse::before,
     .cp-caret,
     .cp-spinner {
       animation: none;
@@ -1640,6 +1651,14 @@ const queryTokens = tokeniseSql(query);
   // reduced-motion, leaving the first phrase rendered from the server.
   const target = document.querySelector<HTMLElement>("[data-cp-typed]");
   const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const ownFormat = document.querySelector(".cp-format-self");
+  if (ownFormat && !still) {
+    const observer = new IntersectionObserver(([entry]) => {
+      ownFormat.classList.toggle("cp-pulse", entry.isIntersecting);
+    }, { threshold: 0.5 });
+    observer.observe(ownFormat);
+  }
+
 
   // Each figure starts only when visible, including the stacked mobile layout.
   // Server-rendered values remain the fallback if motion or observers are unavailable.

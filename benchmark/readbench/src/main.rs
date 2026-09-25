@@ -19,7 +19,7 @@ use scenario::{AttrPred, QueryParams, Scenario};
 ///
 /// This binary has three entry points sharing one CLI surface: the `run`
 /// subcommand (the coordinator — drives a whole (format x scenario) matrix,
-/// medians the repeats, and writes the results CSV; see [`coordinator`]);
+/// means the repeats, and writes the results CSV; see [`coordinator`]);
 /// `--child` (a plain top-level flag, no subcommand keyword) — a
 /// single-scenario worker the coordinator spawns once per (format, scenario,
 /// dataset, repeat) measurement, which resets the heap allocator, times

@@ -1,0 +1,134 @@
+---
+title: Read and write CityParquet with Rust
+description: Write a CityParquet package with the Rust library, then read selected columns as Arrow batches.
+sidebar:
+  label: Read and write files
+  icon: code
+---
+
+Use the `cityparquet` library to write a package from a city-model source and
+read its object tables from Rust. The writer handles module tables, geometry
+encoding, sidecars, and metadata; the reader builds on the Parquet crate's Arrow
+batch reader.
+
+## Create a project
+
+Clone the implementation and create a sibling application:
+
+```bash
+git clone --recurse-submodules https://github.com/cityjson/cityparquet.git
+cargo new rust-cityparquet-example
+cd rust-cityparquet-example
+```
+
+Replace `Cargo.toml` with the following. These path dependencies use the checked-out
+implementation, including its patched CityJSON reader. Keep Arrow and Parquet on
+the same major version as the library (58 in this checkout).
+
+```toml
+[package]
+name = "rust-cityparquet-example"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cityparquet = { path = "../cityparquet/lib/cityparquet-rs/crates/core" }
+parquet = { version = "58", features = ["arrow", "zstd", "geospatial"] }
+
+[patch.crates-io]
+cjseq = { path = "../cityparquet/lib/cityparquet-rs/vendor/cjseq" }
+```
+
+The patch belongs in your application's manifest: Cargo does not inherit patches
+from a dependency's workspace.
+
+## Write a package and read a file
+
+Replace `src/main.rs` with this program. It offers separate `write` and `read`
+commands so you can also read a package created by another tool.
+
+```rust
+use std::{env, error::Error, fs::File, path::PathBuf};
+
+use cityparquet::{
+    package::{convert, ConvertOptions},
+    reader::CityParquetReaderBuilder,
+};
+use parquet::arrow::{
+    arrow_reader::ParquetRecordBatchReaderBuilder,
+    ProjectionMask,
+};
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    match args.as_slice() {
+        [command, input, output] if command == "write" => {
+            let options = ConvertOptions::new(
+                PathBuf::from(input), PathBuf::from(output),
+            );
+            let report = convert(&options)?;
+            println!("{report:#?}");
+        }
+        [command, input] if command == "read" => {
+            let builder = ParquetRecordBatchReaderBuilder::try_new(
+                File::open(input)?,
+            )?;
+            // Parse the CityParquet footer before reading data batches.
+            let (city, _geo) = builder.cityparquet_footer()?;
+            println!("CityParquet metadata: {city:#?}");
+
+            // Read only identifiers and object types, not geometry.
+            let columns = ["id", "object_type"]
+                .iter()
+                .map(|name| builder.schema().index_of(name))
+                .collect::<Result<Vec<_>, _>>()?;
+            let projection = ProjectionMask::roots(
+                builder.parquet_schema(), columns,
+            );
+            let reader = builder
+                .with_projection(projection)
+                .with_batch_size(1024)
+                .build()?;
+            let mut rows = 0;
+            for batch in reader {
+                let batch = batch?;
+                rows += batch.num_rows();
+                println!("Batch: {} rows", batch.num_rows());
+            }
+            println!("Read {rows} objects");
+        }
+        _ => return Err(
+            "usage: write INPUT PACKAGE_DIR | read OBJECT_TABLE.parquet".into(),
+        ),
+    }
+    Ok(())
+}
+```
+
+`write` uses the package writer, rather than a generic Arrow-to-Parquet write,
+so it produces the CityParquet footer and package metadata as well as the rows.
+Existing output directories are not overwritten by default. The library also
+leaves LoD0 synthesis off by default, preserving the source's levels of detail.
+Review the printed report for dropped or coerced content and CRS diagnostics.
+
+`read` accepts a single object table such as `building.parquet`. It checks the
+CityParquet footer and streams two columns in batches; it does not decode solids
+or load every geometry into memory. The row total includes every object type in
+the table, including building parts.
+
+## Run the example
+
+Download a small source file, write a package, and read its building table:
+
+```bash
+curl -fL https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl \
+  -o delft.city.jsonl
+cargo run -- write delft.city.jsonl delft_package
+cargo run -- read delft_package/building.parquet
+```
+
+The same `read` command works with another local CityParquet object table.
+The writer accepts the city-model inputs supported by the library; see
+[CLI conversion](/tutorials/cli-conversion) for format and export examples.
+For lower-level geometry decoding and query APIs, see the
+[Rust implementation](https://github.com/cityjson/cityparquet/tree/main/lib/cityparquet-rs).

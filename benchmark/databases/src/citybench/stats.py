@@ -1,9 +1,10 @@
-"""Robust summary statistics for benchmark timings.
+"""Summary statistics for benchmark timings.
 
-The median and median absolute deviation are used rather than mean and
-standard deviation because a benchmark sample set routinely contains
-outliers from OS scheduling and background load, and the median is not
-dragged by them.
+``report.py`` reports the arithmetic mean of the timed samples in
+``time_s`` and their population standard deviation in ``time_std_s``.
+``median`` and ``mad`` (median absolute deviation about the median) are
+available for robust estimates; this harness's headline timing does not
+use them.
 """
 
 import statistics
@@ -115,6 +116,17 @@ def mean(values: list[float]) -> float:
     if not values:
         raise ValueError("mean requires at least one value")
     return statistics.mean(values)
+
+
+def standard_deviation(values: list[float]) -> float:
+    """Population standard deviation of ``values``. Raises ValueError if empty.
+
+    Population rather than sample: the timed samples are the whole set that
+    was measured, not a draw used to infer a wider population.
+    """
+    if not values:
+        raise ValueError("standard_deviation requires at least one value")
+    return statistics.pstdev(values)
 
 
 def median(values: list[float]) -> float:

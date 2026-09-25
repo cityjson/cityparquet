@@ -18,8 +18,9 @@ dataset size. `cjseq filter` is no substitute either: it parses each line to a
 
 Each sample creates a fresh artefact directory, so the idempotent preparation
 script cannot turn a timed conversion into a cache hit. The raw samples are
-kept beside the aggregate read CSVs; the aggregate uses median time and maximum
-RSS, matching the readbench coordinator convention.
+kept beside the aggregate read CSVs; the aggregate uses the mean time (with the
+population standard deviation in `time_std_s`) and the maximum RSS, matching
+the readbench coordinator convention.
 
 Completion contract: the timer stops when the converter exits, no `fsync` is
 issued, and the output is deleted afterwards — so every row measures a write
@@ -30,7 +31,7 @@ CityGML stage is by far the slowest and needs citygml-tools on disk — and neve
 belongs in a published run: a partial CSV is not a comparison.
 """
 from __future__ import annotations
-import argparse, csv, os, shutil, statistics, subprocess, tempfile, time
+import argparse, csv, math, os, shutil, subprocess, tempfile, time
 from pathlib import Path
 
 ALL_FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet-hilbert")
@@ -40,16 +41,18 @@ ALL_FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet
 # refuses outright (below) to append to one whose header differs.
 # `benchmark/plot/tests/test_csv_contract.py` asserts the two literals and
 # `benchmark/scripts/readbench_duckdb.sh`'s third copy agree.
-HEADER = ["dataset","format","scenario","selectivity","result_count","time_s","time_mad_s","peak_heap_bytes","peak_rss_bytes","repeat","notes","bytes_read","http_requests","row_groups_total","bloom_pruned","filter_bytes"]
+HEADER = ["dataset","format","scenario","selectivity","result_count","time_s","time_std_s","peak_heap_bytes","peak_rss_bytes","repeat","notes","bytes_read","http_requests","row_groups_total","bloom_pruned","filter_bytes"]
 SAMPLES_HEADER = ["dataset","format","scenario","sample","time_s","peak_rss_bytes"]
 
 
-def median(values: list[float]) -> float:
-    return statistics.median(values)
+def mean(values: list[float]) -> float:
+    """The arithmetic mean, summed in order exactly as the coordinator's `mean`."""
+    return sum(values) / len(values)
 
 
-def mad(values: list[float], centre: float) -> float:
-    return median([abs(value-centre) for value in values])
+def std_dev(values: list[float], centre: float) -> float:
+    """The population standard deviation about `centre`, as the coordinator's `std_dev`."""
+    return math.sqrt(sum((value - centre) ** 2 for value in values) / len(values))
 
 
 def base(path: Path) -> str:
@@ -182,8 +185,8 @@ def main() -> None:
                 shutil.rmtree(output)
         warm = values[1:]
         times = [value[0] for value in warm]
-        centre = median(times)
-        aggregates.append([dataset, fmt, "write", "", "0", f"{centre:.6f}", f"{mad(times, centre):.6f}", "", str(max(value[1] for value in warm)), str(args.repeat), "canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml", "", "", "", "", ""])
+        centre = mean(times)
+        aggregates.append([dataset, fmt, "write", "", "0", f"{centre:.6f}", f"{std_dev(times, centre):.6f}", "", str(max(value[1] for value in warm)), str(args.repeat), "canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml", "", "", "", "", ""])
         raw.extend([dataset, fmt, "write", str(index + 1), f"{elapsed:.6f}", str(rss)] for index, (elapsed, rss) in enumerate(warm))
     existing = []
     if args.out.exists():
