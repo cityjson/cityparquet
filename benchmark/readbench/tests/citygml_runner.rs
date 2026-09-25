@@ -340,14 +340,12 @@ fn count_is_member_level_while_attr_scenarios_reach_nested_city_objects() {
 /// **The measurement-integrity guard.** The reader maps `bldg:Building` plus a
 /// fixed list of 1st-level non-building types; a `cityObjectMember` of any
 /// other type used to be skipped silently, so a real PLATEAU `trk` tile
-/// (`tran:Track`), a `dem` tile (`dem:ReliefFeature`), an `lsld` or a `urf`
-/// tile all returned `count = 0` with exit status 0 — in a fraction of the
+/// (`tran:Track`), an `lsld` or a `urf` tile all returned `count = 0` with exit status 0 — in a fraction of the
 /// time a real read takes, because nothing was ever materialised.
 ///
 /// That is not a defensible benchmark row. Every other format's artefact for
-/// the same tile is produced by citygml-tools, which DOES map
-/// `dem:ReliefFeature` to CityJSON `TINRelief` (a type this repository treats
-/// as first class — it writes `relief.parquet`), so the CSV would print
+/// the same tile is produced by citygml-tools, which DOES map the members this
+/// reader skips, so the CSV would print
 /// `citygml 0` beside `cityjsonseq N`, with CityGML's timing flattered by the
 /// work it never did. The CityGML 1.0 refusal already in this file exists for
 /// exactly this failure mode; an unmapped member type is the same failure.
