@@ -966,7 +966,10 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     `scaling_rowgroup_results` directories still describe packages with no
     filters; their `LEGACY.md` says so, and an `id-lookup` row from them must
     not be compared with one from the current evidence or with the `bloom`
-    family.
+    family. The shapes keep the two apart mechanically: `format_write.py`
+    refuses to append to a CSV whose header differs from the coordinator's,
+    and the summary loader reports a legacy-shaped CSV as a gap instead of
+    rendering it.
 
 32. **FlatCityBuf is read through the raw FlatBuffers accessors, not
     `cur_cj_feature`.** Every FCB walk — `full-read`, the `attr-filter`
