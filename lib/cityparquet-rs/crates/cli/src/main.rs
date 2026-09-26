@@ -138,13 +138,13 @@ enum Commands {
         tolerate_invalid_appearance: bool,
     },
 
-    /// Export CityParquet package back to CityJSON/CityJSONSeq
+    /// Export CityParquet package back to CityJSON, CityJSONSeq, or CityGML
     Export {
         /// Input CityParquet package directory
         #[arg(value_name = "PACKAGE_DIR")]
         package_dir: PathBuf,
 
-        /// Output file (.city.jsonl for Seq, .city.json for doc)
+        /// Output file (.city.jsonl for Seq, .city.json for doc, .gml for CityGML)
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
     },
