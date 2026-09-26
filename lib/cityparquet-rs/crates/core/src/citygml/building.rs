@@ -93,6 +93,10 @@ pub struct RawBuilding {
     /// LoD, no semantics. Empty for a Building (whose MultiSurfaces come from
     /// `boundedBy`) — CG-7.
     plain_surfaces: Vec<(String, Vec<Polygon>)>,
+    /// The CityJSON geometry type `plain_surfaces` are emitted as:
+    /// `MultiSurface`, except for a `TINRelief`, whose geometry CityJSON
+    /// restricts to a `CompositeSurface` (CityJSON 2.0 §2.11).
+    plain_surface_type: &'static str,
     /// One solid geometry per distinct LoD (`bldg:lodNSolid`); each LoD maps to
     /// its own CityParquet geometry column, so all are emitted.
     solids: Vec<(String, SolidGeom)>,
@@ -151,20 +155,7 @@ pub fn read_generic_object<R: BufRead>(
     end_name: &[u8],
     depth: usize,
 ) -> Result<RawBuilding> {
-    let mut b = RawBuilding {
-        id,
-        object_type: object_type.to_string(),
-        plain_surfaces: Vec::new(),
-        solids: Vec::new(),
-        polygons: HashMap::new(),
-        surfaces: Vec::new(),
-        semantic_of_polygon: HashMap::new(),
-        boundary_polys: Vec::new(),
-        boundary_refs: Vec::new(),
-        attributes: serde_json::Map::new(),
-        parts: Vec::new(),
-        appearance: ReadAppearance::default(),
-    };
+    let mut b = RawBuilding::new(id, object_type);
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -267,20 +258,7 @@ fn read_abstract_building<R: BufRead>(
             "bldg:consistsOfBuildingPart nested deeper than {MAX_PART_DEPTH}"
         )));
     }
-    let mut b = RawBuilding {
-        id,
-        object_type: object_type.to_string(),
-        plain_surfaces: Vec::new(),
-        solids: Vec::new(),
-        polygons: HashMap::new(),
-        surfaces: Vec::new(),
-        semantic_of_polygon: HashMap::new(),
-        boundary_polys: Vec::new(),
-        boundary_refs: Vec::new(),
-        attributes: serde_json::Map::new(),
-        parts: Vec::new(),
-        appearance: ReadAppearance::default(),
-    };
+    let mut b = RawBuilding::new(id, object_type);
     // A `lod0RoofEdge`, kept aside until the whole subtree has been read.
     let mut roof_edge: Option<(String, Vec<Polygon>)> = None;
 
@@ -829,6 +807,52 @@ fn read_semantic_surface<R: BufRead>(
 }
 
 impl RawBuilding {
+    fn new(id: Option<String>, object_type: &str) -> Self {
+        RawBuilding {
+            id,
+            object_type: object_type.to_string(),
+            plain_surfaces: Vec::new(),
+            plain_surface_type: "MultiSurface",
+            solids: Vec::new(),
+            polygons: HashMap::new(),
+            surfaces: Vec::new(),
+            semantic_of_polygon: HashMap::new(),
+            boundary_polys: Vec::new(),
+            boundary_refs: Vec::new(),
+            attributes: serde_json::Map::new(),
+            parts: Vec::new(),
+            appearance: ReadAppearance::default(),
+        }
+    }
+
+    /// A `TINRelief` City Object: one relief component's triangles at `lod`,
+    /// emitted as a single `CompositeSurface`, plus its attributes. Triangles
+    /// with no LoD to place them at are an error: dropping them would report a
+    /// terrain as converted without its surface.
+    pub(super) fn tin_relief(
+        id: Option<String>,
+        lod: Option<String>,
+        triangles: Vec<Polygon>,
+        attributes: serde_json::Map<String, Value>,
+    ) -> Result<Self> {
+        let mut b = RawBuilding::new(id, "TINRelief");
+        b.plain_surface_type = "CompositeSurface";
+        b.attributes = attributes;
+        match lod {
+            Some(lod) => b.add_plain_surfaces(lod, triangles),
+            None if triangles.is_empty() => {}
+            None => {
+                return Err(CityParquetError::Schema(format!(
+                    "dem:TINRelief {} has {} triangles but no dem:lod, on it or its \
+                     dem:ReliefFeature",
+                    b.id.as_deref().unwrap_or("(no gml:id)"),
+                    triangles.len()
+                )));
+            }
+        }
+        Ok(b)
+    }
+
     /// Record a non-building object's standalone surface geometry at `lod`
     /// (CG-7/CG-5): register ided polygons (so a sibling solid may xlink to
     /// them) and keep the non-empty list as a plain MultiSurface.
@@ -928,7 +952,12 @@ impl RawBuilding {
             if semantic_lods.contains(lod) {
                 continue;
             }
-            built.push(build_plain_multisurface(polys, lod, vb)?);
+            built.push(build_plain_surfaces(
+                polys,
+                lod,
+                self.plain_surface_type,
+                vb,
+            )?);
         }
         // For each LoD whose geometry lives only in `boundedBy` surfaces (no
         // `lodNSolid` at that LoD), emit one MultiSurface. When a solid exists
@@ -1520,13 +1549,15 @@ fn read_leaf_text<R: BufRead>(
     Ok((!t.is_empty()).then(|| t.to_string()))
 }
 
-/// Build a CityJSON `MultiSurface` geometry (no semantics) for a non-building
-/// object's `lodN{MultiSurface,Geometry}` from a flat polygon list, returning
+/// Build a CityJSON surface geometry of `geometry_type` (`MultiSurface`, or a
+/// `TINRelief`'s `CompositeSurface`; no semantics) for a non-building object's
+/// standalone surfaces from a flat polygon list, returning
 /// the `(geometry, face-id, ring-id, reverse)` trees like the other builders
 /// (CG-7). Every face has reverse=false.
-fn build_plain_multisurface(
+fn build_plain_surfaces(
     polys: &[Polygon],
     lod: &str,
+    geometry_type: &str,
     vb: &mut VertexBuilder,
 ) -> Result<(Value, Value, Value, Value)> {
     let mut boundaries = Vec::with_capacity(polys.len());
@@ -1540,7 +1571,7 @@ fn build_plain_multisurface(
         reverse.push(reverse_leaf(poly, false));
     }
     let g = json!({
-        "type": "MultiSurface",
+        "type": geometry_type,
         "lod": lod,
         "boundaries": Value::Array(boundaries),
     });
@@ -1575,4 +1606,36 @@ fn ring_indices(ring: &[[f64; 3]], reverse: bool, vb: &mut VertexBuilder) -> Res
         }
     }
     Ok(Value::Array(idxs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The first triangle of `tests/data/montreal_tin_relief_fragment.gml`.
+    fn triangle() -> Polygon {
+        Polygon {
+            id: None,
+            exterior: vec![
+                [295554.37, 5038697.35, 125.23],
+                [295551.806739, 5038696.437653, 123.752867],
+                [295552.228443, 5038696.169388, 123.815941],
+            ],
+            interiors: Vec::new(),
+            ring_ids: vec![None],
+        }
+    }
+
+    #[test]
+    fn a_tin_without_a_lod_is_an_error_not_a_tinrelief_without_its_triangles() {
+        let err = RawBuilding::tin_relief(
+            Some("tin".to_string()),
+            None,
+            vec![triangle()],
+            serde_json::Map::new(),
+        )
+        .err()
+        .expect("triangles with no LoD to put them at must not vanish");
+        assert!(err.to_string().contains("dem:lod"), "{err}");
+    }
 }

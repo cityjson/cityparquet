@@ -21,8 +21,10 @@ every format decision.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 from .discover import Item
 from .ledger import CONFORMANCE_REASONS, HostFailure, is_host_failure
@@ -159,3 +161,52 @@ def stamp(pkg_dir: Path, item: Item) -> None:
     doc["links"] = links
 
     path.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def copy_texture_images(inputs: list[Path], pkg_dir: Path) -> tuple[int, list[str]]:
+    """Copy every image the package's textures reference into the package.
+
+    `textures.parquet` names each image by `image_uri`, relative to the source
+    document it came from; a reader resolves a relative `image_uri` against
+    the package directory. The converter writes only Parquet, so the images are
+    copied here from the unpacked source, each to the same relative path under
+    `pkg_dir`, trying the directory of each input in turn.
+
+    Returns `(copied, missing)`: `missing` lists the relative URIs no input's
+    directory holds, and any URI that would climb out of either tree (`..`, an
+    absolute path) — third-party text is never followed outside it. A remote
+    URI (one with a scheme) is the reader's to fetch and is neither.
+    """
+    textures = pkg_dir / "textures.parquet"
+    if not textures.is_file():
+        return 0, []
+    import duckdb
+
+    rows = duckdb.sql(
+        "SELECT DISTINCT image_uri FROM read_parquet(?) WHERE image_uri IS NOT NULL",
+        params=[str(textures)],
+    ).fetchall()
+    roots = list(dict.fromkeys(p.parent.resolve() for p in inputs))
+    pkg_root = pkg_dir.resolve()
+    copied, missing = 0, []
+    for (uri,) in sorted(rows):
+        if urlsplit(uri).scheme and not _looks_like_windows_drive(uri):
+            continue
+        rel = PurePosixPath(uri.replace("\\", "/"))
+        if rel.is_absolute() or ".." in rel.parts or _looks_like_windows_drive(uri):
+            missing.append(uri)
+            continue
+        found = next((r / rel for r in roots if (r / rel).is_file()), None)
+        target = (pkg_root / rel).resolve()
+        if found is None or not target.is_relative_to(pkg_root):
+            missing.append(uri)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(found, target)
+        copied += 1
+    return copied, missing
+
+
+def _looks_like_windows_drive(uri: str) -> bool:
+    # `C:/x.jpg` parses with scheme `c`; it is a local absolute path.
+    return len(uri) > 1 and uri[1] == ":" and uri[0].isalpha()

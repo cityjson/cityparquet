@@ -19,7 +19,8 @@ use quick_xml::reader::NsReader;
 
 use super::appearance::{ModelAppearance, ReadAppearance, read_appearance};
 use super::building::{read_building, read_generic_object};
-use super::xml::{NS_APP, NS_BLDG, gml_id, ns_is, skip_element, xml_err};
+use super::relief::read_relief_feature;
+use super::xml::{NS_APP, NS_BLDG, NS_DEM, gml_id, ns_is, skip_element, xml_err};
 
 /// Map a CityGML 1st-level NON-building element local name to its CityJSON
 /// CityObject type (CG-7). Matched by local name (unique across CityGML module
@@ -34,10 +35,9 @@ fn citygml_object_type(local: &[u8]) -> Option<&'static str> {
         b"PlantCover" => "PlantCover",
         b"Bridge" => "Bridge",
         b"Tunnel" => "Tunnel",
-        // ReliefFeature is deliberately NOT mapped: a CityGML ReliefFeature may
-        // be raster/breakline/mass-point/TIN, and only a TIN maps cleanly to
-        // CityJSON TINRelief; its `reliefComponent` geometry is nested
-        // differently. Deferred to avoid misclassifying non-TIN reliefs.
+        // `dem:ReliefFeature` is not here: it is a container of relief
+        // components, each TIN of which becomes a `TINRelief` of its own
+        // (`super::relief`).
         b"GenericCityObject" => "GenericCityObject",
         b"CityObjectGroup" => "CityObjectGroup",
         b"Road" => "Road",
@@ -69,8 +69,10 @@ pub struct FeatureReader {
     inside_member: bool,
     /// `cityObjectMember` objects whose element name this reader does not map,
     /// keyed by the name exactly as the document spells it (`tran:Track`,
-    /// `dem:ReliefFeature`, …) — a `BTreeMap` so a diagnostic built from it is
-    /// deterministic.
+    /// `uro:UndergroundBuilding`, …) — a `BTreeMap` so a diagnostic built from it is
+    /// deterministic. A `dem:ReliefFeature`'s components that CityJSON has no
+    /// type for (`dem:RasterRelief`, `dem:MassPointRelief`,
+    /// `dem:BreaklineRelief`) are tallied here by their own names.
     ///
     /// Skipping is deliberate and stays that way: the conversion pipeline must
     /// keep ingesting the mapped part of a real national export. But a caller
@@ -78,6 +80,9 @@ pub struct FeatureReader {
     /// document is empty" without being told, so the reader records it and lets
     /// the caller decide (the readbench `citygml` runner refuses outright).
     skipped_members: std::collections::BTreeMap<String, usize>,
+    /// Features read but not yet returned: one `dem:ReliefFeature` yields a
+    /// `TINRelief` feature per TIN component.
+    pending: std::collections::VecDeque<CityJSONFeature>,
 }
 
 /// Pre-pass: read every CityModel-level `app:appearanceMember` (the conformant
@@ -189,11 +194,15 @@ impl FeatureReader {
             model_appearance,
             inside_member: false,
             skipped_members: std::collections::BTreeMap::new(),
+            pending: std::collections::VecDeque::new(),
         })
     }
 
     fn next_feature(&mut self) -> Result<Option<CityJSONFeature>> {
         loop {
+            if let Some(feature) = self.pending.pop_front() {
+                return Ok(Some(feature));
+            }
             self.buf.clear();
             let (rr, ev) = self
                 .reader
@@ -209,13 +218,14 @@ impl FeatureReader {
                         continue;
                     }
                     let is_building = ns_is(&rr, NS_BLDG) && local.as_ref() == b"Building";
+                    let is_relief = ns_is(&rr, NS_DEM) && local.as_ref() == b"ReliefFeature";
                     // A 1st-level non-building object (WaterBody, LandUse, …).
-                    let generic_type = if is_building {
+                    let generic_type = if is_building || is_relief {
                         None
                     } else {
                         citygml_object_type(local.as_ref())
                     };
-                    if self.inside_member && !is_building && generic_type.is_none() {
+                    if self.inside_member && !is_building && !is_relief && generic_type.is_none() {
                         // A member of a type this reader does not map. Record
                         // it (by the name the document spells, so a diagnostic
                         // can quote it) and clear the flag so nothing deeper in
@@ -227,6 +237,25 @@ impl FeatureReader {
                         // Only the tally is new.
                         let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
                         *self.skipped_members.entry(name).or_insert(0) += 1;
+                        self.inside_member = false;
+                        continue;
+                    }
+                    if is_relief {
+                        let id = gml_id(&e);
+                        let relief = read_relief_feature(&mut self.reader, &mut self.buf, id)?;
+                        for name in relief.unmapped_components {
+                            *self.skipped_members.entry(name).or_insert(0) += 1;
+                        }
+                        for raw in relief.tins {
+                            self.index += 1;
+                            let feature = raw.into_feature(
+                                &self.scale,
+                                &self.translate,
+                                self.index,
+                                &self.model_appearance,
+                            )?;
+                            self.pending.push_back(feature);
+                        }
                         self.inside_member = false;
                         continue;
                     }

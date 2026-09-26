@@ -802,9 +802,10 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
       a document outright, naming the offending types. Measured tallies:
       `lsld` 134/134 members unmapped, `trk` 11/11, `urf` 2158/2158, `ubld`
       1 of 2 (the partial case, which used to report a plausible, plausibly
-      _wrong_ `count = 1`); `dem` is excluded by inference from the reader's
-      own type map, never measured (the tile is 599 MB and was never
-      downloaded), and no member tally is claimed for it.
+      _wrong_ `count = 1`); `dem` is excluded without a measurement (the tile
+      is 599 MB and was never downloaded), and no member tally is claimed for
+      it. The reader maps a `dem` tile's `dem:TINRelief` components, so that
+      exclusion does not carry over to a new corpus.
 
     **Every entry of the current corpus serves every format**, which is the
     property it was selected for and what `scripts/tests/fetch_benchmark_test.sh`
