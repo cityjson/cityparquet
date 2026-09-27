@@ -82,16 +82,28 @@ collection are the source's.
   vertical CRS (NGF-IGN69 height, EPSG:5720) over Lambert-93 coordinates; its
   package keeps the declared CRS, so it has no geographic extent and is absent
   from the map.
-- **Montréal** (Canada), as two collections. `montreal-terrain` is the 2015
-  terrain model (CityGML 2.0), one package per borough or municipality, each
-  holding the TIN as `TINRelief` objects whose triangles form one
-  `CompositeSurface`. `montreal-2009` holds the 294 LoD2 buildings of the 2009
-  tile VM05, from its CityJSON edition, with the texture images of the city's
-  own VM05 archive beside it (`VM05_2009_Appearance/`). Neither source declares a CRS; both
-  packages are written in NAD83(CSRS) / MTM zone 8 (EPSG:2950), the reference the
-  city's open-data portal states. The textured 2013 building tiles are CityGML
-  1.0 and are not converted. Heights are the source's own, outliers included:
-  the Anjou terrain's own envelope reaches down to −74.99 m.
+- **Montréal** (Canada), as four collections, all in NAD83(CSRS) / MTM zone 8
+  (EPSG:2950), the reference the city's open-data portal states; none of the
+  sources declares a CRS.
+  - `montreal-terrain` is the 2015 terrain model (CityGML 2.0), one package per
+    borough or municipality, each holding the TIN as `TINRelief` objects whose
+    triangles form one `CompositeSurface`. Heights are the source's own, outliers
+    included: the Anjou terrain's own envelope reaches down to −74.99 m.
+  - `montreal-2016` and `montreal-2020` are the LoD2 building models with
+    textures (CityGML 2.0), one package per borough — six for 2016, three for
+    2020 — each merging the borough's tiles, with the texture images beside it.
+    Every id is prefixed by the tile it came from (`V01_2016.Groupe152`): the
+    exporter numbers some objects per tile, so the bare ids repeat across a
+    borough. A building that two 2020 tiles both carry whole (900 in Ville-Marie,
+    identical down to their texture images) is kept once. The city's 2016
+    Ville-Marie download also holds the three Outremont tiles, which are
+    published in Outremont's package only.
+  - `montreal-2009` holds the 294 LoD2 buildings of the 2009 tile VM05, from its
+    CityJSON edition, with the texture images of the city's own VM05 archive
+    beside it (`VM05_2009_Appearance/`).
+
+  The textured 2013 building tiles and the other 2009 tiles are CityGML 1.0 and
+  are not converted.
 
 Where a source has no LoD0 footprint, the converter derives one from the object's
 ground surfaces — its `GroundSurface` faces, or failing those its downward-facing
