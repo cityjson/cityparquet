@@ -135,6 +135,10 @@ pub struct ConvertOptions {
     /// [`ConvertReport::invalid_appearance_refs_dropped`], never silent —
     /// see [`crate::appearance::AppearanceInterner::set_tolerate_invalid_refs`].
     pub tolerate_invalid_appearance: bool,
+    /// How several inputs are merged into one package — see
+    /// [`crate::merge::MergeOptions`]. Read wherever inputs are merged
+    /// (the CLI's single-package path and [`crate::partition::convert_partitioned`]).
+    pub merge: crate::merge::MergeOptions,
 }
 
 impl ConvertOptions {
@@ -158,6 +162,7 @@ impl ConvertOptions {
             lod0: Lod0Options::default(),
             crs_override: None,
             tolerate_invalid_appearance: false,
+            merge: crate::merge::MergeOptions::default(),
         }
     }
 }

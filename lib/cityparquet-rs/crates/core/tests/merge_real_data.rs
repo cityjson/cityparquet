@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use cityparquet::merge::merge_sources;
+use cityparquet::merge::{MergeOptions, merge_sources};
 use cityparquet::source::{Source, SourceFormat};
 use cjseq::{CityJSON, CityJSONFeature, Transform};
 
@@ -87,7 +87,7 @@ fn write_derived_copy(orig: &Path, dst: &Path, scale_div: f64, vert_mul: i64, ta
 fn single_source_merge_preserves_transform_and_count() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let n = src.features().unwrap().count();
-    let merged = merge_sources(std::slice::from_ref(&src)).unwrap();
+    let merged = merge_sources(std::slice::from_ref(&src), &MergeOptions::default()).unwrap();
     assert_eq!(merged.header.transform.scale, src.header().transform.scale);
     assert_eq!(
         merged.header.transform.translate,
@@ -118,7 +118,7 @@ fn heterogeneous_transforms_requantise_to_same_real_coords() {
         &sa.header().transform,
     );
 
-    let merged = merge_sources(&[sa, sb]).unwrap();
+    let merged = merge_sources(&[sa, sb], &MergeOptions::default()).unwrap();
     // Merged transform must be the finer (min) scale, i.e. B's.
     assert!(merged.header.transform.scale[0] < 0.001 + 1e-12);
     let got = real_bbox(&merged.features, &merged.header.transform);
@@ -162,14 +162,17 @@ fn crs_mismatch_is_error() {
     }
     let sa = Source::open(&a).unwrap();
     let sb = Source::open(&b).unwrap();
-    assert!(merge_sources(&[sa, sb]).is_err(), "CRS mismatch must error");
+    assert!(
+        merge_sources(&[sa, sb], &MergeOptions::default()).is_err(),
+        "CRS mismatch must error"
+    );
 }
 
 #[test]
 fn transform_with_fewer_than_three_components_is_rejected() {
     let bad = delft_source_with_transform(vec![1.0], vec![0.0, 0.0, 0.0]);
     assert!(
-        merge_sources(&[bad]).is_err(),
+        merge_sources(&[bad], &MergeOptions::default()).is_err(),
         "a <3-component scale must error, not panic"
     );
 }
@@ -177,10 +180,13 @@ fn transform_with_fewer_than_three_components_is_rejected() {
 #[test]
 fn zero_or_nonfinite_scale_is_rejected() {
     let zero = delft_source_with_transform(vec![0.0, 0.001, 0.001], vec![0.0, 0.0, 0.0]);
-    assert!(merge_sources(&[zero]).is_err(), "zero scale must error");
+    assert!(
+        merge_sources(&[zero], &MergeOptions::default()).is_err(),
+        "zero scale must error"
+    );
     let inf = delft_source_with_transform(vec![f64::INFINITY, 0.001, 0.001], vec![0.0, 0.0, 0.0]);
     assert!(
-        merge_sources(&[inf]).is_err(),
+        merge_sources(&[inf], &MergeOptions::default()).is_err(),
         "non-finite scale must error"
     );
 }
@@ -192,7 +198,7 @@ fn duplicate_ids_are_counted() {
     write_derived_copy(&fixture("delft.city.jsonl"), &a, 1.0, 1, 5);
     let s1 = Source::open(&a).unwrap();
     let s2 = Source::open(&a).unwrap();
-    let merged = merge_sources(&[s1, s2]).unwrap();
+    let merged = merge_sources(&[s1, s2], &MergeOptions::default()).unwrap();
     assert_eq!(merged.features.len(), 10);
     assert_eq!(
         merged.duplicate_ids, 5,

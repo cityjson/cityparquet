@@ -273,6 +273,8 @@ pub fn repair_reference_locality(
 #[derive(Debug, Clone)]
 pub struct PartitionReport {
     pub partitions: Vec<(String, ConvertReport)>,
+    /// Identical copies dropped by [`crate::merge::MergeOptions::dedupe_identical`].
+    pub deduplicated: usize,
     pub duplicate_ids: usize,
     /// See [`LocalityRepair::co_assigned_features`].
     pub co_assigned_features: usize,
@@ -370,7 +372,7 @@ pub fn convert_partitioned(
     if let Some(spec) = &opts.crs_override {
         crate::package::validate_crs_override(spec)?;
     }
-    let merged = merge_sources(sources)?;
+    let merged = merge_sources(sources, &opts.merge)?;
     // The provenance of the merged header's CRS: `merge_sources` enforces one
     // shared CRS across the inputs, so the merged header's CRS is the
     // operator's only if EVERY input's was — one input that declared that CRS
@@ -447,6 +449,7 @@ pub fn convert_partitioned(
 
     Ok(PartitionReport {
         partitions,
+        deduplicated: merged.deduplicated,
         duplicate_ids: merged.duplicate_ids,
         co_assigned_features: repair.co_assigned_features,
         unresolvable_refs: repair.unresolvable_refs,

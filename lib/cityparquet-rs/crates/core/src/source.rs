@@ -177,6 +177,12 @@ impl Source {
         }
     }
 
+    /// The file this source was opened from (empty for a synthetic
+    /// [`Source::from_parts`] source).
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn format(&self) -> SourceFormat {
         self.format
     }
