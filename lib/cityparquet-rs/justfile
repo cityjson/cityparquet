@@ -27,8 +27,14 @@ default:
 
 # `--all-features`: the object-store transport (`query_async`,
 # `counting_store`) is a feature, and its tests only run with it on.
+#
+# `nextest` runs every test in its own process, so the gate's wall-clock is no
+# longer the serial sum of per-binary times. It skips `#[ignore]` tests by
+# default, exactly as `cargo test` does (`just interop` runs the bloom
+# cross-writer ones explicitly with `--ignored`). It does not run doc-tests;
+# this workspace has none.
 test:
-    cargo test --workspace --all-features
+    cargo nextest run --workspace --all-features
 
 lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings

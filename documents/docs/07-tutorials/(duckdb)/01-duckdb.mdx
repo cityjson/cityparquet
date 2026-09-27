@@ -112,12 +112,14 @@ in any material, texture, or template sidecars.
 
 ## Insert records from another tile
 
-Add the versioned 3DBAG tile used by the extension's notebook test:
+Add the versioned 3DBAG tile used by the extension's notebook test. 3DBAG publishes
+its tiles gzip-compressed, so the path ends in `.city.json.gz`; the reader detects the
+gzip payload and decompresses it, with no option to set:
 
 ```sql
 PRAGMA insert_cityjson(
   'pkg',
-  'https://data.3dbag.nl/v20250903/tiles/9/304/532/9-304-532.city.json');
+  'https://data.3dbag.nl/v20250903/tiles/9/304/532/9-304-532.city.json.gz');
 ```
 
 The insertion routes objects into their module tables, updates relationships and

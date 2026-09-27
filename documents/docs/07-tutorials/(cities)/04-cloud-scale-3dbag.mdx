@@ -220,10 +220,12 @@ next section measures.
 To turn the `Solid` columns into measurable values, use the
 [`three_d`](https://cityjson.github.io/duckdb-3d/#/) extension, available from the DuckDB community registry.
 
-:::note[`three_d` loads alongside `spatial`]
+:::note[`three_d` loads alongside `spatial` — on DuckDB 1.5.5 or newer]
 `three_d` exposes its 3D operations under `ST_3D*` names, so it shares a session with
 the `spatial` extension from the previous section — load both, in any order.
 `spatial` owns the generic 2D `GEOMETRY` vocabulary, `three_d` owns the 3D solids.
+The community build carrying these `ST_3D*` functions targets **DuckDB 1.5.5**;
+earlier releases neither load the two extensions together nor provide the functions.
 :::
 
 **Carve the working set out with the window first.** Materialising geometry for the

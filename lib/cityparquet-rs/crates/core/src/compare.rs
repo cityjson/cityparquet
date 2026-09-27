@@ -2429,6 +2429,7 @@ mod tests {
     fn header_metadata_members_are_logged_as_excluded_not_silently_ignored() {
         let path = fixture("delft.city.jsonl");
         let report = compare_datasets(&path, &path, &CompareOptions::default()).unwrap();
+        assert!(report.equal, "identical inputs must compare equal");
         assert!(report.differences.is_empty());
         for member in ["title", "geographicalExtent"] {
             assert!(
@@ -2441,18 +2442,6 @@ mod tests {
                 report.excluded
             );
         }
-    }
-
-    #[test]
-    fn compare_delft_against_itself_is_equal() {
-        let path = fixture("delft.city.jsonl");
-        let report = compare_datasets(&path, &path, &CompareOptions::default()).unwrap();
-        assert!(
-            report.equal,
-            "identical inputs must compare equal, got differences: {:?}",
-            report.differences
-        );
-        assert!(report.differences.is_empty());
     }
 
     /// M4 task 4: before this fix, a Solid's `semantics`/`material` were

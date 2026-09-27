@@ -31,10 +31,12 @@ serde = { version = "1", features = ["derive"] }
 # it the default fast path can land 1 ULP off, so an attribute written as
 # 28.184951782226562 was stored as the double below it — a conversion that
 # does not preserve the source value it was handed.
-serde_json = { version = "1", features = ["float_roundtrip"] }
+# `raw_value` lets the EPSG table index each entry as unparsed text, so a CRS
+# lookup parses only the entry it asked for (D-RS-15).
+serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 thiserror = "2"
 cjseq = "0.4"
-quick-xml = "0.37"
+quick-xml = "0.39"
 chrono = "0.4"
 flate2 = "1"
 object_store = { version = "0.13", features = ["http"] }
@@ -49,8 +51,6 @@ wkb = "0.9"
 geo-traits = "0.3"
 geo = "0.30"
 tempfile = "3"
-fcb_core = "0.7"
-peak_alloc = "0.3.0"
 cityparquet-schema = { path = "crates/schema", version = "0.1.0" }
 city3d-stac-types = { git = "https://github.com/cityjson/city3d-stac-tool", rev = "743199c9b9ff566ec42c4023ce0968e9ac6af485" }
 jsonschema = "0.26"

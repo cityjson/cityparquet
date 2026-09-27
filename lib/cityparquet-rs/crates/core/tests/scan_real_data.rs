@@ -390,28 +390,12 @@ fn an_unresolvable_reference_system_scans_to_an_explicit_null_crs() {
     );
 }
 
-/// The high-cardinality rule on delft, whose attributes sit on the 1115
-/// Building rows only: `identificatie` (1115 distinct of 1115 non-null) and
-/// `documentnummer` (293 of 1115, 0.26) qualify at 0.2; `status` (5 values),
-/// the other short vocabularies, the Date/Timestamp-typed strings and the
-/// all-null columns do not.
-#[test]
-fn delft_scan_selects_exactly_the_high_cardinality_string_attributes() {
-    let result = scan(&Source::open(&fixture("delft.city.jsonl")).unwrap()).unwrap();
-    let expected: BTreeSet<String> = ["documentnummer", "identificatie"]
-        .into_iter()
-        .map(String::from)
-        .collect();
-    assert_eq!(result.bloom_attributes, expected);
-}
-
 /// The estimator's hasher is seeded deterministically, so the selection —
 /// and with it the package layout — is identical run to run.
 ///
 /// Two scans in ONE process would agree under a per-process random seed too,
 /// which is exactly the failure this is meant to catch, so both scans are
-/// checked against the hard-coded set the sibling test above pins rather than
-/// only against each other.
+/// checked against the hard-coded set rather than only against each other.
 #[test]
 fn the_bloom_attribute_selection_is_deterministic() {
     let expected: BTreeSet<String> = ["documentnummer", "identificatie"]

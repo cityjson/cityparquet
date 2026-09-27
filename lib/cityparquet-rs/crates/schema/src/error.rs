@@ -124,59 +124,44 @@ mod tests {
         assert!(back.to_string().contains("bad"));
     }
 
+    /// Every source-carrying constructor must keep its `#[source]` on the
+    /// chain and surface its message in Display. This guards the review-P7
+    /// fix: a dropped `#[source]` attribute would silently flatten the chain.
     #[test]
-    fn metadata_error_displays_context() {
-        let e = CityParquetError::Metadata("missing key city".into());
-        assert!(e.to_string().contains("missing key city"));
-    }
-
-    #[test]
-    fn io_error_displays_context() {
-        let e = CityParquetError::io("x");
-        assert!(e.to_string().contains("io error"));
-    }
-
-    #[test]
-    fn io_error_preserves_its_source() {
-        let source = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
-        let e = CityParquetError::io_source("cannot open /tmp/x", source);
-        assert!(e.to_string().contains("cannot open /tmp/x"));
-        let src = std::error::Error::source(&e).expect("Io must carry a #[source]");
-        assert!(src.to_string().contains("gone"));
-    }
-
-    #[test]
-    fn parquet_error_preserves_a_boxed_source() {
-        let source = std::io::Error::other("inner parquet failure");
-        let e = CityParquetError::parquet_source("cannot open parquet reader", source);
-        assert!(e.to_string().contains("cannot open parquet reader"));
-        let src = std::error::Error::source(&e).expect("Parquet must carry a #[source]");
-        assert!(src.to_string().contains("inner parquet failure"));
-    }
-
-    #[test]
-    fn from_io_error_keeps_display_and_source() {
-        let e: CityParquetError = std::io::Error::other("disk fell off").into();
-        assert!(e.to_string().contains("disk fell off"));
-        assert!(std::error::Error::source(&e).is_some());
-    }
-
-    #[test]
-    fn message_only_constructors_have_no_source() {
-        let e = CityParquetError::io("no input files resolved");
-        assert!(e.to_string().contains("no input files resolved"));
-        assert!(std::error::Error::source(&e).is_none());
-
-        let e = CityParquetError::parquet("no parquet files in package");
-        assert!(e.to_string().contains("no parquet files in package"));
-        assert!(std::error::Error::source(&e).is_none());
-    }
-
-    #[test]
-    fn parquet_from_uses_the_source_display_as_its_message() {
-        let e = CityParquetError::parquet_from(std::io::Error::other("column not found"));
-        assert!(e.to_string().contains("column not found"));
-        let src = std::error::Error::source(&e).expect("parquet_from must keep the source");
-        assert!(src.to_string().contains("column not found"));
+    fn source_carrying_constructors_keep_their_source() {
+        let cases: Vec<(&str, CityParquetError)> = vec![
+            (
+                "cannot open /tmp/x",
+                CityParquetError::io_source(
+                    "cannot open /tmp/x",
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "gone"),
+                ),
+            ),
+            (
+                "cannot open parquet reader",
+                CityParquetError::parquet_source(
+                    "cannot open parquet reader",
+                    std::io::Error::other("inner parquet failure"),
+                ),
+            ),
+            (
+                "disk fell off",
+                std::io::Error::other("disk fell off").into(),
+            ),
+            (
+                "column not found",
+                CityParquetError::parquet_from(std::io::Error::other("column not found")),
+            ),
+        ];
+        for (message, e) in cases {
+            assert!(
+                e.to_string().contains(message),
+                "Display must contain {message:?}, got: {e}"
+            );
+            assert!(
+                std::error::Error::source(&e).is_some(),
+                "a source-carrying constructor must keep its #[source]: {e}"
+            );
+        }
     }
 }

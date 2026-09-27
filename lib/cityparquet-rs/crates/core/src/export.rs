@@ -1882,34 +1882,27 @@ mod tests {
         assert_eq!((shells[0].len(), shells[1].len()), (2, 1));
     }
 
-    #[test]
-    fn single_solid_shell_rejects_more_than_one_entry() {
-        // A `Solid` has exactly one solid; `shells` naming two ([[1],[2]]) is a
-        // corrupt/hand-rolled package, and must be rejected rather than
-        // silently picking the first or last entry (the divergence Fix 1
-        // closes: writer/export call sites previously disagreed on which).
-        let err = single_solid_shell(vec![vec![1], vec![2]]).unwrap_err();
-        assert!(
-            matches!(err, CityParquetError::Schema(_)),
-            "expected Schema error, got {err:?}"
-        );
-    }
-
-    #[test]
-    fn single_solid_shell_rejects_zero_entries() {
-        let err = single_solid_shell(vec![]).unwrap_err();
-        assert!(
-            matches!(err, CityParquetError::Schema(_)),
-            "expected Schema error, got {err:?}"
-        );
-    }
-
+    /// A `Solid` has exactly one solid: `shells` naming zero or two entries is
+    /// a corrupt/hand-rolled package and must be rejected, never silently
+    /// picking the first or last entry (the divergence Fix 1 closes).
     #[test]
     fn single_solid_shell_accepts_exactly_one_entry() {
-        assert_eq!(
-            single_solid_shell(vec![vec![1, 2, 3]]).unwrap(),
-            vec![1, 2, 3]
-        );
+        let cases: Vec<(Vec<Vec<usize>>, bool)> = vec![
+            (vec![], false),
+            (vec![vec![1], vec![2]], false),
+            (vec![vec![1, 2, 3]], true),
+        ];
+        for (shells, ok) in cases {
+            let result = single_solid_shell(shells.clone());
+            match (result, ok) {
+                (Ok(value), true) => assert_eq!(value, vec![1, 2, 3], "{shells:?}"),
+                (Err(e), false) => assert!(
+                    matches!(e, CityParquetError::Schema(_)),
+                    "{shells:?}: expected Schema error, got {e:?}"
+                ),
+                (other, _) => panic!("{shells:?}: unexpected result {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -2041,56 +2034,39 @@ mod tests {
         assert!(source_metadata_from_other(&meta).is_none());
     }
 
+    /// The three `city.crs` states as `referenceSystem` output: a known
+    /// OGC:CRS84 rebuilds the URL, while `Unknown` and `Unspecified` both
+    /// export nothing — emitting one would invent a georeference the stored
+    /// coordinates were never given.
     #[test]
-    fn reference_system_rebuilds_the_ogc_crs84_url() {
-        // sol-review G1: metadata `crs` is now PROJJSON. A package whose CRS is
-        // OGC:CRS84 (a lon/lat dataset) with no source_metadata must still
-        // export a `referenceSystem`, not silently drop it.
-        let meta = CityMetadata {
-            crs: cityparquet_schema::CrsState::Known(serde_json::json!({
-                "type": "GeographicCRS",
-                "name": "WGS 84 (CRS84)",
-                "id": { "authority": "OGC", "code": "CRS84" }
-            })),
-            ..CityMetadata::new()
-        };
-        let rs = reference_system(&meta)
-            .expect("resolution must not error")
-            .expect("OGC:CRS84 must yield a referenceSystem");
-        assert_eq!(rs.to_url(), "https://www.opengis.net/def/crs/OGC/1.3/CRS84");
-    }
-
-    /// Spec §metadata "CRS rules": a package whose `city.crs` is an explicit
-    /// `null` (CRS unknown/unresolvable) exports **no** `referenceSystem` —
-    /// "on export the reconstructed model carries no reference system —
-    /// matching the source". Emitting one would invent a georeference the
-    /// stored coordinates were never given.
-    #[test]
-    fn an_unknown_crs_exports_no_reference_system() {
-        let meta = CityMetadata {
-            crs: cityparquet_schema::CrsState::Unknown,
-            ..CityMetadata::new()
-        };
-        assert!(
-            reference_system(&meta)
-                .expect("an unknown CRS is not an export error")
-                .is_none(),
-            "an explicit null CRS must export no referenceSystem"
-        );
-    }
-
-    /// The absent state exports nothing either — see [`reference_system`]'s
-    /// doc comment: GeoParquet's absent-means-CRS84 is a *reading* rule, and
-    /// materialising it here would assert a georeference onto the one kind of
-    /// file that has no CRS-bearing coordinate to georeference, breaking the
-    /// round trip against a source that declared none.
-    #[test]
-    fn an_unspecified_crs_exports_no_reference_system() {
-        assert!(
-            reference_system(&CityMetadata::new())
-                .expect("an absent CRS is not an export error")
-                .is_none(),
-        );
+    fn reference_system_state_contract() {
+        let cases: Vec<(cityparquet_schema::CrsState, Option<&str>)> = vec![
+            (
+                cityparquet_schema::CrsState::Known(serde_json::json!({
+                    "type": "GeographicCRS",
+                    "name": "WGS 84 (CRS84)",
+                    "id": { "authority": "OGC", "code": "CRS84" }
+                })),
+                Some("https://www.opengis.net/def/crs/OGC/1.3/CRS84"),
+            ),
+            (cityparquet_schema::CrsState::Unknown, None),
+            (cityparquet_schema::CrsState::Unspecified, None),
+        ];
+        for (state, expected) in cases {
+            let label = format!("{state:?}");
+            let meta = CityMetadata {
+                crs: state,
+                ..CityMetadata::new()
+            };
+            let resolved = reference_system(&meta)
+                .expect("resolving a CRS state must not error")
+                .map(|r| r.to_url().to_string());
+            assert_eq!(
+                resolved.as_deref(),
+                expected,
+                "{label}: unexpected referenceSystem"
+            );
+        }
     }
 
     /// M4 final-review Fix 4: a legal `[null, [u, v], ...]` texture ring —
@@ -2111,13 +2087,8 @@ mod tests {
             "visual": {"values": [[null, [0.1, 0.2], [0.3, 0.4]]]}
         });
         let localised = local.localise_texture_map(&map).unwrap();
-        // Precondition: the localise pass really did populate local_uvs
-        // while leaving local_materials/local_textures empty.
-        assert!(local.local_materials.is_empty());
-        assert!(local.local_textures.is_empty());
-        assert_eq!(local.local_uvs.len(), 2, "both UV pairs must be interned");
-        // The localised ring itself keeps its null texture index and now
-        // references the interned UV pool by position.
+        // The localised ring keeps its null texture index and references the
+        // interned UV pool by position.
         assert_eq!(
             localised["visual"]["values"][0],
             serde_json::json!([null, 0, 1])

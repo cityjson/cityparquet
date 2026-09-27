@@ -45,6 +45,12 @@ INSTALL spatial; LOAD spatial;
 INSTALL three_d FROM community; LOAD three_d;
 ```
 
+:::note[DuckDB 1.5.5 or newer]
+The community `three_d` build that carries the `ST_3D*` functions used below, and that
+loads alongside `spatial`, targets **DuckDB 1.5.5**. On earlier releases the two
+extensions conflict and these functions are absent.
+:::
+
 ## Coordinates in degrees
 
 The per-object `bbox` shows what the geometry holds — longitude and latitude, stored

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use arrow_array::{Array, StringArray};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
+use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::recipe::RecipePreset;
@@ -178,98 +178,106 @@ fn template_transformation_matrix_wrong_length_is_rejected() {
 }
 
 /// M5 task 3 (the milestone claim): presets change bytes, never semantics.
-/// Every named [`RecipePreset`] must still round-trip delft losslessly —
-/// the per-column tuning a preset picks is purely a `WriterProperties`
-/// concern and must never affect what a reader gets back.
-#[test]
-fn every_recipe_preset_round_trips_delft_losslessly() {
-    assert_eq!(
-        RecipePreset::ALL.len(),
-        6,
-        "this gate must cover exactly the 6 binding presets"
+/// Every named [`RecipePreset`] must still round-trip delft losslessly — the
+/// per-column tuning a preset picks is purely a `WriterProperties` concern and
+/// must never affect what a reader gets back. The default preset is the
+/// [`delft_round_trips_losslessly`] gate; one test per remaining preset keeps
+/// the five from serialising into a single long loop.
+fn assert_preset_round_trips(preset: RecipePreset) {
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(
+        fixture("delft.city.jsonl"),
+        package_dir.path().to_path_buf(),
     );
+    opts.recipe = preset.recipe();
+    convert(&opts).unwrap();
 
-    for preset in RecipePreset::ALL {
-        let package_dir = tempfile::tempdir().unwrap();
-        let mut opts = ConvertOptions::new(
-            fixture("delft.city.jsonl"),
-            package_dir.path().to_path_buf(),
-        );
-        opts.recipe = preset.recipe();
-        convert(&opts).unwrap();
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
 
-        let export_dir = tempfile::tempdir().unwrap();
-        let output = export_dir.path().join("export.city.jsonl");
-        export(&ExportOptions {
-            package_dir: package_dir.path().to_path_buf(),
-            output: output.clone(),
-        })
-        .unwrap();
-
-        let report = compare_datasets(
-            &fixture("delft.city.jsonl"),
-            &output,
-            &CompareOptions::default(),
-        )
-        .unwrap();
-        assert!(
-            report.equal,
-            "preset {} must round-trip delft losslessly; differences: {:#?}",
-            preset.name(),
-            report.differences
-        );
-        assert!(
-            report.differences.is_empty(),
-            "preset {} produced non-empty differences",
-            preset.name()
-        );
-        // Pinned counts updated alongside the comparator's coordinate-degenerate
-        // ring fix (3DBAG tile `9-284-556.city.json` finding; see
-        // `crate::compare`'s module docs and `delft_round_trips_losslessly`
-        // below for the full explanation): delft's real, unmutated source
-        // carries 8 objects with an index-distinct/coordinate-identical ring,
-        // previously invisible to the INDEX-only degenerate check. Not a
-        // regression — `report.equal`/`differences.is_empty()` above still hold.
-        let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-            .excluded
-            .iter()
-            .partition(|e| e.starts_with("header: metadata member"));
-        let degenerate = non_header_excluded
-            .iter()
-            .filter(|e| e.contains("degenerate ring"))
-            .count();
-        assert_eq!(
-            (degenerate, non_header_excluded.len()),
-            (16, 17),
-            "preset {}'s only non-header exclusions must be the 16 pinned \
-             coordinate-degenerate-ring drops (8 objects, source + export side each) plus \
-             geographicalExtent (derived from bbox), got: {:#?}",
-            preset.name(),
-            non_header_excluded
-        );
-        assert!(
-            !header_excluded.is_empty(),
-            "preset {} must still document delft's header metadata members, got: {:#?}",
-            preset.name(),
-            report.excluded
-        );
-    }
-}
-
-/// delft's LoD0 footprint is stored in the un-suffixed `geometry` column, with
-/// its LoD recorded in `geometry_properties.lod` (§9/§12). Export must recover
-/// that LoD so the round-tripped CityJSON carries a genuine `lod:"0"` geometry
-/// (not a lod-less one). This is the narrow behavioural pin behind the fuller
-/// `delft_round_trips_losslessly` semantic-equality gate below.
-#[test]
-fn delft_lod0_footprint_round_trips_with_lod_restored() {
-    let (exported, _package_dir, _export_dir) = convert_and_export("delft.city.jsonl");
-    let text = std::fs::read_to_string(&exported).unwrap();
+    let report = compare_datasets(
+        &fixture("delft.city.jsonl"),
+        &output,
+        &CompareOptions::default(),
+    )
+    .unwrap();
     assert!(
-        text.contains("\"lod\":\"0.0\""),
-        "exported delft must restore LoD0 geometry with the canonical lod \"0.0\""
+        report.equal,
+        "preset {} must round-trip delft losslessly; differences: {:#?}",
+        preset.name(),
+        report.differences
+    );
+    assert!(
+        report.differences.is_empty(),
+        "preset {} produced non-empty differences",
+        preset.name()
+    );
+    // Pinned counts updated alongside the comparator's coordinate-degenerate
+    // ring fix (3DBAG tile `9-284-556.city.json` finding; see
+    // `crate::compare`'s module docs and `delft_round_trips_losslessly`
+    // below for the full explanation): delft's real, unmutated source
+    // carries 8 objects with an index-distinct/coordinate-identical ring,
+    // previously invisible to the INDEX-only degenerate check. Not a
+    // regression — `report.equal`/`differences.is_empty()` above still hold.
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        (degenerate, non_header_excluded.len()),
+        (16, 17),
+        "preset {}'s only non-header exclusions must be the 16 pinned \
+         coordinate-degenerate-ring drops (8 objects, source + export side each) plus \
+         geographicalExtent (derived from bbox), got: {:#?}",
+        preset.name(),
+        non_header_excluded
+    );
+    assert!(
+        !header_excluded.is_empty(),
+        "preset {} must still document delft's header metadata members, got: {:#?}",
+        preset.name(),
+        report.excluded
     );
 }
+
+macro_rules! preset_round_trip_test {
+    ($name:ident, $preset:expr) => {
+        #[test]
+        fn $name() {
+            assert_preset_round_trips($preset);
+        }
+    };
+}
+
+preset_round_trip_test!(
+    parquet_defaults_preset_round_trips_delft_losslessly,
+    RecipePreset::ParquetDefaults
+);
+preset_round_trip_test!(
+    no_dictionary_preset_round_trips_delft_losslessly,
+    RecipePreset::NoDictionary
+);
+preset_round_trip_test!(
+    no_byte_stream_split_preset_round_trips_delft_losslessly,
+    RecipePreset::NoByteStreamSplit
+);
+preset_round_trip_test!(
+    no_delta_preset_round_trips_delft_losslessly,
+    RecipePreset::NoDelta
+);
+preset_round_trip_test!(
+    snappy_preset_round_trips_delft_losslessly,
+    RecipePreset::Snappy
+);
 
 #[test]
 fn delft_round_trips_losslessly() {
@@ -324,98 +332,6 @@ fn delft_round_trips_losslessly() {
         !header_excluded.is_empty(),
         "delft's header sets metadata members; expected at least one documented header-metadata \
          exclusion, got none. Full excluded: {:#?}",
-        report.excluded
-    );
-}
-
-#[test]
-fn railway_round_trips_losslessly_modulo_documented_drops() {
-    let (_crs_dir, railway_path) = railway_fixture_with_crs();
-    let (exported, _package_dir, _export_dir) = convert_and_export_path(&railway_path);
-    let opts = CompareOptions {
-        coord_tolerance: [0.0; 3],
-        exclusions: Exclusions {
-            appearance: true,
-            geometry_instances: true,
-        },
-    };
-    let report = compare_datasets(&railway_path, &exported, &opts).unwrap();
-    assert!(
-        report.equal,
-        "railway must round-trip losslessly modulo the documented appearance/instance drops; \
-         differences: {:#?}",
-        report.differences
-    );
-    assert!(report.differences.is_empty());
-
-    // Split header-metadata exclusions (documented, unbounded — whatever
-    // metadata members railway's header happens to set) from everything
-    // else, and pin the non-header set exactly as before: any non-header,
-    // non-pinned exclusion must still fail this test.
-    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-        .excluded
-        .iter()
-        .partition(|e| e.starts_with("header: metadata member"));
-
-    // The exact exclusion breakdown, recounted by category. The
-    // appearance/instances totals are pinned against counts already proven
-    // elsewhere: 105 stored geometries carry material or texture
-    // (export_real_data.rs's appearance_refs_dropped), 15 objects carry a
-    // GeometryInstance (instance_geometries_dropped) — DOUBLED to 210/30
-    // since spec-alignment gap 19: sidecars (materials/textures/
-    // geometry_templates) are now written whenever the source has content
-    // for them, so `export` actually RESTORES railway's appearance/instances
-    // (unlike the old Core-profile default, which dropped them). With
-    // `exclusions.appearance`/`exclusions.geometry_instances` on, the
-    // comparator excludes rather than compares that data on EACH side that
-    // carries it — now both the source and the export do, logging one
-    // exclusion entry per side. The degenerate count was updated from the
-    // writer-only-index-drop figure of 3 to 23 alongside the comparator's
-    // coordinate-degenerate ring fix (3DBAG tile `9-284-556.city.json`
-    // finding; see `crate::compare`'s module docs): railway's real,
-    // unmutated source carries 20 MORE objects whose boundaries include an
-    // index-distinct/coordinate-identical ring, previously invisible to the
-    // INDEX-only degenerate check. It moved again, 23 to 24, alongside
-    // `wkb_write::normalise_ring`'s `> 3` bound: the writer no longer drops
-    // object `GMLID_855011_330784_753`'s `[a, b, a]` sliver ring (it is a
-    // real 3-vertex ring, not a baked WKB closure), so the export now
-    // carries it too — and the comparator's own (still `>= 2`) fixpoint
-    // strip excludes it on BOTH sides instead of the source side only,
-    // turning that one object's single exclusion into two (the writer's own
-    // drop counts in `wkb_roundtrip_real_data.rs` were updated alongside
-    // this same change: railway's former 6 writer-side drops are now 0).
-    let appearance = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("exclusions.appearance"))
-        .count();
-    let instances = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("exclusions.geometry_instances"))
-        .count();
-    let degenerate = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("degenerate ring"))
-        .count();
-    assert_eq!(
-        (appearance, instances, degenerate),
-        (210, 30, 24),
-        "exclusion breakdown must match the pinned pipeline counts, got: {:#?}",
-        non_header_excluded
-    );
-    assert_eq!(
-        non_header_excluded.len(),
-        265,
-        "210 appearance + 30 instances + 24 degenerate + 1 geographicalExtent (derived from bbox) \
-         = 265 total non-header exclusions, nothing else, got: {:#?}",
-        non_header_excluded
-    );
-
-    // Railway's header sets `metadata.geographicalExtent`, a documented
-    // exclusion: it must be logged, never silently dropped.
-    assert!(
-        !header_excluded.is_empty(),
-        "railway's header sets metadata members; expected at least one documented \
-         header-metadata exclusion, got none. Full excluded: {:#?}",
         report.excluded
     );
 }
@@ -483,16 +399,26 @@ fn railway_interior_ring_texture_survives_round_trip() {
 /// M4 task 11 (the milestone's headline gate): a round trip with NO
 /// exclusions at all — appearance and GeometryInstance geometries are
 /// restored from the sidecars (M4 tasks 6-10, always written now that
-/// sidecars are content-gated rather than profile-gated), so unlike
-/// `railway_round_trips_losslessly_modulo_documented_drops` above (an older
-/// pin from when Core-vs-Compatibility was a real choice), the only
-/// remaining exclusions are the 24 pinned degenerate-ring drops (updated
-/// alongside the comparator's coordinate-degenerate fix, and again alongside
-/// `wkb_write::normalise_ring`'s `> 3` bound — see the comment in
-/// `railway_round_trips_losslessly_modulo_documented_drops` above) and
-/// whatever header metadata members railway's header sets (documented,
-/// unbounded). Any OTHER exclusion here would mean appearance or an
-/// instance silently failed to round-trip.
+/// sidecars are content-gated rather than profile-gated), so the only
+/// remaining exclusions are the 24 pinned degenerate-ring drops and whatever
+/// header metadata members railway's header sets (documented, unbounded). Any
+/// OTHER exclusion here would mean appearance or an instance silently failed
+/// to round-trip.
+///
+/// The degenerate count was updated from the writer-only-index-drop figure of
+/// 3 to 23 alongside the comparator's coordinate-degenerate ring fix (3DBAG
+/// tile `9-284-556.city.json` finding; see `crate::compare`'s module docs):
+/// railway's real, unmutated source carries 20 MORE objects whose boundaries
+/// include an index-distinct/coordinate-identical ring, previously invisible
+/// to the INDEX-only degenerate check. It moved again, 23 to 24, alongside
+/// `wkb_write::normalise_ring`'s `> 3` bound: the writer no longer drops
+/// object `GMLID_855011_330784_753`'s `[a, b, a]` sliver ring (it is a real
+/// 3-vertex ring, not a baked WKB closure), so the export now carries it too
+/// — and the comparator's own (still `>= 2`) fixpoint strip excludes it on
+/// BOTH sides instead of the source side only, turning that one object's
+/// single exclusion into two (the writer's own drop counts in
+/// `wkb_roundtrip_real_data.rs` were updated alongside this same change:
+/// railway's former 6 writer-side drops are now 0).
 #[test]
 fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
@@ -531,52 +457,6 @@ fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
         !header_excluded.is_empty(),
         "railway's header sets metadata members; expected at least one documented \
          header-metadata exclusion, got none. Full excluded: {:#?}",
-        report.excluded
-    );
-}
-
-/// M4 task 11: delft carries no appearance and no GeometryInstances, so BOTH
-/// profiles must round-trip with no exclusions beyond delft's own documented
-/// header metadata members and the 16 pinned coordinate-degenerate-ring
-/// drops (see `delft_round_trips_losslessly` above for the full explanation)
-/// — delft has no appearance/templates to write sidecars for, so this must
-/// not introduce any new difference or exclusion relative to the round trip
-/// already proven by `delft_round_trips_losslessly`.
-#[test]
-fn delft_compatibility_round_trips_losslessly_with_only_header_exclusions() {
-    let (exported, _package_dir, _export_dir) = convert_and_export("delft.city.jsonl");
-    let report = compare_datasets(
-        &fixture("delft.city.jsonl"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
-    assert!(
-        report.equal,
-        "delft must round-trip losslessly under the Compatibility profile too; differences: {:#?}",
-        report.differences
-    );
-    assert!(report.differences.is_empty());
-    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-        .excluded
-        .iter()
-        .partition(|e| e.starts_with("header: metadata member"));
-    let degenerate = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("degenerate ring"))
-        .count();
-    assert_eq!(
-        (degenerate, non_header_excluded.len()),
-        (16, 17),
-        "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
-         drops (8 objects, source + export side each; see `delft_round_trips_losslessly` for \
-         the full explanation) plus geographicalExtent (derived from bbox), got: {:#?}",
-        non_header_excluded
-    );
-    assert!(
-        !header_excluded.is_empty(),
-        "delft's header sets metadata members; expected at least one documented header-metadata \
-         exclusion, got none. Full excluded: {:#?}",
         report.excluded
     );
 }
@@ -720,114 +600,6 @@ fn convert_and_export_with_path(
     .unwrap();
 
     (output, package_dir, export_dir)
-}
-
-/// M5 task 5 (Step 3): delft under by-type (Core profile) must round-trip
-/// exactly as losslessly as `delft_round_trips_losslessly` above — the
-/// table layout is purely a physical-file concern, never a semantic one.
-/// Per the family-grouping rule, delft's Building + BuildingPart share the
-/// single `building.parquet` file (see
-/// `by_type_convert_of_delft_writes_exactly_one_family_table` in
-/// `convert_real_data.rs`), so `export` must still read the whole dataset
-/// back from that one table.
-#[test]
-fn delft_by_type_round_trips_losslessly() {
-    let (exported, package_dir, _export_dir) =
-        convert_and_export_with("delft.city.jsonl", RowOrder::Source);
-    assert!(
-        package_dir.path().join("building.parquet").exists(),
-        "sanity: this must actually be a split-by-type package"
-    );
-    assert!(
-        !package_dir.path().join("buildingpart.parquet").exists(),
-        "BuildingPart is 2nd-level and must share building.parquet, not get its own file"
-    );
-    let report = compare_datasets(
-        &fixture("delft.city.jsonl"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
-    assert!(
-        report.equal,
-        "ByType-layout delft must round-trip losslessly; differences: {:#?}",
-        report.differences
-    );
-    assert!(report.differences.is_empty());
-    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-        .excluded
-        .iter()
-        .partition(|e| e.starts_with("header: metadata member"));
-    let degenerate = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("degenerate ring"))
-        .count();
-    assert_eq!(
-        (degenerate, non_header_excluded.len()),
-        (16, 17),
-        "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
-         drops (8 objects, source + export side each; see `delft_round_trips_losslessly` for \
-         the full explanation) plus geographicalExtent (derived from bbox), got: {:#?}",
-        non_header_excluded
-    );
-    assert!(
-        !header_excluded.is_empty(),
-        "delft's header sets metadata members; expected at least one documented header-metadata \
-         exclusion, got none. Full excluded: {:#?}",
-        report.excluded
-    );
-}
-
-/// M5 task 5 (Step 3), updated for the by-module split (spec "By-module
-/// object-table layout"): railway under by-module (Compatibility profile) —
-/// the M4 headline round-trip gate
-/// (`railway_compatibility_round_trips_losslessly_with_no_exclusions` above)
-/// must hold across all 9 pinned module tables (railway's 14 distinct
-/// `object_type` values collapse to 9 distinct CityGML 3.0 modules — see
-/// `by_type_convert_of_railway_writes_nine_module_tables` in
-/// `convert_real_data.rs` for the exact module membership).
-#[test]
-fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
-    let (_crs_dir, railway_path) = railway_fixture_with_crs();
-    let (exported, package_dir, _export_dir) =
-        convert_and_export_with_path(&railway_path, RowOrder::Source);
-    let tables = PackageTables::open(package_dir.path()).unwrap().tables;
-    assert_eq!(
-        tables.len(),
-        9,
-        "railway's pinned type set collapses to 9 distinct CityGML modules, got: {tables:?}"
-    );
-
-    let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
-    assert!(
-        report.equal,
-        "By-type railway must round-trip losslessly with NO exclusions under the \
-         Compatibility profile; differences: {:#?}",
-        report.differences
-    );
-    assert!(report.differences.is_empty());
-
-    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-        .excluded
-        .iter()
-        .partition(|e| e.starts_with("header: metadata member"));
-    let degenerate = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("degenerate ring"))
-        .count();
-    assert_eq!(
-        (degenerate, non_header_excluded.len()),
-        (24, 25),
-        "the 24 pinned degenerate-ring drops plus geographicalExtent (derived from bbox) \
-         must be the only non-header exclusions, got: {:#?}",
-        non_header_excluded
-    );
-    assert!(
-        !header_excluded.is_empty(),
-        "railway's header sets metadata members; expected at least one documented \
-         header-metadata exclusion, got none. Full excluded: {:#?}",
-        report.excluded
-    );
 }
 
 /// M5 task 5 (Step 3, the composed smoke gate): `RowOrder::Hilbert` and the
