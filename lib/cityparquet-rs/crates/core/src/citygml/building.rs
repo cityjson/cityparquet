@@ -1104,7 +1104,9 @@ impl RawBuilding {
             let mut texture_obj = serde_json::Map::new();
             for theme in &themes {
                 let map = &theme_maps[theme];
-                let (values, any) = texture_values_from_ring_ids(ring_ids, reverse, map);
+                let boundaries = &geom["boundaries"];
+                let (values, any) =
+                    texture_values_from_ring_ids(ring_ids, boundaries, reverse, map);
                 if any {
                     texture_obj.insert(theme.clone(), json!({ "values": values }));
                 }
@@ -1449,16 +1451,26 @@ fn reverse_leaf(poly: &Polygon, reverse: bool) -> Value {
 /// `Array` is a container to recurse into.
 fn texture_values_from_ring_ids(
     node: &Value,
+    boundary: &Value,
     reverse: &Value,
     map: &HashMap<String, (usize, Vec<usize>)>,
 ) -> (Value, bool) {
     match node {
         Value::String(id) => match map.get(id) {
             Some((tex, uvs)) => {
+                // GML gives one UV pair per ring position, closing included;
+                // the ring dropped its closing position iff it had one, so a
+                // list exactly one longer than the ring loses its last pair.
+                let positions = boundary.as_array().map_or(uvs.len(), Vec::len);
+                let uvs = if uvs.len() == positions + 1 {
+                    &uvs[..positions]
+                } else {
+                    &uvs[..]
+                };
                 // A ring wound backwards by a reversed OrientableSurface needs
                 // its per-vertex UVs reversed to stay aligned (CG-2). The
-                // closing pair is already dropped on both vertices and UVs, so
-                // a full reverse is the exact inverse of the vertex reversal.
+                // closing pair is now gone from both vertices and UVs, so a
+                // full reverse is the exact inverse of the vertex reversal.
                 let reversed = reverse.as_bool().unwrap_or(false);
                 let mut leaf = Vec::with_capacity(1 + uvs.len());
                 leaf.push(json!(tex));
@@ -1479,7 +1491,8 @@ fn texture_values_from_ring_ids(
                 let rev = rev_items
                     .and_then(|r| r.get(i))
                     .unwrap_or(&Value::Bool(false));
-                let (v, hit) = texture_values_from_ring_ids(it, rev, map);
+                let bnd = boundary.get(i).unwrap_or(&Value::Null);
+                let (v, hit) = texture_values_from_ring_ids(it, bnd, rev, map);
                 any |= hit;
                 out.push(v);
             }

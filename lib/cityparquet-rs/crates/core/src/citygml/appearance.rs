@@ -11,8 +11,9 @@
 //!
 //! `app:theme` is absent → the empty-string theme `""` (round-trips to an absent
 //! `app:theme` on write). `app:ParameterizedTexture` becomes a CityJSON texture
-//! with per-ring UV coordinates (the GML closing UV pair dropped, symmetric with
-//! the ring's closing point).
+//! with per-ring UV coordinates, one pair per ring position as GML gives them;
+//! the closing pair is dropped where the ring's closing position is (see
+//! `building::texture_values_from_ring_ids`).
 
 use std::io::BufRead;
 
@@ -37,7 +38,7 @@ pub type RingUvs = (String, Vec<[f64; 2]>);
 
 /// One `app:ParameterizedTexture`: its theme, the CityJSON texture object, and
 /// the per-ring UV coordinates (keyed by the ring `gml:id` the
-/// `app:textureCoordinates ring="#id"` targets; the closing pair dropped).
+/// `app:textureCoordinates ring="#id"` targets; every pair, closing included).
 pub struct ReadTexture {
     pub theme: String,
     pub texture: Value,
@@ -298,7 +299,7 @@ fn read_x3d_material<R: BufRead>(
 
 /// Parse an `app:ParameterizedTexture` (positioned after its `Start`) into a
 /// CityJSON texture object and its per-ring UV coordinates (keyed by ring
-/// `gml:id`; the GML closing UV pair dropped). Unhandled foreign forms
+/// `gml:id`; every pair, closing included). Unhandled foreign forms
 /// (`app:TexCoordGen`, texture coords with no `ring` id) are skipped.
 fn read_parameterized_texture<R: BufRead>(
     reader: &mut NsReader<R>,
@@ -348,8 +349,8 @@ fn read_parameterized_texture<R: BufRead>(
 }
 
 /// An `app:target` (a `TexCoordList` of per-ring `app:textureCoordinates`):
-/// collect each ring's `(ring gml:id, UVs)` — the closing UV pair dropped
-/// (symmetric with the ring's closing point). A `textureCoordinates` with no
+/// collect each ring's `(ring gml:id, UVs)`, every pair kept. A
+/// `textureCoordinates` with no
 /// `ring` id, or `app:TexCoordGen`, is skipped.
 fn read_texture_target<R: BufRead>(
     reader: &mut NsReader<R>,
@@ -397,8 +398,13 @@ fn mime_to_type(mime: &str) -> Option<&'static str> {
     }
 }
 
-/// Parse a whitespace-separated UV list into `[u, v]` pairs, dropping the closing
-/// pair (a GML texture ring is closed; CityJSON UVs are not).
+/// Parse a whitespace-separated UV list into `[u, v]` pairs, all of them.
+///
+/// The closing pair is not dropped here: GML pairs the list with the ring's
+/// positions one for one, so whether it closes is the ring's decision, made
+/// where the two meet (`building::texture_values_from_ring_ids`). Deciding it
+/// from the UVs' own equality leaves a pair short on a sliver ring whose last
+/// position misses its first by a fraction of a millimetre.
 fn parse_uvs(s: &str) -> Result<Vec<[f64; 2]>> {
     let nums = parse_floats(s)?;
     if nums.len() % 2 != 0 {
@@ -407,11 +413,7 @@ fn parse_uvs(s: &str) -> Result<Vec<[f64; 2]>> {
             nums.len()
         )));
     }
-    let mut uvs: Vec<[f64; 2]> = nums.chunks(2).map(|c| [c[0], c[1]]).collect();
-    if uvs.len() >= 2 && uvs.first() == uvs.last() {
-        uvs.pop();
-    }
-    Ok(uvs)
+    Ok(nums.chunks(2).map(|c| [c[0], c[1]]).collect())
 }
 
 /// Parse a whitespace-separated list of floats (an X3D colour).
