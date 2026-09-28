@@ -37,6 +37,44 @@ const sections = [
   { label: "AI", href: url("ai") },
 ];
 
+const conversations = [
+  {
+    label: "Count buildings",
+    question: "How many buildings in the Netherlands are higher than 100 metres?",
+    steps: ["Calling the CityParquet query tool…", "Running SQL against the national 3DBAG dataset…"],
+    answer: "674 buildings are higher than 100 metres in this dataset.",
+    context: "Using roof height above ground. Only building type and height attributes are needed — no 3D geometry to download.",
+    source: "Query result checked on 23 September 2026.",
+    link: "getting-started",
+    linkLabel: "Try the query",
+    query: `SELECT COUNT(*) AS buildings_over_100m
+FROM read_parquet(
+  'https://cityparquet.open3d.city/data/3dbag/building.parquet')
+WHERE object_type = 'Building'
+  AND b3_h_dak_max - b3_h_maaiveld > 100;`,
+  },
+  {
+    label: "Find datasets",
+    question: "What datasets are available to you?",
+    steps: ["Searching the Open3DCity STAC collections…", "Checking the CityParquet catalogue for converted datasets…"],
+    answer: "3DBAG in the Netherlands, PLATEAU in Japan, and LoD3 buildings in French economic activity zones.",
+    context: "Explore a whole country with 3DBAG, Tokyo and Yokohama with PLATEAU, or economic activity zones in Auvergne-Rhône-Alpes.",
+    source: "Examples from the published dataset documentation; availability may change.",
+    link: "resources/datasets",
+    linkLabel: "Explore the datasets",
+  },
+  {
+    label: "Explain geometry",
+    question: "How should geometries be encoded in CityParquet?",
+    steps: ["Searching the CityParquet specification…", "Reading the geometry encoding and per-LoD column rules…"],
+    answer: "Use little-endian ISO WKB, with a separate geometry column for each level of detail.",
+    context: "For example, geometry_lod2_2 stores the WKB and geometry_properties_lod2_2 carries semantics and shell structure. Coordinates are world-coordinate doubles in the file CRS; a Solid uses PolyhedralSurfaceZ.",
+    source: "Based on the draft CityParquet geometry specification.",
+    link: "specification/geometry-semantics",
+    linkLabel: "Read the geometry specification",
+  },
+];
+
 // The four properties that decide whether CityParquet fits a reader's problem.
 const facts = [
   { key: "Storage", value: "Static files", note: "No database server" },
@@ -104,33 +142,6 @@ const tools = [
   {
     name: "Arrow · pandas · Spark",
     body: "A package is Parquet, so mature readers open it with no extension at all.",
-  },
-];
-
-// The MCP server's five tools, in the order an agent meets them: learn what
-// exists, find the passage, read it, then look at the data. Names drop the
-// `cityparquet_` prefix the server registers them under, which stays
-// provisional while a merge with the sibling CityJSON server is open.
-const mcpTools = [
-  {
-    name: "docs_outline",
-    body: "Every chapter of the specification, the design decisions and both extension function references — titles only.",
-  },
-  {
-    name: "docs_search",
-    body: "The passage that answers a question, with its surrounding snippet, across all three corpora.",
-  },
-  {
-    name: "docs_read",
-    body: "One chapter, or one section of it. Never the whole corpus.",
-  },
-  {
-    name: "describe",
-    body: "What a dataset holds — module tables, row counts, LoDs, geometry columns, CRS — in a single call.",
-  },
-  {
-    name: "query",
-    body: "SQL against a package over HTTPS, one statement at a time, under a deadline and a row cap.",
   },
 ];
 
@@ -536,58 +547,47 @@ const queryTokens = tokeniseSql(query);
           <h2>AI friendly</h2>
           <span class="cp-heading-note">Agents</span>
         </div>
-        <p class="cp-lede">
-          A package is static files and SQL, which is most of what an agent
-          needs to work unaided. The gap is knowledge: what the format
-          guarantees, and which DuckDB functions actually exist. An MCP server
-          in the monorepo closes it — serving the specification and the
-          extension function references in chapters, describing a dataset in
-          one call, and running sandboxed SQL.
-        </p>
-        <div class="cp-tools">
-          {
-            mcpTools.map((tool) => (
-              <div class="cp-tool">
-                <span class="cp-tool-name">{tool.name}</span>
-                <p>{tool.body}</p>
+        <p class="cp-lede">Ask a question. Let your agent query the city model.</p>
+        <figure class="cp-chat" aria-label="Example conversations with an AI agent" data-chat>
+          <figcaption class="cp-chat-caption">Scripted conversations · not a live chat</figcaption>
+          <div class="cp-chat-controls" hidden>
+            <div class="cp-chat-choices" aria-label="Choose an example">
+              {conversations.map((conversation, index) => (
+                <button type="button" data-chat-choice={index} aria-pressed={index === 0}>{conversation.label}</button>
+              ))}
+            </div>
+            <button type="button" data-chat-replay>Replay</button>
+            <button type="button" data-chat-skip>Show answer</button>
+          </div>
+          {conversations.map((conversation, index) => (
+            <div data-chat-panel={index} hidden={index !== 0}>
+              <div class="cp-chat-human">
+                <span class="cp-chat-role">You</span>
+                <p data-chat-question>{conversation.question}</p>
               </div>
-            ))
-          }
-        </div>
-        <p class="cp-lede">
-          The shape matters more than the count. Documentation arrives in
-          chapters, so a model reads the passage it needs rather than the whole
-          specification, and asks after the functions the loaded build provides
-          rather than the ones it half-remembers. Results are bounded on the
-          way back: a row cap, and geometry returned as <code>&lt;BLOB 4213
-          bytes&gt;</code> instead of kilobytes of binary, so one <code>SELECT
-          *</code> over an object table cannot flood the context it was meant
-          to inform.
+              <div class="cp-chat-agent">
+                <span class="cp-chat-role">AI agent</span>
+                <p class="cp-chat-thinking" data-chat-thinking hidden>Thinking<span aria-hidden="true">…</span></p>
+                <div class="cp-chat-tools" aria-label="Example tool activity">
+                  {conversation.steps.map((step) => <span data-chat-step>{step}</span>)}
+                  {conversation.query && <details data-chat-detail>
+                    <summary>View SQL</summary>
+                    <pre><code>{conversation.query}</code></pre>
+                  </details>}
+                </div>
+                <p class="cp-chat-answer" data-chat-answer>{conversation.answer}</p>
+                <p class="cp-chat-context" data-chat-context>{conversation.context}</p>
+                <a data-chat-reference href={url(conversation.link)}>{conversation.linkLabel} →</a>
+              </div>
+              <p class="cp-chat-source">{conversation.source}</p>
+            </div>
+          ))}
+          <span class="cp-chat-announcement" role="status" aria-live="polite"></span>
+        </figure>
+        <p class="cp-lede cp-chat-link">
+          Connect your agent with the CityParquet MCP server.
+          <a href={url("ai")}>See the setup →</a>
         </p>
-        <p class="cp-lede">
-          Four skills carry what a tool cannot: which function to call, and
-          the mistakes that return a wrong answer rather than an error. A
-          footprint total counted twice, a conversion that drops its
-          coordinate reference system, a load that discards every file's
-          footer. Every SQL example in them runs in the server's test suite.
-        </p>
-        <div class="cp-card cp-note">
-          <span class="cp-tag">Status</span>
-          <p>
-            The server runs locally over stdio from a clone, or hosted over
-            streamable HTTP on Google Cloud Run: read-only, sandboxed, one engine
-            per request, and limited to the project's own data hosts. The
-            hosted instances sleep when idle, so a first call can take a few
-            seconds. The skills install as a Claude Code plugin or through
-            APM, for Claude Code and Codex.
-            Both live at{" "}
-            <a href={`${repo}/tree/main/ai`} rel="noopener">
-              cityjson/cityparquet
-            </a>{" "}
-            under <code>ai/</code>, alongside the specification they serve;{" "}
-            <a href={url("ai")}>AI and agents</a> has the setup.
-          </p>
-        </div>
       </div>
     </section>
 
@@ -1126,6 +1126,72 @@ const queryTokens = tokeniseSql(query);
     font-weight: 500;
   }
 
+  .cp-chat {
+    max-width: 52rem;
+    margin: 2rem 0 0;
+    padding: clamp(1rem, 3vw, 2rem);
+    border: 1px solid var(--cp-line);
+    border-radius: 12px;
+    background: var(--cp-surface);
+  }
+  .cp-chat-caption, .cp-chat-source {
+    color: var(--cp-ink-2);
+    font-size: 0.8125rem;
+  }
+  .cp-chat [hidden] { display: none !important; }
+  .cp-chat-controls, .cp-chat-choices { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .cp-chat-controls { margin-top: 1rem; align-items: center; }
+  .cp-chat-choices { margin-right: auto; }
+  .cp-chat-controls button {
+    font: inherit; font-size: 0.8125rem; padding: 0.5rem 0.75rem;
+    border: 1px solid var(--cp-line); border-radius: 6px;
+    background: transparent; color: var(--cp-ink); cursor: pointer;
+  }
+  .cp-chat-controls button:hover { background: var(--cp-accent-wash); }
+  .cp-chat-controls button[aria-pressed="true"] { background: var(--cp-accent-wash); border-color: var(--cp-accent); }
+  .cp-chat button:focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 3px; }
+  .cp-chat [data-chat-panel] { min-height: 25rem; }
+  .cp-chat [data-chat-question] { min-height: 3.3em; }
+  .cp-chat [data-chat-reference] { display: inline-block; margin-top: 0.75rem; }
+  .cp-chat-typing::after { content: ""; display: inline-block; height: 1em; border-right: 2px solid var(--cp-accent); margin-left: 2px; vertical-align: -0.1em; }
+  .cp-chat-thinking { color: var(--cp-ink-2); }
+  .cp-chat-thinking span { animation: cp-thinking 1s ease-in-out infinite alternate; }
+  @keyframes cp-thinking { to { opacity: 0.25; } }
+  .cp-chat-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  @media (prefers-reduced-motion: reduce) { .cp-chat-thinking span { animation: none; } }
+  .cp-chat-human {
+    margin: 1.5rem 0 1.75rem auto;
+    padding: 1rem 1.25rem;
+    max-width: 36rem;
+    background: var(--cp-accent-wash);
+    border-radius: 12px 12px 0 12px;
+  }
+  .cp-chat-role { font-weight: 600; font-size: 0.875rem; }
+  .cp-chat p { margin: 0.5rem 0 0; line-height: 1.65; }
+  .cp-chat-tools {
+    margin: 1.25rem 0;
+    padding: 0.875rem 1rem;
+    border-left: 1px solid var(--cp-line);
+    color: var(--cp-ink-2);
+    font-size: 0.875rem;
+  }
+  .cp-chat-tools > span { display: block; margin-bottom: 0.5rem; }
+  .cp-chat-tools summary { cursor: pointer; color: var(--cp-ink); }
+  .cp-chat-tools summary:focus-visible {
+    outline: 2px solid var(--cp-accent);
+    outline-offset: 4px;
+  }
+  .cp-chat-tools pre {
+    margin: 1rem 0 0;
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .cp-chat-answer { font-size: 1.25rem; }
+  .cp-chat-context { color: var(--cp-ink-2); }
+  .cp-chat .cp-chat-source { margin-top: 1.75rem; }
+  .cp-chat-link { margin-top: 1.5rem; }
+
   /* --- measurements --------------------------------------------------- */
 
   .cp-stats {
@@ -1647,6 +1713,92 @@ const queryTokens = tokeniseSql(query);
 </style>
 
 <script>
+  // A finite, cancellable demo; never makes a network request or runs SQL.
+  const chat = document.querySelector<HTMLElement>("[data-chat]");
+  if (chat) {
+    const panels = Array.from(chat.querySelectorAll<HTMLElement>("[data-chat-panel]"));
+    const choices = Array.from(chat.querySelectorAll<HTMLButtonElement>("[data-chat-choice]"));
+    const motionPreference = matchMedia("(prefers-reduced-motion: reduce)");
+    const announcement = chat.querySelector<HTMLElement>(".cp-chat-announcement")!;
+    let current = 0;
+    let controller = new AbortController();
+    let started = false;
+    let running = false;
+    const originals = new Map<HTMLElement, string>();
+    panels.forEach(panel => panel.querySelectorAll<HTMLElement>("[data-chat-question], [data-chat-answer]").forEach(el => originals.set(el, el.textContent ?? "")));
+    chat.querySelector<HTMLElement>(".cp-chat-controls")!.hidden = false;
+    const finish = (announce = true) => {
+      controller.abort();
+      running = false;
+      const panel = panels[current];
+      panel.querySelectorAll<HTMLElement>("[data-chat-question], [data-chat-answer]").forEach(el => {
+        el.textContent = originals.get(el)!;
+        el.classList.remove("cp-chat-typing");
+      });
+      panel.querySelectorAll<HTMLElement>("[data-chat-step], [data-chat-answer], [data-chat-context], [data-chat-detail], [data-chat-reference]").forEach(el => el.hidden = false);
+      panel.querySelector<HTMLElement>("[data-chat-thinking]")!.hidden = true;
+      if (announce) announcement.textContent = originals.get(panel.querySelector<HTMLElement>("[data-chat-answer]")!)!;
+    };
+    const play = async (index: number) => {
+      finish(false);
+      current = index;
+      started = true;
+      announcement.textContent = "";
+      panels.forEach((panel, i) => panel.hidden = i !== index);
+      choices.forEach((button, i) => button.setAttribute("aria-pressed", String(i === index)));
+      if (motionPreference.matches) { finish(); return; }
+      controller = new AbortController();
+      const signal = controller.signal;
+      running = true;
+      const panel = panels[index];
+      const question = panel.querySelector<HTMLElement>("[data-chat-question]")!;
+      const answer = panel.querySelector<HTMLElement>("[data-chat-answer]")!;
+      const thinking = panel.querySelector<HTMLElement>("[data-chat-thinking]")!;
+      panel.querySelectorAll<HTMLElement>("[data-chat-step], [data-chat-answer], [data-chat-context], [data-chat-detail], [data-chat-reference]").forEach(el => el.hidden = true);
+      panel.querySelectorAll("details").forEach(el => el.open = false);
+      const wait = (ms: number) => new Promise<void>((resolve, reject) => {
+        const abort = () => { clearTimeout(timer); reject(new DOMException("Cancelled", "AbortError")); };
+        const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, ms);
+        signal.addEventListener("abort", abort, { once: true });
+      });
+      const type = async (el: HTMLElement, interval: number) => {
+        el.hidden = false;
+        el.textContent = "";
+        el.classList.add("cp-chat-typing");
+        for (const char of originals.get(el)!) {
+          if (signal.aborted) return;
+          el.textContent += char;
+          await wait(interval);
+        }
+        el.classList.remove("cp-chat-typing");
+      };
+      try {
+        await type(question, 30);
+        thinking.hidden = false;
+        await wait(850);
+        for (const step of panel.querySelectorAll<HTMLElement>("[data-chat-step]")) {
+          step.hidden = false;
+          await wait(1100);
+        }
+        thinking.hidden = true;
+        await type(answer, 18);
+        finish();
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) throw error;
+      }
+    };
+    choices.forEach((button, index) => button.addEventListener("click", () => void play(index)));
+    chat.querySelector("[data-chat-replay]")!.addEventListener("click", () => void play(current));
+    chat.querySelector("[data-chat-skip]")!.addEventListener("click", () => finish());
+    motionPreference.addEventListener("change", () => finish(false));
+    document.addEventListener("visibilitychange", () => { if (document.hidden && running) finish(false); });
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && !started) void play(0);
+      else if (!entry.isIntersecting && running) finish(false);
+    }, { threshold: 0.25 });
+    observer.observe(chat);
+  }
+
   // Types the hero's four claims one character at a time. Bails out under
   // reduced-motion, leaving the first phrase rendered from the server.
   const target = document.querySelector<HTMLElement>("[data-cp-typed]");
