@@ -6014,13 +6014,71 @@
     "codec": {
       "records": [],
       "sizes": [],
-      "gaps": [],
+      "gaps": [
+        {
+          "dataset": "3dbag_n1000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n10000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n100000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n1000000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n5000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n50000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n500000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        }
+      ],
       "variants": []
     },
     "rowgroup": {
       "records": [],
       "sizes": [],
-      "gaps": [],
+      "gaps": [
+        {
+          "dataset": "3dbag_n1000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n10000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n100000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n1000000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n5000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n50000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        },
+        {
+          "dataset": "3dbag_n500000",
+          "issue": "legacy median/time_mad_s CSV; not rendered"
+        }
+      ],
       "variants": []
     },
     "bloom": {
