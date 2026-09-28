@@ -279,26 +279,6 @@ an LoD being supplied for it; how a tool obtains one is out of scope.)
 only implicit geometries, or none at all — simply carries no geometry column, and
 declares no `city.primary_column`.
 
-### LoD0 synthesis (writer feature)
-
-A writer **MAY** synthesise an LoD0 footprint for an object whose source provides no
-LoD0 geometry, by flattening its highest available LoD (typically a `Solid` or
-`MultiSurface`) to a 2D footprint at a representative elevation. This is an opt-in
-**enrichment**, not a decoding of anything the source carried: the exported model gains
-a footprint the source model lacked.
-
-- The synthesised footprint follows the ordinary [suffix grammar](#levels-of-detail)
-  like any other LoD — it lands in `geometry_lod0_0`, never a bare `geometry` column —
-  and gets its own `geometry_properties_lod0_0` (`type: "MultiSurface"`).
-- It is **kept on export** back to CityJSON/CityGML (see
-  [round-trip losslessness](/specification/dataset-package#round-trip-losslessness)):
-  because the source lacked this footprint, the round trip for that object is an
-  enrichment, not an exact reproduction of the source.
-- **Synthesis provenance is distinct from degenerate-geometry diagnostics.** Some
-  inputs project to a degenerate (zero-area) footprint; a writer that drops these rather
-  than writing them logs the fact as a diagnostic — this affects write-time reporting,
-  not the encoding or round-trip contract.
-
 ## CRS
 
 The CRS is defined once per file, as **PROJJSON**, in the

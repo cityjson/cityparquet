@@ -150,7 +150,6 @@ yet fully preserved at all. This table is the contract:
 | Addresses | **Exact for the kept fields** (street/number/postcode/city/state/country/free-text + `location`); source members outside that set are dropped. |
 | Unmapped source members | **Exact in value;** held in `other`, returned as `attributes` members on export. |
 | ADE namespace / object-class metadata | 🟡 **Partial** — attributes and types survive; full namespace fidelity is [open](/open-questions). |
-| Synthesised LoD0 footprint ([writer enrichment](/specification/geometry-semantics#lod0-synthesis-writer-feature)) | **Not a round trip** — the object gains a footprint the source lacked; kept on export. |
 
 Two deliberate **canonicalisations** — where the result is equal to the source as a
 model but not byte-for-byte as a document:
