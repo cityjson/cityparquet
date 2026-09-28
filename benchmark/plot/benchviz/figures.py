@@ -457,72 +457,84 @@ def format_heatmap(data: dict[str, Any], out: Path) -> list[Path]:
         for mi, (_field, _scenario, _name, scale) in enumerate(metrics)
     ]
 
-    # A complete query matrix is deliberately a tall standalone sheet. Its
-    # width is fixed; adding datasets increases height, never shrinks labels.
-    n = len(datasets)
-    row_units = max(1, len(queries))
-    # Width and height are sized so a two-line cell keeps a margin inside its
-    # border: the numbers never touch the rule, at any column count.
-    fig = plt.figure(figsize=(10.0, 4.5 * n + 1.3), layout="constrained")
-    subfigures = fig.subfigures(
-        nrows=n + 1, ncols=1, squeeze=False, height_ratios=[*([4] * n), 1.2]
-    )
-    for i, dataset in enumerate(datasets):
-        subfig = subfigures[i, 0]
-        subfig.suptitle(_title(dataset), fontsize=11, x=0.01, ha="left")
-        # Write above idle write, read beside read: the two read metrics share
-        # the query rows, so they read across; the write metrics share the same
-        # format columns and sit directly above.
-        grid = subfig.add_gridspec(2, 2, height_ratios=[1.2, row_units], wspace=0.2)
-        axes = [
-            subfig.add_subplot(grid[0, 0]),
-            subfig.add_subplot(grid[0, 1]),
-            subfig.add_subplot(grid[1, 0]),
-            subfig.add_subplot(grid[1, 1]),
-        ]
-        for mi, (_field, scenario, title, scale) in enumerate(metrics):
-            ax = axes[mi]
-            row_labels = [scenario] if scenario else queries
-            _heat(
-                ax,
-                metric_matrices[i][mi],
-                row_labels,
-                formats,
-                title,
-                vmax=bounds[mi],
-                scale=scale,
-                x_rotation=0,
+    def render(chosen: list[int], name: str, heading: str) -> list[Path]:
+        # A complete query matrix is deliberately a tall standalone sheet. Its
+        # width is fixed; adding datasets increases height, never shrinks labels.
+        n = len(chosen)
+        row_units = max(1, len(queries))
+        # Width and height are sized so a two-line cell keeps a margin inside its
+        # border: the numbers never touch the rule, at any column count.
+        fig = plt.figure(figsize=(10.0, 4.5 * n + 1.3), layout="constrained")
+        subfigures = fig.subfigures(
+            nrows=n + 1, ncols=1, squeeze=False, height_ratios=[*([4] * n), 1.2]
+        )
+        for row, i in enumerate(chosen):
+            dataset = datasets[i]
+            subfig = subfigures[row, 0]
+            subfig.suptitle(_title(dataset), fontsize=11, x=0.01, ha="left")
+            # Write above idle write, read beside read: the two read metrics share
+            # the query rows, so they read across; the write metrics share the same
+            # format columns and sit directly above.
+            grid = subfig.add_gridspec(2, 2, height_ratios=[1.2, row_units], wspace=0.2)
+            axes = [
+                subfig.add_subplot(grid[0, 0]),
+                subfig.add_subplot(grid[0, 1]),
+                subfig.add_subplot(grid[1, 0]),
+                subfig.add_subplot(grid[1, 1]),
+            ]
+            for mi, (_field, scenario, title, scale) in enumerate(metrics):
+                ax = axes[mi]
+                row_labels = [scenario] if scenario else queries
+                _heat(
+                    ax,
+                    metric_matrices[i][mi],
+                    row_labels,
+                    formats,
+                    title,
+                    vmax=bounds[mi],
+                    scale=scale,
+                    x_rotation=0,
+                )
+                for text in ax.texts:
+                    text.set_fontsize(5.8)
+                ax.tick_params(axis="y", labelsize=7)
+                ax.tick_params(axis="x", labelsize=6.5)
+                # Format labels live under the read row only; the write row shares
+                # its columns. Query labels live left of the read-time panel only.
+                if mi in (0, 1):
+                    ax.set_xticks([])
+                if mi in (1, 3):
+                    ax.set_yticks([])
+        key = subfigures[n, 0]
+        key.suptitle(
+            "Cell text: absolute value over ×ratio to CityJSONSeq; lower is better",
+            fontsize=8,
+            x=0.01,
+            ha="left",
+        )
+        key_grid = key.add_gridspec(1, len(metrics), wspace=0.55)
+        for mi, (_field, _scenario, title, scale) in enumerate(metrics):
+            cax = key.add_subplot(key_grid[0, mi])
+            cmap, norm = _heat_colors(scale, bounds[mi])
+            bar = key.colorbar(
+                ScalarMappable(norm=norm, cmap=cmap), cax=cax, orientation="horizontal"
             )
-            for text in ax.texts:
-                text.set_fontsize(5.8)
-            ax.tick_params(axis="y", labelsize=7)
-            ax.tick_params(axis="x", labelsize=6.5)
-            # Format labels live under the read row only; the write row shares
-            # its columns. Query labels live left of the read-time panel only.
-            if mi in (0, 1):
-                ax.set_xticks([])
-            if mi in (1, 3):
-                ax.set_yticks([])
-    key = subfigures[n, 0]
-    key.suptitle(
-        "Cell text: absolute value over ×ratio to CityJSONSeq; lower is better",
-        fontsize=8,
-        x=0.01,
-        ha="left",
-    )
-    key_grid = key.add_gridspec(1, len(metrics), wspace=0.55)
-    for mi, (_field, _scenario, title, scale) in enumerate(metrics):
-        cax = key.add_subplot(key_grid[0, mi])
-        cmap, norm = _heat_colors(scale, bounds[mi])
-        bar = key.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=cax, orientation="horizontal")
-        ticks = _heat_ticks(bounds[mi], scale)
-        bar.set_ticks(ticks)
-        bar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
-        bar.ax.tick_params(labelsize=6, length=0)
-        bar.outline.set_visible(False)
-        bar.set_label(title, fontsize=7)
-    fig.suptitle("Format comparison", fontsize=13, x=0.01, ha="left")
-    return _save(fig, "heatmap", out)
+            ticks = _heat_ticks(bounds[mi], scale)
+            bar.set_ticks(ticks)
+            bar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
+            bar.ax.tick_params(labelsize=6, length=0)
+            bar.outline.set_visible(False)
+            bar.set_label(title, fontsize=7)
+        fig.suptitle(heading, fontsize=13, x=0.01, ha="left")
+        return _save(fig, name, out)
+
+    # The combined sheet, then one sheet per dataset for a paper to place at
+    # its own size. The per-dataset sheets keep the shared colour bounds, so
+    # a colour means the same ratio in every one of them.
+    written = render(list(range(len(datasets))), "heatmap", "Format comparison")
+    for i, dataset in enumerate(datasets):
+        written += render([i], f"heatmap-{dataset.get('id')}", "Format comparison")
+    return written
 
 
 def _axis(data: dict[str, Any], key: str) -> tuple[list[dict], list[dict], list[str]]:
@@ -997,8 +1009,7 @@ def database_blocks(data: dict[str, Any]) -> dict[str, Any]:
 
     blocks = {
         (field, config): [
-            [cell(system, query, config, field, formatter) for system in systems]
-            for query in rows
+            [cell(system, query, config, field, formatter) for system in systems] for query in rows
         ]
         for field, _title, formatter in DB_HEAT_SPECS
         for config in configs

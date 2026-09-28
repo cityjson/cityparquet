@@ -43,6 +43,18 @@ def test_preparation_and_paper_figure_set(tmp_path: Path):
     assert not any("pareto" in name for name in names)
 
 
+def test_heatmap_is_also_written_per_dataset(tmp_path: Path):
+    bench = fixture_bench(tmp_path)
+    data, _ = prep.build(prep.Inputs(bench))
+    path = tmp_path / "bench_data.json"
+    path.write_text(prep.json.dumps(data), encoding="utf-8")
+    output = figures.main(path, tmp_path / "figures")
+    names = {p.name for p in output.glob("*")}
+    ids = [dataset["id"] for dataset in data["datasets"]]
+    assert ids
+    assert {f"heatmap-{i}.{kind}" for i in ids for kind in ("svg", "png")} <= names
+
+
 def test_cityparquet_label_and_missing_database_are_honest(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     data, _ = prep.build(prep.Inputs(bench))
@@ -292,9 +304,7 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
     data_path = _dump(data, tmp_path)
     figures_dir = tmp_path / "figures"
     figures.main(data_path, figures_dir)
-    page = html.main(
-        data_path=data_path, out_path=tmp_path / "index.html", figures_dir=figures_dir
-    )
+    page = html.main(data_path=data_path, out_path=tmp_path / "index.html", figures_dir=figures_dir)
     text = page.read_text(encoding="utf-8")
 
     # The premise: the page really is showing bloom figures.
