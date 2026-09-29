@@ -28,6 +28,8 @@ amsterdam/
   materials.parquet          # sidecar — only if the source has materials
   textures.parquet           # sidecar — only if the source has textures
   geometry_templates.parquet # sidecar — only if the source has templates
+  appearance/                # texture images, at the paths `image_uri` names
+    roof_0001.jpg
 ```
 
 ## File roles
@@ -41,6 +43,10 @@ amsterdam/
   when the source has something to put in it. A source with no textures produces no
   `textures.parquet` — as CityGML and CityJSON datasets routinely carry no
   appearance, material or template data at all.
+- **Texture images** — optional. A texture whose `image_uri` is relative names
+  an image at that path **beneath the package directory**; a package that carries
+  its images keeps them there, in whatever subdirectories the source used (see
+  [textures.parquet](/specification/appearance-templates#texturesparquet)).
 - **`metadata.json`** — the package-level STAC **Item**, using the 3D city model STAC
   extension.
 - **`collection.json`** — an optional dataset-level STAC **Collection** curating

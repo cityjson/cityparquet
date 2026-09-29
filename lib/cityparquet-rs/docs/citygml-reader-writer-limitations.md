@@ -69,8 +69,11 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
 
 - Non-building **semantic surfaces / nested parts / appearance** on non-building
   objects (reader reads geometry + attributes only).
-- `ReliefFeature` not mapped (only a TIN maps cleanly to `TINRelief`;
-  raster/breakline/mass-point reliefs would misclassify).
+- `dem:ReliefFeature`: each `dem:TINRelief` component is read as a CityJSON
+  `TINRelief` (a `CompositeSurface` of its `gml:Triangle` patches). The other
+  component kinds — `RasterRelief`, `MassPointRelief`, `BreaklineRelief` — have
+  no CityJSON type and are reported as skipped members; a `gml:Tin` given only
+  by control points is not triangulated, so its `TINRelief` has no geometry.
 - `MultiSolid` cannot be written (CityGML 2.0 `Building` has no `lodNMultiSolid`
   slot — a genuine format asymmetry, `multi_solids_skipped`).
 - **Multi-LoD semantics**: the reader builds ONE building-wide `surfaces` array,

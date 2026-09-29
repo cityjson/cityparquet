@@ -393,6 +393,41 @@ def test_a_payload_with_nothing_convertible_is_a_classified_failure(tmp_path, mo
     assert excinfo.value.reason == "unsupported_archive"
 
 
+def test_a_converted_package_keeps_its_texture_images(tmp_path, monkeypatch, capsys):
+    # The images are unpacked beside the GML in the per-item working directory,
+    # which is swept once the item is done; the package must hold them first.
+    import duckdb
+
+    def fake_normalise(path, workdir, max_bytes):
+        (workdir / "tile_appearance").mkdir(parents=True)
+        (workdir / "tile_appearance" / "roof.jpg").write_bytes(b"JPEG")
+        gml = workdir / "tile.gml"
+        gml.write_text("<CityModel/>")
+        return [gml]
+
+    def fake_run_convert(binary, inputs, out_dir, crs, timeout):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        duckdb.sql(
+            "COPY (SELECT * FROM (VALUES (0, 'tile_appearance/roof.jpg'), "
+            "(1, 'tile_appearance/gone.jpg')) t(id, image_uri)) "
+            f"TO '{out_dir / 'textures.parquet'}' (FORMAT parquet)"
+        )
+        return 1
+
+    seen = _stub_conversion(monkeypatch, run_convert=fake_run_convert)
+    monkeypatch.setattr(driver.fetch, "normalise", fake_normalise)
+    config = _config(tmp_path)
+    item = Item("plateau", "tile", "https://example.invalid/a.zip", None, None)
+
+    driver.process_item(item, config=config, client=None)
+
+    pkg = driver.package_dir(config, item)
+    assert (pkg / "tile_appearance" / "roof.jpg").read_bytes() == b"JPEG"
+    assert not seen["dest"].parent.exists(), "the working directory is still swept"
+    err = capsys.readouterr().err
+    assert "1 texture image(s) not in the source" in err and "gone.jpg" in err
+
+
 def test_the_per_collection_crs_fallback_reaches_the_converter(tmp_path, monkeypatch):
     seen = {}
 

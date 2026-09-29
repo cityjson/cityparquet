@@ -66,6 +66,7 @@ OUT/
       <item-id>/                          one CityParquet package per catalogue item
         building.parquet                  … and any other per-family table
         textures.parquet                  … and any appearance/template sidecars
+        <tile>_appearance/*.jpg           the texture images, where image_uri names them
         metadata.json                     the package's STAC Item
   _reports/
     <collection>.jsonl                    append-only, one line per item outcome
@@ -132,6 +133,13 @@ Run `cityparquet convert` over every normalised input at once (the converter mer
 them, which is what a multi-tile archive needs), then **stamp** the STAC Item the
 converter wrote with the two things a single package cannot know: which collection it
 belongs to, and where its bytes came from (`rel=via`, `rel=derived_from`).
+
+The converter writes only Parquet, so the package's **texture images** are copied
+here too, before the working directory is swept: every image `textures.parquet`
+names by a relative `image_uri` is taken from beside the source document that named
+it and written to the same relative path under the package, which is where the
+specification resolves it. An image the source lacks is reported on stderr, never
+invented; a URI with `..` or an absolute path is never followed.
 
 Footer-derived properties are never edited. The CityParquet specification makes the
 Parquet footer authoritative wherever Item and footer disagree, and the Item is built
@@ -377,8 +385,8 @@ OUT/
     building.parquet
 ```
 
-The payload is hard-linked, not copied, so `--out` must be on the same
-filesystem as the packages. Each package's Item is rewritten for the three
+The payload — texture-image subdirectories included — is hard-linked, not copied,
+so `--out` must be on the same filesystem as the packages. Each package's Item is rewritten for the three
 things the layout changes — its id (the slug), a `title` (the slug, capitalised,
 unless the spec gives one), and its `collection`/`parent`/`root` links;
 footer-derived properties and provenance links are carried untouched. A

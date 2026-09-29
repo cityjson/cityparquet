@@ -81,9 +81,10 @@ cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 positionally. Other flags include `--recipe`, `--ordering source|hilbert`,
 `--row-group-size`, `--zstd-level`,
 `--partition`, `--no-lod0`, `--crs` (an operator-supplied CRS for a source that
-declares none — without it such a source still converts, writing `city.crs: null`), and
+declares none — without it such a source still converts, writing `city.crs: null`),
 `--tolerate-invalid-appearance` (drop a dangling material/texture index instead of
-aborting; off by default — strict is the oracle). The
+aborting; off by default — strict is the oracle), and, for tiled inputs,
+`--dedupe-identical` and `--prefix-ids-by-input`. The
 round-trip is proven by `convert` → `export` → `compare` against the source. See
 `README.md` for the full flag tables and the per-command stdout report formats, and
 `../../benchmark/formats/README.md` for benchmark methodology and comparability caveats.

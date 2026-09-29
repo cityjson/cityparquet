@@ -101,10 +101,14 @@ def _relink(doc: dict, *, collection: str, flat: bool) -> None:
 
 def _place(src: Path, dest: Path, *, item_id: str, title: str, collection: str, flat: bool):
     dest.mkdir(parents=True, exist_ok=True)
-    for entry in src.iterdir():
-        if entry.name == _ITEM or not entry.is_file():
+    # The whole payload, subdirectories included: a package's texture images
+    # sit beside it at the relative paths its `image_uri`s name.
+    for entry in src.rglob("*"):
+        if entry == src / _ITEM or not entry.is_file():
             continue
-        os.link(entry, dest / entry.name)
+        target = dest / entry.relative_to(src)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.link(entry, target)
     doc = json.loads((src / _ITEM).read_text(encoding="utf-8"))
     doc["id"] = item_id
     doc.setdefault("properties", {})["title"] = title

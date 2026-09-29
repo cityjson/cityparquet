@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use city3d_stac_types::metadata::AttributeType;
 use city3d_stac_types::stac::CityObjectsCount;
-use cityparquet::merge::merge_sources;
+use cityparquet::merge::{MergeOptions, merge_sources};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::source::{Source, SourceFormat};
 use cityparquet::stac::properties::{PackageTables, derive_co_types, derive_from_footer};
@@ -145,7 +145,7 @@ fn write_railway_and_delft_merged(dst: &Path) {
         SourceFormat::CityJsonSeq,
     );
 
-    let merged = merge_sources(&[railway, delft]).unwrap();
+    let merged = merge_sources(&[railway, delft], &MergeOptions::default()).unwrap();
 
     let mut out = serde_json::to_string(&merged.header).unwrap();
     out.push('\n');

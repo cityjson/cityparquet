@@ -25,6 +25,7 @@ mod building;
 mod geometry;
 mod header;
 pub mod reader;
+mod relief;
 mod sniff;
 mod vertices;
 pub mod writer;

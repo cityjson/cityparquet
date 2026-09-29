@@ -16,24 +16,54 @@
 //! across inputs in this milestone); more than one carrier is an error.
 //! `geographicalExtent` is stripped from the merged header so a partition's
 //! footer never advertises another input's extent.
+//!
+//! Two [`MergeOptions`] serve tiled exports, whose tiles are cut from one
+//! model. `dedupe_identical` keeps one copy of a feature that several tiles
+//! carry whole; `prefix_ids_by_input` makes ids that only mean something within
+//! their tile unique across the package.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use cityparquet_schema::{CityParquetError, Result};
 use cjseq::{Appearance, CityJSON, CityJSONFeature, Transform};
 
 use crate::source::Source;
 
+/// How [`merge_sources`] reconciles inputs cut from one model.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MergeOptions {
+    /// Keep one copy of a feature that another input already carries
+    /// identically: the same id, and the same feature once requantised onto
+    /// the merged transform — except that a texture's image may sit at a
+    /// different path, provided the two image files (resolved beside their
+    /// inputs) hold the same bytes. A tile exporter that repeats a straddling
+    /// building ships its texture in each tile's own folder. The first copy is
+    /// kept, image path and all. Same id with any other difference is kept and
+    /// counted in [`MergedDataset::duplicate_ids`].
+    pub dedupe_identical: bool,
+    /// Rename every CityObject `<input stem>.<id>` — the feature id and every
+    /// `parents`/`children` reference with it — so ids an exporter numbers per
+    /// tile stay distinct once tiles are merged. Applied after
+    /// `dedupe_identical`, so a kept copy takes its first input's stem. `.` is
+    /// the separator because it is legal in an XML NCName (a `gml:id`), where
+    /// `:` is not. Inputs sharing a stem are refused. A round trip compares
+    /// equal to the source only once the prefix is stripped.
+    pub prefix_ids_by_input: bool,
+}
+
 /// One merged dataset: the shared header (merged transform, first input's
 /// metadata sans `geographicalExtent`, the sole template carrier's templates),
 /// every input's features concatenated (requantised onto the merged transform
-/// where needed), the doc-level appearance the templates resolve against, and
-/// how many feature ids collided across inputs.
+/// where needed), the doc-level appearance the templates resolve against, how
+/// many identical copies [`MergeOptions::dedupe_identical`] dropped, and how
+/// many feature ids still collide.
 #[derive(Debug, Clone)]
 pub struct MergedDataset {
     pub header: CityJSON,
     pub features: Vec<CityJSONFeature>,
     pub doc_appearance: Option<Appearance>,
+    pub deduplicated: usize,
     pub duplicate_ids: usize,
 }
 
@@ -87,7 +117,7 @@ fn is_template_carrier(source: &Source) -> bool {
 
 /// Merge `sources` (non-empty) into one [`MergedDataset`]. See the module docs
 /// for the CRS / transform / template rules.
-pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
+pub fn merge_sources(sources: &[Source], opts: &MergeOptions) -> Result<MergedDataset> {
     let first = sources
         .first()
         .ok_or_else(|| err("merge_sources: no sources".to_string()))?;
@@ -156,10 +186,20 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
         ));
     }
 
+    let stems = if opts.prefix_ids_by_input {
+        Some(input_stems(sources)?)
+    } else {
+        None
+    };
+
     // Concatenate features, requantising onto the merged transform where the
-    // source's own transform differs from it.
+    // source's own transform differs from it; with `dedupe_identical`, a
+    // feature an earlier input already carries identically is dropped.
     let mut features: Vec<CityJSONFeature> = Vec::new();
-    for s in sources {
+    let mut origin: Vec<usize> = Vec::new();
+    let mut by_id: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut deduplicated = 0usize;
+    for (si, s) in sources.iter().enumerate() {
         let src_t = &s.header().transform;
         let needs_requantise = !transform_eq(src_t, &merged_transform);
         for f in s.features()? {
@@ -167,7 +207,28 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
             if needs_requantise {
                 requantise_vertices(&mut f.vertices, src_t, &merged_transform);
             }
+            if opts.dedupe_identical {
+                let seen = by_id.entry(f.id.clone()).or_default();
+                let mut identical = false;
+                for &k in seen.iter() {
+                    if same_feature(&features[k], sources[origin[k]].path(), &f, s.path())? {
+                        identical = true;
+                        break;
+                    }
+                }
+                if identical {
+                    deduplicated += 1;
+                    continue;
+                }
+                seen.push(features.len());
+            }
             features.push(f);
+            origin.push(si);
+        }
+    }
+    if let Some(stems) = &stems {
+        for (f, &si) in features.iter_mut().zip(&origin) {
+            prefix_ids(f, &stems[si]);
         }
     }
 
@@ -218,6 +279,111 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
         header,
         features,
         doc_appearance,
+        deduplicated,
         duplicate_ids,
     })
+}
+
+/// Each input's file stem, refusing an input with none and two inputs with
+/// the same one (a prefix naming two inputs keeps nothing apart).
+fn input_stems(sources: &[Source]) -> Result<Vec<String>> {
+    let mut seen: HashMap<String, &Path> = HashMap::new();
+    let mut stems = Vec::with_capacity(sources.len());
+    for s in sources {
+        let stem = s
+            .path()
+            .file_stem()
+            .and_then(|x| x.to_str())
+            .filter(|x| !x.is_empty())
+            .ok_or_else(|| {
+                err(format!(
+                    "cannot prefix ids by input: {} has no file stem",
+                    s.path().display()
+                ))
+            })?
+            .to_string();
+        if let Some(other) = seen.insert(stem.clone(), s.path()) {
+            return Err(err(format!(
+                "cannot prefix ids by input: {} and {} share the stem '{stem}'",
+                other.display(),
+                s.path().display()
+            )));
+        }
+        stems.push(stem);
+    }
+    Ok(stems)
+}
+
+/// Rename every CityObject of `f` `<stem>.<id>`, with the feature id and every
+/// `parents`/`children` reference.
+fn prefix_ids(f: &mut CityJSONFeature, stem: &str) {
+    let rename = |id: &str| format!("{stem}.{id}");
+    f.id = rename(&f.id);
+    f.city_objects = std::mem::take(&mut f.city_objects)
+        .into_iter()
+        .map(|(id, mut co)| {
+            for refs in [co.parents.as_mut(), co.children.as_mut()]
+                .into_iter()
+                .flatten()
+            {
+                for r in refs.iter_mut() {
+                    *r = rename(r);
+                }
+            }
+            (rename(&id), co)
+        })
+        .collect();
+}
+
+/// Whether `b` (read from `b_path`) is an identical copy of `a` (from
+/// `a_path`); see [`MergeOptions::dedupe_identical`].
+fn same_feature(
+    a: &CityJSONFeature,
+    a_path: &Path,
+    b: &CityJSONFeature,
+    b_path: &Path,
+) -> Result<bool> {
+    let mut va = serde_json::to_value(a)?;
+    let mut vb = serde_json::to_value(b)?;
+    let images_a = take_images(&mut va);
+    let images_b = take_images(&mut vb);
+    if va != vb || images_a.len() != images_b.len() {
+        return Ok(false);
+    }
+    for (ia, ib) in images_a.iter().zip(&images_b) {
+        if ia != ib && !same_bytes(&resolve(a_path, ia), &resolve(b_path, ib)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Blank every texture's `image` in a feature's JSON, returning them in order.
+fn take_images(v: &mut serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(textures) = v
+        .pointer_mut("/appearance/textures")
+        .and_then(|t| t.as_array_mut())
+    {
+        for t in textures {
+            if let Some(img) = t.get_mut("image") {
+                out.push(img.as_str().unwrap_or_default().to_string());
+                *img = serde_json::Value::Null;
+            }
+        }
+    }
+    out
+}
+
+/// An image URI resolved beside the input document that names it.
+fn resolve(input: &Path, uri: &str) -> std::path::PathBuf {
+    input.parent().unwrap_or(Path::new("")).join(uri)
+}
+
+/// True when both files exist and hold the same bytes.
+fn same_bytes(a: &Path, b: &Path) -> bool {
+    match (std::fs::read(a), std::fs::read(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
 }

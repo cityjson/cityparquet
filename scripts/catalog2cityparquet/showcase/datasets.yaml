@@ -24,4 +24,92 @@ collections:
   - name: aura-zae
     source: craig-aura-zae-2024
     packages: showcase-aura/craig-aura-zae-2024/items/*
-    slug: '^(?P<slug>.+)$'
+    slug: "^(?P<slug>.+)$"
+
+  # Montréal's catalogue collection mixes CityGML 1.0 building tiles (2013,
+  # not convertible), CityGML 2.0 terrain and a CityJSON building sample; the
+  # terrain and the buildings are published apart. Neither source declares a
+  # CRS: convert with `--crs montreal-3d=EPSG:2950` (NAD83(CSRS) / MTM zone 8,
+  # the portal's stated planimetric reference).
+  - name: montreal-terrain
+    source: montreal-3d
+    # `tin-2015-westmount` → `westmount`; one item carries a longer prefix
+    # (`vcarto_…-tin-2015-rosemont-la-petite-patrie`).
+    packages: showcase-montreal/montreal-3d/items/*tin-2015-*
+    slug: "tin-2015-(?P<slug>.+)$"
+    overrides:
+      title: Montréal terrain model (TIN, 2015)
+      description: >-
+        Terrain of the Montréal agglomeration as CityGML 2.0 TIN reliefs, one
+        package per borough or municipality.
+      links:
+        - rel: source
+          href: https://donnees.montreal.ca/dataset/modele-numerique-de-terrain-mnt
+          type: text/html
+          title: Modèle numérique de terrain
+        - rel: license
+          href: https://donnees.montreal.ca/licence-d-utilisation
+          type: text/html
+          title: CC-BY-4.0 License
+
+  # The CityJSON edition ships without its images: the package's
+  # `VM05_2009_Appearance/` is copied from the city's own vm05-2009.zip, named
+  # by a second `rel=via` link in the package's Item.
+  - name: montreal-2009
+    source: montreal-3d
+    packages: showcase-montreal/montreal-3d/items/VM05_2009.city
+    title: VM05 2009
+    overrides:
+      title: Montréal 3D buildings (2009, VM05)
+      description: >-
+        LoD2 buildings of Montréal's 2009 tile VM05, from its CityJSON edition.
+      links:
+        - rel: source
+          href: https://donnees.montreal.ca/dataset/maquette-numerique-batiments-citygml-lod2-avec-textures
+          type: text/html
+          title: Maquette numérique 2009 (CityGML LOD2 avec textures)
+        - rel: license
+          href: https://donnees.montreal.ca/licence-d-utilisation
+          type: text/html
+          title: CC-BY-4.0 License
+
+  # Not in the City3D catalogue: converted from the city's portal by borough,
+  # every tile of a borough merged into one package, with `--crs EPSG:2950`
+  # (the files declare none) and the texture images beside each package.
+  - name: montreal-2016
+    source: montreal-3d
+    packages: showcase-montreal-bldg/2016/*
+    slug: "^(?P<slug>.+)$"
+    overrides:
+      title: Montréal 3D buildings (2016)
+      description: >-
+        LoD2 buildings with textures of six Montréal boroughs, as captured in
+        2016, one package per borough.
+      links:
+        - rel: source
+          href: https://donnees.montreal.ca/dataset/batiment-3d-2016-maquette-citygml-lod2-avec-textures2
+          type: text/html
+          title: Bâtiments 3D 2016 (maquette CityGML LOD2 avec textures)
+        - rel: license
+          href: https://donnees.montreal.ca/licence-d-utilisation
+          type: text/html
+          title: CC-BY-4.0 License
+
+  - name: montreal-2020
+    source: montreal-3d
+    packages: showcase-montreal-bldg/2020/*
+    slug: "^(?P<slug>.+)$"
+    overrides:
+      title: Montréal 3D buildings (2020)
+      description: >-
+        LoD2 buildings with textures of three Montréal boroughs, as captured in
+        2020, one package per borough.
+      links:
+        - rel: source
+          href: https://donnees.montreal.ca/dataset/batiments-3d-2020-maquette-lod2-avec-textures
+          type: text/html
+          title: Bâtiments 3D 2020 (maquette LOD2 avec textures)
+        - rel: license
+          href: https://donnees.montreal.ca/licence-d-utilisation
+          type: text/html
+          title: CC-BY-4.0 License

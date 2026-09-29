@@ -450,6 +450,56 @@ pub fn collect_polygons_with_xlinks<R: BufRead>(
 
 /// A `gml:Polygon` (positioned after its `Start`): exterior ring + holes.
 pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Polygon> {
+    read_planar_patch(reader, buf, b"Polygon")
+}
+
+/// A `gml:Triangle` (positioned after its `Start`): a polygon patch whose
+/// exterior ring has three corners and no interior ring.
+pub fn read_triangle<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Polygon> {
+    read_planar_patch(reader, buf, b"Triangle")
+}
+
+/// Every `gml:Triangle` patch in an element's subtree (a `gml:Tin` or
+/// `gml:TriangulatedSurface`), in document order. Call right after the
+/// subtree's `Start`; consumes through its matching `End`.
+pub fn collect_triangles<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<Polygon>> {
+    let mut out = Vec::new();
+    let mut depth = 1usize;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                if ns_is(&rr, NS_GML) && e.local_name().as_ref() == b"Triangle" {
+                    // `read_triangle` consumes the whole Triangle subtree.
+                    out.push(read_triangle(reader, buf)?);
+                } else {
+                    depth += 1;
+                }
+            }
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => return Err(eof("triangle collection")),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// A planar surface patch — `gml:Polygon` or `gml:Triangle`, which share the
+/// exterior/interior ring content model — ending at `End(end)`.
+fn read_planar_patch<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    end: &[u8],
+) -> Result<Polygon> {
     let mut exterior: Option<(Ring, Option<String>)> = None;
     let mut interiors: Vec<(Ring, Option<String>)> = Vec::new();
     loop {
@@ -469,13 +519,17 @@ pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> 
                     _ => skip_element(reader, buf)?,
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == b"Polygon" => break,
-            Event::Eof => return Err(eof("Polygon")),
+            Event::End(e) if e.local_name().as_ref() == end => break,
+            Event::Eof => return Err(eof(&String::from_utf8_lossy(end))),
             _ => {}
         }
     }
-    let (exterior, ext_id) = exterior
-        .ok_or_else(|| CityParquetError::Schema("gml:Polygon without exterior ring".to_string()))?;
+    let (exterior, ext_id) = exterior.ok_or_else(|| {
+        CityParquetError::Schema(format!(
+            "gml:{} without exterior ring",
+            String::from_utf8_lossy(end)
+        ))
+    })?;
     let mut ring_ids = Vec::with_capacity(1 + interiors.len());
     ring_ids.push(ext_id);
     let interior_rings = interiors

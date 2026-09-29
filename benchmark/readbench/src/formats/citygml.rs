@@ -164,13 +164,12 @@ fn open_citygml(path: &Path, origin: &str) -> Result<Document> {
 /// **Why this is fatal rather than a footnote.** The reader maps
 /// `bldg:Building` plus a fixed list of 1st-level non-building types and
 /// silently skips the rest — right for the conversion pipeline, fatal for a
-/// benchmark. A real PLATEAU `trk`, `dem`, `lsld` or `urf` tile consists
+/// benchmark. A real PLATEAU `trk`, `lsld` or `urf` tile consists
 /// entirely of unmapped members, so every scenario used to return `0` with
 /// exit status 0, in a fraction of the time a real read takes because nothing
 /// was ever materialised. Meanwhile every OTHER format's artefact for the same
-/// tile is produced by citygml-tools, which does map (say)
-/// `dem:ReliefFeature` to CityJSON `TINRelief` — a type this repository treats
-/// as first class — so the published CSV would read `citygml 0` beside
+/// tile is produced by citygml-tools, which does map the members this reader
+/// skips, so the published CSV would read `citygml 0` beside
 /// `cityjsonseq N`, with CityGML's timing flattered by the work it skipped.
 ///
 /// The threshold is deliberately **zero members skipped**, not "zero features

@@ -2,7 +2,7 @@ use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::inputs::resolve_inputs;
-use cityparquet::merge::merge_sources;
+use cityparquet::merge::{MergeOptions, merge_sources};
 use cityparquet::package::{ConvertOptions, RowOrder, convert_source};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::recipe::{BloomPolicy, Codec, RecipePreset, WriterRecipe};
@@ -136,6 +136,19 @@ enum Commands {
         /// never silent.
         #[arg(long, default_value_t = false)]
         tolerate_invalid_appearance: bool,
+
+        /// With several inputs cut from one model: keep one copy of a feature
+        /// that another input already carries identically (same id, same
+        /// feature; a texture image may sit at another path if its bytes are
+        /// equal). Dropped copies are counted on stderr.
+        #[arg(long, default_value_t = false)]
+        dedupe_identical: bool,
+
+        /// Rename every CityObject `<input file stem>.<id>`, references
+        /// included, so ids numbered per input stay distinct. A round trip
+        /// then differs from the source by the prefix.
+        #[arg(long, default_value_t = false)]
+        prefix_ids_by_input: bool,
     },
 
     /// Export CityParquet package back to CityJSON, CityJSONSeq, or CityGML
@@ -280,12 +293,20 @@ fn resolve_and_open(inputs: &[PathBuf]) -> CpResult<Vec<Source>> {
 /// would stamp a whole mixed batch `crs_source: "operator-supplied"` and strip
 /// the genuine `referenceSystem` out of the verbatim `source_metadata`,
 /// leaving a footer that denies a declaration the source did make.
-fn merge_to_one(sources: Vec<Source>) -> CpResult<Source> {
-    if sources.len() == 1 {
+fn merge_to_one(sources: Vec<Source>, merge: &MergeOptions) -> CpResult<Source> {
+    // A lone input is taken directly unless a merge option changes it: ids
+    // are prefixed even when there is only one input to prefix them by.
+    if sources.len() == 1 && !merge.prefix_ids_by_input {
         return Ok(sources.into_iter().next().expect("one source"));
     }
     let crs_is_operator_supplied = sources.iter().all(Source::crs_is_operator_supplied);
-    let merged = merge_sources(&sources)?;
+    let merged = merge_sources(&sources, merge)?;
+    if merged.deduplicated > 0 {
+        eprintln!(
+            "note: {} identical feature copies across inputs dropped (--dedupe-identical)",
+            merged.deduplicated
+        );
+    }
     if merged.duplicate_ids > 0 {
         eprintln!(
             "warning: {} duplicate feature id(s) across inputs; all kept (a package with \
@@ -408,6 +429,8 @@ fn main() -> std::process::ExitCode {
             no_lod0,
             crs,
             tolerate_invalid_appearance,
+            dedupe_identical,
+            prefix_ids_by_input,
         } => {
             // `--compression` deliberately keeps its hand-rolled parse: its
             // "error: invalid compression '<v>' (expected one of: …)" text and
@@ -459,6 +482,10 @@ fn main() -> std::process::ExitCode {
                 lod0: cityparquet::lod0::Lod0Options::default(),
                 crs_override: None,
                 tolerate_invalid_appearance,
+                merge: MergeOptions {
+                    dedupe_identical,
+                    prefix_ids_by_input,
+                },
             };
 
             // A sizing flag only makes sense with --partition.
@@ -590,7 +617,7 @@ fn main() -> std::process::ExitCode {
                     }
                 }
                 None => {
-                    let source = match merge_to_one(sources) {
+                    let source = match merge_to_one(sources, &opts.merge) {
                         Ok(source) => source,
                         Err(e) => {
                             eprintln!("error: {}", render_error(&e));

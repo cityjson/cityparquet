@@ -149,7 +149,10 @@ There is no stored UV pool — UV coordinates are inlined in the object table's
 All columns except `id` are nullable, but a row **MUST** carry at least one of
 `image_uri` / `image_data` — a texture with no image is meaningless. When both are
 present, `image_data` is the authoritative bytes and `image_uri` is where they came
-from. `wrapMode` and `textureType` are enumerations: a value outside the listed set is
+from. A relative `image_uri` resolves against the **package directory**: the image
+it names is at `<package>/<image_uri>`, and **MUST NOT** resolve outside the package
+(no `..` segment). An absolute URI names an image elsewhere, fetched as given.
+`wrapMode` and `textureType` are enumerations: a value outside the listed set is
 invalid. `borderColor` **MUST** hold exactly four values, each in `[0,1]`, when
 non-null.
 

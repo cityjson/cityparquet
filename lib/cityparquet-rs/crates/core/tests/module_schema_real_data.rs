@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
-use cityparquet::merge::merge_sources;
+use cityparquet::merge::{MergeOptions, merge_sources};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::reader::CityParquetReaderBuilder;
@@ -74,7 +74,7 @@ fn write_delft_and_railway_merged(dst: &Path) {
         SourceFormat::CityJsonSeq,
     );
 
-    let merged = merge_sources(&[delft, railway]).unwrap();
+    let merged = merge_sources(&[delft, railway], &MergeOptions::default()).unwrap();
 
     let mut out = serde_json::to_string(&merged.header).unwrap();
     out.push('\n');
