@@ -16,8 +16,10 @@ and [Object table schema](/specification/object-table-schema) pages.
 
 The feature: a `Building` with one `BuildingPart`; the part has an LoD 2.2 `Solid`
 whose two boundary surfaces are a `RoofSurface` and a `WallSurface`; the building
-carries one core attribute (`yearOfConstruction`) and one ADE attribute (`height`); the
-roof surface has a material.
+carries one core attribute (`yearOfConstruction`) and one attribute of the Energy ADE
+(`heatCapacity`), an extension whose namespace is `energy`; the roof surface has a
+material. (The Energy ADE attaches `heatCapacity` to a `ThermalZone`; this example puts
+it on the building so that one feature shows every rule.)
 
 ## As CityGML CM → CityParquet
 
@@ -27,9 +29,9 @@ becomes a per-face reference into the material sidecar.
 
 **Object table `building.parquet` (two rows):**
 
-| id | feature_id | object_type | parents | children | bbox | geometry_lod2_2 | geometry_properties_lod2_2 | material_lod2_2 | ex_height | yearOfConstruction |
+| id | feature_id | object_type | parents | children | bbox | geometry_lod2_2 | geometry_properties_lod2_2 | material_lod2_2 | energy_heatCapacity | yearOfConstruction |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `b-42` | `b-42` | `Building` | — | `[b-42-0]` | *(union of children)* | *null* | *null* | *null* | `12.5` | `1998` |
+| `b-42` | `b-42` | `Building` | — | `[b-42-0]` | *(union of children)* | *null* | *null* | *null* | `120000.0` | `1998` |
 | `b-42-0` | `b-42` | `BuildingPart` | `[b-42]` | — | `{xmin…zmax}` | *WKB PolyhedralSurfaceZ (2 faces)* | `{type:"Solid", surfaces:[…], face_semantics:[0,1], shells:[[2]]}` | `{"": [3, 3]}` | *null* | *null* |
 
 **Notes.**
@@ -37,8 +39,9 @@ becomes a per-face reference into the material sidecar.
 - The root `Building` has `feature_id == id` (`b-42`), and its child `BuildingPart`
   inherits it, so both rows of the family share `feature_id = b-42`.
 - The `Building`'s attributes sit on its own row; a CM feature's own thematic
-  attributes stay with the feature. `yearOfConstruction` was inferred `BIGINT`; the ADE
-  attribute `height` became the `ex_height` column.
+  attributes stay with the feature. `yearOfConstruction` was inferred `BIGINT`; the
+  Energy ADE attribute `heatCapacity` became the `energy_heatCapacity` column, inferred
+  `DOUBLE`, its name carrying the extension's namespace as a prefix.
 - The `Solid`'s two boundary surfaces were flattened into a 2-face
   `PolyhedralSurfaceZ`; the roof/wall semantics live in the
   `geometry_properties_lod2_2` struct, face-aligned (`face_semantics: [0, 1]`), with
@@ -52,6 +55,15 @@ becomes a per-face reference into the material sidecar.
 - The `Building` carries no geometry of its own, so its
   [`bbox`](/specification/geometry-semantics) is the union of its part's.
 
+**Footer `city.extensions` of `building.parquet`** — the declaration that resolves the
+`energy_` prefix:
+
+```json
+"extensions": {
+  "energy": { "name": "Energy", "url": "https://…/energy.ext.json", "version": "3.0" }
+}
+```
+
 **`materials.parquet` — the referenced row:**
 
 | id | name | diffuseColor | … |
@@ -62,14 +74,18 @@ becomes a per-face reference into the material sidecar.
 
 CityJSON is one serialisation of that CM feature, and the
 [CityJSON mapping](/specification/mapping-cityjson) governs its fields. The source
-below encodes exactly the feature above; comparing it with the table shows what the
-encoding changes.
+below — a CityJSONSeq header line declaring the extension, then the feature — encodes
+exactly the feature above; comparing it with the table shows what the encoding changes.
 
 ```jsonc
+{ "type": "CityJSON", "version": "2.0", "transform": { /* … */ },
+  "extensions": { "Energy": { "url": "https://…/energy.ext.json", "version": "3.0" } },
+  "CityObjects": {}, "vertices": [] }
+
 { "type": "CityJSONFeature", "id": "b-42",
   "CityObjects": {
     "b-42":   { "type": "Building", "children": ["b-42-0"],
-                "attributes": { "yearOfConstruction": 1998, "+height": 12.5 } },
+                "attributes": { "yearOfConstruction": 1998, "+heatCapacity": 120000.0 } },
     "b-42-0": { "type": "BuildingPart", "parents": ["b-42"],
                 "geometry": [ { "type": "Solid", "lod": "2.2",
                   "boundaries": [ [ [[0,1,2,3]], [[4,5,6,7]] ] ],
@@ -81,7 +97,11 @@ encoding changes.
 
 What the encoding changes, relative to this serialisation:
 
-- `+height` → the `ex_height` column (a leading `+` cannot be a portable column name).
+- `+heatCapacity` → the `energy_heatCapacity` column: the header declares one
+  extension, `Energy`, so every `+` name belongs to it, and its namespace `energy`
+  (the member key lower-cased) replaces the `+`, which cannot be a portable column name.
+- The header's `extensions` member becomes `city.extensions`, keyed by `energy`, with
+  `Energy` as its `name`; export restores both the member and the `+`.
 - The nested `boundaries` are resolved against `vertices` (and the feature's
   `transform`, not shown) into world-coordinate WKB; the source quantisation is not
   retained.

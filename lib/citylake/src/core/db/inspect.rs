@@ -61,13 +61,12 @@ impl DuckLakeService {
     /// statements: `cityparquet_vacuum` is idempotent, so a failure between
     /// them leaves the package consistent, merely un-vacuumed.
     ///
-    /// A known limitation: `cityparquet_validate.cpp`'s
-    /// `HasNonNullTemplateReference` (line 32) probes for template references
-    /// on its own connection using two-part names, which do not resolve under
-    /// an attached catalog's search path. That failure is fail-safe by
+    /// A known limitation: `cityparquet_validate.cpp` probes for
+    /// implicit-geometry references on its own connection using two-part
+    /// names, which do not resolve under an attached catalog's search path. That failure is fail-safe by
     /// construction — a failed probe contributes no term and the
     /// "undeterminable" fallback fires — so the effect is that
-    /// `geometry_templates` orphans are **not** vacuumed from a
+    /// `implicit_geometries` orphans are **not** vacuumed from a
     /// DuckLake-backed package. Missed cleanup, never data loss. This is the
     /// extension's limitation, not fixed here.
     pub fn vacuum_impl(&self, dataset: &DatasetName) -> RepositoryResult<usize> {

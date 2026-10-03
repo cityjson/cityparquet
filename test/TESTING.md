@@ -56,7 +56,7 @@ cd cityparquet          # wherever you cloned github.com/cityjson/cityparquet
 > | **Every LoD is a suffixed column, LoD0 included**                                      | cityparquet-rs `197e351` (2026-07-23)                             | There is no un-suffixed `geometry` column any more — it is `geometry_lod0_0`. Same in duckdb-cityjson's `lod =>` mode                                                                                                                                                  |
 > | **`geometry_properties` is a STRUCT**, not JSON text                                   | duckdb-cityjson `d334b26` (2026-07-25)                            | `ST_3DFromWKB` consumes it directly via the new `(BLOB, ANY)` overload; no `to_json(...)`                                                                                                                                                                              |
 > | **CityParquet package mutation in SQL**                                                | duckdb-cityjson, 2026-07-25→27                                    | `cityparquet_init/validate/reconcile/delete/merge/read/write`, `insert_cityjson[seq]` — Part 2.7                                                                                                                                                                       |
-> | **Appearance sidecar readers**                                                         | duckdb-cityjson, 2026-07-26                                       | `cityjson_materials/textures/geometry_templates` — Part 2.6                                                                                                                                                                                                            |
+> | **Appearance sidecar readers**                                                         | duckdb-cityjson, 2026-07-26                                       | `cityjson_materials/textures/implicit_geometries` — Part 2.6                                                                                                                                                                                                           |
 > | **flatcitybuf is a vcpkg registry dependency, bumped to `cpp-v0.9.0`** + a wasm target | duckdb-cityjson, 2026-08-14                                       | New build prerequisites — Part 0                                                                                                                                                                                                                                       |
 > | **`ST_Transform` → `ST_3DTransform`**                                                  | duckdb-3d `a6b1f1d` (2026-07-24)                                  | Generic `ST_*` names that collided with `spatial` moved into the `ST_3D*` namespace                                                                                                                                                                                    |
 > | **STAC catalogue → CityParquet driver**                                                | cityparquet-rs, 2026-08-11/13                                     | New Python tool with its own suite, `just catalog-test` — Part 1.10                                                                                                                                                                                                    |
@@ -68,15 +68,15 @@ cd cityparquet          # wherever you cloned github.com/cityjson/cityparquet
 > A cross-repo campaign closed the duckdb-cityjson → cityparquet-rs interop gap
 > that dogged the previous pass. What actually moved:
 >
-> | Change                                                                                                                         | Where                                                        | Effect on the old guide                                                                        |
-> | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-> | **CityJSON → rs → CityParquet → duckdb-cityjson → CityParquet → rs → CityJSON is now semantically lossless**                   | cityparquet-rs `571b24f`, duckdb-cityjson develop            | §4.5 goes from **BROKEN** to the strongest check in the document — Part 4.5                    |
-> | **The convert report gained a tenth field**, `invalid_appearance_refs_dropped`                                                 | cityparquet-rs `571b24f`                                     | Every report line in Parts 1 and 2 grew a trailing column — 1.2, 1.5, 1.9, 2.7                 |
-> | **`--tolerate-invalid-appearance`** drops a dangling appearance reference instead of failing the whole conversion              | cityparquet-rs                                               | Settles Known issue #7 (Railway's dangling material reference); strict stays the default — 4.5 |
-> | **`geometry_templates.id` divergence is settled**                                                                              | spec `documents/` `d7b373c` region, duckdb-cityjson          | Closes former Known issue #2                                                                   |
-> | **Reserved object-table columns now emitted in the spec's normative order**, with `address`/`template` present but always NULL | duckdb-cityjson                                              | Re-run in 2.7                                                                                  |
-> | **CRS survives `cityparquet_read` → `cityparquet_write`** without passing `crs =>`                                             | duckdb-cityjson                                              | The old §2.7 CRS note asserted the opposite; corrected below                                   |
-> | **A fresh read + ordering benchmark run, and the benchviz pipeline**                                                           | cityparquet-rs `01b719d` (2026-08-17, Linux/EPYC), `c87aaa9` | Part 5 — `just plot-pretty` replaces the old direct script invocation                          |
+> | Change                                                                                                                                  | Where                                                        | Effect on the old guide                                                                        |
+> | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+> | **CityJSON → rs → CityParquet → duckdb-cityjson → CityParquet → rs → CityJSON is now semantically lossless**                            | cityparquet-rs `571b24f`, duckdb-cityjson develop            | §4.5 goes from **BROKEN** to the strongest check in the document — Part 4.5                    |
+> | **The convert report gained a tenth field**, `invalid_appearance_refs_dropped`                                                          | cityparquet-rs `571b24f`                                     | Every report line in Parts 1 and 2 grew a trailing column — 1.2, 1.5, 1.9, 2.7                 |
+> | **`--tolerate-invalid-appearance`** drops a dangling appearance reference instead of failing the whole conversion                       | cityparquet-rs                                               | Settles Known issue #7 (Railway's dangling material reference); strict stays the default — 4.5 |
+> | **`implicit_geometries.id` divergence is settled**                                                                                      | spec `documents/` `d7b373c` region, duckdb-cityjson          | Closes former Known issue #2                                                                   |
+> | **Reserved object-table columns now emitted in the spec's normative order**, with `address`/`implicit_geometry` present but always NULL | duckdb-cityjson                                              | Re-run in 2.7                                                                                  |
+> | **CRS survives `cityparquet_read` → `cityparquet_write`** without passing `crs =>`                                                      | duckdb-cityjson                                              | The old §2.7 CRS note asserted the opposite; corrected below                                   |
+> | **A fresh read + ordering benchmark run, and the benchviz pipeline**                                                                    | cityparquet-rs `01b719d` (2026-08-17, Linux/EPYC), `c87aaa9` | Part 5 — `just plot-pretty` replaces the old direct script invocation                          |
 >
 > One divergence remains open and is **not** part of this closure: a
 > sidecar-bearing package still fails rs export on a degenerate ring that
@@ -276,7 +276,7 @@ Expected report (space-separated, now **ten** fields — a trailing
 `invalid_appearance_refs_dropped` joined the nine below in `571b24f`:
 `object_count files_count skipped_same_lod_geometries
 attribute_coercion_nulls degenerate_rings_dropped degenerate_surfaces_dropped
-materials_written textures_written templates_written
+materials_written textures_written implicit_geometries_written
 invalid_appearance_refs_dropped`):
 
 ```
@@ -305,7 +305,7 @@ The schema should show the current column set, in this order:
 - one **quad per LoD**, LoD0 included and suffixed like every other:
   `geometry_lod0_0`, `geometry_properties_lod0_0`, `material_lod0_0`,
   `texture_lod0_0` — and the same for `lod1_2`, `lod1_3`, `lod2_2`
-- `template`, `other`, then the flattened typed attribute columns (`b3_*`)
+- `implicit_geometry`, `other`, then the flattened typed attribute columns (`b3_*`)
 
 Two things to check specifically:
 
@@ -457,7 +457,7 @@ RD New coordinates would silently move the city; that is why `null` exists and
 why only the sidecar may omit the key.
 
 Back to the package itself. Expected report — note the non-zero sidecar counts
-(85 materials, 34 textures, 3 templates) and the 6 dropped degenerate
+(85 materials, 34 textures, 3 implicit geometries) and the 6 dropped degenerate
 rings/surfaces:
 
 ```
@@ -496,9 +496,9 @@ and `object_type` — not the filename — carries the class.
 
 ```sh
 duckdb -c "SELECT
-  (SELECT count(*) FROM read_parquet('$OUT/railway/materials.parquet'))          AS materials,
-  (SELECT count(*) FROM read_parquet('$OUT/railway/textures.parquet'))           AS textures,
-  (SELECT count(*) FROM read_parquet('$OUT/railway/geometry_templates.parquet')) AS templates;"
+  (SELECT count(*) FROM read_parquet('$OUT/railway/materials.parquet'))           AS materials,
+  (SELECT count(*) FROM read_parquet('$OUT/railway/textures.parquet'))            AS textures,
+  (SELECT count(*) FROM read_parquet('$OUT/railway/implicit_geometries.parquet')) AS implicit_geometries;"
 ```
 
 Expected: `85 | 34 | 3`. (Sidecars are content-gated — there is no `--profile`
@@ -697,9 +697,9 @@ across the whole file:
 ```sh
 F=lib/cityparquet-rs/tests/fixtures/lod3_railway.city.json
 ./lib/duckdb-cityjson/build/release/duckdb -c "
-SELECT (SELECT count(*) FROM cityjson_materials('$F'))          AS materials,
-       (SELECT count(*) FROM cityjson_textures('$F'))           AS textures,
-       (SELECT count(*) FROM cityjson_geometry_templates('$F')) AS templates;"
+SELECT (SELECT count(*) FROM cityjson_materials('$F'))           AS materials,
+       (SELECT count(*) FROM cityjson_textures('$F'))            AS textures,
+       (SELECT count(*) FROM cityjson_implicit_geometries('$F')) AS implicit_geometries;"
 ```
 
 Expected: `85 | 34 | 3` — **the exact counts cityparquet-rs writes in 1.5**.
@@ -777,12 +777,12 @@ Expected — two new object tables and three sidecars, created as the source
 needed them:
 
 ```
-bridge             | object
-building           | object
-city_furniture     | object
-geometry_templates | sidecar
-materials          | sidecar
-textures           | sidecar
+bridge              | object
+building            | object
+city_furniture      | object
+implicit_geometries | sidecar
+materials           | sidecar
+textures            | sidecar
 ```
 
 Write the schema back out as a package. `cityparquet_write` is a **table
@@ -794,27 +794,27 @@ which SQL cannot branch on):
 ```
 
 ```
-bridge.parquet             | written |    1 |   15406
-building.parquet           | written | 2231 | 2632606
-city_furniture.parquet     | written |    1 |   16870
-geometry_templates.parquet | written |    3 |   22633
-materials.parquet          | written |    4 |    1770
-textures.parquet           | written |    4 |    1333
-metadata.json              | written |    0 |    7826
+bridge.parquet              | written |    1 |   15406
+building.parquet            | written | 2231 | 2632606
+city_furniture.parquet      | written |    1 |   16870
+implicit_geometries.parquet | written |    3 |   22633
+materials.parquet           | written |    4 |    1770
+textures.parquet            | written |    4 |    1333
+metadata.json               | written |    0 |    7826
 ```
 
 > **Object tables changed shape underneath these byte counts.** Reserved
 > columns are now emitted in the spec's normative order — `id, feature_id,
 object_type, parents, children, children_roles, address, bbox, <geometry
-quad per LoD>, template, other` — with attribute columns strictly after all
-> of them. `address` and `template` are present (this writer declares them)
+quad per LoD>, implicit_geometry, other` — with attribute columns strictly after all
+> of them. `address` and `implicit_geometry` are present (this writer declares them)
 > but always `NULL`, because it parses neither yet:
 >
 > ```sh
 > duckdb -c "SELECT count(*) FILTER (WHERE address IS NOT NULL) AS addr_nonnull,
->                   count(*) FILTER (WHERE template IS NOT NULL) AS tmpl_nonnull
+>                   count(*) FILTER (WHERE implicit_geometry IS NOT NULL) AS ig_nonnull
 >            FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet');"
-> # addr_nonnull=0 | tmpl_nonnull=0
+> # addr_nonnull=0 | ig_nonnull=0
 > ```
 >
 > Note also: `other_attributes` no longer exists — `other` is the single
@@ -838,12 +838,12 @@ quad per LoD>, template, other` — with attribute columns strictly after all
 > and none was given (crs => 'EPSG:7415'), so every file's `crs` is written as an
 > explicit null (CRS unknown) and metadata.json declares no projection
 >
-> bridge.parquet             | written |    1 |    9229
-> building.parquet           | written | 2231 | 2628488
-> city_furniture.parquet     | written |    1 |   10693
-> geometry_templates.parquet | written |    3 |   22633
-> materials.parquet          | written |    4 |    1770
-> textures.parquet           | written |    4 |    1333
+> bridge.parquet              | written |    1 |    9229
+> building.parquet            | written | 2231 | 2628488
+> city_furniture.parquet      | written |    1 |   10693
+> implicit_geometries.parquet | written |    3 |   22633
+> materials.parquet           | written |    4 |    1770
+> textures.parquet            | written |    4 |    1333
 > metadata.json              | written |    0 |    3298
 > ```
 >
@@ -877,7 +877,7 @@ straight off Part 1.2's output:
 > metadata blocker on reading this package back with cityparquet-rs, and it is
 > fixed; pinned by `test/sql/cityparquet_io.test`.
 >
-> **The `geometry_templates.id` type divergence is settled** — the spec sides
+> **The `implicit_geometries.id` type divergence is settled** — the spec sides
 > with duckdb-cityjson's `BIGINT`, and cityparquet-rs now matches it. The
 > reverse round trip (a duckdb-cityjson-written package back through
 > `cityparquet-rs export`) is covered in full in 4.5, headline result: **the
@@ -1230,7 +1230,7 @@ Building parents); and 18 real-world solids are non-manifold.
 ### 4.5 The full duckdb-cityjson ↔ cityparquet-rs round trip
 
 This closes the gap the previous pass of this guide recorded as **BROKEN**. A
-cross-repo campaign settled the `geometry_templates.id` schema divergence (the
+cross-repo campaign settled the `implicit_geometries.id` schema divergence (the
 spec sides with duckdb-cityjson's `BIGINT`; cityparquet-rs now matches it), so
 the direction that used to fail — a duckdb-cityjson-written package read back
 by `cityparquet-rs export` — now works, and the full six-hop chain is
@@ -1283,7 +1283,7 @@ exit=0
 >
 > `["data","cityparquet-objects"]` / `["data","cityparquet-sidecar"]` asset
 > roles (fixed earlier) get rs as far as discovering the package's tables;
-> matching `geometry_templates.id` types is what lets it actually read them.
+> matching `implicit_geometries.id` types is what lets it actually read them.
 
 **One divergence remains, and it is real** — a **sidecar-bearing** package
 still fails rs export:
@@ -1329,7 +1329,7 @@ writer's:
   && ./build/release/duckdb /tmp/cp_test/rt.db -c "CREATE SCHEMA x;" \
   && ./build/release/duckdb /tmp/cp_test/rt.db -c "PRAGMA cityparquet_read('/tmp/cp_test/pkg_out', 'x');" \
   && ./build/release/duckdb /tmp/cp_test/rt.db -c "SELECT table_name, role FROM x.__cityparquet ORDER BY 1;")
-# bridge/building/city_furniture = object, geometry_templates/materials/textures = sidecar
+# bridge/building/city_furniture = object, implicit_geometries/materials/textures = sidecar
 ```
 
 (Expect a warning that a `GEOMETRY` column's CRS is not persisted in a
@@ -1494,14 +1494,14 @@ All committed and pushed to `develop` — none of this is a working-tree state
 any more. `duckdb-3d` needed no code change for the interop closure below — it
 was the conformant side throughout.
 
-| #   | Issue                                                                                                                                                                    | Fix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2   | **A duckdb-cityjson-written package could not be read by cityparquet-rs** — `geometry_templates.id` was `BIGINT` from duckdb-cityjson and `VARCHAR` from cityparquet-rs. | **Settled in cityparquet-rs's favour of the spec, against its own prior schema**: the spec's `04-appearance-templates.mdx` mandates `id BIGINT`, and cityparquet-rs's `geometry_templates_schema` now matches it. The full six-hop round trip is lossless. Verified in 4.5                                                                                                                                                                                                                      |
-| 3   | **`make release` failed** — `src/libduckdb.dylib` did not link flatcitybuf                                                                                               | The deferred link fixup that already existed for `unittest` now also covers DuckDB's `duckdb` SHARED target (`cityjson_fcb_link_upstream_targets`, `CMakeLists.txt`). Verified in 0.4                                                                                                                                                                                                                                                                                                           |
-| 4   | **The `test/cpp` harness could not run**                                                                                                                                 | Fixed by #3, plus `run_fcb_selective_tests.sh`'s stale-library guard is no longer hardcoded to the Linux `libduckdb.so`. Verified in 2.10                                                                                                                                                                                                                                                                                                                                                       |
-| 5   | **`just interop` was broken** — `lib/cityparquet-rs/scripts/interop.sh` still passed the removed `--profile compatibility`                                               | Flag dropped; stale by-family comments corrected to by-module; the cross-module union now uses `union_by_name = true`. Verified in 1.7                                                                                                                                                                                                                                                                                                                                                          |
-| 7   | **`Railway.city.jsonl` fails conversion** — `material index 2 in theme 'visual' out of range (local defs len 2)`                                                         | **No longer an open decision.** cityparquet-rs gained `--tolerate-invalid-appearance`, which drops the dangling reference and counts it in the report's tenth field rather than aborting the whole conversion. Strict remains the default — a bare `convert` still refuses the file with the message above. Verified: `convert benchmark/formats/data/Railway.city.jsonl -o … --tolerate-invalid-appearance` reports `121 13 0 0 6 6 84 34 3 1` (84 materials written, one dropped) and exits 0 |
-| 10  | `cityparquet-rs/CLAUDE.md` + `AGENTS.md` documented `convert INPUT OUTPUT_DIR` positionally                                                                              | Both now show `--output`, list the flags added since (`--partition`, `--crs`, `--no-lod0`), and the catalogue suite count is 265, not 219                                                                                                                                                                                                                                                                                                                                                       |
+| #   | Issue                                                                                                                                                                     | Fix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2   | **A duckdb-cityjson-written package could not be read by cityparquet-rs** — `implicit_geometries.id` was `BIGINT` from duckdb-cityjson and `VARCHAR` from cityparquet-rs. | **Settled in cityparquet-rs's favour of the spec, against its own prior schema**: the spec's `04-appearance-templates.mdx` mandates `id BIGINT`, and cityparquet-rs's `implicit_geometries_schema` now matches it. The full six-hop round trip is lossless. Verified in 4.5                                                                                                                                                                                                                     |
+| 3   | **`make release` failed** — `src/libduckdb.dylib` did not link flatcitybuf                                                                                                | The deferred link fixup that already existed for `unittest` now also covers DuckDB's `duckdb` SHARED target (`cityjson_fcb_link_upstream_targets`, `CMakeLists.txt`). Verified in 0.4                                                                                                                                                                                                                                                                                                           |
+| 4   | **The `test/cpp` harness could not run**                                                                                                                                  | Fixed by #3, plus `run_fcb_selective_tests.sh`'s stale-library guard is no longer hardcoded to the Linux `libduckdb.so`. Verified in 2.10                                                                                                                                                                                                                                                                                                                                                       |
+| 5   | **`just interop` was broken** — `lib/cityparquet-rs/scripts/interop.sh` still passed the removed `--profile compatibility`                                                | Flag dropped; stale by-family comments corrected to by-module; the cross-module union now uses `union_by_name = true`. Verified in 1.7                                                                                                                                                                                                                                                                                                                                                          |
+| 7   | **`Railway.city.jsonl` fails conversion** — `material index 2 in theme 'visual' out of range (local defs len 2)`                                                          | **No longer an open decision.** cityparquet-rs gained `--tolerate-invalid-appearance`, which drops the dangling reference and counts it in the report's tenth field rather than aborting the whole conversion. Strict remains the default — a bare `convert` still refuses the file with the message above. Verified: `convert benchmark/formats/data/Railway.city.jsonl -o … --tolerate-invalid-appearance` reports `121 13 0 0 6 6 84 34 3 1` (84 materials written, one dropped) and exits 0 |
+| 10  | `cityparquet-rs/CLAUDE.md` + `AGENTS.md` documented `convert INPUT OUTPUT_DIR` positionally                                                                               | Both now show `--output`, list the flags added since (`--partition`, `--crs`, `--no-lod0`), and the catalogue suite count is 265, not 219                                                                                                                                                                                                                                                                                                                                                       |
 
 ### Open — needing a decision, not a patch
 
@@ -1548,7 +1548,7 @@ gap that the previous pass recorded as **BROKEN** at §4.5 is closed. The full
 six-hop chain — CityJSON → cityparquet-rs → CityParquet → duckdb-cityjson →
 CityParquet → cityparquet-rs → CityJSON — is now semantically lossless
 (`equal (excluded: 19)`, exit 0). Closing it took settling the
-`geometry_templates.id` schema divergence (BIGINT, matching the spec) and
+`implicit_geometries.id` schema divergence (BIGINT, matching the spec) and
 adding `--tolerate-invalid-appearance` for dangling appearance references.
 
 One **BROKEN** marker remains, and it is an environment prerequisite, not a

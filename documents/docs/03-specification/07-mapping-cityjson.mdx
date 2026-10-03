@@ -19,13 +19,13 @@ CityGML conceptual model:
 | CityGML | CityParquet |
 |---|---|
 | feature id | `id` |
-| feature class | `object_type` — the CityGML class name verbatim |
+| feature class | `object_type` — the CityGML class name verbatim; an ADE class carries its [extension namespace](/specification/extensions) as a prefix |
 | feature hierarchy | `parents` / `children` / `feature_id` |
 | feature attributes | inferred typed [attribute columns](/specification/object-table-schema) |
 | geometry, per LoD | [WKB `geometry_lod*`](/specification/geometry-semantics) |
 | boundary surfaces and their attributes | `geometry_properties_lod*` (`surfaces` + `face_semantics`) |
 | appearance (surface data) | [`material_lod*` / `texture_lod*`](/specification/appearance-templates) + sidecars |
-| implicit geometry | `template` struct + `geometry_templates.parquet` |
+| implicit geometry (`ImplicitGeometry`) | `implicit_geometry` struct (reference point, transformation matrix) + the relative geometry in [`implicit_geometries.parquet`](/specification/appearance-templates) |
 | address | the [`address` column](/specification/object-table-schema) |
 | `CityObjectGroup` + its members | the group is a row (in `generics.parquet`); membership is carried by `children` / `children_roles` / `parents` — no dedicated file |
 | ADE feature types / attributes | [extension rules](/specification/extensions) |
@@ -43,26 +43,26 @@ CityParquet borrows 3DCityDB's shape deliberately is the
 | CityJSON field                            | CityParquet mapping                                         |
 | ----------------------------------------- | ----------------------------------------------------------- |
 | `CityObjects.{id}`                        | `id`                                                        |
-| `CityObjects.{id}.type`                   | `object_type` — mapped to the CityGML class name (`TransportSquare`→`Square`, `GenericCityObject`→`GenericOccupiedSpace`, `BuildingStorey`→`Storey`, `TunnelHollowSpace`→`HollowSpace`; others unchanged; any `+` stripped) |
-| `attributes`                              | inferred typed [attribute columns](/specification/object-table-schema) |
+| `CityObjects.{id}.type`                   | `object_type` — mapped to the CityGML class name (`TransportSquare`→`Square`, `GenericCityObject`→`GenericOccupiedSpace`, `BuildingStorey`→`Storey`, `TunnelHollowSpace`→`HollowSpace`; others unchanged); an extension type carries its [namespace](/specification/extensions) prefix in place of the `+` (`+ThermalZone`→`energy_ThermalZone`) |
+| `attributes`                              | inferred typed [attribute columns](/specification/object-table-schema); an extension attribute carries its namespace prefix in place of the `+` (`+heatCapacity`→`energy_heatCapacity`) |
 | `children` / `parents` / `children_roles` | same-named columns                                          |
 | `address`                                 | the [`address` column](/specification/object-table-schema); `address[].location` becomes a WKB `MultiPointZ` |
 | `geometry[].boundaries`                   | encoded into [WKB `geometry_lod*`](/specification/geometry-semantics) |
 | `geometry[].lod`                          | the column's LoD suffix (`lod2_2`); exact source spelling not separately retained |
-| `geometry[].semantics`                    | `geometry_properties_lod*` — `surfaces` verbatim, `values` flattened to `face_semantics` |
+| `geometry[].semantics`                    | `geometry_properties_lod*` — `surfaces` verbatim except that an extension surface type carries its namespace prefix (`+PartyWallSurface`→`energy_PartyWallSurface`), `values` flattened to `face_semantics` |
 | `geometry[]` shell nesting                | `geometry_properties_lod*.shells`                           |
 | `geometry[].material`                     | [`material_lod*`](/specification/appearance-templates) for the geometry's LoD — one map entry per theme, `values` flattened to one sidecar `id` per WKB face, a whole-geometry `value` expanded per face |
 | `geometry[].texture`                      | `texture_lod*` for the geometry's LoD — one map entry per theme, `values` flattened per WKB face, each ring's texture index and UV indices resolved to `{id, uv}` |
-| `geometry[].template`                     | `template.id`                                               |
-| `geometry[].transformationMatrix`         | `template.transformationMatrix`                             |
-| geometry instance reference point         | `template.point` as WKB `PointZ`                            |
+| `geometry[].template`                     | `implicit_geometry.id`                                      |
+| `geometry[].transformationMatrix`         | `implicit_geometry.transformationMatrix`                    |
+| geometry instance reference point         | `implicit_geometry.point` as WKB `PointZ`                   |
 | `CityObjects.{id}.geographicalExtent`     | `bbox` (unioned with the extent computed from the object's subtree geometry; reconstructed from `bbox` on export) |
 | `appearance.materials`                    | `materials.parquet`                                         |
 | `appearance.textures`                     | `textures.parquet`                                          |
 | `appearance.vertices-texture`             | resolved into the `uv` pairs of `texture_lod*`; no UV pool is stored |
-| `geometry-templates.templates`            | `geometry_templates.parquet`, one row per template          |
-| `geometry-templates.vertices-templates`   | encoded into the template WKB geometry                      |
+| `geometry-templates.templates`            | `implicit_geometries.parquet`, one row per template (the relative geometry) |
+| `geometry-templates.vertices-templates`   | encoded into the relative geometry's WKB in `implicit_geometries.parquet` |
 | `metadata`                                | `city.other` and/or the [STAC Item](/specification/metadata)'s `city3d:*` fields |
 | `transform`                               | applied to the geometry at encode; not a structural key — MAY be carried informationally in `city.other` |
-| `extensions`                              | the [`city.extensions` metadata key](/specification/metadata) + [extension-derived columns](/specification/extensions) |
+| `extensions`                              | the [`city.extensions` metadata key](/specification/extensions#the-extension-declaration-cityextensions), keyed by the namespace derived from each member key (`"Energy"`→`energy`), with its `url` and `version`; the member key becomes `name` |
 | other object members                      | the object-table `other` column, restored into `attributes` on export (JSON; null when the object has none) |

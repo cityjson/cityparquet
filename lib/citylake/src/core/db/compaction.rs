@@ -12,7 +12,7 @@ use crate::core::interface::types::{
 
 impl DuckLakeService {
     /// Merge each object table's small Parquet files. Sidecars (`materials`,
-    /// `textures`, `geometry_templates`) are deliberately out of scope: they
+    /// `textures`, `implicit_geometries`) are deliberately out of scope: they
     /// are not among `object_tables`, which only lists the rows the
     /// extension's own registry marks `role = 'object'`.
     pub fn compact_impl(&self, dataset: &DatasetName) -> RepositoryResult<CompactionStats> {

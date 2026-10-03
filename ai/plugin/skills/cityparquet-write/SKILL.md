@@ -13,7 +13,7 @@ every `COPY … TO` and every `cityparquet_write`.
 
 1. **Send each pragma as its own statement.** DuckDB expands every pragma in a
    batch before running any statement, so `CREATE SCHEMA d; PRAGMA
-   cityparquet_init('d');` sent to the CLI as one batch fails.
+cityparquet_init('d');` sent to the CLI as one batch fails.
    `cityparquet_query` splits scripts for you; the CLI does not.
 2. **The CRS is never reprojected, and it is only checked if it is known.**
    On insert or merge the incoming CRS must match the package's, and an
@@ -81,7 +81,7 @@ TO '/data/delft.city.jsonl'
 - **State the `crs` option whenever the source is Parquet or a table.** `COPY`
   inherits a CRS only from a single `read_cityjson…` reader. From Parquet, it
   otherwise writes a file with **no** reference system and gives no error.
-- `bbox`, `other`, `address` and templates are not written to CityJSON.
+- `bbox`, `other`, `address` and `implicit_geometry` are not written to CityJSON.
 - `flatcitybuf` takes `attr_index 'col1,col2'` to index attributes for later
   filtering.
 

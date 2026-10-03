@@ -14,7 +14,7 @@ against it, and quote the specification rather than recalling it.
 - **One file per module**, with fixed names: `building`, `bridge`, `tunnel`,
   `construction`, `transportation`, `vegetation`, `relief`, `water_body`,
   `land_use`, `city_furniture`, `generics` (`.parquet`). Optional sidecars:
-  `materials`, `textures`, `geometry_templates`. A STAC Item,
+  `materials`, `textures`, `implicit_geometries`. A STAC Item,
   `metadata.json`, lists the files.
 - **One row per city object.** Reserved columns: `id`; `feature_id` (the id of
   the object's root — group by it to combine a `Building` with its
@@ -54,11 +54,11 @@ against it, and quote the specification rather than recalling it.
 
 ## Where to go next
 
-| The task | Skill |
-| --- | --- |
-| Read, filter, aggregate, find what a package holds | `cityparquet-query` |
-| Write or edit a package, or convert to or from CityJSON | `cityparquet-write` |
-| Volume, footprint, height, validity, reprojection | `cityparquet-3d-analysis` |
+| The task                                                | Skill                     |
+| ------------------------------------------------------- | ------------------------- |
+| Read, filter, aggregate, find what a package holds      | `cityparquet-query`       |
+| Write or edit a package, or convert to or from CityJSON | `cityparquet-write`       |
+| Volume, footprint, height, validity, reprojection       | `cityparquet-3d-analysis` |
 
 ## Two geometry extensions
 

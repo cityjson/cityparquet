@@ -19,18 +19,18 @@ with the reasoning in `04-design-decisions/` and the genuinely unsettled parts i
 
 ## Layout
 
-| Path                   | What                                                                                                           | Authoritative instructions                  |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `documents/`           | Blume docs site — the **normative CityParquet specification**, design decisions, open questions                | `documents/blume.config.ts`; skill: `blume` |
-| `lib/cityparquet-rs/`  | **Rust reference implementation** — the reader/writer that _owns_ the encoding; the `cityparquet` CLI          | its `CLAUDE.md`                             |
-| `lib/citylake/`        | Rust data-lake framework + web API; the lakehouse runtime. **Work in progress.** Its own Cargo workspace       | its `CLAUDE.md`                             |
-| `lib/duckdb-cityjson/` | DuckDB CityJSON extension — SQL-native CityJSON I/O and an executable prototype of the encoding. **Submodule** | its `CLAUDE.md`                             |
-| `lib/duckdb-3d/`       | DuckDB 3D extension — 3D solid processing (`SOLID_3D`). Strict TDD. **Submodule**                              | its `CLAUDE.md`                             |
-| `benchmark/`           | Three benchmark families: `formats/` (cross-format), `databases/` (vs cjdb / 3DCityDB v5), `plot/` (renderers) | `benchmark/README.md`                       |
-| `test/`                | `TESTING.md`, the cross-module manual walkthrough, and `run-all.sh`                                            | —                                           |
-| `ai/mcp/`              | The **MCP server** — the specification, the function references, dataset description and sandboxed SQL, for agents | its `CLAUDE.md`                             |
+| Path                   | What                                                                                                                                               | Authoritative instructions                  |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `documents/`           | Blume docs site — the **normative CityParquet specification**, design decisions, open questions                                                    | `documents/blume.config.ts`; skill: `blume` |
+| `lib/cityparquet-rs/`  | **Rust reference implementation** — the reader/writer that _owns_ the encoding; the `cityparquet` CLI                                              | its `CLAUDE.md`                             |
+| `lib/citylake/`        | Rust data-lake framework + web API; the lakehouse runtime. **Work in progress.** Its own Cargo workspace                                           | its `CLAUDE.md`                             |
+| `lib/duckdb-cityjson/` | DuckDB CityJSON extension — SQL-native CityJSON I/O and an executable prototype of the encoding. **Submodule**                                     | its `CLAUDE.md`                             |
+| `lib/duckdb-3d/`       | DuckDB 3D extension — 3D solid processing (`SOLID_3D`). Strict TDD. **Submodule**                                                                  | its `CLAUDE.md`                             |
+| `benchmark/`           | Three benchmark families: `formats/` (cross-format), `databases/` (vs cjdb / 3DCityDB v5), `plot/` (renderers)                                     | `benchmark/README.md`                       |
+| `test/`                | `TESTING.md`, the cross-module manual walkthrough, and `run-all.sh`                                                                                | —                                           |
+| `ai/mcp/`              | The **MCP server** — the specification, the function references, dataset description and sandboxed SQL, for agents                                 | its `CLAUDE.md`                             |
 | `ai/plugin/`           | The **agent skills** — four Markdown skills, shipped as a Claude Code plugin (`.claude-plugin/marketplace.json` at the root) and as an APM package | its `README.md`                             |
-| `example/`             | Small inputs; anything worth measuring is fetch-scripted                                                       | —                                           |
+| `example/`             | Small inputs; anything worth measuring is fetch-scripted                                                                                           | —                                           |
 
 Generated benchmark inputs, evidence and summaries belong in the ignored `benchmark/runs/` directory. Do not place new benchmark outputs in a sibling checkout.
 
@@ -41,7 +41,7 @@ Generated benchmark inputs, evidence and summaries belong in the ignored `benchm
   with **WKB geometry in a per-LoD `geometry_lod*` column** paired with a
   `geometry_properties_lod*` struct carrying the CityGML CM information WKB
   cannot hold (semantic surfaces, shell structure), plus optional `materials` /
-  `textures` / `geometry_templates` sidecars. Footer metadata is a `city` object
+  `textures` / `implicit_geometries` sidecars. Footer metadata is a `city` object
   alongside a GeoParquet-conformant `geo` object; `metadata.json` is a STAC Item
   (city3d extension). At LoD0 a footprint _is_ GeoParquet; solids step beyond
   GeoParquet's WKB vocabulary and are declared only in `city`.

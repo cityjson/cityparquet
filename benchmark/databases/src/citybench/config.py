@@ -15,7 +15,7 @@ from pathlib import Path
 # The STAC asset role `cityparquet convert` stamps on every per-module
 # OBJECT table it writes (verified against a real converted package — see
 # `object_table_files`). Sidecar tables (materials/textures/
-# geometry_templates) and the "data" alias entry (a convenience duplicate of
+# implicit_geometries) and the "data" alias entry (a convenience duplicate of
 # the FIRST object table, for a single-family package) do not carry this
 # role, so filtering on it is what tells object tables apart from everything
 # else `assets` lists.
@@ -42,7 +42,7 @@ def object_table_files(package: Path) -> list[str]:
     real converted package to be exactly the per-module object tables,
     excluding both the "data" convenience alias (a duplicate pointer at
     the FIRST object table, carrying only the plain ``"data"`` role) and
-    any materials/textures/geometry_templates sidecar assets (which carry
+    any materials/textures/implicit_geometries sidecar assets (which carry
     their own, different roles). Sorted for a deterministic query shape
     across runs.
 

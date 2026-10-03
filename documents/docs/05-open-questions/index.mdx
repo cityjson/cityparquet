@@ -27,26 +27,33 @@ to a list, or merging the duplicates into a `MultiSolid`. Until this is decided 
 reference implementation silently drops the extra geometries, so no choice can be
 enforced yet.
 
-### Multiple implicit-geometry instances per object <Badge variant="warning">open</Badge>
+### Multiple implicit geometries per object <Badge variant="warning">open</Badge>
 
-The `template` column [defined in the object table schema](/specification/object-table-schema)
-is a single struct, so an object that instantiates several templates cannot currently
-be represented. The choice is between **one instance per object** (rejecting the rest)
-and a **list-valued `template` column** that can hold several. A third option surfaced
-during the 2026-07-21 review and was set aside as scope creep: **per-LoD
-`template_lod*` columns**, which would resolve the case where the instances differ by
-LoD but not the case where they do not. The reference implementation keeps only the
-first instance today.
+The `implicit_geometry` column [defined in the object table schema](/specification/object-table-schema)
+is a single struct, so an object with several implicit geometries cannot currently be
+represented. The choice is between **one implicit geometry per object** (rejecting the
+rest) and a **list-valued `implicit_geometry` column** that can hold several. A third
+option surfaced during the 2026-07-21 review and was set aside as scope creep:
+**per-LoD `implicit_geometry_lod*` columns**, which would resolve the case where the
+implicit geometries differ by LoD but not the case where they do not. The reference
+implementation keeps only the first implicit geometry today.
 
 ## Other open questions
 
-### CityGML ADE namespace / object-class metadata <Badge variant="warning">open</Badge>
+### Extensions: attribution across several extensions, and ADE object-class metadata <Badge variant="warning">open</Badge>
 
-How to represent **CityGML ADE** namespace and object-class metadata beyond the
-[`ex_` attribute-prefix convention](/specification/extensions) is unresolved. The `ex_`
-prefix captures extended *attributes*, and extended feature types get their own tables,
-but a richer scheme may be needed to carry ADE namespaces and object-class information
-faithfully.
+An extension's identity is carried by its [namespace prefix](/specification/extensions):
+every name an extension adds — attribute columns, `object_type` values, semantic surface
+types and module files — carries it, and `city.extensions` maps it to the extension's
+schema document. Two parts remain open:
+
+- **Attributing names across several extensions.** When a CityJSON source declares
+  several extensions, attributing each `+` name to one of them needs the extensions'
+  schema documents (`extraAttributes`, `extraCityObjects`, `extraSemanticSurfaces`).
+  How a writer obtains and reads them is not yet settled.
+- **Full ADE object-class metadata.** Beyond the class name, its module file and the
+  extension declaration, a richer scheme may be needed to carry an ADE's object-class
+  information faithfully.
 
 ### Strict 1:1 face_semantics ↔ source surfaces <Badge variant="warning">open</Badge>
 

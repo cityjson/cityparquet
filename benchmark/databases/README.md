@@ -969,7 +969,7 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     geometry and its descendants' geometry, widened by any declared
     `geographicalExtent` (`lib/cityparquet-rs/crates/core/src/encode.rs`). A
     `GeometryInstance` contributes no extent (`geometry_bbox` in
-    `wkb_write.rs`). An object with only template instances in its subtree
+    `wkb_write.rs`). An object with only implicit geometries in its subtree
     and no declared extent therefore has a NULL `bbox`, and every
     `bbox-query` on CityParquet excludes it, while cjdb and 3DCityDB resolve
     the placed geometry and can include it. Such a row is also outside the

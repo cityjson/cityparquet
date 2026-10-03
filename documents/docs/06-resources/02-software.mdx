@@ -65,7 +65,8 @@ summary, not a certification of complete specification conformance.
 | --- | --- |
 | Object tables | CityGML module routing, identity and hierarchy columns, typed attributes, structured addresses, and extension data |
 | Geometry | WKB columns with explicit LoD suffixes, including `geometry_lod0_0`; geometry properties and bounding boxes |
-| Appearance and instances | Material and texture assignments, appearance sidecars, and geometry-template sidecars with LoD-specific geometry |
+| Appearance and implicit geometries | Material and texture assignments, appearance sidecars, and the `implicit_geometries.parquet` sidecar with LoD-specific geometry |
+| Extensions | A source that declares a **single** extension: the namespace is derived from it, and every `+` name — attribute, `object_type` value, semantic surface type — carries its prefix, declared in `city.extensions`. Attributing names across several declared extensions from their schema documents is not implemented, so a `+` name in a source that declares several is rejected. The extension registry is a stub that reads no schema documents, so an extension class resolves to a module file only when its name without the `+` is a core class name (`+Building` → `building.parquet`); any other extension class has no resolvable module and is rejected |
 | Metadata and CRS | Structured `city` footer metadata, GeoParquet `geo` metadata for eligible geometry, PROJJSON CRS information, and a STAC Item in `metadata.json` |
 | Bloom filters | On `id`, `feature_id` and high-cardinality string attributes at FPP 0.01, after the last row group; `--no-bloom` turns them off |
 | Reading | Arrow record batches, column projection, attribute filtering, bounding-box pruning, bloom-filter pruning for `id`, `feature_id` and string-equality lookups (every filter of a column asked for in one batched range read, which object storage coalesces into few requests; a filter without a declared `bloom_filter_length` is fetched separately), and optional asynchronous object-store access |
@@ -105,6 +106,9 @@ The extension also manages **complete CityParquet packages** as DuckDB schemas:
   derived values.
 - `cityparquet_validate`, `cityparquet_orphans`, and `cityparquet_vacuum` check
   structure and manage unreferenced sidecar rows.
+- Extension names carry the namespace derived from a source's **single** declared
+  extension, declared in `city.extensions`. Attributing names across several
+  declared extensions from their schema documents is not implemented.
 
 `cityparquet_write` writes Parquet bloom filters under its `bloom` option (on by
 default). DuckDB writes a filter only for a dictionary-encoded column chunk and

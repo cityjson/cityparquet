@@ -5,7 +5,7 @@ sidebar:
   label: D · Appearance
 ---
 
-How CityParquet handles resources shared across many objects: materials and textures are separated from geometry and deduplicated into sidecar files referenced by global id, and reusable geometry templates live in their own sidecar with instances carrying only a small `template` struct. Prior art weighed here: 3DCityDB's appearance table and CityJSON's shared appearance/geometry-template pools, following the OBJ / COLLADA / glTF principle of separating geometry from appearance.
+How CityParquet handles resources shared across many objects: materials and textures are separated from geometry and deduplicated into sidecar files referenced by global id, and the shared relative geometries of implicit geometries live in their own sidecar, with each object carrying only a small `implicit_geometry` struct. Prior art weighed here: 3DCityDB's appearance table and CityJSON's shared pools of appearance and of implicit-geometry shapes, following the OBJ / COLLADA / glTF principle of separating geometry from appearance.
 
 ## Geometry separated from appearance; shared resources in deduplicated sidecars
 
@@ -26,16 +26,16 @@ How CityParquet handles resources shared across many objects: materials and text
 
 **Status.** Decided. The global-id + inline-UV normalisation and the typed per-face column shape are normative; the [conformance matrix](/resources/software) records which implementation has caught up.
 
-## Geometry templates in a sidecar, instances via a template struct
+## Implicit geometries: relative geometries in a sidecar, the rest in an `implicit_geometry` struct
 
 <Badge variant="success">decided</Badge>
 
-**Decision.** Reusable templates live in `geometry_templates.parquet`, using the same geometry strategy as the object table — including the per-LoD column grammar: `geometry_lod*` + nullable `geometry_properties_lod*` / `material_lod*` / `texture_lod*`. An instancing object stores a `template` STRUCT `{id, point (WKB PointZ), transformationMatrix (LIST<DOUBLE>, a flat 16-element row-major 4×4)}` in the object table. See the [specification](/specification/appearance-templates) → *geometry_templates.parquet*.
+**Decision.** Following the CityGML `ImplicitGeometry`, an implicit geometry is a reference point, a transformation matrix and a reference to a shared *relative geometry*. The relative geometries live in `implicit_geometries.parquet`, one per row, using the same geometry strategy as the object table — including the per-LoD column grammar: `geometry_lod*` + nullable `geometry_properties_lod*` / `material_lod*` / `texture_lod*`. An object with an implicit geometry stores an `implicit_geometry` STRUCT `{id, point (WKB PointZ), transformationMatrix (LIST<DOUBLE>, a flat 16-element row-major 4×4)}` in the object table. See the [specification](/specification/appearance-templates) → *implicit_geometries.parquet*.
 
-**Alternatives considered.** Inline the template geometry at each instance (simple, but defeats the whole point of an implicit/instanced geometry) vs reference a shared template (chosen).
+**Alternatives considered.** Inline the relative geometry at each object (simple, but defeats the whole point of an implicit geometry) vs reference a shared relative geometry (chosen).
 
-**Why this.** Implicit geometries exist precisely to share one geometry across many instances; a sidecar of templates referenced by id preserves that compaction. Template vertices are in **local** coordinates and are **not** subject to any dataset-level transform, so template WKB stores raw doubles. The sidecar follows the per-LoD column grammar so that one LoD-naming rule holds across the whole format, rather than making this the sole place where an LoD rides in a value.
+**Why this.** Implicit geometries exist precisely to share one geometry across many objects; a sidecar of relative geometries referenced by id preserves that compaction. A relative geometry's vertices are in **local** coordinates and are **not** subject to any dataset-level transform, so its WKB stores raw doubles. The sidecar follows the per-LoD column grammar so that one LoD-naming rule holds across the whole format, rather than making this the sole place where an LoD rides in a value.
 
-**Trade-off.** Resolving an instance needs a sidecar lookup plus applying its `transformationMatrix` and reference `point`. A template is one geometry at one LoD, so the per-LoD columns leave each row sparse — accepted as the price of the uniform naming rule.
+**Trade-off.** Resolving an implicit geometry needs a sidecar lookup plus applying its `transformationMatrix` and reference `point`. A relative geometry is one geometry at one LoD, so the per-LoD columns leave each row sparse — accepted as the price of the uniform naming rule.
 
-**Status.** Decided and implemented; 🟡 an object instantiating *several* templates remains an [open question](/open-questions), since `template` is a single struct.
+**Status.** Decided and implemented; 🟡 an object with *several* implicit geometries remains an [open question](/open-questions), since `implicit_geometry` is a single struct.

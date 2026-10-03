@@ -7,7 +7,7 @@ sidebar:
 
 Each row of an object table represents one **city object** — a feature of the CityGML
 conceptual model. The table stores identity, hierarchy, attributes, addresses,
-geometry, semantics, appearance references, geometry-template instances, and spatial
+geometry, semantics, appearance references, implicit geometries, and spatial
 metadata.
 
 ## Reserved columns
@@ -27,9 +27,9 @@ required and non-null on every row.
 | `bbox` | `STRUCT<xmin,ymin,zmin,xmax,ymax,zmax DOUBLE>` |  | column nullable; the six struct fields are non-null | Bounding box in the geometry CRS (see [spatial metadata](/specification/geometry-semantics)) |
 | `geometry_lod*` | `BLOB` |  | nullable | WKB 3D geometry; one column per LoD, named per the [LoD suffix grammar](/specification/geometry-semantics) |
 | `geometry_properties_lod*` | `STRUCT<type VARCHAR, surfaces JSON, face_semantics LIST<INT>, shells LIST<LIST<INT>>>` |  | nullable | The CityGML CM geometry information WKB cannot encode — chiefly the **semantic surfaces** — plus geometry type and shell structure; one per LoD ([details](/specification/geometry-semantics)) |
-| `material_lod*` | `MAP<VARCHAR, LIST<BIGINT>>` |  | nullable | Per-theme material references for the geometry in the matching `geometry_lod*` cell: theme → one `materials.parquet` `id` (or `null`) per WKB face (see [appearance & templates](/specification/appearance-templates)); one per LoD |
+| `material_lod*` | `MAP<VARCHAR, LIST<BIGINT>>` |  | nullable | Per-theme material references for the geometry in the matching `geometry_lod*` cell: theme → one `materials.parquet` `id` (or `null`) per WKB face (see [appearance & implicit geometries](/specification/appearance-templates)); one per LoD |
 | `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>` |  | nullable | Per-theme texture references for the geometry in the matching `geometry_lod*` cell: theme → per WKB face → per ring → the `textures.parquet` `id` and the ring's `[u, v]` pairs; one per LoD |
-| `template` | `STRUCT<id BIGINT, point BLOB, transformationMatrix LIST<DOUBLE>>` |  | column and all fields nullable | Geometry-template instance data (the matrix is a flat 16-element row-major 4×4) |
+| `implicit_geometry` | `STRUCT<id BIGINT, point BLOB, transformationMatrix LIST<DOUBLE>>` |  | column and all fields nullable | The object's [implicit geometry](/specification/appearance-templates#implicit_geometriesparquet): the `implicit_geometries.parquet` `id` of the shared relative geometry, the reference point, and the transformation matrix (a flat 16-element row-major 4×4) |
 | `other` | `JSON` |  | nullable | Source data with no column of its own — a member the format does not map, or an attribute whose name collides with a reserved column. A reader restores every entry into the object's `attributes`; see [the escape-hatch rule](#the-other-column) |
 
 :::note[bbox field names]
@@ -65,8 +65,9 @@ four that differ are mapped on import (and back on export):
 | `BuildingStorey` | `Storey` |
 | `TunnelHollowSpace` | `HollowSpace` |
 
-An extension (ADE / CityJSON Extension) type keeps its own class name, with the CityJSON
-`+` prefix stripped.
+An extension (ADE / CityJSON Extension) type is its class name prefixed with the
+extension's namespace — `+ThermalZone` of the Energy ADE (namespace `energy`) →
+`energy_ThermalZone` — see [extensions](/specification/extensions).
 :::
 
 ### The `other` column
@@ -100,8 +101,8 @@ A writer **MUST NOT** emit an `other` entry whose key duplicates an attribute th
 same row carries in a column — such a file is exactly what the reader-side rule
 above rejects.
 
-**Optional data is `NULL`, not an omitted column.** `address` and `template` remain
-part of the schema even when no row has a value for them, and every LoD that has a
+**Optional data is `NULL`, not an omitted column.** `address` and `implicit_geometry`
+remain part of the schema even when no row has a value for them, and every LoD that has a
 `geometry_lod*` column also has its matching `geometry_properties_lod*`,
 `material_lod*` and `texture_lod*` columns, whether or not any row carries values for
 them.
@@ -139,7 +140,9 @@ pruning on a parent's `bbox` never misses geometry held by its descendants.
 - **`other` is itself a reserved name.** A source attribute literally named `other`
   is invalid input, exactly as one named `children` or `bbox` would be: it is the
   column collisions divert *into*, so it has nowhere further to go.
-- Extension attributes use the `ex_` prefix — see [extensions](/specification/extensions).
+- Extension attributes carry their extension's namespace as a prefix
+  (`energy_heatCapacity`), and a core attribute **MUST NOT** begin with a declared
+  namespace followed by `_` — see [extensions](/specification/extensions).
 - A reader distinguishes reserved from attribute columns using the `attributes`
   metadata key: a column listed there is an attribute, and every other column is a
   reserved structural column whose name is fixed by this specification.
