@@ -14,9 +14,11 @@ spatial pruning. This page defines all four.
 
 The geometry column stores **ISO WKB** as `BLOB`, in the file CRS. This is the same WKB
 serialisation GeoParquet uses, but not the same *vocabulary*: GeoParquet admits only the
-OGC **Simple Feature** types, whereas CityParquet also stores the solid-family geometry
-(`PolyhedralSurfaceZ`) a 3D city model needs, which lies outside Simple Features — so the
-two are only partially interchangeable (see the note on GeoParquet-legal types below).
+seven basic OGC **Simple Feature** types (`Point` to `GeometryCollection`), whereas
+CityParquet also stores the solid-family geometry (`PolyhedralSurfaceZ`) a 3D city model
+needs. Simple Features 1.2 defines `PolyhedralSurface`, but GeoParquet does not permit it
+— so the two are only partially interchangeable (see the note on GeoParquet-legal types
+below).
 Specifically:
 
 - **ISO WKB** with 1000-series Z type codes (`PointZ` = 1001, `LineStringZ` = 1002,
