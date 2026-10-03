@@ -15,10 +15,10 @@
 //! the sole, mandatory table layout (2026-07-21); last numbers under the
 //! old `+by-type` axis are in `.superpowers/sdd/bytype-family-report.md`.
 //!
-//! Sidecar files (materials/textures/templates) are written whenever `input`
-//! actually has appearance/templates to store (spec-alignment gap 19 removed
+//! Sidecar files (materials/textures/implicit geometries) are written whenever
+//! `input` actually has appearance/implicit geometries to store (spec-alignment gap 19 removed
 //! the `Profile` choice this used to gate on) — a Core-shaped dataset (no
-//! materials/textures/templates) simply writes none, uniformly across every
+//! materials/textures/implicit geometries) simply writes none, uniformly across every
 //! variant.
 
 use std::fs::{self, File, OpenOptions};

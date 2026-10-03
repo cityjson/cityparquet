@@ -1,7 +1,7 @@
 //! A CityParquet file from a foreign writer must read. The physical conventions
 //! here are duckdb-cityjson's: its reserved-column order, plain Utf8 for
 //! `object_type`, `element` as the LIST child name, and microsecond
-//! timestamps. `address`/`template`/`children_roles`/`other` are present but
+//! timestamps. `address`/`implicit_geometry`/`children_roles`/`other` are present but
 //! all-null on every row — `decode_batch` requires the columns to exist, so
 //! this exercises them as absent-in-effect without pretending a foreign
 //! writer would physically omit them.
@@ -20,7 +20,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::properties::WriterProperties;
 
 use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
-use cityparquet_schema::model::{address_data_type, template_data_type};
+use cityparquet_schema::model::{address_data_type, implicit_geometry_data_type};
 
 /// A minimal but conformant `city` footer for a one-attribute object table.
 const CITY_JSON: &str = r#"{
@@ -55,14 +55,14 @@ fn foreign_file(path: &std::path::Path) {
         // `decode_batch` errors on any of these being absent, so they must
         // be present — all-null is enough to exercise the object-type/
         // timestamp tolerance this file tests without needing real address/
-        // template/other data.
+        // implicit_geometry/other data.
         Field::new(
             "children_roles",
             DataType::List(Field::new("item", DataType::Utf8, true).into()),
             true,
         ),
         Field::new("address", address_data_type(), true),
-        Field::new("template", template_data_type(), true),
+        Field::new("implicit_geometry", implicit_geometry_data_type(), true),
         Field::new("other", DataType::Utf8, true),
     ]));
 
@@ -94,7 +94,7 @@ fn foreign_file(path: &std::path::Path) {
         1,
     );
     let address: ArrayRef = new_null_array(&address_data_type(), 1);
-    let template: ArrayRef = new_null_array(&template_data_type(), 1);
+    let implicit_geometry: ArrayRef = new_null_array(&implicit_geometry_data_type(), 1);
     let other: ArrayRef = new_null_array(&DataType::Utf8, 1);
 
     let batch = RecordBatch::try_new(
@@ -108,7 +108,7 @@ fn foreign_file(path: &std::path::Path) {
             stamps,
             children_roles,
             address,
-            template,
+            implicit_geometry,
             other,
         ],
     )
@@ -154,7 +154,7 @@ fn renders_the_foreign_writers_own_fields_not_the_canonical_set() {
             "tijdstipregistratie",
             "children_roles",
             "address",
-            "template",
+            "implicit_geometry",
             "other",
         ],
         "the rendered schema must be the file's own fields, in the file's order"
@@ -295,7 +295,7 @@ const MINIMAL_CITY_JSON: &str = r#"{
 
 /// What duckdb-cityjson actually writes: only the non-null reserved
 /// columns (`id`, `feature_id`, `object_type`, `parents`, `children`) —
-/// `children_roles`, `address`, `template`, and `other` are omitted
+/// `children_roles`, `address`, `implicit_geometry`, and `other` are omitted
 /// OUTRIGHT, not present-and-null. Kept separate from [`foreign_file`]
 /// rather than folded into it — three existing tests depend on that
 /// helper's exact shape.
@@ -350,7 +350,7 @@ fn minimal_foreign_file(path: &std::path::Path) {
 
 #[test]
 fn a_table_omitting_the_optional_reserved_columns_decodes() {
-    // duckdb-cityjson emits none of address/template/other. The spec requires
+    // duckdb-cityjson emits none of address/implicit_geometry/other. The spec requires
     // these stay present as all-null columns ("Optional data is `NULL`, not
     // an omitted column"), but an absent nullable column and an all-null one
     // carry the same information, so this reader tolerates the omission as
@@ -383,8 +383,8 @@ fn a_table_omitting_the_optional_reserved_columns_decodes() {
         "an absent column decodes as an absent address, not Some(vec![])"
     );
     assert!(
-        objects[0].template.is_none(),
-        "an absent template column decodes as no template instance, not a spuriously \
+        objects[0].implicit_geometry.is_none(),
+        "an absent implicit_geometry column decodes as no implicit geometry, not a spuriously \
          populated one"
     );
 }

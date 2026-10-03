@@ -254,10 +254,16 @@ fn extensions_declarations_reach_metadata() {
     let extensions = meta
         .extensions
         .expect("extensions declaration must survive the scan");
-    assert!(
-        extensions.get("Noise").is_some(),
-        "expected the Noise declaration in {extensions}"
+    // Keyed by the derived namespace, carrying the source name, the schema
+    // document's URL and its version (spec "Extensions").
+    let noise = &extensions["noise"];
+    assert_eq!(noise.name, "Noise");
+    assert_eq!(
+        noise.url,
+        "https://www.cityjson.org/extensions/download/noise.ext.json"
     );
+    assert_eq!(noise.version.as_deref(), Some("1.1.0"));
+    assert_eq!(extensions.len(), 1);
 
     // The delft header carries no extensions key at all; that absence must be
     // preserved as None, not fabricated.

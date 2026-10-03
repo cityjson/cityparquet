@@ -12,7 +12,9 @@ use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::sidecar::{read_materials, read_templates, write_materials, write_templates};
+use cityparquet::sidecar::{
+    read_implicit_geometries, read_materials, write_implicit_geometries, write_materials,
+};
 use cityparquet::source::{Source, SourceFormat};
 use cityparquet::stac::assets::{PARQUET_MEDIA_TYPE, ROLE_OBJECT_TABLE, ROLE_SIDECAR};
 use parquet::arrow::ArrowWriter;
@@ -191,14 +193,14 @@ fn delft_exports_back_to_a_seq_matching_the_source_header_and_counts() {
     assert_eq!(object_count, 2231);
 }
 
-/// railway carries real materials/textures/templates, so a plain convert now
+/// railway carries real materials/textures/implicit geometries, so a plain convert now
 /// writes all three sidecars unconditionally (spec-alignment gap 19:
 /// sidecars are content-gated, not profile-gated) — the "no sidecars"
 /// scenario this test exercises no longer arises from a plain convert. It is
 /// constructed directly instead, by removing every sidecar asset from the
 /// manifest after conversion (the sidecar FILES are left on disk, untouched
 /// — the same "unlisted-but-present" shape
-/// `export_ignores_an_unlisted_geometry_templates_file_left_on_disk` already
+/// `export_ignores_an_unlisted_implicit_geometries_file_left_on_disk` already
 /// proves `export` ignores), so `export` sees exactly the package shape a
 /// Core-only writer (no sidecars at all) would have produced.
 #[test]
@@ -218,7 +220,7 @@ fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
     assert_eq!(
         item.assets.len(),
         before - 3,
-        "precondition: all three sidecar assets (materials/textures/geometry_templates) \
+        "precondition: all three sidecar assets (materials/textures/implicit_geometries) \
          must actually have been removed"
     );
     write_item(package_dir.path(), &item);
@@ -236,7 +238,7 @@ fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
     assert_eq!(report.object_count, 121);
     assert_eq!(
         report.instance_geometries_dropped, 15,
-        "the recount in decode_real_data.rs: exactly 15 objects carry a template"
+        "the recount in decode_real_data.rs: exactly 15 objects carry an implicit geometry"
     );
 
     // Recounted with python3 over the fixture, replaying the writer's
@@ -1315,7 +1317,7 @@ fn core_profile_export_attaches_dataset_wide_defaults_even_without_sidecars() {
     assert!(checked > 0, "expected at least one exported feature");
 }
 
-/// M4 task 10: on a Compatibility-profile package (`geometry_templates.parquet`
+/// M4 task 10: on a Compatibility-profile package (`implicit_geometries.parquet`
 /// present), export rebuilds the header's `geometry-templates` and each
 /// object's `GeometryInstance` geometry, instead of dropping them. Exercised
 /// via the DOC (`.city.json`) output path deliberately — `cjseq_to_cj`'s
@@ -1345,7 +1347,7 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
     // (a)
     assert_eq!(
         report.instance_geometries_dropped, 0,
-        "templates sidecar is present: instances must be rebuilt, not dropped"
+        "implicit-geometries sidecar is present: instances must be rebuilt, not dropped"
     );
 
     let text = std::fs::read_to_string(&output).unwrap();
@@ -1480,7 +1482,7 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
     }
     assert_eq!(
         instance_count, 15,
-        "the recount in decode_real_data.rs: exactly 15 objects carry a template"
+        "the recount in decode_real_data.rs: exactly 15 objects carry an implicit geometry"
     );
     assert_eq!(
         instances_per_template,
@@ -1523,40 +1525,40 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
     }
 }
 
-/// Controller addition A (M4 task 10 review): a `template` reference that
-/// names a row `geometry_templates.parquet` no longer carries must be a
-/// `Schema` error naming both the dangling object and the missing template
-/// id — never a panic or a silently-dropped/fabricated geometry. Derived
+/// Controller addition A (M4 task 10 review): an `implicit_geometry` reference that
+/// names a row `implicit_geometries.parquet` no longer carries must be a
+/// `Schema` error naming both the dangling object and the missing
+/// relative-geometry id — never a panic or a silently-dropped/fabricated geometry. Derived
 /// from a real converted railway package (sanctioned): the fixture's own
 /// python recount (`{0: 10, 1: 4, 2: 1}` GeometryInstance-per-template
-/// counts) confirms template id `2` is referenced by 1 real object, so
+/// counts) confirms id `2` is referenced by 1 real object, so
 /// dropping ONLY its sidecar row is guaranteed to hit the
 /// dangling-reference path on export, not silently succeed because nothing
-/// happened to reference it. Any row would do now that `read_templates`
+/// happened to reference it. Any row would do now that `read_implicit_geometries`
 /// validates uniqueness rather than dense ordinals — a gap is legal, so a
 /// missing middle row would reach this path too — but the trailing row is
 /// kept as the least surprising corruption.
 #[test]
-fn export_errors_on_a_dangling_template_id_reference() {
+fn export_errors_on_a_dangling_implicit_geometry_id_reference() {
     let package_dir = tempfile::tempdir().unwrap();
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
     let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
-    let templates_path = package_dir.path().join("geometry_templates.parquet");
-    let rows = read_templates(&templates_path).unwrap();
+    let implicit_geometries_path = package_dir.path().join("implicit_geometries.parquet");
+    let rows = read_implicit_geometries(&implicit_geometries_path).unwrap();
     assert_eq!(
         rows.len(),
         3,
-        "railway must carry exactly 3 geometry templates (pinned elsewhere)"
+        "railway must carry exactly 3 relative geometries (pinned elsewhere)"
     );
     let corrupted: Vec<_> = rows.into_iter().filter(|r| r.id != 2).collect();
     assert_eq!(
         corrupted.len(),
         2,
-        "removing template id 2 must leave exactly the other 2 (ids 0 and 1) rows"
+        "removing id 2 must leave exactly the other 2 (ids 0 and 1) rows"
     );
-    write_templates(&templates_path, &corrupted).unwrap();
+    write_implicit_geometries(&implicit_geometries_path, &corrupted).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
@@ -1576,8 +1578,8 @@ fn export_errors_on_a_dangling_template_id_reference() {
         "the error must name the dangling object, got: {msg}"
     );
     assert!(
-        msg.contains("template id 2"),
-        "the error must name the missing template id 2, got: {msg}"
+        msg.contains("implicit_geometry id 2"),
+        "the error must name the missing implicit_geometry id 2, got: {msg}"
     );
 }
 
@@ -1591,14 +1593,14 @@ fn export_errors_on_a_dangling_template_id_reference() {
 /// per-OBJECT path on this fixture — railway's own geometry templates
 /// happen to reference the two HIGHEST dataset-global material ids (83 and
 /// 84 of 85, confirmed by probing the converted package's own
-/// `geometry_templates.parquet`), so any truncation that stops short of
-/// keeping every definition also strands a template reference, and the
-/// header-level template rebuild (which runs before the per-object loop)
-/// would report that instead. The template rows' own `material`/`texture`
-/// are therefore additionally cleared (a template legitimately carries
+/// `implicit_geometries.parquet`), so any truncation that stops short of
+/// keeping every definition also strands a relative-geometry reference, and the
+/// header-level `geometry-templates` rebuild (which runs before the per-object loop)
+/// would report that instead. The implicit-geometry rows' own `material`/`texture`
+/// are therefore additionally cleared (a relative geometry legitimately carries
 /// neither) so the truncation's effect is isolated to real objects, which
 /// is what this fix targets — the per-object appearance restore, not the
-/// template one (already covered by the dangling-template-id test above).
+/// relative-geometry one (already covered by the dangling-id test above).
 #[test]
 fn export_errors_on_an_out_of_range_material_global_id() {
     let package_dir = tempfile::tempdir().unwrap();
@@ -1618,22 +1620,26 @@ fn export_errors_on_an_out_of_range_material_global_id() {
         "railway must carry exactly 85 material definitions (pinned elsewhere)"
     );
 
-    // Clear every template row's material/texture reference so truncating
-    // materials.parquet cannot also strand the header-level template
+    // Clear every implicit-geometry row's material/texture reference so truncating
+    // materials.parquet cannot also strand the header-level `geometry-templates`
     // rebuild (see the doc comment above).
-    let templates_path = package_dir.path().join("geometry_templates.parquet");
-    let mut template_rows = read_templates(&templates_path).unwrap();
-    assert_eq!(template_rows.len(), 3, "railway has 3 geometry templates");
+    let implicit_geometries_path = package_dir.path().join("implicit_geometries.parquet");
+    let mut implicit_geometry_rows = read_implicit_geometries(&implicit_geometries_path).unwrap();
+    assert_eq!(
+        implicit_geometry_rows.len(),
+        3,
+        "railway has 3 relative geometries"
+    );
     assert!(
-        template_rows.iter().any(|r| r.material.is_some()),
-        "precondition: at least one template must actually reference a material \
+        implicit_geometry_rows.iter().any(|r| r.material.is_some()),
+        "precondition: at least one relative geometry must actually reference a material \
          (or clearing it below would be a no-op)"
     );
-    for row in &mut template_rows {
+    for row in &mut implicit_geometry_rows {
         row.material = None;
         row.texture = None;
     }
-    write_templates(&templates_path, &template_rows).unwrap();
+    write_implicit_geometries(&implicit_geometries_path, &implicit_geometry_rows).unwrap();
 
     // Truncate to a single definition (id 0): any real object referencing a
     // higher index is now dangling.
@@ -1723,16 +1729,16 @@ fn table_asset(name: &str, role: &str) -> Asset {
 }
 
 /// M4 Codex-review Finding 1(a): the package manifest is authoritative for
-/// whether `geometry_templates.parquet` should be loaded — mirroring how
+/// whether `implicit_geometries.parquet` should be loaded — mirroring how
 /// `materials.parquet`/`textures.parquet` are already gated. When the
 /// manifest LISTS the sidecar but the file has been deleted (a
 /// truncated/tampered package), export must fail loudly, never silently fall
 /// back to dropping every instance geometry as if the profile carried no
-/// templates at all. Derived from a real converted railway Compatibility
+/// implicit geometries at all. Derived from a real converted railway Compatibility
 /// package (sanctioned): the manifest is left untouched, only the sidecar
 /// file itself is removed.
 #[test]
-fn export_errors_when_manifest_lists_templates_but_the_sidecar_file_is_missing() {
+fn export_errors_when_manifest_lists_implicit_geometries_but_the_sidecar_file_is_missing() {
     let package_dir = tempfile::tempdir().unwrap();
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
     let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
@@ -1740,14 +1746,14 @@ fn export_errors_when_manifest_lists_templates_but_the_sidecar_file_is_missing()
 
     let item = read_item(package_dir.path());
     assert!(
-        has_asset_with_role(&item, ROLE_SIDECAR, "geometry_templates.parquet"),
+        has_asset_with_role(&item, ROLE_SIDECAR, "implicit_geometries.parquet"),
         "precondition: the Compatibility Item carries a cityparquet-sidecar asset for \
-         geometry_templates.parquet"
+         implicit_geometries.parquet"
     );
 
-    let templates_path = package_dir.path().join("geometry_templates.parquet");
-    assert!(templates_path.exists());
-    std::fs::remove_file(&templates_path).unwrap();
+    let implicit_geometries_path = package_dir.path().join("implicit_geometries.parquet");
+    assert!(implicit_geometries_path.exists());
+    std::fs::remove_file(&implicit_geometries_path).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
@@ -1765,20 +1771,20 @@ fn export_errors_when_manifest_lists_templates_but_the_sidecar_file_is_missing()
         "expected an Io or Schema error naming the missing manifest-listed sidecar, got {err:?}"
     );
     assert!(
-        err.to_string().contains("geometry_templates.parquet"),
+        err.to_string().contains("implicit_geometries.parquet"),
         "the error must name the missing sidecar file, got: {err}"
     );
 }
 
 /// M4 Codex-review Finding 1(b): the inverse of the test above — when the
-/// manifest does NOT list `geometry_templates.parquet` (edited out of
-/// `sidecar_files`) but a `geometry_templates.parquet` file is still sitting
+/// manifest does NOT list `implicit_geometries.parquet` (edited out of
+/// `sidecar_files`) but an `implicit_geometries.parquet` file is still sitting
 /// on disk (e.g. left over from a prior write, or planted by a third party),
 /// export must ignore it outright and fall back to the counted-drop path,
 /// exactly as if the file were never there — the manifest is the sole source
 /// of truth, never the file's mere presence.
 #[test]
-fn export_ignores_an_unlisted_geometry_templates_file_left_on_disk() {
+fn export_ignores_an_unlisted_implicit_geometries_file_left_on_disk() {
     let package_dir = tempfile::tempdir().unwrap();
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
     let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
@@ -1788,12 +1794,12 @@ fn export_ignores_an_unlisted_geometry_templates_file_left_on_disk() {
     let before = item.assets.len();
     item.assets.retain(|_, a| {
         !(a.roles.iter().any(|r| r == ROLE_SIDECAR)
-            && a.href.trim_start_matches("./") == "geometry_templates.parquet")
+            && a.href.trim_start_matches("./") == "implicit_geometries.parquet")
     });
     assert_eq!(
         item.assets.len(),
         before - 1,
-        "precondition: the geometry_templates.parquet asset must actually have been removed"
+        "precondition: the implicit_geometries.parquet asset must actually have been removed"
     );
     write_item(package_dir.path(), &item);
 
@@ -1801,7 +1807,7 @@ fn export_ignores_an_unlisted_geometry_templates_file_left_on_disk() {
     assert!(
         package_dir
             .path()
-            .join("geometry_templates.parquet")
+            .join("implicit_geometries.parquet")
             .exists()
     );
 
@@ -1815,7 +1821,7 @@ fn export_ignores_an_unlisted_geometry_templates_file_left_on_disk() {
 
     assert_eq!(
         report.instance_geometries_dropped, 15,
-        "an unlisted geometry_templates.parquet file on disk must be ignored: every \
+        "an unlisted implicit_geometries.parquet file on disk must be ignored: every \
          GeometryInstance-bearing object must fall back to the counted-drop path, matching a \
          package that never wrote the sidecar at all (pinned in \
          railway_exports_dropping_instance_geometries_but_keeping_their_objects)"

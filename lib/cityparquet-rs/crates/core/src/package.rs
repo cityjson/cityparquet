@@ -22,8 +22,8 @@ use parquet::file::properties::WriterProperties;
 
 use cityparquet_schema::crs::AxisOrder;
 use cityparquet_schema::{
-    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, ExtensionRegistry, Lod,
-    ModuleKey, ModuleKeyResolver, Result, geometry_column_name,
+    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, ExtensionNaming,
+    ExtensionRegistry, Lod, ModuleKey, ModuleKeyResolver, Result, geometry_column_name,
 };
 use cjseq::CityJSONFeature;
 
@@ -33,7 +33,9 @@ use crate::lod0::Lod0Options;
 use crate::order::feature_hilbert_key;
 use crate::recipe::WriterRecipe;
 use crate::scan::{ScanResult, city_and_geo_for_file, scan};
-use crate::sidecar::{TemplateRow, write_materials, write_templates, write_textures};
+use crate::sidecar::{
+    ImplicitGeometryRow, write_implicit_geometries, write_materials, write_textures,
+};
 use crate::source::Source;
 use crate::stac::properties::PackageTables;
 use crate::stac::{ItemOptions, build_item};
@@ -42,7 +44,7 @@ use crate::wkb_write::{VertexPool, geometry_to_wkb};
 /// Compatibility-profile sidecar tables.
 const MATERIALS_TABLE: &str = "materials.parquet";
 const TEXTURES_TABLE: &str = "textures.parquet";
-const TEMPLATES_TABLE: &str = "geometry_templates.parquet";
+const IMPLICIT_GEOMETRIES_TABLE: &str = "implicit_geometries.parquet";
 /// Files a by-type object table's derived name must never collide with —
 /// every package sidecar/metadata file. Since `table_name_for_module` no
 /// longer namespaces object tables under a `cityobjects_` prefix (Task 4),
@@ -52,7 +54,7 @@ const TEMPLATES_TABLE: &str = "geometry_templates.parquet";
 const RESERVED_PACKAGE_FILES: &[&str] = &[
     MATERIALS_TABLE,
     TEXTURES_TABLE,
-    TEMPLATES_TABLE,
+    IMPLICIT_GEOMETRIES_TABLE,
     "metadata.json",
 ];
 /// Scratch directory a `convert` run writes every new file into before the
@@ -142,7 +144,7 @@ impl ConvertOptions {
     /// emission order, no overwrite, and no GeoParquet/GeoArrow
     /// self-description — the sensible defaults for a first conversion of
     /// `input` into `output_dir`. Sidecars (`materials.parquet`,
-    /// `textures.parquet`, `geometry_templates.parquet`) are written
+    /// `textures.parquet`, `implicit_geometries.parquet`) are written
     /// whenever the source has content for them (spec-alignment gap 19
     /// dropped the `Profile` choice this used to gate on).
     pub fn new(input: PathBuf, output_dir: PathBuf) -> Self {
@@ -181,10 +183,10 @@ pub struct ConvertReport {
     pub materials_written: usize,
     /// Rows written to `textures.parquet` (see [`Self::materials_written`]).
     pub textures_written: usize,
-    /// Rows written to `geometry_templates.parquet` (`0` for the Core
-    /// profile, or a Compatibility dataset with no geometry templates at
+    /// Rows written to `implicit_geometries.parquet` (`0` for the Core
+    /// profile, or a Compatibility dataset with no implicit geometries at
     /// all).
-    pub templates_written: usize,
+    pub implicit_geometries_written: usize,
     /// Set when the source carried CRS-bearing coordinates but no CRS this
     /// writer could resolve to PROJJSON, so `city.crs` was written as an
     /// explicit `null` (spec §metadata "CRS rules": an unresolvable CRS is
@@ -334,15 +336,16 @@ fn commit_package(tmp_dir: &Path, output_dir: &Path, files: &[String]) -> Result
     Ok(())
 }
 
-/// Build one [`TemplateRow`] per entry in `templates.templates`, folding
+/// Build one [`ImplicitGeometryRow`] (one shared relative geometry) per
+/// entry in the CityJSON `geometry-templates.templates`, folding
 /// their `material`/`texture` definitions into `interner` — the SAME
 /// interner the main encode pass populated from `source`'s features — so
 /// the materials/textures sidecars end up describing every definition in
 /// the dataset, not just the ones a regular feature geometry reaches.
 ///
-/// `id` is the template's ordinal position as a `BIGINT`, matching the
-/// main-table `template.id` column that references it (see `crate::encode`'s
-/// `build_template`) — CityJSON's own `template` reference IS that index, and
+/// `id` is the CityJSON template's ordinal position as a `BIGINT`, matching the
+/// main-table `implicit_geometry.id` column that references it (see `crate::encode`'s
+/// `build_implicit_geometry`) — CityJSON's own `template` reference IS that index, and
 /// duckdb-cityjson assigns the same, so packages from either implementation
 /// merge cleanly. `name` is always `None` here: CityJSON templates are bare
 /// array entries with no identifier to carry over. The
@@ -350,11 +353,11 @@ fn commit_package(tmp_dir: &Path, output_dir: &Path, files: &[String]) -> Result
 /// to a regular feature geometry's — see [`rewrite_geometry_appearance`]'s
 /// doc comment — because a template's `material`/`texture`/`semantics`
 /// follow the exact same CityJSON shapes a feature geometry's do. The one
-/// deliberate divergence: template rows also carry `"lod"` inside
+/// deliberate divergence: these rows also carry `"lod"` inside
 /// `geometry_properties`. The main table encodes LoD in the geometry
 /// COLUMN NAME (`geometry_lod2` etc.) so its properties JSON never needs
-/// it; the templates sidecar has a single properties column, so the
-/// template's `lod` would otherwise be lost.
+/// it; the implicit-geometries sidecar has a single properties column, so the
+/// relative geometry's `lod` would otherwise be lost.
 ///
 /// `pub(crate)` so the sidecar round-trip test exercises THIS production
 /// builder instead of a hand-built duplicate of its logic.
@@ -363,19 +366,20 @@ fn commit_package(tmp_dir: &Path, output_dir: &Path, files: &[String]) -> Result
 /// `vertices-templates` is not subject to the dataset transform), so they
 /// are looked up through [`VertexPool::raw`] over `templates.vertices_templates`,
 /// never the dataset's quantised [`VertexPool::new`].
-pub(crate) fn build_template_rows(
+pub(crate) fn build_implicit_geometry_rows(
     templates: &cjseq::GeometryTemplates,
     source: &Source,
     interner: &mut AppearanceInterner,
-) -> Result<Vec<TemplateRow>> {
+    naming: &ExtensionNaming,
+) -> Result<Vec<ImplicitGeometryRow>> {
     let verts: Vec<Vec<f64>> = serde_json::from_value(templates.vertices_templates.clone())
         .map_err(|e| {
             err(format!(
                 "invalid geometry-templates vertices-templates: {e}"
             ))
         })?;
-    // Templates are in **local** coordinates and are exempt from the file CRS
-    // (spec "appearance & templates": `geometry_templates.parquet` carries no
+    // Relative geometries are in **local** coordinates and are exempt from the file CRS
+    // (spec "Appearance & implicit geometries": `implicit_geometries.parquet` carries no
     // `city.crs` key at all). There is no axis order to reconcile, so no
     // reordering is applied — an instance's `transformationMatrix` and its
     // reference `point`, which IS in the file CRS, do the placing.
@@ -402,7 +406,7 @@ pub(crate) fn build_template_rows(
     for (i, tpl) in templates.templates.iter().enumerate() {
         let outcome = geometry_to_wkb(tpl, &pool)?.ok_or_else(|| {
             err(format!(
-                "geometry template {i}: produced no WKB (empty or fully degenerate boundaries)"
+                "relative geometry {i}: produced no WKB (empty or fully degenerate boundaries)"
             ))
         })?;
         let defs = LocalDefs {
@@ -415,10 +419,11 @@ pub(crate) fn build_template_rows(
             &outcome.dropped_surfaces,
             interner,
             &defs,
-            &format!("geometry template {i}"),
+            &format!("relative geometry {i}"),
+            naming,
         )?;
-        // A template is a single geometry at a single LoD (spec
-        // "geometry_templates.parquet"): its LoD picks which physical
+        // A relative geometry is a single geometry at a single LoD (spec
+        // "implicit_geometries.parquet"): its LoD picks which physical
         // per-LoD column set this row's data lands in — the sidecar's own
         // schema equivalent of the main table's `accumulate_geometry`
         // requiring a valid, parseable LoD for every stored geometry.
@@ -428,18 +433,18 @@ pub(crate) fn build_template_rows(
             .and_then(|s| Lod::parse(s).ok())
             .ok_or_else(|| {
                 CityParquetError::Lod(format!(
-                    "geometry template {i}: has no valid lod for a per-LoD sidecar column"
+                    "relative geometry {i}: has no valid lod for a per-LoD sidecar column"
                 ))
             })?;
-        rows.push(TemplateRow {
+        rows.push(ImplicitGeometryRow {
             // Ordinal position. CityJSON references a template by its index
             // in `geometry-templates.templates`, so using that index as the
-            // id keeps the object table's `template.id` meaningful without a
+            // id keeps the object table's `implicit_geometry.id` meaningful without a
             // lookup table — and it is the same convention duckdb-cityjson
             // writes, so the two implementations' packages merge cleanly.
             id: i as i64,
             // CityJSON templates are bare array entries: no source
-            // identifier exists to carry across. See `TemplateRow::name`.
+            // identifier exists to carry across. See `ImplicitGeometryRow::name`.
             name: None,
             lod,
             wkb: outcome.bytes,
@@ -465,7 +470,7 @@ struct WrittenPackage {
     degenerate_surfaces_dropped: usize,
     materials_written: usize,
     textures_written: usize,
-    templates_written: usize,
+    implicit_geometries_written: usize,
     invalid_appearance_refs_dropped: usize,
     dropped_colliding_members: usize,
     dropped_colliding_member_diagnostics: Vec<String>,
@@ -586,7 +591,7 @@ fn module_geo_by_file(
 /// unlike [`CityParquetSchema::to_arrow_schema`]'s dataset-wide
 /// zero-analysis-geometry rendering, which is a DIFFERENT case this function
 /// is never asked to reproduce — see [`TableWriters::projection_for`]'s doc
-/// comment for why), then `template`, `other`, then the
+/// comment for why), then `implicit_geometry`, `other`, then the
 /// dataset's attribute columns in scan order. Mirrors
 /// `CityParquetSchema::to_arrow_schema`'s non-empty-lods field order exactly,
 /// so every name here is guaranteed to resolve in the dataset-wide (wide)
@@ -611,7 +616,7 @@ fn module_column_names(file_lods: &[Lod], attributes: &[(String, AttributeType)]
         names.push(geometry_column_name("material", lod));
         names.push(geometry_column_name("texture", lod));
     }
-    names.push("template".to_string());
+    names.push("implicit_geometry".to_string());
     names.push("other".to_string());
     names.extend(attributes.iter().map(|(name, _)| name.clone()));
     names
@@ -628,10 +633,14 @@ fn module_column_names(file_lods: &[Lod], attributes: &[(String, AttributeType)]
 /// writer may not) via [`crate::arrow_compat::string_view`]. `object_type`
 /// stores the CityGML class name (spec "object_type vocabulary", gap 15);
 /// `resolve_module_key` recognises a core class by either its CityJSON or
-/// CityGML spelling, so this is correct as-is.
+/// CityGML spelling. An extension class's stored namespace prefix is turned
+/// back into CityJSON's `+` marker through `naming` first (spec
+/// "Extensions"), so a `+`-marked core class (`energy_Building`) routes to
+/// its core module exactly as its source spelling `+Building` does.
 fn resolve_object_type_module_keys(
     batch: &RecordBatch,
     resolver: &mut ModuleKeyResolver,
+    naming: &ExtensionNaming,
 ) -> Result<Vec<ModuleKey>> {
     let column = batch
         .column_by_name("object_type")
@@ -645,7 +654,12 @@ fn resolve_object_type_module_keys(
                 // rather than silently drop the row from every table.
                 return Err(err(format!("row {row}: 'object_type' must not be null")));
             }
-            resolver.resolve(view.value(row))
+            let object_type = view.value(row);
+            if naming.is_extension_name(object_type) {
+                resolver.resolve(&naming.decode_name(object_type))
+            } else {
+                resolver.resolve(object_type)
+            }
         })
         .collect()
 }
@@ -739,6 +753,10 @@ struct TableWriters {
     /// type across every batch this run writes (see
     /// [`cityparquet_schema::ModuleKeyResolver`]).
     resolver: ModuleKeyResolver,
+    /// The declared extensions' naming policy, from `base_city`'s
+    /// `city.extensions`: an extension class's `object_type` carries its
+    /// namespace prefix, which routing reads back as CityJSON's `+` marker.
+    naming: ExtensionNaming,
 }
 
 impl TableWriters {
@@ -770,6 +788,7 @@ impl TableWriters {
             wide_schema,
             module_lods_by_file,
             module_geo_by_file,
+            naming: ExtensionNaming::new(base_city.extensions.as_ref()),
             base_city,
             attributes,
             force_identity_projection,
@@ -877,7 +896,7 @@ impl TableWriters {
     /// conversion), then does one linear pass over rows comparing
     /// `ModuleKey`s.
     fn write_batch(&mut self, batch: &RecordBatch) -> Result<()> {
-        let per_row_key = resolve_object_type_module_keys(batch, &mut self.resolver)?;
+        let per_row_key = resolve_object_type_module_keys(batch, &mut self.resolver, &self.naming)?;
 
         // Distinct ModuleKeys actually present in `batch`, first-appearance
         // order within this batch — mirrors the old `distinct_types_in_batch`
@@ -953,9 +972,9 @@ impl TableWriters {
 /// empty [`ExtensionRegistry`], so a source with a genuine `+`-marked
 /// extension type resolves via [`cityparquet_schema::resolve_module_key`]'s
 /// hard-error path (spec: "A class with no resolvable `ModuleKey` ... is a
-/// hard error") rather than being silently misfiled — every fixture this
-/// crate round-trips today carries no extension types, so this is not yet
-/// exercised end-to-end.
+/// hard error") rather than being silently misfiled. A `+`-marked class
+/// whose stripped name is a core class needs no registry entry: it routes to
+/// that core module's file (`extension_module_real_data.rs`).
 fn extension_registry(_source: &Source) -> ExtensionRegistry {
     ExtensionRegistry::new()
 }
@@ -1059,7 +1078,7 @@ fn write_package(
             encode_buffered(features, source.header(), scan_result, opts.batch_size)?
         }
     };
-    // Set BEFORE either the main encode loop below or `build_template_rows`
+    // Set BEFORE either the main encode loop below or `build_implicit_geometry_rows`
     // touches the interner — both resolve material/texture indices through
     // it, and a dangling one must be tolerated (or not) consistently across
     // both paths, not just the main table's own geometries.
@@ -1082,13 +1101,18 @@ fn write_package(
     // (spec-alignment gap 19: the `Profile` choice this used to gate on is
     // gone — a writer no longer declares Core vs Compatibility up front).
     let mut sidecar_files_written: Vec<String> = Vec::new();
-    let mut templates_written = 0usize;
-    // Fold geometry-template appearance into the SAME interner the encode
+    let mut implicit_geometries_written = 0usize;
+    // Fold implicit-geometry appearance into the SAME interner the encode
     // pass populated BEFORE materials.parquet/textures.parquet are written,
-    // so their totals include definitions reachable ONLY from a geometry
-    // template (see `build_template_rows`).
-    let template_rows = match source.header().geometry_templates.as_ref() {
-        Some(templates) => build_template_rows(templates, source, batches.appearance_mut())?,
+    // so their totals include definitions reachable ONLY from a relative
+    // geometry (see `build_implicit_geometry_rows`).
+    let implicit_geometry_rows = match source.header().geometry_templates.as_ref() {
+        Some(templates) => build_implicit_geometry_rows(
+            templates,
+            source,
+            batches.appearance_mut(),
+            &scan_result.naming(),
+        )?,
         None => Vec::new(),
     };
 
@@ -1107,11 +1131,12 @@ fn write_package(
         sidecar_files_written.push(TEXTURES_TABLE.to_string());
     }
 
-    if !template_rows.is_empty() {
-        let templates_path = tmp_dir.join(TEMPLATES_TABLE);
-        templates_written = write_templates(&templates_path, &template_rows)?;
-        if templates_written > 0 {
-            sidecar_files_written.push(TEMPLATES_TABLE.to_string());
+    if !implicit_geometry_rows.is_empty() {
+        let implicit_geometries_path = tmp_dir.join(IMPLICIT_GEOMETRIES_TABLE);
+        implicit_geometries_written =
+            write_implicit_geometries(&implicit_geometries_path, &implicit_geometry_rows)?;
+        if implicit_geometries_written > 0 {
+            sidecar_files_written.push(IMPLICIT_GEOMETRIES_TABLE.to_string());
         }
     }
 
@@ -1189,7 +1214,7 @@ fn write_package(
         degenerate_surfaces_dropped: encode_stats.degenerate_surfaces_dropped,
         materials_written,
         textures_written,
-        templates_written,
+        implicit_geometries_written,
         invalid_appearance_refs_dropped,
         dropped_colliding_members: encode_stats.dropped_colliding_members,
         dropped_colliding_member_diagnostics: encode_stats.dropped_colliding_member_diagnostics,
@@ -1201,10 +1226,10 @@ fn write_package(
 /// dataset metadata, one encode pass streamed straight into an `ArrowWriter`
 /// using `opts.recipe`'s per-column `WriterProperties`, then (Compatibility
 /// profile only) folds `Source::header`'s `geometry_templates` into the SAME
-/// [`crate::appearance::AppearanceInterner`] the encode pass built (template
+/// [`crate::appearance::AppearanceInterner`] the encode pass built (relative-geometry
 /// definitions the encode pass never visits directly — see
 /// [`crate::source::Source::doc_appearance`]) and writes the
-/// `geometry_templates.parquet`/`materials.parquet`/`textures.parquet`
+/// `implicit_geometries.parquet`/`materials.parquet`/`textures.parquet`
 /// sidecars from it, then a `metadata.json` manifest alongside it all.
 ///
 /// `opts.output_dir` is created if missing; if it already exists and is
@@ -1464,7 +1489,7 @@ pub(crate) fn convert_source_impl(
         degenerate_surfaces_dropped: written.degenerate_surfaces_dropped,
         materials_written: written.materials_written,
         textures_written: written.textures_written,
-        templates_written: written.templates_written,
+        implicit_geometries_written: written.implicit_geometries_written,
         crs_diagnostic: scan_result.crs_diagnostic.clone(),
         invalid_appearance_refs_dropped: written.invalid_appearance_refs_dropped,
         dropped_colliding_members: written.dropped_colliding_members,
@@ -1545,8 +1570,9 @@ mod tests {
     /// The `ModuleKey`-driven equivalent of the old lossy `table_name_for_type`
     /// collision test: since [`to_snake_case`](cityparquet_schema) is not
     /// injective over arbitrary extension module names, two DIFFERENT
-    /// extension module names can still derive the same file
-    /// (`"MyEnergy"` and `"My_energy"` both -> `my_energy.parquet`) — the
+    /// extension module names of one extension can still derive the same file
+    /// (`"MyEnergy"` and `"My_energy"` of the `energy` extension both ->
+    /// `energy_my_energy.parquet`) — the
     /// writer bookkeeping must reject that as a `Schema` error naming both
     /// colliding `ModuleKey`s and the file, never silently merge two
     /// distinct modules into one table.
@@ -1556,6 +1582,7 @@ mod tests {
         extensions.declare(
             "A",
             ExtensionClassDecl {
+                namespace: "energy".to_string(),
                 module: Some("MyEnergy".to_string()),
                 parent: None,
             },
@@ -1563,6 +1590,7 @@ mod tests {
         extensions.declare(
             "B",
             ExtensionClassDecl {
+                namespace: "energy".to_string(),
                 module: Some("My_energy".to_string()),
                 parent: None,
             },
@@ -1570,8 +1598,14 @@ mod tests {
         // Precondition the whole scenario rests on: the two module names
         // really do collide on the derived file name.
         assert_eq!(
-            table_name_for_module(&ModuleKey::Extension("MyEnergy".to_string())),
-            table_name_for_module(&ModuleKey::Extension("My_energy".to_string())),
+            table_name_for_module(&ModuleKey::Extension {
+                namespace: "energy".to_string(),
+                module: "MyEnergy".to_string(),
+            }),
+            table_name_for_module(&ModuleKey::Extension {
+                namespace: "energy".to_string(),
+                module: "My_energy".to_string(),
+            }),
             "fixture fact: 'MyEnergy' and 'My_energy' must derive the same table file name"
         );
 
@@ -1586,7 +1620,7 @@ mod tests {
         );
         let msg = e.to_string();
         assert!(
-            msg.contains("my_energy.parquet"),
+            msg.contains("energy_my_energy.parquet"),
             "the error must name the colliding file, got: {msg}"
         );
 
@@ -1596,6 +1630,7 @@ mod tests {
         ok_extensions.declare(
             "A",
             ExtensionClassDecl {
+                namespace: "energy".to_string(),
                 module: Some("MyEnergy".to_string()),
                 parent: None,
             },
@@ -1608,7 +1643,7 @@ mod tests {
             .write_batch(&object_type_only_batch(&["+A"]))
             .unwrap();
         let tables = ok_writers.finish().unwrap();
-        assert_eq!(tables, vec!["my_energy.parquet".to_string()]);
+        assert_eq!(tables, vec!["energy_my_energy.parquet".to_string()]);
     }
 
     /// Any two DISTINCT `Core` `ModuleKey`s sharing a file is always the
@@ -1628,26 +1663,33 @@ mod tests {
 
     /// The reserved-name guard inside [`TableWriters::by_type_table_index`]
     /// must actually fire when a module derives a [`RESERVED_PACKAGE_FILES`]
-    /// name: an extension module literally named `Materials` snakes to
-    /// `materials.parquet`, which IS reserved (it names the materials
-    /// sidecar table), so writing it under by-module must be rejected before
-    /// any writer for it is ever opened.
+    /// name: the namespace prefix keeps an extension module file apart from
+    /// every single-word reserved name, but a module `Geometries` of an
+    /// extension with the namespace `implicit` still derives
+    /// `implicit_geometries.parquet`, which IS reserved (it names the
+    /// implicit-geometries sidecar table), so writing it under by-module must
+    /// be rejected before any writer for it is ever opened.
     #[test]
     fn by_type_write_rejects_a_module_deriving_a_reserved_package_file() {
         let mut extensions = ExtensionRegistry::new();
         extensions.declare(
             "Foo",
             ExtensionClassDecl {
-                module: Some("Materials".to_string()),
+                namespace: "implicit".to_string(),
+                module: Some("Geometries".to_string()),
                 parent: None,
             },
         );
         // Precondition the whole scenario rests on: the module really does
         // derive a reserved file name.
         assert_eq!(
-            table_name_for_module(&ModuleKey::Extension("Materials".to_string())),
-            MATERIALS_TABLE,
-            "fixture fact: module 'Materials' must derive the reserved materials table file name"
+            table_name_for_module(&ModuleKey::Extension {
+                namespace: "implicit".to_string(),
+                module: "Geometries".to_string(),
+            }),
+            IMPLICIT_GEOMETRIES_TABLE,
+            "fixture fact: module 'Geometries' of namespace 'implicit' must derive the reserved \
+             implicit-geometries table file name"
         );
 
         let tmp = tempfile::tempdir().unwrap();
@@ -1661,7 +1703,7 @@ mod tests {
         );
         let msg = e.to_string();
         assert!(
-            msg.contains("materials.parquet"),
+            msg.contains("implicit_geometries.parquet"),
             "the error must name the reserved file it collides with, got: {msg}"
         );
         assert!(
@@ -1673,7 +1715,7 @@ mod tests {
         // No file was ever created for the rejected module — the guard runs
         // before `open_table`, so the reserved sidecar's name is never
         // claimed by a by-module writer.
-        assert!(!tmp.path().join(MATERIALS_TABLE).exists());
+        assert!(!tmp.path().join(IMPLICIT_GEOMETRIES_TABLE).exists());
     }
 
     /// An all-null `object_type` batch must be a hard error under
@@ -1717,8 +1759,11 @@ mod tests {
             "water_body.parquet"
         );
         assert_eq!(
-            table_name_for_module(&ModuleKey::Extension("Energy".to_string())),
-            "energy.parquet"
+            table_name_for_module(&ModuleKey::Extension {
+                namespace: "energy".to_string(),
+                module: "BuildingPhysics".to_string(),
+            }),
+            "energy_building_physics.parquet"
         );
     }
 

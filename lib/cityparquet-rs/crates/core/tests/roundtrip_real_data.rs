@@ -127,7 +127,7 @@ fn attribute_literally_named_other_is_rejected() {
     );
 }
 
-/// spec "Appearance & templates" (gap 13): a `transformationMatrix` that
+/// spec "Appearance & implicit geometries" (gap 13): a `transformationMatrix` that
 /// isn't exactly 16 values is rejected at convert time, not silently
 /// truncated/padded. Derived from the real `lod3_railway` fixture (with an
 /// injected CRS, like [`railway_fixture_with_crs`]): the first
@@ -136,7 +136,7 @@ fn attribute_literally_named_other_is_rejected() {
 /// other railway round-trip test above (real `GeometryInstance`s all carry
 /// genuine 16-value matrices).
 #[test]
-fn template_transformation_matrix_wrong_length_is_rejected() {
+fn implicit_geometry_transformation_matrix_wrong_length_is_rejected() {
     let mut doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
             .unwrap();

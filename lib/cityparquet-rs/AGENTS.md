@@ -4,7 +4,7 @@
 encoding. Part of the CityParquet + CityLake research stack (TU Delft 3D
 Geoinformation). It stores a 3D city model as a **directory of Parquet files** (one row
 per city object, WKB geometry per LoD, typed attribute columns, optional
-material/texture/geometry-template sidecars), with an Arrow in-memory representation,
+material/texture/implicit-geometry sidecars), with an Arrow in-memory representation,
 and round-trips back to CityJSON / CityJSONSeq with **semantic** losslessness.
 
 ## Where you are

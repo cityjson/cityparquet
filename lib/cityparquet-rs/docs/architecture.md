@@ -31,10 +31,18 @@ executable specification.
 - `attributes` — `AttributeInferer` / `AttributeType`: the primitive-mapping
   table that turns sampled source values into a column type.
 - `profile` — `Profile` (Core/Compatibility), the three sidecar table schemas
-  (`materials_schema`/`textures_schema`/`geometry_templates_schema`), and the
+  (`materials_schema`/`textures_schema`/`implicit_geometries_schema`), and the
   `PackageManifest` (`metadata.json`) struct.
 - `metadata` — `CityParquetMetadata`: the dataset KV-metadata block as a typed
-  struct, plus `CITYPARQUET_VERSION` and `SourceFormat`.
+  struct, plus `CITYPARQUET_VERSION` and `SourceFormat`; `city.extensions` is
+  typed as `ExtensionDeclarations` (namespace → `name`/`url`/`version`/`xmlns`).
+- `extensions` — the extension-namespace rules as pure functions: namespace
+  derivation from a CityJSON Extension's name, reading the source's
+  `extensions` member into `city.extensions` and rebuilding it on export, and
+  `ExtensionNaming`, which attributes a `+` name to the single declared
+  extension (`+heatCapacity` → `energy_heatCapacity`), rejects what it cannot
+  attribute and core names carrying a declared prefix, and restores the `+` on
+  export.
 
 ## Conversion pipeline
 
@@ -122,10 +130,11 @@ inverse of `convert`, built on `decode` plus its own geometry reconstruction
 (WKB → CityJSON boundary arrays, re-quantised against the dataset transform).
 Its correctness hinges on **manifest authority**:
 
-- **Templates** are rebuilt from `geometry_templates.parquet` only when the
-  manifest lists it; template vertices are re-interned as raw floats. If the
-  manifest doesn't list it (Core, or Compatibility with no templates), an
-  object's `template` reference can't resolve, so the object is exported
+- **Implicit geometries** are rebuilt into the CityJSON `geometry-templates`
+  member from `implicit_geometries.parquet` only when the manifest lists it;
+  relative-geometry vertices are re-interned as raw floats. If the manifest
+  doesn't list it (Core, or Compatibility with no implicit geometries), an
+  object's `implicit_geometry` reference can't resolve, so the object is exported
   without its instance geometry and the drop is counted. A reference to a
   missing row _in a listed sidecar_ is a corrupt-file `Schema` error, not a
   silent drop; a listed-but-unreadable sidecar is an `Io` error.

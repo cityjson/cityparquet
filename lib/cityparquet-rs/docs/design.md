@@ -23,24 +23,24 @@ Design principles:
 - **one city object per row** in the main table;
 - **WKB geometry**, so any GIS/database stack can read the geometry column;
 - **separate columns** for the CityJSON information WKB cannot carry
-  (semantics, appearance references, template instances);
+  (semantics, appearance references, implicit geometries);
 - **typed attribute columns** inferred at import time, not a generic
   key/value table;
 - **stable, nullable** structural columns — a column stays in the schema even
   when the dataset has no values for it;
 - **sidecar Parquet files** for shared resources (materials, textures,
-  geometry templates);
+  implicit geometries);
 - **geometry separated from appearance**, following the OBJ / glTF lineage.
 
 ## Two profiles
 
-| Profile           | Writes                                                                                   | Round-trip fidelity                                                                            |
-| ----------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| **Core**          | main object table(s) + `metadata.json`                                                   | identity, hierarchy, attributes, per-LoD geometry, geometry semantics                          |
-| **Compatibility** | the above **plus** `materials.parquet`, `textures.parquet`, `geometry_templates.parquet` | all of the above **plus** appearance definitions, texture UVs, and geometry-template instances |
+| Profile           | Writes                                                                                    | Round-trip fidelity                                                                    |
+| ----------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| **Core**          | main object table(s) + `metadata.json`                                                    | identity, hierarchy, attributes, per-LoD geometry, geometry semantics                  |
+| **Compatibility** | the above **plus** `materials.parquet`, `textures.parquet`, `implicit_geometries.parquet` | all of the above **plus** appearance definitions, texture UVs, and implicit geometries |
 
 Both profiles write the _same_ main-table column content (including the
-`material`/`texture`/`template` references). The only difference is whether
+`material`/`texture`/`implicit_geometry` references). The only difference is whether
 the sidecar **definition** files are written. Under Core, references that
 have nowhere to resolve to are dropped on export and counted; under
 Compatibility they resolve against the sidecars.
@@ -61,7 +61,7 @@ mydataset/
   bridge.parquet               # family actually present in the dataset
   materials.parquet          # Compatibility only, when present
   textures.parquet           # Compatibility only, when present
-  geometry_templates.parquet # Compatibility only, when present
+  implicit_geometries.parquet # Compatibility only, when present
 ```
 
 The main object table is split **by type**, unconditionally: one table per
@@ -87,25 +87,25 @@ written; readers consult the manifest, never the directory listing.
 One row per `CityObject` — a parent `Building` and each of its
 `BuildingPart` children each get their own row. Columns are written in a
 fixed order: reserved structural columns first, then geometry, then
-appearance/template references, then the inferred attribute columns.
+appearance/implicit-geometry references, then the inferred attribute columns.
 
 ### Reserved columns
 
-| Column                                                  | Arrow type                                                              | Notes                                                                                                         |
-| ------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `id`                                                    | `Utf8` (non-null)                                                       | CityObject id, preserved verbatim end-to-end                                                                  |
-| `feature_id`                                            | `Utf8`                                                                  | CityJSONSeq feature grouping id                                                                               |
-| `object_type`                                           | `Dictionary<Int32, Utf8>` (non-null)                                    | dictionary-encoded — few distinct values over many rows                                                       |
-| `parents`                                               | `List<Utf8>`                                                            | parent ids                                                                                                    |
-| `children`                                              | `List<Utf8>`                                                            | child ids                                                                                                     |
-| `children_roles`                                        | `List<Utf8>`                                                            | one role per child, from CityJSON `children_roles`                                                            |
-| `bbox`                                                  | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>`                        | see below                                                                                                     |
-| `geometry` _or_ `geometry_lod<k>`                       | `Binary` (WKB)                                                          | one column per LoD                                                                                            |
-| `geometry_properties` _or_ `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>`                        | semantics WKB can't carry                                                                                     |
-| `material` _or_ `material_lod<k>`                       | `Map<Utf8, List<Int64>>`                                                | theme → one sidecar id (or null) per WKB face, into `materials.parquet`                                       |
-| `texture` _or_ `texture_lod<k>`                         | `Map<Utf8, List<List<Struct<id: Int64, uv: List<List<Float64>>>>>>`     | theme → per WKB face → per ring → `{id, uv}`, into `textures.parquet`                                         |
-| `template`                                              | `Struct<id: Int64, point: Binary, transformationMatrix: List<Float64>>` | geometry-instance data; `id` matches `geometry_templates.parquet`'s `id`; the matrix is a flat, row-major 4x4 |
-| `other`                                                 | JSON                                                                    | source fields not otherwise mapped                                                                            |
+| Column                                                  | Arrow type                                                              | Notes                                                                                                                                                             |
+| ------------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                                                    | `Utf8` (non-null)                                                       | CityObject id, preserved verbatim end-to-end                                                                                                                      |
+| `feature_id`                                            | `Utf8`                                                                  | CityJSONSeq feature grouping id                                                                                                                                   |
+| `object_type`                                           | `Dictionary<Int32, Utf8>` (non-null)                                    | dictionary-encoded — few distinct values over many rows                                                                                                           |
+| `parents`                                               | `List<Utf8>`                                                            | parent ids                                                                                                                                                        |
+| `children`                                              | `List<Utf8>`                                                            | child ids                                                                                                                                                         |
+| `children_roles`                                        | `List<Utf8>`                                                            | one role per child, from CityJSON `children_roles`                                                                                                                |
+| `bbox`                                                  | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>`                        | see below                                                                                                                                                         |
+| `geometry` _or_ `geometry_lod<k>`                       | `Binary` (WKB)                                                          | one column per LoD                                                                                                                                                |
+| `geometry_properties` _or_ `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>`                        | semantics WKB can't carry                                                                                                                                         |
+| `material` _or_ `material_lod<k>`                       | `Map<Utf8, List<Int64>>`                                                | theme → one sidecar id (or null) per WKB face, into `materials.parquet`                                                                                           |
+| `texture` _or_ `texture_lod<k>`                         | `Map<Utf8, List<List<Struct<id: Int64, uv: List<List<Float64>>>>>>`     | theme → per WKB face → per ring → `{id, uv}`, into `textures.parquet`                                                                                             |
+| `implicit_geometry`                                     | `Struct<id: Int64, point: Binary, transformationMatrix: List<Float64>>` | the object's implicit geometry: reference point and transformation matrix; `id` matches `implicit_geometries.parquet`'s `id`; the matrix is a flat, row-major 4x4 |
+| `other`                                                 | JSON                                                                    | source fields not otherwise mapped                                                                                                                                |
 
 Every field carries self-describing metadata: a `cityparquet:role` key
 (`reserved` / `attribute` / `extension`) and, on geometry columns, a
@@ -134,27 +134,54 @@ import:
 | object / heterogeneous array      | JSON                                 |
 | inconsistent sampled types        | promoted if safe, else `Utf8` / JSON |
 
-Reserved columns win any name clash. CityJSON extension attributes (`+name`)
-are renamed to `ex_name` and tagged with the `extension` role. The inferred
+Reserved columns win any name clash. The inferred
 attribute-column list is recorded in metadata so a reader can tell source
 attributes from structural columns. Where a source object carries both an
 unmapped top-level member and an attribute of the same name, the attribute
 wins: the member is dropped from `other` with a warning, so the writer never
 emits an `other` entry that duplicates an attribute.
 
+### Extensions
+
+Every name a CityJSON Extension adds carries the extension's **namespace** as
+a `<namespace>_` prefix: the namespace is the extension's name (the key of the
+source's `extensions` member) lower-cased with every character outside
+`[a-z0-9]` removed, so `Energy` gives `energy`. A `+heatCapacity` attribute
+becomes the column `energy_heatCapacity` (tagged with the `extension` role), a
+`+PartyWallSurface` semantic surface becomes the `geometry_properties` surface
+type `energy_PartyWallSurface`, and a `+`-marked class is stored in
+`object_type` as `energy_<Class>` (a `+`-marked core class still routes to its
+core module file). An extension module file is named `<namespace>_<module>`
+(`energy_building_physics.parquet`). Core names are never prefixed.
+
+The declarations are written to the `city.extensions` footer metadata, keyed
+by namespace, each a reference (`name`, `url`, optional `version`) to the
+extension's schema document. Export strips a declared prefix back to CityJSON's
+`+` and rebuilds the `extensions` member from these references.
+
+The writer attributes a `+` name only when the source declares exactly one
+extension. A `+` name in a source declaring none is rejected (CityJSON
+requires the declaration); a source declaring several is rejected too, since
+attributing each name needs the extensions' schema documents, which this
+implementation does not read. A core attribute, surface type or class whose
+name begins with a declared namespace prefix is rejected, as it could not be
+told apart from an extension name on export. Extension class routing uses a
+registry that is a stub: a `+` class that is not a core class has no module
+to route to and is rejected.
+
 ### Geometry
 
 Boundaries are encoded to **little-endian ISO-WKB** in the dataset CRS
 (CityJSON integer vertices × `transform` are applied on write). The mapping:
 
-| CityJSON geometry                   | WKB                                     |
-| ----------------------------------- | --------------------------------------- |
-| `MultiPoint`                        | `MultiPointZ`                           |
-| `MultiLineString`                   | `MultiLineStringZ`                      |
-| `MultiSurface` / `CompositeSurface` | `MultiPolygonZ`                         |
-| `Solid`                             | `PolyhedralSurfaceZ` (type 1015)        |
-| `MultiSolid` / `CompositeSolid`     | `GeometryCollectionZ`                   |
-| `GeometryInstance`                  | `template` struct + referenced template |
+| CityJSON geometry                   | WKB                                                       |
+| ----------------------------------- | --------------------------------------------------------- |
+| `MultiPoint`                        | `MultiPointZ`                                             |
+| `MultiLineString`                   | `MultiLineStringZ`                                        |
+| `MultiSurface` / `CompositeSurface` | `MultiPolygonZ`                                           |
+| `Solid`                             | `PolyhedralSurfaceZ` (type 1015)                          |
+| `MultiSolid` / `CompositeSolid`     | `GeometryCollectionZ`                                     |
+| `GeometryInstance`                  | `implicit_geometry` struct + referenced relative geometry |
 
 The WKB carries geometry only. Semantic surfaces, the `values` surface→
 semantics mapping, material/texture maps, and the source vertex-index
@@ -242,52 +269,55 @@ geometry's `material`/`texture` reference matches the `id`, never the row
 position. Readers require only that ids are non-null and unique, because
 merging two packages offset-shifts a whole sidecar's ids (`dst_max + 1 -
 src_min`) and may leave gaps — the same rule that applies to
-`geometry_templates.parquet`, and the reason all three sidecar ids are
+`implicit_geometries.parquet`, and the reason all three sidecar ids are
 integers.
 One deliberate normalisation: the numeric material scalars
 (`ambientIntensity`/`transparency`/`shininess`) round-trip through `Float64`,
 so an integer literal `1` reads back as `1.0` — value-exact, not
 literal-exact.
 
-### Geometry templates
+### Implicit geometries
 
-Reusable templates live in `geometry_templates.parquet`, one per row, using
+The shared relative geometries of implicit geometries live in
+`implicit_geometries.parquet`, one per row, using
 the same WKB-plus-`geometry_properties` strategy as the main table, **per-LoD
 suffixed exactly like the main object table's own geometry and appearance
 columns**: `geometry_lod*`/`geometry_properties_lod*`/`material_lod*`/
-`texture_lod*`, one column set per LoD present among the templates being
-rendered. A template row populates exactly the column set matching its own
+`texture_lod*`, one column set per LoD present among the relative geometries
+being rendered. A row populates exactly the column set matching its own
 LoD and leaves every other LoD's columns null — sparse by construction, like
 the main table. There is no `lod` column (the column name already carries
-it, just as in the main table) and no `other` column (a geometry template is
+it, just as in the main table) and no `other` column (a relative geometry is
 a plain geometry — WKB + properties + appearance — with no members left over
-to preserve). Template vertices are **raw floats** — CityJSON
+to preserve). Its vertices are **raw floats** — CityJSON
 `vertices-templates` are _not_ subject to the dataset transform — so they are
 interned by exact `f64` bit pattern rather than through the quantised
-transform, and a template's `geometry_lod*` carries no `geoarrow.wkb`/CRS
-tagging: template coordinates are in the template's own local frame, exempt
-from the file CRS.
+transform, and a relative geometry's `geometry_lod*` carries no
+`geoarrow.wkb`/CRS tagging: its coordinates are in its own local frame,
+exempt from the file CRS.
 
-Its `id` is a `BIGINT`, written as the template's ordinal position and
-matching the main-table `template.id` that references it. An integer rather
+Its `id` is a `BIGINT`, written as the CityJSON template's ordinal position and
+matching the main-table `implicit_geometry.id` that references it. An integer rather
 than a label because sidecar ids are renumbered by an integer offset when
 packages merge, exactly as `materials.parquet` and `textures.parquet` are — a
 string id could not be offset-shifted, and would need its own collision
-strategy. That leaves nowhere for a source's own template identifier to
+strategy. That leaves nowhere for a source's own identifier to
 survive, so the optional `name` column holds it; it is null for CityJSON
 sources, whose `geometry-templates.templates` is a bare array with no
-identifiers. Readers must resolve `template.id` by matching the `id` value,
+identifiers. Readers must resolve `implicit_geometry.id` by matching the `id` value,
 never by row position: a merged package's ids do not start at zero.
 
-An object that instantiates a template stores the reference point (WKB
-`PointZ`) and `transformationMatrix` in its `template` column.
+An object with an implicit geometry stores the reference point (WKB
+`PointZ`) and `transformationMatrix` in its `implicit_geometry` column; the
+`id` field names the shared relative geometry.
 
 ## Dataset metadata
 
 Dataset-level metadata is written both to the Parquet file's key/value
 metadata and to `metadata.json` for package-level discovery. Keys include
 `cityparquet_version`, `source_format`/`source_version`, `crs` (PROJJSON),
-`transform`, `extensions`, `attributes` (the inferred attribute-column list;
+`transform`, `extensions` (the declared extensions, keyed by namespace),
+`attributes` (the inferred attribute-column list;
 any column not named here is a reserved structural column, so no separate
 `reserved_columns` key is written), `default_geometry`, `bbox_column`,
 `sidecar_files`, `source_metadata` (the source header `metadata`, verbatim —
@@ -298,7 +328,7 @@ readers recognise the geometry columns.
 `crs` is tri-state, following GeoParquet: PROJJSON when known, an explicit
 `null` when the file holds CRS-bearing coordinates whose CRS is unknown or
 unresolvable, and absent only for a file with no CRS-bearing coordinate at all
-(the `geometry_templates.parquet` sidecar, an attributes-only object table).
+(the `implicit_geometries.parquet` sidecar, an attributes-only object table).
 A source carrying CRS-bearing coordinates but declaring no resolvable CRS
 therefore converts to `crs: null` plus a conversion diagnostic on
 `ConvertReport::crs_diagnostic` (the CLI prints it as a `warning:`) — the
@@ -356,7 +386,7 @@ under both profiles:
 - geometry semantics (boundary trees, per-surface material/texture refs).
 
 Compatibility additionally preserves appearance definitions + UVs and
-geometry-template definitions + instances, resolved through the sidecars
+implicit geometries (relative geometries + references), resolved through the sidecars
 rather than by raw index (feature-local index numbering is an implementation
 detail, exactly as vertex indices are compared as coordinates, not identity).
 
@@ -373,7 +403,7 @@ Documented exclusions:
 - Unknown per-object members outside the round-tripped data model (`children_roles`
   IS now round-tripped and compared, G5).
 - Under **Core only**: appearance definitions, per-geometry material/texture
-  refs, and geometry-template definitions/instances — dropped on export and
+  refs, and implicit geometries (relative geometries + references) — dropped on export and
   counted (they are present under Compatibility).
 
 ## Status & known limitations

@@ -23,7 +23,7 @@ use cjseq::{CityJSON, CityJSONFeature, CityObject, Geometry, GeometryType, Trans
 use serde_json::Value;
 
 use cityparquet_schema::crs::AxisOrder;
-use cityparquet_schema::{AttributeType, CityParquetError, Lod, Result, normalise_attribute_name};
+use cityparquet_schema::{AttributeType, CityParquetError, ExtensionNaming, Lod, Result};
 
 use crate::appearance::AppearanceInterner;
 use crate::appearance_columns::{
@@ -548,25 +548,25 @@ pub(crate) fn compute_geometry_properties(
     })
 }
 
-/// `(template id, WKB point, transformationMatrix)` — one resolved
-/// `template` column's worth of data. The matrix is the flat, row-major
+/// `(relative-geometry id, WKB point, transformationMatrix)` — one resolved
+/// `implicit_geometry` column's worth of data. The matrix is the flat, row-major
 /// 16-value list the reserved `LIST<DOUBLE>` column stores (spec "Appearance
-/// & templates").
-type TemplateFields = (i64, Vec<u8>, Option<Vec<f64>>);
+/// & implicit geometries").
+type ImplicitGeometryFields = (i64, Vec<u8>, Option<Vec<f64>>);
 
 /// Parses a CityJSON `transformationMatrix` value into the flat 16-value
 /// list the reserved column stores, erroring — not silently truncating or
 /// padding — when it is not an array of exactly 16 numbers (spec "Appearance
-/// & templates": "exactly 16 values when non-null").
+/// & implicit geometries": "exactly 16 values when non-null").
 fn parse_transformation_matrix(v: &Value) -> Result<Vec<f64>> {
     let values: Vec<f64> = serde_json::from_value(v.clone()).map_err(|e| {
         CityParquetError::Schema(format!(
-            "template.transformationMatrix is not an array of numbers: {e}"
+            "implicit_geometry.transformationMatrix is not an array of numbers: {e}"
         ))
     })?;
     if values.len() != 16 {
         return Err(CityParquetError::Schema(format!(
-            "template.transformationMatrix must have exactly 16 values (a flat row-major \
+            "implicit_geometry.transformationMatrix must have exactly 16 values (a flat row-major \
              4x4), got {}",
             values.len()
         )));
@@ -574,14 +574,17 @@ fn parse_transformation_matrix(v: &Value) -> Result<Vec<f64>> {
     Ok(values)
 }
 
-/// `template` binding rule: built from the first `GeometryInstance`
-/// geometry on the object; `None` when it can't be resolved (missing
-/// template index, empty/malformed boundaries) so callers null the column
+/// `implicit_geometry` binding rule: built from the first CityJSON
+/// `GeometryInstance` geometry on the object; `None` when it can't be
+/// resolved (missing `template` index, empty/malformed boundaries) so callers null the column
 /// rather than panic. A present but malformed `transformationMatrix` (wrong
 /// length or non-numeric) is a hard error, not a graceful drop — see
 /// [`parse_transformation_matrix`].
-fn build_template(geom: &Geometry, pool: &VertexPool) -> Result<Option<TemplateFields>> {
-    let Some(template_id) = geom.template else {
+fn build_implicit_geometry(
+    geom: &Geometry,
+    pool: &VertexPool,
+) -> Result<Option<ImplicitGeometryFields>> {
+    let Some(template_index) = geom.template else {
         return Ok(None);
     };
     let Ok(idxs) = serde_json::from_value::<Vec<usize>>(geom.boundaries.clone()) else {
@@ -597,9 +600,9 @@ fn build_template(geom: &Geometry, pool: &VertexPool) -> Result<Option<TemplateF
         .map(parse_transformation_matrix)
         .transpose()?;
     // CityJSON's `template` is the index into `geometry-templates.templates`,
-    // which `build_template_rows` also uses as the sidecar row's `id` — so this
-    // reference resolves by value against `geometry_templates.parquet`.
-    Ok(Some((template_id as i64, point, matrix)))
+    // which `build_implicit_geometry_rows` also uses as the sidecar row's `id` — so this
+    // reference resolves by value against `implicit_geometries.parquet`.
+    Ok(Some((template_index as i64, point, matrix)))
 }
 
 /// One `address[]` entry's resolved fields, ready for the reserved `address`
@@ -617,7 +620,7 @@ struct AddressRow {
 /// malformed (wrong `type`, unparsable `boundaries`, empty, or an
 /// out-of-range vertex index) — a best-effort address field, not load-bearing
 /// geometry, so a malformed one is silently dropped rather than aborting the
-/// whole conversion (mirrors [`build_template`]'s graceful-degradation
+/// whole conversion (mirrors [`build_implicit_geometry`]'s graceful-degradation
 /// style).
 fn build_location_wkb(location: &Value, pool: &VertexPool) -> Option<Vec<u8>> {
     let obj = location.as_object()?;
@@ -702,7 +705,7 @@ struct GeometryAccumulator {
     /// mismatch that the old single-column layout had to guard against
     /// cannot arise: a LoD's geometry, semantics and appearance share one key.
     slots: HashMap<String, GeometrySlotData>,
-    template: Option<TemplateFields>,
+    implicit_geometry: Option<ImplicitGeometryFields>,
     own_bbox: Option<[f64; 6]>,
 }
 
@@ -765,10 +768,10 @@ pub(crate) struct LocalDefs<'a> {
 /// dataset-global ids from `interner` and UV pairs inlined — and build its
 /// `geometry_properties` struct value. This is the exact per-geometry
 /// appearance pipeline [`accumulate_geometry`] runs for a feature's own
-/// geometries, factored out so the geometry-templates sidecar
+/// geometries, factored out so the implicit-geometries sidecar
 /// (`crate::package`) can run the identical rules over `Source::header`'s
 /// `geometry_templates` after the main encode pass, through the SAME
-/// interner — a template's `material`/`texture`/`semantics` follow the same
+/// interner — a CityJSON template's `material`/`texture`/`semantics` follow the same
 /// CityJSON shapes as a regular geometry's, so the same rules apply verbatim.
 ///
 /// A cell is `None` when the geometry carries no map at all AND when the map
@@ -777,7 +780,7 @@ pub(crate) struct LocalDefs<'a> {
 /// map is written as a null cell rather than as an empty MAP.
 ///
 /// `context` names the geometry in any interner error surfaced (e.g.
-/// `"object abc123"` or `"geometry template 0"`).
+/// `"object abc123"` or `"relative geometry 0"`).
 ///
 /// `dropped_surfaces` are the writer-dropped flat surface positions (see
 /// [`crate::wkb_write::WkbOutcome::dropped_surfaces`]) — the caller passes
@@ -788,6 +791,7 @@ pub(crate) fn rewrite_geometry_appearance(
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
     context: &str,
+    naming: &ExtensionNaming,
 ) -> Result<(
     Option<MaterialCell>,
     Option<TextureCell>,
@@ -836,8 +840,25 @@ pub(crate) fn rewrite_geometry_appearance(
         None => None,
     };
 
-    let props = compute_geometry_properties(geom, dropped_surfaces)?;
+    let mut props = compute_geometry_properties(geom, dropped_surfaces)?;
+    namespace_surface_types(&mut props, naming)?;
     Ok((material, texture, props))
+}
+
+/// Stores each semantic surface's `type` through `naming` (spec
+/// "Extensions"): a CityJSON `+` surface type takes its extension's
+/// namespace prefix (`+PartyWallSurface` → `energy_PartyWallSurface`); a core
+/// type is kept as is.
+fn namespace_surface_types(props: &mut GeometryProperties, naming: &ExtensionNaming) -> Result<()> {
+    let Some(Value::Array(surfaces)) = props.surfaces.as_mut() else {
+        return Ok(());
+    };
+    for surface in surfaces {
+        if let Some(Value::String(surface_type)) = surface.get_mut("type") {
+            *surface_type = naming.encode_name(surface_type, "semantic surface type")?;
+        }
+    }
+    Ok(())
 }
 
 /// Walk one object's own geometries, bucketing them into `acc`. `per_lod`
@@ -863,14 +884,15 @@ fn accumulate_geometry(
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
     id: &str,
+    naming: &ExtensionNaming,
 ) -> Result<()> {
     let Some(geoms) = &co.geometry else {
         return Ok(());
     };
     for geom in geoms {
         if geom.thetype == GeometryType::GeometryInstance {
-            if acc.template.is_none() {
-                acc.template = build_template(geom, pool)?;
+            if acc.implicit_geometry.is_none() {
+                acc.implicit_geometry = build_implicit_geometry(geom, pool)?;
             }
             continue;
         }
@@ -891,7 +913,7 @@ fn accumulate_geometry(
         union_bbox(&mut acc.own_bbox, bbox);
 
         // Every geometry reaching here is a non-instance that produced a
-        // payload (instances are routed to `template` above). For a
+        // payload (instances are routed to `implicit_geometry` above). For a
         // `ScanResult` that matches this `Source`, [`crate::scan`] guarantees
         // such a geometry carries a valid lod and that the dataset is
         // therefore per-LoD — so both a missing/unparseable lod and
@@ -925,13 +947,14 @@ fn accumulate_geometry(
         // before anything is written, and feature-local material/texture
         // indices are rewritten to dataset-global ids — both handled by the
         // shared pipeline in `rewrite_geometry_appearance` (also used by the
-        // geometry-templates sidecar, see its doc comment).
+        // implicit-geometries sidecar, see its doc comment).
         let (material, texture, props) = rewrite_geometry_appearance(
             geom,
             &dropped_surfaces,
             interner,
             defs,
             &format!("object {id}"),
+            naming,
         )?;
 
         // The LoD lives only in the column name (spec "Levels of detail") —
@@ -1196,10 +1219,10 @@ struct RowWriter {
     bbox_nulls: NullBufferBuilder,
     per_lod: bool,
     geometry_slots: Vec<GeometrySlot>,
-    template_id: Int64Builder,
-    template_point: BinaryBuilder,
-    template_matrix: ListBuilder<Float64Builder>,
-    template_nulls: NullBufferBuilder,
+    implicit_geometry_id: Int64Builder,
+    implicit_geometry_point: BinaryBuilder,
+    implicit_geometry_matrix: ListBuilder<Float64Builder>,
+    implicit_geometry_nulls: NullBufferBuilder,
     other: StringBuilder,
     attributes: Vec<(String, AttrBuilder)>,
     /// Attribute names diverted into `other` because they collide with a
@@ -1213,6 +1236,10 @@ struct RowWriter {
     /// The dataset's axis order ([`ScanResult::axis_order`]), applied to every
     /// vertex this writer turns into WKB or a `bbox`.
     axis_order: AxisOrder,
+    /// The declared extensions' naming policy ([`ScanResult::naming`]):
+    /// every extension attribute, surface type and class is stored under its
+    /// namespace prefix.
+    naming: ExtensionNaming,
     len: usize,
 }
 
@@ -1255,20 +1282,21 @@ impl RowWriter {
             bbox_nulls: NullBufferBuilder::new(0),
             per_lod,
             geometry_slots,
-            template_id: Int64Builder::new(),
-            template_point: BinaryBuilder::new(),
+            implicit_geometry_id: Int64Builder::new(),
+            implicit_geometry_point: BinaryBuilder::new(),
             // Item field explicitly pinned to non-null Float64: a
             // `ListBuilder`'s default-derived item field is always nullable,
-            // which would mismatch `template_data_type()`'s non-null matrix
+            // which would mismatch `implicit_geometry_data_type()`'s non-null matrix
             // entries at `StructArray::new` time.
-            template_matrix: ListBuilder::new(Float64Builder::new())
+            implicit_geometry_matrix: ListBuilder::new(Float64Builder::new())
                 .with_field(Arc::new(Field::new("item", DataType::Float64, false))),
-            template_nulls: NullBufferBuilder::new(0),
+            implicit_geometry_nulls: NullBufferBuilder::new(0),
             other: StringBuilder::new(),
             attributes,
             diverted_attributes: scan.diverted_attribute_names.iter().cloned().collect(),
             synthesize_lod0: scan.synthesize_lod0,
             axis_order: scan.axis_order,
+            naming: scan.naming(),
             len: 0,
         }
     }
@@ -1290,22 +1318,24 @@ impl RowWriter {
         }
     }
 
-    fn push_template(&mut self, template: Option<TemplateFields>) {
-        match template {
+    fn push_implicit_geometry(&mut self, implicit_geometry: Option<ImplicitGeometryFields>) {
+        match implicit_geometry {
             Some((id, point, matrix)) => {
-                self.template_id.append_value(id);
-                self.template_point.append_value(point);
+                self.implicit_geometry_id.append_value(id);
+                self.implicit_geometry_point.append_value(point);
                 match matrix {
-                    Some(m) => self.template_matrix.append_value(m.into_iter().map(Some)),
-                    None => self.template_matrix.append_null(),
+                    Some(m) => self
+                        .implicit_geometry_matrix
+                        .append_value(m.into_iter().map(Some)),
+                    None => self.implicit_geometry_matrix.append_null(),
                 }
-                self.template_nulls.append(true);
+                self.implicit_geometry_nulls.append(true);
             }
             None => {
-                self.template_id.append_null();
-                self.template_point.append_null();
-                self.template_matrix.append_null();
-                self.template_nulls.append(false);
+                self.implicit_geometry_id.append_null();
+                self.implicit_geometry_point.append_null();
+                self.implicit_geometry_matrix.append_null();
+                self.implicit_geometry_nulls.append(false);
             }
         }
     }
@@ -1448,13 +1478,14 @@ impl RowWriter {
         // `ClassInfo::citygml_class` carries the CityGML spelling; every
         // other core class has the same spelling in both fields. An
         // extension (ADE / CityJSON Extension) class has no taxonomy entry,
-        // so it keeps its own source spelling, but with CityJSON's leading
-        // `+` marker stripped (spec: "An extension ... type keeps its own
-        // class name, with the CityJSON `+` prefix stripped").
-        let object_type = cityparquet_schema::class_info(&co.thetype)
-            .map(|info| info.citygml_class)
-            .unwrap_or_else(|| cityparquet_schema::strip_plus(&co.thetype));
-        self.object_type.append(object_type)?;
+        // so it keeps its own class name, with CityJSON's leading `+` marker
+        // replaced by the extension's namespace prefix (spec "Extensions":
+        // `+ThermalZone` → `energy_ThermalZone`) so export can restore it.
+        let object_type = match cityparquet_schema::class_info(&co.thetype) {
+            Some(info) => info.citygml_class.to_string(),
+            None => self.naming.encode_name(&co.thetype, "city-object type")?,
+        };
+        self.object_type.append(&object_type)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());
         Self::push_string_list(&mut self.children, co.children.as_deref());
         let children_roles = Self::children_roles(co, &co_json, id)?;
@@ -1477,6 +1508,7 @@ impl RowWriter {
             interner,
             &defs,
             id,
+            &self.naming,
         )?;
 
         // Synthesise an LoD0 footprint into the `geometry_lod0_0` slot when
@@ -1592,7 +1624,7 @@ impl RowWriter {
             union_bbox(&mut bbox, reorder_extent(extent, self.axis_order));
         }
         self.push_bbox(bbox);
-        self.push_template(acc.template);
+        self.push_implicit_geometry(acc.implicit_geometry);
 
         let normalised: HashMap<String, &Value> = co
             .attributes
@@ -1600,9 +1632,10 @@ impl RowWriter {
             .and_then(|v| v.as_object())
             .map(|obj| {
                 obj.iter()
-                    .map(|(k, v)| (normalise_attribute_name(k), v))
-                    .collect()
+                    .map(|(k, v)| Ok((self.naming.encode_name(k, "attribute")?, v)))
+                    .collect::<Result<_>>()
             })
+            .transpose()?
             .unwrap_or_default();
         for (name, builder) in &mut self.attributes {
             push_attribute_value(builder, normalised.get(name).copied(), stats)?;
@@ -1625,16 +1658,17 @@ impl RowWriter {
         Arc::new(StructArray::new(fields, arrays, nulls))
     }
 
-    fn finish_template(&mut self) -> ArrayRef {
-        let DataType::Struct(fields) = cityparquet_schema::model::template_data_type() else {
-            unreachable!("template_data_type always returns Struct")
+    fn finish_implicit_geometry(&mut self) -> ArrayRef {
+        let DataType::Struct(fields) = cityparquet_schema::model::implicit_geometry_data_type()
+        else {
+            unreachable!("implicit_geometry_data_type always returns Struct")
         };
         let arrays: Vec<ArrayRef> = vec![
-            Arc::new(self.template_id.finish()),
-            Arc::new(self.template_point.finish()),
-            Arc::new(self.template_matrix.finish()),
+            Arc::new(self.implicit_geometry_id.finish()),
+            Arc::new(self.implicit_geometry_point.finish()),
+            Arc::new(self.implicit_geometry_matrix.finish()),
         ];
-        let nulls = self.template_nulls.finish();
+        let nulls = self.implicit_geometry_nulls.finish();
         Arc::new(StructArray::new(fields, arrays, nulls))
     }
 
@@ -1659,7 +1693,7 @@ impl RowWriter {
             arrays.push(slot.material.finish());
             arrays.push(slot.texture.finish());
         }
-        arrays.push(self.finish_template());
+        arrays.push(self.finish_implicit_geometry());
         arrays.push(Arc::new(self.other.finish()));
         for (_, builder) in &mut self.attributes {
             arrays.push(builder.finish());
@@ -1751,7 +1785,7 @@ impl BatchIter<'_> {
     }
 
     /// Mutable access to the same interner, so a post-encode pass (the
-    /// geometry-templates sidecar in `crate::package`) can fold MORE
+    /// implicit-geometries sidecar in `crate::package`) can fold MORE
     /// definitions into it — e.g. entries reachable only from
     /// `Source::header`'s `geometry_templates`, which this encode loop never
     /// visits — before [`Self::appearance`] is read to write the
@@ -1985,7 +2019,7 @@ mod tests {
         );
     }
 
-    // spec "Appearance & templates": transformationMatrix MUST have exactly
+    // spec "Appearance & implicit geometries": transformationMatrix MUST have exactly
     // 16 values when non-null.
     #[test]
     fn parse_transformation_matrix_rejects_a_non_16_length_matrix() {
@@ -2126,6 +2160,7 @@ mod tests {
             &mut interner,
             &defs,
             "obj1",
+            &ExtensionNaming::default(),
         )
         .unwrap();
 
@@ -2249,6 +2284,7 @@ mod tests {
             &mut interner,
             &defs,
             "obj1",
+            &ExtensionNaming::default(),
         )
         .unwrap();
 
@@ -2394,6 +2430,7 @@ mod tests {
             &mut interner,
             &defs,
             "obj1",
+            &ExtensionNaming::default(),
         )
         .unwrap();
 

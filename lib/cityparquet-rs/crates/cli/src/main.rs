@@ -624,7 +624,7 @@ fn main() -> std::process::ExitCode {
                                 report.degenerate_surfaces_dropped,
                                 report.materials_written,
                                 report.textures_written,
-                                report.templates_written,
+                                report.implicit_geometries_written,
                                 report.invalid_appearance_refs_dropped
                             );
                             std::process::ExitCode::SUCCESS

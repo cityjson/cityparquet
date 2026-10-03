@@ -504,6 +504,7 @@ mod tests {
             geoparquet_lods: vec![Lod::parse("2.2").unwrap()],
             attributes: vec![("yoc".to_string(), AttributeType::Int64)],
             crs: None,
+            extension_namespaces: Vec::new(),
         }
     }
 
@@ -624,6 +625,7 @@ mod tests {
                 ("geometry_extra".to_string(), AttributeType::String),
             ],
             crs: None,
+            extension_namespaces: Vec::new(),
         };
         let props = WriterRecipe::default()
             .writer_properties(&schema, &BTreeSet::new())
@@ -1042,6 +1044,7 @@ mod tests {
                 ("props".to_string(), AttributeType::Json),
             ],
             crs: None,
+            extension_namespaces: Vec::new(),
         };
         let selected: BTreeSet<String> = ["identificatie", "dotted.name", "yoc", "props", "absent"]
             .into_iter()

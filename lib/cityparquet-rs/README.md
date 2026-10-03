@@ -7,8 +7,8 @@ in-memory representation. Part of the CityParquet + CityLake research stack
 
 CityParquet stores a city model as a **directory of Parquet files** — one row
 per city object, WKB geometry per LoD, typed attribute columns, and optional
-sidecar tables for materials, textures, and geometry templates — so national-
-to-global 3D city models can be filtered, pruned, and queried directly from
+sidecar tables for materials, textures, and implicit geometries — so
+national-to-global 3D city models can be filtered, pruned, and queried directly from
 cloud object storage. It round-trips back to CityJSON/CityJSONSeq with
 semantic losslessness.
 
@@ -38,7 +38,7 @@ they measure.
 | `cityparquet-cli`    | The `cityparquet` binary and the benchmark harness                                                                 |
 
 Status: milestones **M1–M5 complete** — schema, native writer, reader
-& round-trip, content-gated appearance/template sidecars, and the benchmark
+& round-trip, content-gated appearance/implicit-geometry sidecars, and the benchmark
 suite. Every LoD,
 **including LoD0, is a suffixed geometry column** (`geometry_lod0_0`, `geometry_lod2_2`, …);
 the writer can **synthesise** an LoD0 footprint from higher-LoD geometry when
@@ -133,7 +133,7 @@ module, so a `CityObjectGroup` in `generics.parquet` may have its members in
 `vegetation.parquet`. That is the by-module layout, not a partition boundary:
 the guarantee is that the references resolve inside the package.
 
-Sidecars (`materials.parquet`/`textures.parquet`/`geometry_templates.parquet`)
+Sidecars (`materials.parquet`/`textures.parquet`/`implicit_geometries.parquet`)
 are written automatically whenever the source has that kind of content —
 there is no profile flag to opt into them:
 
@@ -145,9 +145,9 @@ cargo run -p cityparquet-cli -- convert tests/fixtures/lod3_railway.city.json \
 `convert` prints a space-separated report: `object_count files_count
 skipped_same_lod_geometries attribute_coercion_nulls degenerate_rings_dropped
 degenerate_surfaces_dropped materials_written textures_written
-templates_written invalid_appearance_refs_dropped` (`materials_written`
-through `templates_written` are `0` when the source has no appearance/
-templates for that sidecar to write; `invalid_appearance_refs_dropped` is `0`
+implicit_geometries_written invalid_appearance_refs_dropped`
+(`materials_written` through `implicit_geometries_written` are `0` when the
+source has no appearance/implicit geometries for that sidecar to write; `invalid_appearance_refs_dropped` is `0`
 unless `--tolerate-invalid-appearance` actually dropped a dangling
 material/texture reference).
 

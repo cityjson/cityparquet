@@ -342,9 +342,9 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
 /// materials / 33 textures — see the module doc on
 /// `railway_core_convert_rewrites_appearance_maps_to_global_ids`) plus its 3
 /// geometry templates (2 materials + 1 texture reachable ONLY from a
-/// template, per `crate::package::build_template_rows` folding them into the
+/// CityJSON template, per `crate::package::build_implicit_geometry_rows` folding them into the
 /// same interner) land at 85 materials / 34 textures, split across
-/// `materials.parquet`/`textures.parquet`/`geometry_templates.parquet`, with
+/// `materials.parquet`/`textures.parquet`/`implicit_geometries.parquet`, with
 /// BOTH `metadata.json`'s `sidecar_files` and the parquet footer's KV
 /// `sidecar_files` listing exactly the files actually written.
 #[test]
@@ -356,43 +356,47 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
 
     assert_eq!(report.materials_written, 85);
     assert_eq!(report.textures_written, 34);
-    assert_eq!(report.templates_written, 3);
+    assert_eq!(report.implicit_geometries_written, 3);
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
-    assert!(out.path().join("geometry_templates.parquet").exists());
+    assert!(out.path().join("implicit_geometries.parquet").exists());
 
     assert_eq!(
         PackageTables::open(out.path()).unwrap().sidecar_files,
         vec![
             "materials.parquet".to_string(),
             "textures.parquet".to_string(),
-            "geometry_templates.parquet".to_string()
+            "implicit_geometries.parquet".to_string()
         ],
         "metadata.json's cityparquet-sidecar assets must list exactly the sidecars written"
     );
 
-    // The written template rows must carry their LoD: railway's 3 templates
+    // The written implicit-geometry rows must carry their LoD: railway's 3 templates
     // all declare lod "3". The geometry_properties struct itself has no
     // `lod` field (spec: "same struct, reused" — no lod field anywhere); a
-    // template's LoD instead picks which physical per-LoD column set
+    // relative geometry's LoD instead picks which physical per-LoD column set
     // (`geometry_lod3_0` etc.) its row lands in, exactly like the main
-    // object table's own geometry columns (spec: "a template's LoD is
+    // object table's own geometry columns (spec: "a relative geometry's LoD is
     // carried by its column name here exactly as it is in an object table").
-    let template_rows =
-        cityparquet::sidecar::read_templates(&out.path().join("geometry_templates.parquet"))
-            .unwrap();
-    assert_eq!(template_rows.len(), 3);
+    let implicit_geometry_rows = cityparquet::sidecar::read_implicit_geometries(
+        &out.path().join("implicit_geometries.parquet"),
+    )
+    .unwrap();
+    assert_eq!(implicit_geometry_rows.len(), 3);
     let lod3 = cityparquet_schema::Lod::parse("3").unwrap();
-    for (i, row) in template_rows.iter().enumerate() {
+    for (i, row) in implicit_geometry_rows.iter().enumerate() {
         let props = row.geometry_properties.as_ref().unwrap();
-        assert!(props.get("type").is_some(), "template {i} missing type");
+        assert!(
+            props.get("type").is_some(),
+            "relative geometry {i} missing type"
+        );
         assert!(
             props.get("lod").is_none(),
-            "template {i}: geometry_properties struct must carry no lod field"
+            "relative geometry {i}: geometry_properties struct must carry no lod field"
         );
         assert_eq!(
             row.lod, lod3,
-            "template {i}: row.lod must carry the source lod"
+            "relative geometry {i}: row.lod must carry the source lod"
         );
     }
 
@@ -400,7 +404,7 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     // suffixed column set, no un-suffixed geometry/geometry_properties/
     // material/texture columns, no `lod` column, and no `other` column.
     {
-        let file = std::fs::File::open(out.path().join("geometry_templates.parquet")).unwrap();
+        let file = std::fs::File::open(out.path().join("implicit_geometries.parquet")).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         let schema = builder.schema();
         assert!(schema.field_with_name("geometry_lod3_0").is_ok());
@@ -417,21 +421,21 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
         ] {
             assert!(
                 schema.field_with_name(col).is_err(),
-                "geometry_templates.parquet must not carry column '{col}'"
+                "implicit_geometries.parquet must not carry column '{col}'"
             );
         }
 
-        // Spec "geometry_templates.parquet": `id BIGINT` required, `name
+        // Spec "implicit_geometries.parquet": `id BIGINT` required, `name
         // VARCHAR` optional — the on-disk types another implementation reads
         // this package with. `id` must be an integer so a merge can shift a
-        // whole package's template ids by one offset, as it does for
+        // whole package's ids by one offset, as it does for
         // materials and textures; `name` is where a source identifier
         // survives that renumbering (null here — CityJSON templates are
         // unnamed array entries).
         assert_eq!(
             schema.field_with_name("id").unwrap().data_type(),
             &arrow_schema::DataType::Int64,
-            "geometry_templates.id must be BIGINT, not a string"
+            "implicit_geometries.id must be BIGINT, not a string"
         );
         assert!(!schema.field_with_name("id").unwrap().is_nullable());
         assert_eq!(
@@ -440,44 +444,50 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
         );
         assert!(schema.field_with_name("name").unwrap().is_nullable());
         assert_eq!(
-            template_rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+            implicit_geometry_rows
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>(),
             [0, 1, 2],
             "ids are ordinal positions, so packages from either implementation merge cleanly"
         );
-        assert!(template_rows.iter().all(|r| r.name.is_none()));
+        assert!(implicit_geometry_rows.iter().all(|r| r.name.is_none()));
     }
 
-    // The object table's `template.id` references the sidecar's `id`, so the
+    // The object table's `implicit_geometry.id` references the sidecar's `id`, so the
     // two must be the same type — a BIGINT sidecar id joined against a
     // VARCHAR reference is unreadable by any implementation but this one.
     {
         let file = std::fs::File::open(out.path().join("vegetation.parquet")).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-        let template = builder
+        let implicit_geometry = builder
             .schema()
-            .field_with_name("template")
+            .field_with_name("implicit_geometry")
             .unwrap()
             .clone();
-        let arrow_schema::DataType::Struct(fields) = template.data_type() else {
-            panic!("template must be a struct, got {:?}", template.data_type());
+        let arrow_schema::DataType::Struct(fields) = implicit_geometry.data_type() else {
+            panic!(
+                "implicit_geometry must be a struct, got {:?}",
+                implicit_geometry.data_type()
+            );
         };
         let id = fields
             .find("id")
-            .expect("template struct has an id field")
+            .expect("implicit_geometry struct has an id field")
             .1;
         assert_eq!(
             id.data_type(),
             &arrow_schema::DataType::Int64,
-            "object-table template.id must be BIGINT to match geometry_templates.id"
+            "object-table implicit_geometry.id must be BIGINT to match implicit_geometries.id"
         );
     }
 
     {
-        let file = std::fs::File::open(out.path().join("geometry_templates.parquet")).unwrap();
+        let file = std::fs::File::open(out.path().join("implicit_geometries.parquet")).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
 
-        // Spec "CRS rules": absence is legitimate precisely here. A template's
-        // geometry is stored in template-LOCAL, unplaced coordinates, so the
+        // Spec "CRS rules": absence is legitimate precisely here. A relative
+        // geometry is stored in LOCAL, unplaced coordinates, so the
         // sidecar holds NO CRS-bearing coordinate and writes no `crs` key at
         // all — the third state, distinct from the explicit `null` a
         // coordinate-bearing table with an unknown CRS gets.
@@ -495,7 +505,7 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
         .unwrap();
         assert!(
             !city.as_object().unwrap().contains_key("crs"),
-            "the templates sidecar's unplaced local coordinates carry no CRS key: {city}"
+            "the implicit-geometries sidecar's unplaced local coordinates carry no CRS key: {city}"
         );
     }
 }
@@ -704,7 +714,7 @@ fn index_repeat_sliver_ring_survives_convert_and_export_round_trip() {
 /// A dataset with no appearance at all (delft): no sidecar files are
 /// written, and the manifest says so — sidecars are written whenever the
 /// source has content for them (spec-alignment gap 19), so delft (no
-/// materials/textures/templates) simply writes none.
+/// materials/textures/implicit geometries) simply writes none.
 #[test]
 fn delft_compatibility_convert_writes_no_sidecars() {
     let out = tempfile::tempdir().unwrap();
@@ -713,7 +723,7 @@ fn delft_compatibility_convert_writes_no_sidecars() {
 
     assert_eq!(report.materials_written, 0);
     assert_eq!(report.textures_written, 0);
-    assert_eq!(report.templates_written, 0);
+    assert_eq!(report.implicit_geometries_written, 0);
     assert!(!out.path().join("materials.parquet").exists());
     assert!(!out.path().join("textures.parquet").exists());
 
@@ -726,9 +736,9 @@ fn delft_compatibility_convert_writes_no_sidecars() {
 
 /// M4 task 11 (Step 1/2): the overwrite-purge hazard the `TODO(M4)` comment
 /// named. A Compatibility convert of railway into a fresh directory writes
-/// `materials.parquet`/`textures.parquet`/`geometry_templates.parquet`
+/// `materials.parquet`/`textures.parquet`/`implicit_geometries.parquet`
 /// alongside its main object tables; overwriting that SAME directory with a
-/// Core convert of an unrelated dataset (delft, no appearance/templates of
+/// Core convert of an unrelated dataset (delft, no appearance/implicit geometries of
 /// its own) must not leave any of the first run's sidecars behind — a
 /// consumer reading the directory afterwards must see exactly what the
 /// second run's own `metadata.json` describes (`sidecar_files == []`), never
@@ -742,7 +752,7 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
-    assert!(out.path().join("geometry_templates.parquet").exists());
+    assert!(out.path().join("implicit_geometries.parquet").exists());
 
     let mut second = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
     second.overwrite = true;
@@ -750,7 +760,7 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
     assert_eq!(second_report.object_count, 2231);
     assert_eq!(second_report.materials_written, 0);
     assert_eq!(second_report.textures_written, 0);
-    assert_eq!(second_report.templates_written, 0);
+    assert_eq!(second_report.implicit_geometries_written, 0);
 
     assert!(
         !out.path().join("materials.parquet").exists(),
@@ -761,8 +771,8 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
         "stale textures.parquet from the first (Compatibility) convert must be purged"
     );
     assert!(
-        !out.path().join("geometry_templates.parquet").exists(),
-        "stale geometry_templates.parquet from the first (Compatibility) convert must be purged"
+        !out.path().join("implicit_geometries.parquet").exists(),
+        "stale implicit_geometries.parquet from the first (Compatibility) convert must be purged"
     );
     // delft is a single 1st-level family, so the second (delft) convert
     // writes exactly one main table: building.parquet.
@@ -802,7 +812,7 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
-    assert!(out.path().join("geometry_templates.parquet").exists());
+    assert!(out.path().join("implicit_geometries.parquet").exists());
     // railway's object_type values resolve to 9 distinct CityGML modules,
     // so this convert wrote 9 main tables, never one.
     let tables = manifest_tables(out.path());
@@ -834,8 +844,8 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
         "a failed overwrite must not purge the existing package's textures.parquet"
     );
     assert!(
-        out.path().join("geometry_templates.parquet").exists(),
-        "a failed overwrite must not purge the existing package's geometry_templates.parquet"
+        out.path().join("implicit_geometries.parquet").exists(),
+        "a failed overwrite must not purge the existing package's implicit_geometries.parquet"
     );
     assert_eq!(
         manifest_tables(out.path()),
@@ -906,7 +916,7 @@ fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
-    assert!(out.path().join("geometry_templates.parquet").exists());
+    assert!(out.path().join("implicit_geometries.parquet").exists());
     // railway's object_type values resolve to 9 distinct CityGML modules,
     // so this convert wrote 9 main tables, never one.
     let railway_tables = manifest_tables(out.path());
@@ -987,7 +997,7 @@ fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
     // `railway_compatibility_round_trips_losslessly_with_no_exclusions`).
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
-    assert!(out.path().join("geometry_templates.parquet").exists());
+    assert!(out.path().join("implicit_geometries.parquet").exists());
     assert_eq!(
         manifest_tables(out.path()),
         railway_tables,

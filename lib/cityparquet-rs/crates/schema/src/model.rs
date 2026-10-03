@@ -20,9 +20,6 @@ pub const ROLE_RESERVED: &str = "reserved";
 pub const ROLE_ATTRIBUTE: &str = "attribute";
 pub const ROLE_EXTENSION: &str = "extension";
 
-/// Extension-attribute columns are renamed from `+name` to `ex_name` (spec).
-pub const EXTENSION_ATTR_PREFIX: &str = "ex_";
-
 /// Logical description of one CityParquet object table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CityParquetSchema {
@@ -46,6 +43,11 @@ pub struct CityParquetSchema {
     /// from the scan's realised WKB type sets; a reader fills it from the
     /// file's own `geo.columns`.
     pub geoparquet_lods: Vec<Lod>,
+    /// The namespaces of the extensions the package declares (the keys of
+    /// `city.extensions`). An attribute column whose name carries one of
+    /// them as a `<namespace>_` prefix is an extension attribute and is
+    /// tagged with the `extension` role (spec "Extensions").
+    pub extension_namespaces: Vec<String>,
 }
 
 pub fn bbox_data_type() -> DataType {
@@ -56,18 +58,18 @@ pub fn bbox_data_type() -> DataType {
     ))
 }
 
-/// `template.transformationMatrix`'s element field: a flat, row-major 4x4
-/// (spec "Appearance & templates" — "exactly 16 values when non-null"). Items
+/// `implicit_geometry.transformationMatrix`'s element field: a flat, row-major 4x4
+/// (spec "Appearance & implicit geometries" — "exactly 16 values when non-null"). Items
 /// are non-null — a transformation matrix is 16 real numbers, never a partial
 /// list with holes.
 fn transformation_matrix_data_type() -> DataType {
     DataType::List(Arc::new(Field::new("item", DataType::Float64, false)))
 }
 
-pub fn template_data_type() -> DataType {
+pub fn implicit_geometry_data_type() -> DataType {
     DataType::Struct(Fields::from(vec![
-        // BIGINT, matching `geometry_templates.parquet`'s own `id` column
-        // this references (spec "Appearance & templates").
+        // BIGINT, matching `implicit_geometries.parquet`'s own `id` column
+        // this references (spec "Appearance & implicit geometries").
         Field::new("id", DataType::Int64, true),
         Field::new("point", DataType::Binary, true),
         Field::new(
@@ -180,7 +182,7 @@ fn map_of(value: DataType) -> DataType {
     DataType::Map(Arc::new(entries), false)
 }
 
-/// The `material_lod*` Arrow type (spec "Appearance & templates" — "material
+/// The `material_lod*` Arrow type (spec "Appearance & implicit geometries" — "material
 /// / texture columns"):
 ///
 /// ```text
@@ -197,7 +199,7 @@ pub fn material_data_type() -> DataType {
     ))))
 }
 
-/// The `texture_lod*` Arrow type (spec "Appearance & templates" — "material
+/// The `texture_lod*` Arrow type (spec "Appearance & implicit geometries" — "material
 /// / texture columns"):
 ///
 /// ```text
@@ -254,14 +256,6 @@ fn string_list(name: &str) -> Field {
     )
 }
 
-/// CityJSON extension attributes `+name` become `ex_name` columns (spec).
-pub fn normalise_attribute_name(name: &str) -> String {
-    match name.strip_prefix('+') {
-        Some(rest) => format!("{EXTENSION_ATTR_PREFIX}{rest}"),
-        None => name.to_string(),
-    }
-}
-
 /// Fixed reserved column names, independent of `lods`/`attributes`.
 const RESERVED_COLUMN_NAMES: &[&str] = &[
     "id",
@@ -272,7 +266,7 @@ const RESERVED_COLUMN_NAMES: &[&str] = &[
     "children_roles",
     "address",
     "bbox",
-    "template",
+    "implicit_geometry",
     "other",
 ];
 
@@ -445,14 +439,21 @@ impl CityParquetSchema {
                 }
             }
         }
-        fields.push(reserved(Field::new("template", template_data_type(), true)));
+        fields.push(reserved(Field::new(
+            "implicit_geometry",
+            implicit_geometry_data_type(),
+            true,
+        )));
         fields.push(with_meta(
             json_field("other", true).as_ref().clone(),
             &[(ROLE_KEY, ROLE_RESERVED)],
         ));
 
         for (name, attr_type) in &self.attributes {
-            let role = if name.starts_with(EXTENSION_ATTR_PREFIX) {
+            let role = if self.extension_namespaces.iter().any(|ns| {
+                name.strip_prefix(ns.as_str())
+                    .is_some_and(|rest| rest.starts_with('_'))
+            }) {
                 ROLE_EXTENSION
             } else {
                 ROLE_ATTRIBUTE
@@ -500,9 +501,10 @@ mod tests {
             geoparquet_lods: vec![Lod::parse("1").unwrap(), Lod::parse("2.2").unwrap()],
             attributes: vec![
                 ("yoc".to_string(), AttributeType::Int64),
-                ("ex_height".to_string(), AttributeType::Float64),
+                ("energy_heatCapacity".to_string(), AttributeType::Float64),
             ],
             crs: Some(serde_json::json!({"id": {"authority": "EPSG", "code": 28992}})),
+            extension_namespaces: vec!["energy".to_string()],
         }
     }
 
@@ -529,10 +531,10 @@ mod tests {
                 "geometry_properties_lod2_2",
                 "material_lod2_2",
                 "texture_lod2_2",
-                "template",
+                "implicit_geometry",
                 "other",
                 "yoc",
-                "ex_height",
+                "energy_heatCapacity",
             ]
         );
     }
@@ -558,6 +560,7 @@ mod tests {
                 geoparquet_lods: lods.clone(),
                 attributes: vec![],
                 crs: None,
+                extension_namespaces: Vec::new(),
             };
             let arrow = schema.to_arrow_schema().unwrap();
             for lod in &lods {
@@ -615,6 +618,7 @@ mod tests {
                 AttributeType::String,
             )],
             crs: None,
+            extension_namespaces: Vec::new(),
         };
         let rendered = schema
             .to_arrow_schema()
@@ -779,7 +783,10 @@ mod tests {
         };
         assert_eq!(get("id", ROLE_KEY).as_deref(), Some("reserved"));
         assert_eq!(get("yoc", ROLE_KEY).as_deref(), Some("attribute"));
-        assert_eq!(get("ex_height", ROLE_KEY).as_deref(), Some("extension"));
+        assert_eq!(
+            get("energy_heatCapacity", ROLE_KEY).as_deref(),
+            Some("extension")
+        );
         assert_eq!(get("geometry_lod2_2", LOD_KEY).as_deref(), Some("2.2"));
         assert_eq!(
             get("geometry_properties_lod1_0", LOD_KEY).as_deref(),
@@ -803,7 +810,7 @@ mod tests {
         assert_eq!(field.data_type(), &DataType::Utf8);
     }
 
-    /// spec "Appearance & templates" — "material / texture columns":
+    /// spec "Appearance & implicit geometries" — "material / texture columns":
     /// `material_lod*` is `MAP<VARCHAR, LIST<BIGINT>>` and `texture_lod*` is
     /// `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>`,
     /// genuine typed Arrow MAP columns rather than an `arrow.json` blob.
@@ -815,6 +822,7 @@ mod tests {
             geoparquet_lods: vec![],
             attributes: vec![],
             crs: None,
+            extension_namespaces: Vec::new(),
         }
         .to_arrow_schema()
         .unwrap();
@@ -945,6 +953,7 @@ mod tests {
             geoparquet_lods: vec![],
             attributes: vec![],
             crs: None,
+            extension_namespaces: Vec::new(),
         }
         .to_arrow_schema()
         .unwrap();
@@ -954,12 +963,13 @@ mod tests {
 
     #[test]
     fn attribute_colliding_with_reserved_column_is_an_error() {
-        for bad_name in ["id", "material", "address", "template"] {
+        for bad_name in ["id", "material", "address", "implicit_geometry"] {
             let schema = CityParquetSchema {
                 lods: vec![],
                 geoparquet_lods: vec![],
                 attributes: vec![(bad_name.to_string(), AttributeType::String)],
                 crs: None,
+                extension_namespaces: Vec::new(),
             };
             let err = schema.to_arrow_schema().unwrap_err();
             assert!(
@@ -976,6 +986,7 @@ mod tests {
             geoparquet_lods: vec![Lod::parse("2").unwrap(), Lod::parse("2").unwrap()],
             attributes: vec![],
             crs: None,
+            extension_namespaces: Vec::new(),
         };
         let err = schema.to_arrow_schema().unwrap_err();
         assert!(matches!(err, crate::error::CityParquetError::Schema(_)));
@@ -988,6 +999,7 @@ mod tests {
             geoparquet_lods: vec![Lod::parse("2.2").unwrap()],
             attributes: vec![("geometry_lod2_2".to_string(), AttributeType::String)],
             crs: None,
+            extension_namespaces: Vec::new(),
         };
         let err = schema.to_arrow_schema().unwrap_err();
         assert!(matches!(err, crate::error::CityParquetError::Schema(_)));
@@ -1042,14 +1054,17 @@ mod tests {
         }
     }
 
-    /// spec "Appearance & templates": `template.transformationMatrix` is a
+    /// spec "Appearance & implicit geometries": `implicit_geometry.transformationMatrix` is a
     /// flat, row-major `LIST<DOUBLE>` — no longer JSON.
     #[test]
-    fn template_transformation_matrix_is_a_list_of_double() {
+    fn implicit_geometry_transformation_matrix_is_a_list_of_double() {
         let schema = sample().to_arrow_schema().unwrap();
-        let field = schema.field_with_name("template").unwrap();
+        let field = schema.field_with_name("implicit_geometry").unwrap();
         let DataType::Struct(children) = field.data_type() else {
-            panic!("template must be a Struct, got {:?}", field.data_type());
+            panic!(
+                "implicit_geometry must be a Struct, got {:?}",
+                field.data_type()
+            );
         };
         let matrix = children
             .iter()
@@ -1070,11 +1085,22 @@ mod tests {
         assert!(!item.is_nullable(), "matrix entries are non-null");
     }
 
+    /// spec "Extensions": only a declared namespace prefix marks an
+    /// extension attribute — an undeclared look-alike is a core attribute.
     #[test]
-    fn normalises_extension_attribute_names() {
-        assert_eq!(normalise_attribute_name("+height"), "ex_height");
-        assert_eq!(normalise_attribute_name("height"), "height");
-        assert_eq!(normalise_attribute_name("+"), "ex_");
+    fn only_a_declared_namespace_prefix_tags_the_extension_role() {
+        let mut schema = sample();
+        schema
+            .attributes
+            .push(("noise_level".to_string(), AttributeType::Float64));
+        schema
+            .attributes
+            .push(("energyRating".to_string(), AttributeType::String));
+        let arrow = schema.to_arrow_schema().unwrap();
+        let role = |name: &str| arrow.field_with_name(name).unwrap().metadata()[ROLE_KEY].clone();
+        assert_eq!(role("energy_heatCapacity"), "extension");
+        assert_eq!(role("noise_level"), "attribute");
+        assert_eq!(role("energyRating"), "attribute");
     }
 
     #[test]
@@ -1083,6 +1109,9 @@ mod tests {
         assert!(reserved.contains(&"id".to_string()));
         assert!(reserved.contains(&"geometry_lod2_2".to_string()));
         assert!(!reserved.contains(&"yoc".to_string()));
-        assert_eq!(attrs, vec!["yoc".to_string(), "ex_height".to_string()]);
+        assert_eq!(
+            attrs,
+            vec!["yoc".to_string(), "energy_heatCapacity".to_string()]
+        );
     }
 }

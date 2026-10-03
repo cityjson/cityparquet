@@ -42,7 +42,7 @@ need a new column + encoder/decoder work (not just reader/writer):
 - **`bldg:address` (CG-4)** — CityJSON free-form `address` array (xAL on the
   CityGML side). No address column today.
 - **`ImplicitGeometry` ↔ CityJSON GeometryInstance / geometry-templates (CG-8)** —
-  template plumbing.
+  implicit-geometry plumbing.
 
 ### Feasible as reader/writer only (NO Arrow-schema change)
 

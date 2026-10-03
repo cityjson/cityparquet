@@ -23,8 +23,8 @@ cargo run -p cityparquet-cli -- convert tests/fixtures/delft.city.jsonl -o "$TMP
 duckdb -c "SELECT count(*) FROM '$TMP/out/building.parquet'" | grep -q "2231"
 duckdb -c "SELECT min(bbox.xmin) FROM '$TMP/out/building.parquet'"
 
-# Convert the railway fixture, which carries materials, textures and geometry
-# templates, so the three sidecars are written alongside the object tables —
+# Convert the railway fixture, which carries materials, textures and implicit
+# geometries (CityJSON geometry templates), so the three sidecars are written alongside the object tables —
 # sidecars are content-gated, not opted into by a flag (the `--profile` flag
 # this used to pass was removed with the by-module layout).
 #
@@ -40,7 +40,7 @@ cargo run -p cityparquet-cli -- convert tests/fixtures/lod3_railway.city.json -o
 
 duckdb -c "SELECT count(*) FROM read_parquet('$TMP/railway/materials.parquet')" | grep -q "85"
 duckdb -c "SELECT count(*) FROM read_parquet('$TMP/railway/textures.parquet')" | grep -q "34"
-duckdb -c "SELECT count(*) FROM read_parquet('$TMP/railway/geometry_templates.parquet')" | grep -q "3"
+duckdb -c "SELECT count(*) FROM read_parquet('$TMP/railway/implicit_geometries.parquet')" | grep -q "3"
 
 # railway spans 9 CityGML modules, so the by-module layout writes 9 object
 # tables (bridge.parquet, building.parquet, ...), never one. Reading every
@@ -57,7 +57,7 @@ first=1
 for f in "$TMP"/railway/*.parquet; do
   base="$(basename "$f")"
   case "$base" in
-    materials.parquet|textures.parquet|geometry_templates.parquet) continue ;;
+    materials.parquet|textures.parquet|implicit_geometries.parquet) continue ;;
   esac
   if [[ "$first" -eq 0 ]]; then
     main_tables_sql+=","

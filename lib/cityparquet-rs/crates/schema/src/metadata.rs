@@ -81,8 +81,8 @@ impl<'de> Deserialize<'de> for SourceFormat {
 /// - [`CrsState::Unspecified`] — the key is **absent**. Per GeoParquet an
 ///   absent `crs` is read as OGC:CRS84, so a conforming writer never relies on
 ///   it: absence is legitimate **only** for a file with no CRS-bearing
-///   coordinate at all (the `geometry_templates.parquet` sidecar, whose
-///   templates are unplaced local coordinates, and the attributes-only object
+///   coordinate at all (the `implicit_geometries.parquet` sidecar, whose
+///   relative geometries are unplaced local coordinates, and the attributes-only object
 ///   table).
 ///
 /// `Option<Value>` cannot express this: it collapses "absent" and "null" onto
@@ -133,8 +133,8 @@ impl CrsState {
     /// The spec's writer rule as code: a CRS the writer resolved to PROJJSON
     /// is [`CrsState::Known`]; otherwise the key is an explicit `null`
     /// whenever the file holds **any** CRS-bearing coordinate (object
-    /// geometry, an address `location`, a `bbox`, a geometry-template
-    /// instance's `point`), and absent only when it holds none.
+    /// geometry, an address `location`, a `bbox`, an implicit
+    /// geometry's `point`), and absent only when it holds none.
     ///
     /// "A writer never relies on the absent-CRS default": the
     /// `has_crs_bearing_coordinate` argument is the whole of that rule, so no
@@ -247,6 +247,28 @@ impl CityColumnEntry {
     }
 }
 
+/// One `city.extensions` entry (spec "Extensions"): a reference to an
+/// extension's schema document — a JSON Schema for a CityJSON Extension, an
+/// XSD for a CityGML ADE. The schema itself is not embedded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionDeclaration {
+    /// The extension's source name: the CityJSON `extensions` key, or the
+    /// ADE name.
+    pub name: String,
+    /// The extension's schema document.
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub version: Option<String>,
+    /// The ADE's XML namespace URI (CityGML ADEs only).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub xmlns: Option<String>,
+}
+
+/// `city.extensions`: every declared extension, keyed by its namespace
+/// (`^[a-z][a-z0-9]*$`, unique within the package). `BTreeMap` for
+/// deterministic serialisation.
+pub type ExtensionDeclarations = std::collections::BTreeMap<String, ExtensionDeclaration>;
+
 /// The `city` Parquet key-value metadata object (spec §metadata "The `city`
 /// object") — CityParquet's own metadata: version, provenance, CRS, the
 /// geometry-column registry, the attribute list, and extensions. Describes
@@ -257,7 +279,7 @@ impl CityColumnEntry {
 /// Requirements depend on the file's role: an object table carries
 /// `source_format`/`attributes`/`primary_column`/`columns` when it has the
 /// data to back them; a sidecar (`materials.parquet`, `textures.parquet`,
-/// `geometry_templates.parquet`) carries only `version` plus `crs` when it has
+/// `implicit_geometries.parquet`) carries only `version` plus `crs` when it has
 /// CRS-bearing coordinates — none of the object-table-only fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CityMetadata {
@@ -268,8 +290,8 @@ pub struct CityMetadata {
     pub source_version: Option<String>,
     /// The file CRS, **tri-state** ([`CrsState`]): PROJJSON when known, an
     /// explicit `null` when the file holds CRS-bearing coordinates (object
-    /// geometry, an address `location`, a `bbox`, a geometry-template
-    /// instance's `point`) whose CRS is unknown or unresolvable, and absent
+    /// geometry, an address `location`, a `bbox`, an implicit
+    /// geometry's `point`) whose CRS is unknown or unresolvable, and absent
     /// only when the file holds no CRS-bearing coordinate at all.
     #[serde(skip_serializing_if = "CrsState::is_unspecified", default)]
     pub crs: CrsState,
@@ -286,9 +308,12 @@ pub struct CityMetadata {
     /// column is a reserved structural column.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub attributes: Vec<String>,
-    /// Extension / ADE declarations.
+    /// The extensions (CityJSON Extensions / CityGML ADEs) the package
+    /// declares, keyed by namespace (spec "Extensions"). Each entry is a
+    /// reference to the extension's schema document, not the schema itself.
+    /// Absent when the source declares no `extensions` member at all.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub extensions: Option<Value>,
+    pub extensions: Option<ExtensionDeclarations>,
     /// Source default material / texture theme, when present.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub appearance_defaults: Option<Value>,
@@ -487,6 +512,32 @@ mod tests {
     /// A footer round trip over `(city variant, Option<geo>)`: the optional
     /// `geo` key is restored (or stays absent), and an unrecognised
     /// `source_format` string round-trips as `Other`, never rejected.
+    /// spec "Extensions": `city.extensions` is an object keyed by
+    /// namespace, each entry carrying `name`, `url` and the optional
+    /// `version`/`xmlns`, and it reads back to the same typed value.
+    #[test]
+    fn extensions_serialise_keyed_by_namespace() {
+        let mut city = CityMetadata::new();
+        let mut decls = ExtensionDeclarations::new();
+        decls.insert(
+            "energy".to_string(),
+            ExtensionDeclaration {
+                name: "Energy".to_string(),
+                url: "https://example.org/energy.ext.json".to_string(),
+                version: Some("3.0".to_string()),
+                xmlns: None,
+            },
+        );
+        city.extensions = Some(decls);
+        let v = serde_json::to_value(&city).unwrap();
+        assert_eq!(
+            v["extensions"],
+            json!({"energy": {"name": "Energy", "url": "https://example.org/energy.ext.json", "version": "3.0"}})
+        );
+        let back: CityMetadata = serde_json::from_value(v).unwrap();
+        assert_eq!(back, city);
+    }
+
     #[test]
     fn footer_round_trips_city_and_optional_geo() {
         let mut other_source = sample_city();

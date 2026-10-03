@@ -161,7 +161,7 @@ fn delft_lod0_lands_in_a_suffixed_column_with_no_lod_in_properties() {
 }
 
 #[test]
-fn railway_encodes_with_semantics_and_templates() {
+fn railway_encodes_with_semantics_and_implicit_geometries() {
     let (_crs_dir, src) = railway_source_with_crs();
     let s = scan(&src).unwrap();
     let batches: Vec<_> = encode(&src, &s, 1024)
