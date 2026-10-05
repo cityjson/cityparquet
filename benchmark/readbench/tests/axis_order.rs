@@ -116,6 +116,13 @@ fn a_projected_or_unknown_crs_needs_no_swap() {
         {"coordinate_system": {"axis": [{"direction": "up"}]}}
     ]});
     assert!(params::crs_is_latitude_first(Some(&compound)));
+    // A projected CRS's own axes decide, not its geographic base's.
+    let rd_new = json!({"components": [
+        {"base_crs": {"coordinate_system": {"axis": [{"direction": "north"}, {"direction": "east"}]}},
+         "coordinate_system": {"axis": [{"direction": "east"}, {"direction": "north"}]}},
+        {"coordinate_system": {"axis": [{"direction": "up"}]}}
+    ]});
+    assert!(!params::crs_is_latitude_first(Some(&rd_new)));
 }
 
 /// The CityJSONSeq runner, reading the latitude-first stream, selects the
