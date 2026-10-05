@@ -542,17 +542,17 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     selected = [r for r in records if r.get("dataset") == largest]
     queries = _axis_queries(selected)
     palette = _axis_palette(variants)
-    fig = plt.figure(figsize=(10, 7))
+    # One row: the package size beside the two read heatmaps it explains.
+    fig = plt.figure(figsize=(11, 4.2))
     grid = fig.add_gridspec(
-        2,
+        1,
         3,
-        height_ratios=[1, 1.2],
-        left=0.12,
+        width_ratios=[0.55, 1, 1],
+        left=0.06,
         right=0.86,
-        bottom=0.14,
-        top=0.88,
-        hspace=0.65,
-        wspace=0.3,
+        bottom=0.3,
+        top=0.82,
+        wspace=0.35,
     )
     for col, (title, source, _ratio_field, value, measure) in enumerate(
         (
@@ -599,8 +599,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     short_variants = [
         v.replace("cityparquet+", "").replace("cityparquet", "default") for v in variants
     ]
-    lower = grid[1, :].subgridspec(1, 2)
-    heat_axes = [fig.add_subplot(lower[0]), fig.add_subplot(lower[1])]
+    heat_axes = [fig.add_subplot(grid[0, 1]), fig.add_subplot(grid[0, 2])]
     cell_blocks = []
     for field in ("time_s", "rss_b"):
         cells = []
@@ -640,7 +639,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
         ax.tick_params(axis="x", labelsize=6)
         if col == 1:
             ax.set_yticks([])
-    cbar = fig.colorbar(heat_axes[-1].images[0], cax=fig.add_axes([0.90, 0.25, 0.02, 0.5]))
+    cbar = fig.colorbar(heat_axes[-1].images[0], cax=fig.add_axes([0.90, 0.3, 0.015, 0.52]))
     ticks = _heat_ticks(bound, "diverging")
     cbar.set_ticks(ticks)
     cbar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
