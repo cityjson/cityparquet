@@ -54,8 +54,3 @@ rotterdam_delfshaven.city.json,cityparquet-hilbert,id-lookup,0.001172,1,0.021853
 rotterdam_delfshaven.city.json,cityparquet-hilbert,id-lookup,0.001172,1,0.021888,0.001427,5500223,17866752,7,id-50pct,,,1,0,2048
 rotterdam_delfshaven.city.json,cityparquet-hilbert,id-lookup,0.001172,1,0.021136,0.001122,5500223,17891328,7,id-90pct,,,1,0,2048
 rotterdam_delfshaven.city.json,cityparquet-hilbert,id-lookup,0.000000,0,0.003088,0.000279,219423,12201984,7,id-miss,,,1,1,2048
-rotterdam_delfshaven,citygml,write,,0,3.442970,0.015234,,467578880,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-rotterdam_delfshaven,cityjson,write,,0,0.240683,0.007747,,26779648,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-rotterdam_delfshaven,cityjsonseq,write,,0,0.103587,0.007040,,6299648,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-rotterdam_delfshaven,flatcitybuf,write,,0,0.117032,0.001702,,22020096,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-rotterdam_delfshaven,cityparquet-hilbert,write,,0,0.827791,0.010710,,230744064,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,

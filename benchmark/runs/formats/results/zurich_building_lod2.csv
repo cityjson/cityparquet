@@ -54,8 +54,3 @@ zurich_building_lod2.city.json,cityparquet-hilbert,id-lookup,0.000005,1,0.059375
 zurich_building_lod2.city.json,cityparquet-hilbert,id-lookup,0.000005,1,0.068634,0.004608,12118507,27963392,7,id-50pct,,,4,3,397312
 zurich_building_lod2.city.json,cityparquet-hilbert,id-lookup,0.000005,1,0.064458,0.001812,11969489,27906048,7,id-90pct,,,4,3,397312
 zurich_building_lod2.city.json,cityparquet-hilbert,id-lookup,0.000000,0,0.003539,0.000278,439753,12398592,7,id-miss,,,4,4,397312
-zurich_building_lod2,citygml,write,,0,807.965648,14.932671,,9925705728,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-zurich_building_lod2,cityjson,write,,0,19.659893,1.153500,,3508609024,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-zurich_building_lod2,cityjsonseq,write,,0,4.469359,0.047629,,9973760,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-zurich_building_lod2,flatcitybuf,write,,0,8.117492,0.878046,,1539563520,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-zurich_building_lod2,cityparquet-hilbert,write,,0,31.765526,2.190357,,3842555904,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,

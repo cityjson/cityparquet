@@ -54,8 +54,3 @@ vienna_102081.city.json,cityparquet-hilbert,id-lookup,0.000756,1,0.034269,0.0009
 vienna_102081.city.json,cityparquet-hilbert,id-lookup,0.000756,1,0.038816,0.000987,8964459,23265280,7,id-50pct,,,1,0,2048
 vienna_102081.city.json,cityparquet-hilbert,id-lookup,0.000756,1,0.039098,0.000870,8964459,23302144,7,id-90pct,,,1,0,2048
 vienna_102081.city.json,cityparquet-hilbert,id-lookup,0.000000,0,0.002495,0.000359,172494,12046336,7,id-miss,,,1,1,2048
-vienna_102081,citygml,write,,0,4.038384,0.178600,,650768384,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-vienna_102081,cityjson,write,,0,0.399901,0.001108,,58462208,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-vienna_102081,cityjsonseq,write,,0,0.140351,0.011912,,8400896,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-vienna_102081,flatcitybuf,write,,0,0.334087,0.046248,,41943040,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-vienna_102081,cityparquet-hilbert,write,,0,0.645667,0.017247,,95326208,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,

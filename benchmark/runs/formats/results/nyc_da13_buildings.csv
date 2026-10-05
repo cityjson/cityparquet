@@ -49,8 +49,3 @@ nyc_da13_buildings.city.json,cityparquet-hilbert,id-lookup,0.000042,1,0.067477,0
 nyc_da13_buildings.city.json,cityparquet-hilbert,id-lookup,0.000042,1,0.068555,0.001044,15774774,32919552,7,id-50pct,,,1,0,32768
 nyc_da13_buildings.city.json,cityparquet-hilbert,id-lookup,0.000042,1,0.064032,0.001202,16711429,31711232,7,id-90pct,,,1,0,32768
 nyc_da13_buildings.city.json,cityparquet-hilbert,id-lookup,0.000000,0,0.002401,0.000234,161613,12107776,7,id-miss,,,1,1,32768
-nyc_da13_buildings,citygml,write,,0,31.725142,0.160180,,4237791232,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-nyc_da13_buildings,cityjson,write,,0,9.250979,1.128100,,1174724608,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-nyc_da13_buildings,cityjsonseq,write,,0,2.452873,0.128334,,10383360,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-nyc_da13_buildings,flatcitybuf,write,,0,6.091419,1.004858,,795676672,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-nyc_da13_buildings,cityparquet-hilbert,write,,0,11.541846,1.202900,,1588760576,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,

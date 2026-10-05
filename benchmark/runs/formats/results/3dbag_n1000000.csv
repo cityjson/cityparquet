@@ -43,10 +43,6 @@ dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_byt
 3dbag_n1000000.city.jsonl,cityparquet-hilbert,id-lookup,0.000001,1,0.148204,0.002353,30847986,53309440,7,id-50pct,,,16,15,1998848
 3dbag_n1000000.city.jsonl,cityparquet-hilbert,id-lookup,0.000001,1,0.139973,0.002289,31473901,53420032,7,id-90pct,,,16,15,1998848
 3dbag_n1000000.city.jsonl,cityparquet-hilbert,id-lookup,0.000000,0,0.010465,0.000550,1379236,13131776,7,id-miss,,,16,16,1998848
-3dbag_n1000000,cityjson,write,,0,204.521814,10.311079,,27317112832,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-3dbag_n1000000,cityjsonseq,write,,0,43.873030,1.723195,,11153408,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-3dbag_n1000000,flatcitybuf,write,,0,112.177221,6.406875,,19156819968,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-3dbag_n1000000,cityparquet-hilbert,write,,0,212.458267,10.742951,,34517893120,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
 3dbag_n1000000.city.jsonl,cityjson,full-read,,1000001,68.959133,1.669897,34891349924,37218828288,7,,,,,,
 3dbag_n1000000.city.jsonl,cityjson,count,,1000001,63.148759,2.751292,34891349920,37218402304,7,,,,,,
 3dbag_n1000000.city.jsonl,cityjson,bbox-query,0.010000,10000,73.080632,1.757185,34891349925,37217890304,7,bbox-1pct,,,,,
@@ -58,4 +54,3 @@ dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_byt
 3dbag_n1000000.city.jsonl,cityjson,id-lookup,0.000001,1,63.743200,2.815169,34891349954,37218627584,7,id-50pct,,,,,
 3dbag_n1000000.city.jsonl,cityjson,id-lookup,0.000001,1,63.149466,1.565579,34891349954,37218197504,7,id-90pct,,,,,
 3dbag_n1000000.city.jsonl,cityjson,id-lookup,0.000000,0,62.668802,2.059138,34891349971,37217869824,7,id-miss,,,,,
-3dbag_n1000000,citygml,write,,0,32654.861761,225.140389,,33087528960,3,canonical-cityjsonseq;citygml=seq-to-json+json-to-gml;measured-2026-09-11-pre-fix-run;not-re-measured,,,,,

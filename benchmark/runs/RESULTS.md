@@ -14,10 +14,11 @@ mix the two.
 - **Formats and sizes** (`formats/results/`): the five city datasets and the
   1,000,001-object 3DBAG slice, every artefact written by the chain-3
   preparation (CityParquet packages carry bloom filters; `MACHINE.md`
-  records the host, the commit and the tool versions). Seven read and three
-  write repetitions.
+  records the host, the commit and the tool versions). Seven read
+  repetitions.
 - **Bloom** (`formats/scaling_bloom_results/`): the seven 3DBAG slices and
-  the five city datasets, `cityparquet` against `cityparquet+nobloom`.
+  the five city datasets, `cityparquet` against `cityparquet+nobloom`:
+  lookup reads and package sizes.
 - **Databases** (`databases/results/`): the 1,000,001-object slice, both
   thread configurations (`threads=single` is the primary figure), the four
   write scenarios, the 0.1 % explained-deviation tolerance. The DuckDB
@@ -26,13 +27,17 @@ mix the two.
 `time_s` in every CSV above is the arithmetic mean of the warm samples and
 `time_std_s` their population standard deviation. The run itself reported a
 median with `time_mad_s`; on 25 September both columns were recomputed from
-the committed raw samples (`*.csv.samples.json`, `*.write.samples.csv`,
-`raw_time_samples_s`) without re-measuring, every other column unchanged.
-Write rows from `format_write.py` are recomputed from samples rounded to
-six decimals, so their mean can differ from one computed at measurement
-time in the last digit. The `files_sha256` in each `*.run.json` records the
-CSV as the run wrote it and no longer matches the recomputed file;
-`EVIDENCE_SHA256SUMS` is current.
+the committed raw samples (`*.csv.samples.json`, `raw_time_samples_s`)
+without re-measuring, every other column unchanged.
+
+The run also timed writes. The suite no longer measures them, so the
+`write` rows were removed from the format and bloom CSVs and the bloom
+samples, and the format family's `*.write.samples.csv` files were deleted;
+every read row, read sample and size is unchanged. The `*.run.json`
+manifests record the run as it was made: their `write_repeat`, their
+`fixed_configuration` and their `files_sha256` (the CSVs as the run wrote
+them, and the deleted write-samples files) no longer match the committed
+files. `EVIDENCE_SHA256SUMS` is current.
 
 ## Coverage and limitations
 
@@ -45,10 +50,6 @@ CSV as the run wrote it and no longer matches the recomputed file;
   `formats/results/3dbag_n1000000.csv` (the run manifest says so). Same
   binary, same artefacts, same host; timings are single-scenario runs on a
   shared machine and carry the usual noise floor.
-- The 1M slice's **CityGML write row** was not re-measured (nine hours on
-  the previous run and unaffected by any fix): the 11 September sample is
-  kept in the CSV with `measured-2026-09-11-pre-fix-run;not-re-measured` in
-  its notes, and its three raw samples are in the write-samples file.
 - The database run exited non-zero for two rows only: `append-object` on
   the two CityParquet tags errors with a DuckDB `BinderException`, because
   the extension types an empty `material_lod*` column as `VARCHAR` while the

@@ -54,8 +54,3 @@ ingolstadt.city.json,cityparquet-hilbert,id-lookup,0.002639,1,0.049788,0.000945,
 ingolstadt.city.json,cityparquet-hilbert,id-lookup,0.002639,1,0.049282,0.001745,15416376,27332608,7,id-50pct,,,1,0,512
 ingolstadt.city.json,cityparquet-hilbert,id-lookup,0.002639,1,0.050687,0.001870,15416342,27291648,7,id-90pct,,,1,0,512
 ingolstadt.city.json,cityparquet-hilbert,id-lookup,0.000000,0,0.003721,0.000462,294006,12255232,7,id-miss,,,1,1,512
-ingolstadt,citygml,write,,0,3.574894,0.095778,,590581760,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-ingolstadt,cityjson,write,,0,0.452264,0.008990,,48963584,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-ingolstadt,cityjsonseq,write,,0,0.123385,0.002046,,14049280,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-ingolstadt,flatcitybuf,write,,0,0.143063,0.011644,,27262976,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
-ingolstadt,cityparquet-hilbert,write,,0,0.834922,0.120024,,243335168,3,canonical-cityjsonseq;cityjsonseq=readbench-reserialise;citygml=seq-to-json+json-to-gml,,,,,
