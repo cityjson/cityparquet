@@ -155,17 +155,12 @@ def _dataset(tmp_path) -> Dataset:
     return Dataset(
         name="delft",
         source=tmp_path / "delft.city.jsonl",
-        cityparquet_dir=tmp_path / "cityparquet" / "delft",
-        hilbert_dir=tmp_path / "cityparquet" / "delft-hilbert",
+        cityparquet_dir=tmp_path / "readbench" / "delft.parquet",
     )
 
 
-def test_tag_reflects_the_hilbert_flag(tmp_path):
-    # ReadbenchSystem serves two registry tags off one class (hence it is
-    # deliberately not @register-decorated); each constructor argument
-    # must land on the right one.
+def test_tag_is_cityparquet(tmp_path):
     assert ReadbenchSystem(binary=tmp_path / "bin").tag == "cityparquet"
-    assert ReadbenchSystem(binary=tmp_path / "bin", hilbert=True).tag == "cityparquet-hilbert"
 
 
 def test_prepare_raises_file_not_found_when_binary_is_missing(tmp_path):
@@ -181,7 +176,8 @@ def test_prepare_does_not_raise_when_binary_exists(tmp_path):
 
 
 def test_size_sums_every_file_under_the_ingested_package(tmp_path):
-    package = tmp_path / "cityparquet" / "delft"
+    dataset = _dataset(tmp_path)
+    package = dataset.cityparquet_dir
     package.mkdir(parents=True)
     (package / "building.parquet").write_bytes(b"x" * 100)
     sidecars = package / "sidecars"
@@ -189,7 +185,7 @@ def test_size_sums_every_file_under_the_ingested_package(tmp_path):
     (sidecars / "materials.parquet").write_bytes(b"y" * 50)
 
     system = ReadbenchSystem(binary=tmp_path / "bin")
-    system.ingest(_dataset(tmp_path))
+    system.ingest(dataset)
     report = system.size()
 
     assert report.size_bytes == 150
@@ -202,7 +198,7 @@ class _FakeCompletedProcess:
         self.stderr = ""
 
 
-def test_ingest_routes_a_hilbert_system_to_the_hilbert_package_and_run_reports_it(
+def test_ingest_routes_the_system_to_the_cityparquet_package_and_run_reports_it(
     tmp_path, monkeypatch
 ):
     dataset = _dataset(tmp_path)
@@ -214,38 +210,17 @@ def test_ingest_routes_a_hilbert_system_to_the_hilbert_package_and_run_reports_i
 
     monkeypatch.setattr(readbench.subprocess, "run", fake_run)
 
-    system = ReadbenchSystem(binary=tmp_path / "bin", hilbert=True)
+    system = ReadbenchSystem(binary=tmp_path / "bin")
     ingest_result = system.ingest(dataset)
     assert ingest_result.wall_clock_s == 0.0
 
     system.run("count", PARAMS, repeat=1)
 
-    # ingest() must have pointed --input at hilbert_dir, not cityparquet_dir.
+    # ingest() must have pointed --input at the package...
     argv = captured["argv"]
-    assert str(dataset.hilbert_dir) in argv
-    assert str(dataset.cityparquet_dir) not in argv
-    # ...and --format must match, since this is the flag that tells the
+    assert argv[argv.index("--input") + 1] == str(dataset.cityparquet_dir)
+    # ...and --format must name it, since this is the flag that tells the
     # child which artefact layout it is opening.
-    assert argv[argv.index("--format") + 1] == "cityparquet-hilbert"
-
-
-def test_ingest_routes_a_plain_system_to_the_source_ordered_package(tmp_path, monkeypatch):
-    dataset = _dataset(tmp_path)
-    captured: dict = {}
-
-    def fake_run(argv, **kwargs):
-        captured["argv"] = argv
-        return _FakeCompletedProcess("0.1 100 200 5\n")
-
-    monkeypatch.setattr(readbench.subprocess, "run", fake_run)
-
-    system = ReadbenchSystem(binary=tmp_path / "bin", hilbert=False)
-    system.ingest(dataset)
-    system.run("count", PARAMS, repeat=1)
-
-    argv = captured["argv"]
-    assert str(dataset.cityparquet_dir) in argv
-    assert str(dataset.hilbert_dir) not in argv
     assert argv[argv.index("--format") + 1] == "cityparquet"
 
 

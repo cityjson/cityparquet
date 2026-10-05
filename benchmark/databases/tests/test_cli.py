@@ -38,12 +38,11 @@ PARAMS = make_params(numeric_column="h")
 # --- _dataset -----------------------------------------------------------
 
 
-def test_dataset_derives_name_and_both_package_dirs_under_root_data():
+def test_dataset_derives_name_and_package_dir_under_root_data():
     d = _dataset(Path("/somewhere/delft.city.jsonl"))
     assert d.name == "delft"
     assert d.source == Path("/somewhere/delft.city.jsonl")
     assert d.cityparquet_dir == ROOT.parent / "formats" / "data" / "readbench" / "delft.parquet"
-    assert d.hilbert_dir == ROOT.parent / "formats" / "data" / "readbench" / "delft-hilbert.parquet"
 
 
 def test_dataset_strips_city_jsonl_suffix_not_just_the_extension():
@@ -60,19 +59,9 @@ def test_build_systems_returns_one_instance_per_tag_in_order():
     assert [s.tag for s in systems] == ["cjdb", "3dcitydb"]
 
 
-def test_build_systems_constructs_both_readbench_variants_with_distinct_tags():
-    # ReadbenchSystem is deliberately not @register-decorated (one class,
-    # two tags) — this is the one call site responsible for giving each
-    # tag its own instance with the right `hilbert` flag.
-    systems = _build_systems(["cityparquet", "cityparquet-hilbert"])
-    by_tag = {s.tag: s for s in systems}
-    assert set(by_tag) == {"cityparquet", "cityparquet-hilbert"}
-    assert by_tag["cityparquet"]._hilbert is False
-    assert by_tag["cityparquet-hilbert"]._hilbert is True
-
-
-def test_build_systems_all_five_default_tags_are_known():
-    tags = ["cityparquet", "cityparquet-hilbert", "duckdb-cityparquet", "cjdb", "3dcitydb"]
+def test_build_systems_knows_every_system_tag():
+    tags = ["cityparquet", "duckdb-cityparquet", "duckdb-cityparquet-writeback",
+            "cjdb", "3dcitydb"]
     systems = _build_systems(tags)
     assert [s.tag for s in systems] == tags
 
@@ -298,7 +287,7 @@ def test_srids_reads_back_the_landed_value_from_each_system_that_has_one():
 
 
 def test_srids_omits_systems_with_no_srid_concept():
-    # cityparquet/cityparquet-hilbert/duckdb-cityparquet carry no `_srid`
+    # cityparquet/duckdb-cityparquet carry no `_srid`
     # attribute at all — absent from the dict, not stamped with a
     # meaningless placeholder like 0 or None.
     srids = _srids([_TaggedFake("cityparquet"), _SridFake("cjdb", 7415)])

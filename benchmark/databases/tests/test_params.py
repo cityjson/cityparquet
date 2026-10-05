@@ -6,8 +6,8 @@ import pytest
 
 from citybench.config import BBox, window_for_target
 from citybench.params import (
-    APPEND_SUFFIX, ATTR_RANGE_QUANTILE, derive, from_json, id_probes,
-    resolve_attr_filter, resolve_attr_range, scan_source, to_json,
+    APPEND_SUFFIX, ATTR_RANGE_QUANTILE, _hand_picked_for, derive, from_json,
+    id_probes, resolve_attr_filter, resolve_attr_range, scan_source, to_json,
     write_append_feature,
 )
 
@@ -335,6 +335,14 @@ def test_attr_filter_uses_the_hand_picked_column_for_a_known_dataset(tmp_path):
     assert spec.op == "eq" and spec.eq_value == "slanted"
     assert spec.matched == 30
     assert spec.notes_tag() == "attr=b3_dak_type=slanted"
+
+
+def test_hand_picked_dataset_entries_match_the_exact_name_only():
+    # The same rule as `params.rs::hand_picked_for`: a `dataset` entry is
+    # the exact name, a `family` entry a prefix.
+    assert _hand_picked_for("rotterdam_delfshaven") is not None
+    assert _hand_picked_for("rotterdam_delfshaven-hilbert") is None
+    assert _hand_picked_for("3dbag_n1000000") is not None
 
 
 def test_attr_filter_falls_back_to_the_derived_rule_for_an_unknown_dataset(tmp_path):

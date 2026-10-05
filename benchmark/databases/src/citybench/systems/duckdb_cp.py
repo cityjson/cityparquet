@@ -47,18 +47,17 @@ class DuckDBCityParquet:
     tag = "duckdb-cityparquet"
 
     def __init__(self, *, threads: int = 1, memory_limit: str = "32GB",
-                 package: str = "hilbert", writeback: bool = False,
-                 tag: str | None = None) -> None:
-        """``package`` selects which CityParquet package is read.
+                 writeback: bool = False) -> None:
+        """Reads the dataset's one CityParquet package, rows in Hilbert order.
 
-        ``"hilbert"`` is the default because the format family displays the
-        Hilbert package as "CityParquet" (`benchmark/plot/benchviz/
-        figures.py`), and until this change the two families published
-        different artefacts under one name
-        (`notes/benchmark-fairness-review-2026-09-22.md` §4.5). The
-        source-order package is published beside it, as
-        `duckdb-cityparquet-source`, for the bbox scenarios alone — the
-        only ones whose answer depends on row order.
+        That package is the artefact the format family displays as
+        "CityParquet" (`benchmark/plot/benchviz/figures.py`), so both
+        benchmark families publish the same artefact under that name
+        (`notes/benchmark-fairness-review-2026-09-22.md` §4.5).
+
+        ``writeback`` selects the write tier's second row,
+        `duckdb-cityparquet-writeback`: the same mutations, timed with the
+        package write-back included.
 
         ``threads`` defaults to 1, the PRIMARY figure: it matches the format
         harness's single-threaded readers and PostgreSQL's single backend.
@@ -67,13 +66,8 @@ class DuckDBCityParquet:
         """
         self._threads = threads
         self._memory_limit = memory_limit
-        self._package_kind = package
         self._writeback = writeback
-        self.tag = tag or (
-            "duckdb-cityparquet-writeback" if writeback
-            else "duckdb-cityparquet-source" if package == "source"
-            else "duckdb-cityparquet"
-        )
+        self.tag = "duckdb-cityparquet-writeback" if writeback else "duckdb-cityparquet"
         self._conn: duckdb.DuckDBPyConnection | None = None
         self._package: Path | None = None
         self._columns: dict[str, str] | None = None
@@ -112,8 +106,7 @@ class DuckDBCityParquet:
         absence of a load step is the property under discussion, not a
         measurement gap.
         """
-        package = (dataset.cityparquet_dir if self._package_kind == "source"
-                   else dataset.hilbert_dir)
+        package = dataset.cityparquet_dir
         files = object_table_files(package)
         missing = [path for path in files if not Path(path).is_file()]
         if missing:

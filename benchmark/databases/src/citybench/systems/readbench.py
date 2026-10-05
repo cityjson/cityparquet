@@ -118,29 +118,28 @@ def build_child_args(scenario: str, params: Params, input_path: str,
 
 
 class ReadbenchSystem:
-    """Deliberately NOT decorated with @register.
+    """The native Rust reader over the dataset's one CityParquet package.
 
-    The registry keys on a class attribute, but this class serves two tags
-    depending on its ``hilbert`` argument, so registering it would silently
-    bind only one of them. The CLI constructs both instances explicitly.
+    Not decorated with @register: it cannot be built without the path of
+    the `cityparquet-readbench` binary, so the CLI constructs it explicitly.
     """
 
-    def __init__(self, *, binary: Path, hilbert: bool = False) -> None:
+    tag = "cityparquet"
+
+    def __init__(self, *, binary: Path) -> None:
         self._binary = binary
-        self._hilbert = hilbert
-        self.tag = "cityparquet-hilbert" if hilbert else "cityparquet"
         self._package: Path | None = None
 
     def prepare(self) -> None:
         if not self._binary.exists():
             raise FileNotFoundError(
                 f"{self._binary} not found; build it with "
-                "`cargo build --release -p cityparquet-readbench` in lib/cityparquet-rs"
+                "`cargo build --release --manifest-path benchmark/readbench/Cargo.toml`"
             )
 
     def ingest(self, dataset: Dataset) -> IngestResult:
         """No load step; the package was written by `cityparquet convert`."""
-        self._package = dataset.hilbert_dir if self._hilbert else dataset.cityparquet_dir
+        self._package = dataset.cityparquet_dir
         return IngestResult(wall_clock_s=0.0, notes="no load step")
 
     def run(self, scenario: str, params: Params, repeat: int,
@@ -148,11 +147,8 @@ class ReadbenchSystem:
         assert self._package is not None
         args = build_child_args(
             scenario, params, str(self._package), window,
-            # self.tag is exactly "cityparquet" / "cityparquet-hilbert" — the
-            # two `--format` values `formats::resolve` accepts for this
-            # runner (both dispatch to the same CityParquetRunner; passing
-            # the honest one keeps this invocation self-documenting even
-            # though it makes no behavioural difference today).
+            # `cityparquet`, the `--format` value the read harness parses to
+            # `Format::CityParquet` (`benchmark/readbench/src/format.rs`).
             fmt=self.tag,
             probe=probe,
         )

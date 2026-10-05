@@ -32,7 +32,6 @@ def system():
             name="delft",
             source=FIXTURE,
             cityparquet_dir=PACKAGE,
-            hilbert_dir=Path("data/cityparquet-hilbert/delft"),
         )
     )
     yield s

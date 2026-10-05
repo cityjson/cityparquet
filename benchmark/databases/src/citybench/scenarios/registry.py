@@ -56,9 +56,7 @@ READ_SCENARIOS: tuple[str, ...] = TIER1 + TIER2
 
 ALL_SYSTEMS: tuple[str, ...] = (
     "cityparquet",
-    "cityparquet-hilbert",
     "duckdb-cityparquet",
-    "duckdb-cityparquet-source",
     "duckdb-cityparquet-writeback",
     "cjdb",
     "3dcitydb",
@@ -76,16 +74,6 @@ SELECTIVITY_SCENARIOS: frozenset[str] = frozenset({"bbox-query"})
 # target would make the published time a function of where that one id
 # happened to sit in the stream.
 ID_PROBE_SCENARIOS: frozenset[str] = frozenset({"id-lookup"})
-
-# The scenarios whose answer depends on the package's ROW ORDER, and so the
-# only ones the source-order package is published alongside the Hilbert one
-# for. `bbox-query` is now the only one — `bbox-fetch` and `point-query`
-# left with the catalogue review — which leaves
-# `duckdb-cityparquet-source` a one-scenario system. It is KEPT at that
-# size: it is the ordering-dependence control, and without it the two
-# benchmark families' "CityParquet" would again be different artefacts
-# under one name (`notes/benchmark-fairness-review-2026-09-22.md` §4.5).
-ORDERING_SCENARIOS: frozenset[str] = frozenset({"bbox-query"})
 
 # What `cityparquet-readbench --child` implements. `geometry-scan` and
 # `attr-range` have no counterpart in the Rust child's own `Scenario` enum
@@ -113,10 +101,8 @@ def systems_for(scenario: str) -> tuple[str, ...]:
     if scenario not in READ_SCENARIOS:
         raise KeyError(f"unknown scenario: {scenario}")
     tags = list(SQL_SYSTEMS)
-    if scenario in ORDERING_SCENARIOS:
-        tags.insert(1, "duckdb-cityparquet-source")
     if scenario in READBENCH_SCENARIOS:
-        tags = ["cityparquet", "cityparquet-hilbert"] + tags
+        tags = ["cityparquet"] + tags
     return tuple(tags)
 
 # How each scenario's `result_count` is extracted.

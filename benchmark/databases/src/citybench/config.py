@@ -279,8 +279,7 @@ def window_from_halves(halves: list[float], centre: tuple[float, float],
 class Dataset:
     name: str
     source: Path          # the .city.json / .city.jsonl input
-    cityparquet_dir: Path  # the converted CityParquet package
-    hilbert_dir: Path      # the Hilbert-ordered CityParquet package
+    cityparquet_dir: Path  # the CityParquet package, rows in Hilbert order
 
     @staticmethod
     def name_from_path(path: str | Path) -> str:

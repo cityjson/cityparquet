@@ -193,10 +193,9 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
             answered = {
                 tag: m for tag, m in measurements.items() if m.result_count is not None
             }
-            # The two `duckdb-cityparquet` package-ordering tags read the
-            # same rows in a different order and the two write tags run the
-            # same statements, so they are genuine participants in the
-            # check rather than duplicates to exclude.
+            # The two write tags run the same statements, so they are
+            # genuine participants in the check rather than duplicates to
+            # exclude.
             deviation, status = cross_check(
                 {tag: m.result_count for tag, m in answered.items()}, tolerance
             )

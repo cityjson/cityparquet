@@ -164,52 +164,29 @@ def test_prepare_sets_duckdb_temporary_directory_explicitly(tmp_path, monkeypatc
 
 
 def _dataset_for_package(tmp_path: Path, package: Path) -> Dataset:
-    """Both package slots point at the same directory.
-
-    `duckdb-cityparquet` reads the HILBERT package by default now — the one
-    the format family's figures call "CityParquet" — and only the
-    `duckdb-cityparquet-source` tag reads the source-order one. A fixture
-    that filled just `cityparquet_dir` would exercise neither default.
-    """
     source = tmp_path / "source.city.jsonl"
     source.write_text("")
-    return Dataset(
-        name="fixture",
-        source=source,
-        cityparquet_dir=package,
-        hilbert_dir=package,
-    )
+    return Dataset(name="fixture", source=source, cityparquet_dir=package)
 
 
-def test_the_default_package_is_hilbert_and_the_source_tag_reads_source_order(tmp_path):
-    hilbert = tmp_path / "hilbert"
-    source_order = tmp_path / "source-order"
-    for package in (hilbert, source_order):
-        _write_manifest(package, {
-            "building.parquet": {"href": "./building.parquet",
-                                 "roles": ["cityparquet-objects"]},
-        })
-        (package / "building.parquet").write_bytes(b"")
-    dataset = Dataset(
-        name="fixture", source=tmp_path / "s.city.jsonl",
-        cityparquet_dir=source_order, hilbert_dir=hilbert,
-    )
-    (tmp_path / "s.city.jsonl").write_text("")
+def test_both_tags_read_the_one_cityparquet_package(tmp_path):
+    package = tmp_path / "fixture.parquet"
+    _write_manifest(package, {
+        "building.parquet": {"href": "./building.parquet",
+                             "roles": ["cityparquet-objects"]},
+    })
+    (package / "building.parquet").write_bytes(b"")
+    dataset = _dataset_for_package(tmp_path, package)
 
     default = DuckDBCityParquet()
     assert default.tag == "duckdb-cityparquet"
     default.ingest(dataset)
-    assert default._package == hilbert
-
-    ordering = DuckDBCityParquet(package="source")
-    assert ordering.tag == "duckdb-cityparquet-source"
-    ordering.ingest(dataset)
-    assert ordering._package == source_order
+    assert default._package == package
 
     writeback = DuckDBCityParquet(writeback=True)
     assert writeback.tag == "duckdb-cityparquet-writeback"
     writeback.ingest(dataset)
-    assert writeback._package == hilbert
+    assert writeback._package == package
 
 
 def test_prepare_turns_off_the_geoparquet_footer_conversion(tmp_path, monkeypatch):

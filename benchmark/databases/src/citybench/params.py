@@ -37,8 +37,8 @@ from citybench.config import (
 # Each entry names a column that is a member of the CityJSON `attributes`
 # map and that every format carries. `family` matches any dataset name with
 # that prefix (the 3DBAG scaling slices are prefixes of one stream and so
-# share their attributes); `dataset` matches that exact name or a
-# `-<suffix>` ordering variant of it (`rotterdam_delfshaven-hilbert`).
+# share their attributes); `dataset` matches that exact name only, as
+# `params.rs::hand_picked_for` does.
 HAND_PICKED: tuple[tuple[str, str, str, tuple[str, Any]], ...] = (
     # The natural roof-type query; 3DBAG carries it on the Building, one
     # per feature.
@@ -429,10 +429,7 @@ def resolve_attr_filter(dataset: str, table: str, attributes: list[str],
     at `FALLBACK_QUANTILE`); otherwise `None`, and `attr-filter` is skipped
     rather than fabricated.
 
-    ``dataset`` is the dataset NAME as the CSV reports it, so an ordering
-    variant shares its source dataset's pick: `3dbag_n1000-hilbert` is the
-    same data as `3dbag_n1000` in a different row order, and measuring the
-    two with different predicates would compare nothing.
+    ``dataset`` is the dataset NAME as the CSV reports it.
     """
     pick = _hand_picked_for(dataset)
     if pick is not None:
@@ -449,7 +446,7 @@ def _hand_picked_for(dataset: str) -> tuple[str, tuple[str, Any]] | None:
     for kind, key, column, pick in HAND_PICKED:
         if kind == "family" and dataset.startswith(key):
             return column, pick
-        if kind == "dataset" and (dataset == key or dataset.startswith(f"{key}-")):
+        if kind == "dataset" and dataset == key:
             return column, pick
     return None
 
@@ -617,10 +614,8 @@ def derive(source: Path, package: Path, *, append_dir: Path | None = None,
     ``package`` is a CityParquet package directory. It supplies the extent,
     the query windows, the `attr-filter` predicate and `attr-range`'s
     threshold — every parameter the format harness also derives from the
-    package, so the two families ask the same questions. The source-order
-    and Hilbert packages hold the same rows in a different order, so either
-    yields identical parameters; the caller passes the source-order one for
-    determinism.
+    package, so the two families ask the same questions. None of them
+    depends on the package's row order.
 
     ``append_dir`` is where `append-object`'s derived one-feature
     CityJSONSeq file is written — beside the params sidecar, so the file
@@ -675,10 +670,9 @@ def derive(source: Path, package: Path, *, append_dir: Path | None = None,
 def dataset_name_of(package: Path) -> str:
     """The dataset name a package directory carries, for `HAND_PICKED`.
 
-    `<name>.parquet` / `<name>-hilbert.parquet` both reduce to `<name>`'s
-    own hand-picked entry, because `_hand_picked_for` matches a
-    `-<suffix>` ordering variant of a dataset name as well as the name
-    itself — the same rule `params.rs::hand_picked_for` applies.
+    `<name>.parquet` reduces to `<name>`, which `_hand_picked_for` matches
+    exactly or by family prefix — the same rule `params.rs::hand_picked_for`
+    applies.
     """
     return package.name[: -len(".parquet")] if package.name.endswith(".parquet") else package.name
 

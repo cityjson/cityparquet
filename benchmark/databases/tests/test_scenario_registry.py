@@ -8,7 +8,6 @@ from citybench.scenarios.registry import (
     COUNT_FROM_FIRST_COLUMN,
     COUNT_FROM_ROWCOUNT,
     COUNT_FROM_WRITE_ROWCOUNT,
-    ORDERING_SCENARIOS,
     READBENCH_SCENARIOS,
     READ_SCENARIOS,
     SELECTIVITY_SCENARIOS,
@@ -73,17 +72,6 @@ def test_id_lookup_expands_into_its_four_probes():
     assert ID_PROBE_SCENARIOS.isdisjoint(SELECTIVITY_SCENARIOS)
 
 
-def test_the_source_order_package_is_published_for_the_ordering_scenarios_only():
-    # One scenario, deliberately: `bbox-query` is the only one whose answer
-    # depends on the package's row order now that `bbox-fetch` and
-    # `point-query` have left the set. The tag is KEPT at that size — it is
-    # the ordering-dependence control.
-    assert ORDERING_SCENARIOS == frozenset({"bbox-query"})
-    for scenario in ORDERING_SCENARIOS:
-        assert "duckdb-cityparquet-source" in systems_for(scenario)
-    assert "duckdb-cityparquet-source" not in systems_for("attr-stats")
-
-
 def test_native_readers_only_run_what_the_rust_child_implements():
     # `geometry-scan`, `attr-range`, `lod-query` and the two
     # `parts-per-building` forms have no counterpart in the child's own
@@ -91,7 +79,7 @@ def test_native_readers_only_run_what_the_rust_child_implements():
     assert READBENCH_SCENARIOS == frozenset(
         {"count", "bbox-query", "attr-filter", "attr-stats", "id-lookup"}
     )
-    assert systems_for("count")[:2] == ("cityparquet", "cityparquet-hilbert")
+    assert systems_for("count")[0] == "cityparquet"
     assert "cityparquet" not in systems_for("geometry-scan")
     assert "cityparquet" not in systems_for("lod-query")
 

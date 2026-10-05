@@ -35,7 +35,7 @@ READBENCH_BIN = BENCHMARK_DIR / "readbench" / "target" / "release" / "cityparque
 def _dataset(source: Path, prepared_dir: Path | None = None) -> Dataset:
     name = Dataset.name_from_path(source)
     prepared = prepared_dir or BENCHMARK_DIR / "formats" / "data" / "readbench"
-    return Dataset(name=name, source=source, cityparquet_dir=prepared / f"{name}.parquet", hilbert_dir=prepared / f"{name}-hilbert.parquet")
+    return Dataset(name=name, source=source, cityparquet_dir=prepared / f"{name}.parquet")
 
 
 #: The two named execution conditions, both measured and both reported.
@@ -63,21 +63,11 @@ def _build_systems(tags: list[str], *, ports: dict[str, int] | None = None) -> l
     available = {
         "cjdb": lambda: CjdbSystem(port=ports.get("cjdb", 55432)),
         "3dcitydb": lambda: CityDbSystem(port=ports.get("3dcitydb", 55433)),
-        # The Hilbert package, which is what the format family's figures
-        # call "CityParquet".
-        "duckdb-cityparquet": lambda: DuckDBCityParquet(package="hilbert"),
-        # The source-order package, for the ordering-sensitive scenarios
-        # only (`registry.ORDERING_SCENARIOS`).
-        "duckdb-cityparquet-source": lambda: DuckDBCityParquet(package="source"),
+        "duckdb-cityparquet": lambda: DuckDBCityParquet(),
         # The write tier's second row: the same mutations, timed with the
         # package write-back included.
-        "duckdb-cityparquet-writeback": lambda: DuckDBCityParquet(
-            package="hilbert", writeback=True
-        ),
+        "duckdb-cityparquet-writeback": lambda: DuckDBCityParquet(writeback=True),
         "cityparquet": lambda: ReadbenchSystem(binary=READBENCH_BIN),
-        "cityparquet-hilbert": lambda: ReadbenchSystem(
-            binary=READBENCH_BIN, hilbert=True
-        ),
     }
     unknown = set(tags) - set(available)
     if unknown:
@@ -267,19 +257,16 @@ def cmd_bench(args) -> int:
     source = Path(args.dataset)
     dataset = _dataset(source, Path(args.prepared_dir) if getattr(args, "prepared_dir", None) else None)
     tags = args.systems.split(",") if args.systems else [
-        "duckdb-cityparquet", "duckdb-cityparquet-source",
-        "duckdb-cityparquet-writeback", "cjdb", "3dcitydb",
+        "duckdb-cityparquet", "duckdb-cityparquet-writeback", "cjdb", "3dcitydb",
     ]
     systems = _build_systems(tags, ports=getattr(args, "ports", None))
 
     # Never reuse name-keyed parameters: scaling inputs can be regenerated at
     # the same path. Derive from this run's source and persist beside output.
     #
-    # The SOURCE-ORDER package supplies the package-derived parameters even
-    # though `duckdb-cityparquet` reads the Hilbert one: the two hold the
-    # same rows in a different order, so the windows and attribute picks are
-    # identical either way, and naming one makes the derivation
-    # deterministic regardless of which systems this run includes.
+    # The package-derived parameters do not depend on the package's row
+    # order: the windows come from the `bbox` column, the attribute picks
+    # from value counts, and the id probes from the CityJSONSeq stream order.
     #
     # The results directory is resolved HERE, before the run rather than
     # after it, because `append-object`'s derived one-feature CityJSONSeq

@@ -87,7 +87,6 @@ def _dataset(tmp_path) -> Dataset:
         name="delft",
         source=source,
         cityparquet_dir=tmp_path / "cityparquet" / "delft",
-        hilbert_dir=tmp_path / "cityparquet-hilbert" / "delft",
     )
 
 
