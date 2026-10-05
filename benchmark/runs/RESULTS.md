@@ -3,7 +3,9 @@
 Format, file-size, bloom-filter and database measurements from the run of
 23 September 2026 on the fairness-fixed harness, with raw samples, query
 parameters, run manifests, the machine record and the rendered report.
-Inputs and prepared packages are not tracked. The 11 and 12 September
+Inputs and prepared packages are not tracked. The committed 3DBAG results
+were measured on slices that still carried LoD 1.2, which the slices no
+longer do, and are to be re-measured. The 11 and 12 September
 evidence this replaces is in git history (`5b80835` and before) and was
 measured on a harness with the defects `benchmark/formats/READ_BENCHMARK.md`
 Caveats 32–35 and `benchmark/databases/README.md` Caveat 21 describe; do not

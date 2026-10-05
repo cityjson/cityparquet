@@ -94,6 +94,10 @@ figures use readable display names. The scaling generator takes whole features
 from a pinned FlatCityBuf source in source order. Slices are nested prefixes,
 not replicated objects. Actual CityObject counts can exceed the nominal target
 because a feature is indivisible; the recorded counts determine plot positions.
+The slices are cut without LoD 1.2: CityGML 2.0 has integer LoDs only and
+cannot carry LoD 1.2 beside LoD 1.3, so removing it at the source gives all
+five formats the same geometry, LoD 0, 1.3 and 2.2
+([`formats/READ_BENCHMARK.md`](formats/READ_BENCHMARK.md), Caveat 14).
 
 The format comparison displays the Hilbert-ordered configuration as
 **CityParquet**. Its internal configuration ID remains distinct from source

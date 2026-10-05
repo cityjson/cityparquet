@@ -100,8 +100,9 @@ just bench-summary
 ```
 
 Add `--smoke` for a small pipeline check. Full experiments use all configured
-scaling slices; actual counts are recorded because feature boundaries can
-cross a nominal target. Keep machine metadata, source identity, software
+scaling slices, cut without LoD 1.2 so that every format holds the same
+geometry (`READ_BENCHMARK.md`, Caveat 14); actual counts are recorded because
+feature boundaries can cross a nominal target. Keep machine metadata, source identity, software
 revision, query parameters and repetition settings alongside the results.
 Prepared data and result directories have separate responsibilities: preparing
 an artefact is never a measurement.
