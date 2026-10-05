@@ -467,8 +467,8 @@ pub fn seq_scale(seq_path: &Path) -> Result<[f64; 3]> {
 
 /// Every feature's own top-level `id`, in the CityJSONSeq stream's order —
 /// the canonical order the id deciles are cut from, because
-/// `readbench_prepare.sh` builds the gzipped, FlatCityBuf and CityParquet
-/// artefacts from this one file.
+/// `readbench_prepare.sh` builds the FlatCityBuf and CityParquet artefacts
+/// from this one file.
 ///
 /// The first line of a `.city.jsonl` is the CityJSON metadata object, not a
 /// feature; it is skipped.

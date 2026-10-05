@@ -442,8 +442,8 @@ fn close(a: f64, b: f64) -> bool {
 /// was asserted, only CityParquet aggregated; every other runner merely
 /// counted, so its `attr-stats` row timed a cheaper question.
 ///
-/// Every artefact comes from the one fixture: CityJSONSeq and its gzip as
-/// is; CityParquet by `convert`; plain CityJSON by exporting that package;
+/// Every artefact comes from the one fixture: CityJSONSeq as is;
+/// CityParquet by `convert`; plain CityJSON by exporting that package;
 /// CityGML by writing it with the library's CityGML writer; FlatCityBuf by
 /// `fcb ser -A` (skipped when the CLI is absent). Two integer and two float
 /// columns, two of them sparse. The counts are the ones the per-runner tests
@@ -490,23 +490,11 @@ fn every_format_computes_the_same_four_attr_stats_aggregates_on_delft() {
     })
     .unwrap();
 
-    let gz = tmp.path().join("delft.jsonl.gz");
-    {
-        use std::io::Write as _;
-        let mut encoder = flate2::write::GzEncoder::new(
-            std::fs::File::create(&gz).unwrap(),
-            flate2::Compression::default(),
-        );
-        encoder.write_all(&std::fs::read(&delft).unwrap()).unwrap();
-        encoder.finish().unwrap();
-    }
-
     let mut artefacts: Vec<(&str, PathBuf)> = vec![
         ("cityparquet", package.clone()),
         ("cityjson", doc),
         ("citygml", gml),
         ("cityjsonseq", delft.clone()),
-        ("cityjsonseq-gz", gz),
     ];
     if fcb_cli_missing() {
         eprintln!("skipping the flatcitybuf leg: `fcb` CLI not found on PATH");

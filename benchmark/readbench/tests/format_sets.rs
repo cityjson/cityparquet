@@ -44,12 +44,8 @@ fn the_ordering_set_isolates_the_sort_strategy() {
 }
 
 #[test]
-fn compression_and_engine_baselines_are_opt_in() {
+fn the_engine_baseline_is_opt_in() {
     let d = Format::DEFAULT_SET;
-    assert!(
-        !d.contains(&Format::CityJsonSeqGz),
-        "a compression variant is not a format"
-    );
     assert!(
         !d.contains(&Format::DuckDbParquet),
         "an engine baseline is not a format"

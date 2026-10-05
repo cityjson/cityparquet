@@ -111,7 +111,7 @@ jq_free_bin() {
   # `dirname`; the rest are what the build steps would need if the guard were
   # gone and the run continued.
   for tool in bash env dirname basename mkdir cat sed grep awk head tr wc \
-    find mktemp cp mv rm gzip gunzip; do
+    find mktemp cp mv rm; do
     resolved="$(PATH="$BASE_PATH" command -v "$tool" 2>/dev/null || true)"
     if [[ -n "$resolved" ]]; then
       ln -sf "$resolved" "$dir/nojq/$tool"
@@ -414,23 +414,6 @@ esac
 FCB_STUB
         chmod +x "$dir/bin/fcb"
         ;;
-      gzip)
-        # A RECORDING PASS-THROUGH, not a fake: the case that reads the argv
-        # back also needs a real gzip stream (another case gunzips the
-        # artefact and compares it to the CityJSONSeq). The real binary is
-        # resolved and baked in here, because the stub shadows `gzip` on PATH
-        # and calling it by name would recurse.
-        local real_gzip
-        real_gzip="$(PATH="$BASE_PATH" command -v gzip)"
-        cat >"$dir/bin/gzip" <<GZIP_STUB
-#!/usr/bin/env bash
-set -euo pipefail
-SANDBOX="\$(cd "\$(dirname "\$0")/.." && pwd)"
-printf '%s\n' "\$@" >"\$SANDBOX/gzip-argv.txt"
-exec "$real_gzip" "\$@"
-GZIP_STUB
-        chmod +x "$dir/bin/gzip"
-        ;;
       *)
         echo "new_sandbox: unknown stub '$stub'" >&2
         exit 1
@@ -584,7 +567,7 @@ case_unknown_format_rejected() {
     return
   fi
   local valid
-  for valid in cityparquet-hilbert flatcitybuf cityjsonseq-gz; do
+  for valid in cityparquet-hilbert flatcitybuf cityjsonseq; do
     if ! log_mentions "$valid"; then
       fail "$name" "message does not list '$valid'; log: $(cat "$LAST_LOG")"
       return
@@ -621,7 +604,7 @@ case_default_on_cityjsonseq_builds_every_format() {
   fi
   local artefact
   for artefact in tiny.gml tiny.city.json tiny.city.jsonl tiny.parquet \
-    tiny-hilbert.parquet tiny.fcb tiny.jsonl.gz; do
+    tiny-hilbert.parquet tiny.fcb; do
     if [[ ! -e "$dir/out/$artefact" ]]; then
       fail "$name" "missing $artefact; log: $(cat "$LAST_LOG")"
       return
@@ -686,7 +669,7 @@ case_cityjsonseq_is_materialised_from_a_seq_input() {
 # Case 7: a CityGML input builds the whole forward chain
 #
 #   CityGML --citygml-tools--> CityJSON --cjseq cat--> CityJSONSeq
-#                                                  |-> gz | fcb | CityParquet
+#                                                  |-> fcb | CityParquet
 #
 # and nothing in it derives from CityParquet. That last clause is what the
 # `cityparquet` stub enforces: it refuses every subcommand but `convert`, so
@@ -705,7 +688,7 @@ case_citygml_input_builds_the_whole_chain() {
     return
   fi
   local artefact
-  for artefact in tiny.gml tiny.city.json tiny.city.jsonl tiny.jsonl.gz \
+  for artefact in tiny.gml tiny.city.json tiny.city.jsonl \
     tiny.fcb tiny.parquet tiny-hilbert.parquet; do
     if [[ ! -e "$dir/out/$artefact" ]]; then
       fail "$name" "missing $artefact; log: $(cat "$LAST_LOG")"
@@ -738,11 +721,6 @@ case_citygml_input_builds_the_whole_chain() {
       return
     fi
   done
-  # The gzip baseline is the same bytes again, so its content is the proof.
-  if ! gunzip -c "$dir/out/tiny.jsonl.gz" | cmp -s - "$dir/out/tiny.city.jsonl"; then
-    fail "$name" "tiny.jsonl.gz is not a gzip of the derived CityJSONSeq"
-    return
-  fi
   run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
   if [[ $LAST_RC -ne 0 ]]; then
     fail "$name" "second run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
@@ -1234,15 +1212,13 @@ case_cityjson_input_builds_a_real_seq_artefact() {
 #                       FlatCityBuf falls back to a full scan on
 #                       attr-filter/id-lookup and the row is published as an
 #                       indexed query.
-#   gzip -9             a different level is a different compression baseline
-#                       in the size chart.
 #
 # Asserted from the stubs' own recorded argv, not from the script's echo.
 # --------------------------------------------------------------------------
 case_measurement_flags_are_passed() {
-  local name="--ordering hilbert, fcb -A and gzip -9 all reach the tools"
+  local name="--ordering hilbert and fcb -A both reach the tools"
   local dir
-  dir="$(new_sandbox cargo fcb citygml-tools cjseq gzip)"
+  dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
   run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
   if [[ $LAST_RC -ne 0 ]]; then
     fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
@@ -1269,10 +1245,6 @@ case_measurement_flags_are_passed() {
     fail "$name" "fcb ser was not given -A (no attribute index): $(
       tr '\n' ' ' <"$dir/fcb-ser-argv.txt"
     )"
-    return
-  fi
-  if ! grep -qFx -- "-9" "$dir/gzip-argv.txt"; then
-    fail "$name" "the gz baseline was not gzip -9: $(tr '\n' ' ' <"$dir/gzip-argv.txt")"
     return
   fi
   pass "$name"
@@ -1373,11 +1345,11 @@ case_artefact_names_match_the_rust_enum() {
 # validity check, and `benchmark/runs/data/readbench/` persists across runs — so a
 # directory prepared before the chain changed keeps serving artefacts derived
 # from a stage that no longer exists, and nothing says so. That is C1's bug
-# class one level up: a pre-fix `<base>.jsonl.gz` is a gzip of the WHOLE
-# CityJSON document, which the gz runner reads quite happily (measured:
-# 0.254909 s / 61,192,614 B against the real seq-gz's 0.092799 s / 1,798,710 B
-# — 2.75x too slow, 34x too heavy, and the same whole-document parse C1's own
-# "before" figure was).
+# class one level up: the gzipped-CityJSONSeq baseline the benchmark once
+# measured was, before the fix, a gzip of the WHOLE CityJSON document, which
+# its runner read quite happily (measured: 0.254909 s / 61,192,614 B against
+# the real stream's 0.092799 s / 1,798,710 B — 2.75x too slow, 34x too heavy,
+# and the same whole-document parse C1's own "before" figure was).
 #
 # A sentence in the docs cannot fix this: it is missed by exactly the person
 # who most needs it, and the failure publishes plausible-looking numbers. So

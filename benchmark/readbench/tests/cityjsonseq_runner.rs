@@ -1,4 +1,4 @@
-//! RED (readbench Task 9): the CityJSONSeq (+ gzipped-CityJSONSeq)
+//! RED (readbench Task 9): the CityJSONSeq
 //! `FormatRunner`, exercised only through the BUILT `cityparquet-readbench`
 //! binary's `--child` protocol — never calling into the runner's internals
 //! directly — against the real `delft.city.jsonl` fixture (never inline
@@ -15,7 +15,6 @@
 //! carrying its `BuildingPart` child inline) and so intentionally differ
 //! from CityParquet's 2231 (one row per CityObject, parents AND children).
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -25,19 +24,6 @@ fn fixture(name: &str) -> PathBuf {
         .join(name);
     assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
     p
-}
-
-/// Gzip-compresses a real fixture into `out_dir` (never an inline artificial
-/// CityJSON payload) and returns the compressed file's path.
-fn gzip_fixture(name: &str, out_dir: &Path) -> PathBuf {
-    let src = fixture(name);
-    let data = std::fs::read(&src).expect("reading fixture to gzip");
-    let out_path = out_dir.join(format!("{name}.gz"));
-    let file = std::fs::File::create(&out_path).expect("creating gz output file");
-    let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
-    encoder.write_all(&data).expect("writing gzip payload");
-    encoder.finish().expect("finishing gzip stream");
-    out_path
 }
 
 /// Runs the built `cityparquet-readbench` binary's `--child` protocol with
@@ -176,50 +162,5 @@ fn bbox_query_is_feature_level_and_uses_the_header_transform() {
     assert_eq!(
         none, 0,
         "a query window outside the dataset must match none"
-    );
-}
-
-#[test]
-fn gzip_variant_matches_the_plain_variant_on_the_same_cityobject_level_scenarios() {
-    let tmp = tempfile::tempdir().unwrap();
-    let gz_input = gzip_fixture("delft.city.jsonl", tmp.path());
-
-    let count = run_child("cityjsonseq-gz", "count", &gz_input, &[]);
-    assert_eq!(
-        count, 1115,
-        "gzip variant must match the plain variant's feature count"
-    );
-
-    let attr_filter_count = run_child(
-        "cityjsonseq-gz",
-        "attr-filter",
-        &gz_input,
-        &["--attr-column", "object_type", "--attr-eq", "BuildingPart"],
-    );
-    assert_eq!(
-        attr_filter_count, 1116,
-        "gzip variant's attr-filter must match CityParquet's known BuildingPart count"
-    );
-
-    let stats_count = run_child(
-        "cityjsonseq-gz",
-        "attr-stats",
-        &gz_input,
-        &["--attr-column", "oorspronkelijkbouwjaar"],
-    );
-    assert_eq!(
-        stats_count, 1115,
-        "gzip variant's attr-stats count must match CityParquet's known count"
-    );
-
-    let id_found = run_child(
-        "cityjsonseq-gz",
-        "id-lookup",
-        &gz_input,
-        &["--target-id", "NL.IMBAG.Pand.0503100000012869"],
-    );
-    assert_eq!(
-        id_found, 1,
-        "gzip variant's id-lookup must find the real id"
     );
 }

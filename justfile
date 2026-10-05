@@ -294,7 +294,7 @@ convert-all FOLDER OUT='out/cityparquet':
 # see benchmark/readbench/src/format.rs); empty
 # (the default) builds every artefact the script knows how to build. Needs
 # whichever external tools the requested hop of the chain uses (`just
-# fetch-tools` for citygml-tools + cjseq; `fcb`, `jq`, `gzip`);
+# fetch-tools` for citygml-tools + cjseq; `fcb`, `jq`);
 # network-independent given already-fetched inputs and tools; kept OUT of
 # `just check`/CI.
 [private]

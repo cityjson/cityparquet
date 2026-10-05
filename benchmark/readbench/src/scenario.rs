@@ -3,7 +3,7 @@
 //!
 //! This is the one seam the whole read-benchmark milestone hangs off:
 //! Task 8 establishes it against the CityParquet backend; Tasks 9/10 reuse
-//! it, unchanged, for CityJSONSeq/gzipped-CityJSONSeq and FlatCityBuf; the
+//! it, unchanged, for CityJSONSeq and FlatCityBuf; the
 //! Task 11 coordinator is the only thing that ever *populates* a
 //! [`QueryParams`] with real values (dataset bbox windows, a sampled
 //! attribute column/predicate, a sampled id) — this task's own `--child`

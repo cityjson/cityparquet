@@ -143,7 +143,7 @@ pub const FEATURE_LOOKUP_CITYPARQUET_ONLY: &str =
 
 /// One format's read-benchmark backend: runs exactly one [`Scenario`]
 /// against `source` (a format-specific location — a CityParquet package
-/// directory or its main table file, a `.city.jsonl`/`.jsonl.gz` file, or a
+/// directory or its main table file, a `.city.jsonl` file, or a
 /// `.fcb` file, either local or over HTTP) and returns the scenario's
 /// natural result cardinality (`result_count` — see the milestone plan's
 /// "Scenario & metric contract" for what that means per scenario; in
@@ -193,8 +193,7 @@ pub fn resolve(format: Format) -> Result<Box<dyn FormatRunner>> {
             Ok(Box::new(cityparquet::CityParquetRunner))
         }
         Format::CityJson => Ok(Box::new(cityjson::CityJsonRunner)),
-        Format::CityJsonSeq => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::plain())),
-        Format::CityJsonSeqGz => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::gzip())),
+        Format::CityJsonSeq => Ok(Box::new(cityjsonseq::CityJsonSeqRunner)),
         Format::FlatCityBuf => Ok(Box::new(flatcitybuf::FlatCityBufRunner)),
         Format::CityGml => Ok(Box::new(citygml::CityGmlRunner)),
         Format::DuckDbParquet => bail!(
@@ -221,7 +220,6 @@ mod tests {
                 | Format::CityParquetHilbert
                 | Format::CityJson
                 | Format::CityJsonSeq
-                | Format::CityJsonSeqGz
                 | Format::FlatCityBuf => {
                     assert!(resolved.is_ok(), "{format} should resolve to a runner");
                 }

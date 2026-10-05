@@ -50,7 +50,7 @@ struct Cli {
     scenario: Option<String>,
 
     /// Format-specific input path: a CityParquet package directory (or its
-    /// main table file directly), a `.city.jsonl`/`.jsonl.gz` file, or a
+    /// main table file directly), a `.city.jsonl` file, or a
     /// `.fcb` file.
     #[arg(long)]
     input: Option<PathBuf>,

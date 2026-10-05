@@ -31,7 +31,6 @@ fn the_canonical_spellings_are_the_documented_tags() {
             "citygml",
             "cityjson",
             "cityjsonseq",
-            "cityjsonseq-gz",
             "flatcitybuf",
             "cityparquet",
             "cityparquet-hilbert",

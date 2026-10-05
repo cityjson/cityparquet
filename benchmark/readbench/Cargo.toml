@@ -82,7 +82,6 @@ clap = { version = "4", features = ["derive"] }
 # stay in the source order.
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
-flate2 = "1"
 arrow-array = "58"
 arrow-schema = "58"
 parquet = { version = "58", features = ["zstd"] }

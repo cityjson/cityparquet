@@ -20,8 +20,7 @@ use std::str::FromStr;
 /// One format the read benchmark measures.
 ///
 /// Variants are ordered as the benchmark presents them: the formats city
-/// models actually ship as today (CityGML → CityJSON → CityJSONSeq →
-/// gzipped CityJSONSeq), then the indexed/columnar ones (FlatCityBuf →
+/// models actually ship as today (CityGML → CityJSON → CityJSONSeq), then the indexed/columnar ones (FlatCityBuf →
 /// CityParquet → Hilbert-ordered CityParquet), then the SQL-engine
 /// baseline. See [`Format::ALL`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,8 +32,6 @@ pub enum Format {
     CityJson,
     /// CityJSONSeq: one JSON object per line.
     CityJsonSeq,
-    /// gzipped CityJSONSeq (`.jsonl.gz`).
-    CityJsonSeqGz,
     /// FlatCityBuf: the indexed FlatBuffers encoding.
     FlatCityBuf,
     /// A CityParquet package in source order.
@@ -75,11 +72,10 @@ impl Format {
     /// ships as, then the indexed/columnar ones, then the engine baseline —
     /// so a chart reads left-to-right from "what you have" to "what we
     /// propose".
-    pub const ALL: [Format; 8] = [
+    pub const ALL: [Format; 7] = [
         Format::CityGml,
         Format::CityJson,
         Format::CityJsonSeq,
-        Format::CityJsonSeqGz,
         Format::FlatCityBuf,
         Format::CityParquet,
         Format::CityParquetHilbert,
@@ -95,10 +91,9 @@ impl Format {
     /// ordering choice no other format here faces; the ordering choice itself
     /// is a separate question, asked by [`Format::ORDERING_SET`].
     ///
-    /// [`Format::CityJsonSeqGz`] (a compression variant of a format already
-    /// in the set) and [`Format::DuckDbParquet`] (an SQL-engine baseline, and
-    /// not driven by this coordinator at all) are opt-in: neither is a
-    /// format, so neither belongs on a format axis.
+    /// [`Format::DuckDbParquet`] (an SQL-engine baseline, and not driven by
+    /// this coordinator at all) is opt-in: it is not a format, so it does
+    /// not belong on a format axis.
     pub const DEFAULT_SET: [Format; 5] = [
         Format::CityGml,
         Format::CityJson,
@@ -125,7 +120,7 @@ impl Format {
     pub fn counts_features(self) -> bool {
         matches!(
             self,
-            Format::CityGml | Format::CityJsonSeq | Format::CityJsonSeqGz | Format::FlatCityBuf
+            Format::CityGml | Format::CityJsonSeq | Format::FlatCityBuf
         )
     }
 
@@ -145,7 +140,6 @@ impl Format {
             Format::CityGml => "citygml",
             Format::CityJson => "cityjson",
             Format::CityJsonSeq => "cityjsonseq",
-            Format::CityJsonSeqGz => "cityjsonseq-gz",
             Format::FlatCityBuf => "flatcitybuf",
             Format::CityParquet => "cityparquet",
             Format::CityParquetHilbert => "cityparquet-hilbert",
@@ -170,7 +164,6 @@ impl Format {
             // NEVER the `--input` itself: a `.gml`/`.city.json` input would
             // then be measured, and published, as CityJSONSeq.
             Format::CityJsonSeq => Artefact::Prepared(format!("{base}.city.jsonl")),
-            Format::CityJsonSeqGz => Artefact::Prepared(format!("{base}.jsonl.gz")),
             Format::FlatCityBuf => Artefact::Prepared(format!("{base}.fcb")),
             Format::CityParquet => Artefact::Prepared(format!("{base}.parquet")),
             Format::CityParquetHilbert => Artefact::Prepared(format!("{base}-hilbert.parquet")),
@@ -197,7 +190,6 @@ impl FromStr for Format {
             "citygml" => Ok(Format::CityGml),
             "cityjson" => Ok(Format::CityJson),
             "cityjsonseq" => Ok(Format::CityJsonSeq),
-            "cityjsonseq-gz" => Ok(Format::CityJsonSeqGz),
             "flatcitybuf" => Ok(Format::FlatCityBuf),
             "cityparquet" => Ok(Format::CityParquet),
             "cityparquet-hilbert" => Ok(Format::CityParquetHilbert),
