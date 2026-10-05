@@ -678,9 +678,8 @@ dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_byt
 ```
 
 The first thirteen columns match, in name and order, the header of the format
-harness's CSVs (`benchmark/formats/read_results/*.csv` and
-`benchmark/runs/formats/results/<dataset>.csv`; `sizes.csv` and
-`*.write.samples.csv` have other shapes). Appending those rows to this
+harness's CSVs (`benchmark/runs/formats/results/<dataset>.csv`; `sizes.csv`
+has another shape). Appending those rows to this
 harness's rows needs six empty fields per row. The two harnesses use
 different `dataset` identifiers (`3dbag_n1000000` here, the source file name
 there) and are separate experiments.

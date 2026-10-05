@@ -41,7 +41,7 @@ def _shell_header() -> list[str]:
     return match.group(1).split(",")
 
 
-def test_every_writer_of_the_read_results_csv_uses_the_same_header():
+def test_every_writer_of_the_results_csv_uses_the_same_header():
     authority = _rust_header()
     assert authority[0] == "dataset" and len(authority) == 16, authority
     assert _shell_header() == authority, DUCKDB_SH

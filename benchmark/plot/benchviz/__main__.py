@@ -160,7 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="DIR",
-        help="benchmark results to read (default: this repo's benchmark/formats/)",
+        help="benchmark results to read (default: this repo's benchmark/runs/formats/)",
     )
 
     common.add_argument(
@@ -186,8 +186,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="benchviz",
         description=(
             "Build the CityParquet benchmark visualisations from the result CSVs "
-            "an earlier `just bench` / `just bloom-bench` / "
-            "`just sizes` run left in benchmark/formats/. Runs no benchmark of its own."
+            "an earlier `just bench-run` left in benchmark/runs/formats/. Runs no "
+            "benchmark of its own."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

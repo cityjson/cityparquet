@@ -60,7 +60,7 @@ cityparquet-schema = { path = "../../lib/cityparquet-rs/crates/schema" }
 # EXACT pins, both of them, and they must stay exact.
 #
 # `fcb_core` is a MEASURED format's reader: the FlatCityBuf numbers in
-# benchmark/formats/read_results/ were produced by 0.7.6, so a caret range would
+# benchmark/runs/formats/results/ were produced by 0.7.6, so a caret range would
 # let a later release silently change what the published figures mean. 0.7.8
 # also moved `ser` to positional arguments (breaking readbench_prepare.sh) and
 # changed which crate its public `CityObject` comes from, which is a compile

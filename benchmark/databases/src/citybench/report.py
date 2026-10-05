@@ -1,16 +1,13 @@
 """The results CSV contract.
 
-The first eleven columns (``dataset`` through ``notes``) match the sibling
-``cityparquet-rs`` harness's own *committed* CSVs (``benchmark/formats/read_results/
-*.csv``) in name and order. ``bytes_read``/``http_requests`` are columns
-12-13 of that harness's *documented* contract but are absent from every one
-of its committed files; this harness carries them anyway (always empty
-here) for forward compatibility with that documented shape.
-``server_time_s``/``size_bytes``/``size_bytes_no_index`` (columns 14-16)
-are genuinely new, added once server-bound databases entered the
-comparison. Concatenating the sibling harness's committed rows with this
-one's therefore needs five empty fields appended to each of its rows —
-trivial and lossless, but not "no transformation".
+The first thirteen columns (``dataset`` through ``http_requests``) match the
+format harness's committed CSVs (``benchmark/runs/formats/results/*.csv``) in
+name and order; ``bytes_read``/``http_requests`` are always empty here.
+``server_time_s``/``size_bytes``/``size_bytes_no_index``/``status`` and the
+raw-sample columns are this harness's own, added once server-bound databases
+entered the comparison, and the format harness's last three columns are its
+lookup counters. Concatenating the two harnesses' rows is therefore a
+column mapping — trivial and lossless, but not "no transformation".
 """
 
 from __future__ import annotations

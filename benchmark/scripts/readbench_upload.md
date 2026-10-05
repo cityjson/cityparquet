@@ -117,7 +117,7 @@ directly, regardless of transport; see `benchmark/formats/READ_BENCHMARK.md`):
 cargo run --release -p cityparquet-readbench -- run \
     --input tests/fixtures/delft.city.jsonl \
     --prepared-dir benchmark/runs/data/readbench \
-    --out benchmark/formats/read_results/delft-http.csv \
+    --out benchmark/runs/formats/http/delft-http.csv \
     --transport http --base-url "<BASE_URL>" \
     --repeat 7
 ```

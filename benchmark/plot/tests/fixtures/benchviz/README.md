@@ -5,7 +5,7 @@ Result CSVs extracted verbatim from commit `cc7f2f7`
 full-corpus run whose numbers the first `bench-summary.html` reported. Nothing
 here is hand-written: they are measured rows, trimmed to three datasets.
 
-Why a pinned copy rather than the live `benchmark/formats/read_results`: a benchmark run
+Why a pinned copy rather than the live `benchmark/runs/formats/results`: a benchmark run
 replaces those CSVs with whatever corpus, formats and columns it measured, so a
 test reading them asserts something different after every run. The three
 datasets kept here span the range the views have to handle —

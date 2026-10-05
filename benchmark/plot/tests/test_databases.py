@@ -170,7 +170,7 @@ def test_the_page_lists_one_database_figure_with_its_conditions(tmp_path: Path):
 
 def test_retired_project_rows_are_ignored_not_fatal(tmp_path: Path):
     bench = _bench(tmp_path, databases=False)
-    assert ",project," in (bench / "read_results" / "delft.csv").read_text()
+    assert ",project," in (bench / "results" / "delft.csv").read_text()
     data, anomalies = prep.build(prep.Inputs(bench))
     assert "project" not in {r["scenario_key"] for r in data["read"]}
     assert any("retired scenario 'project'" in note for note in anomalies)

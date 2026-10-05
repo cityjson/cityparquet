@@ -1353,8 +1353,8 @@ results were regenerated, the compression CSVs of the superseded corpus were
 deleted. Two commands answer the question at the moment you ask it:
 
 ```sh
-ls benchmark/formats/data benchmark/formats/read_results 2>&1
-git log --oneline -3 -- benchmark/formats/read_results
+ls benchmark/runs/data benchmark/runs/formats/results 2>&1
+git log --oneline -3 -- benchmark/runs/formats/results
 ```
 
 The two methodology documents beside them state what a committed run means, and
@@ -1427,7 +1427,7 @@ useful for skipping it.
 
 ```sh
 rm -rf benchmark/formats/data/readbench          # only if you want a clean prepare
-just bench benchmark/formats/data benchmark/formats/read_results
+just bench benchmark/runs/data/benchmark benchmark/runs/formats/results
 ```
 
 `readbench_prepare.sh` **skips any package directory that already exists**, so

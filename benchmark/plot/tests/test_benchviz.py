@@ -326,9 +326,27 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
         "measures single-table packages only",
         "the same verified-absent string as `id-miss`",
         "counts the requests the reader made after",
-        # 30-31: which evidence carries default-on filters, and which predates them.
+        # 30-31: the evidence carries default-on filters and one timing statistic.
         "The current evidence was measured on bloom-enabled packages.",
-        "The legacy `read_results/` CSVs predate bloom filters.",
+        "One generation of results, one statistic, one header.",
         "refuses to",
     ):
         assert phrase in caveats, phrase
+
+
+def test_a_median_shaped_csv_is_refused_loudly_in_both_loaders(tmp_path: Path):
+    """A CSV whose dispersion column is the older `time_mad_s`, not
+    `time_std_s`, is a different statistic: both the format and the bloom
+    loaders refuse it rather than plotting it or skipping it quietly."""
+    import pytest
+
+    legacy = (
+        "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,"
+        "peak_heap_bytes,peak_rss_bytes,repeat,notes\n"
+        "delft.city.jsonl,cityparquet,full-read,,2231,0.1,0.01,1,2,7,\n"
+    )
+    for directory in ("results", "scaling_bloom_results"):
+        bench = fixture_bench(tmp_path / directory)
+        (bench / directory / "delft.csv").write_text(legacy, encoding="utf-8")
+        with pytest.raises(prep.PrepError, match="unexpected columns"):
+            prep.build(prep.Inputs(bench))

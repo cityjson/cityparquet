@@ -5,15 +5,17 @@ agree on them, and because a second copy of ``parents[2]`` is how the old
 paper-repo edition of this package ended up hard-wired to a directory layout
 outside itself.
 
-Outputs default *inside* ``benchmark/`` — a `just plot-pretty` run needs no
-arguments and writes nothing outside the repository. A caller with somewhere
+Outputs default *inside* ``benchmark/`` — a bare ``python -m benchviz summary``
+needs no arguments and writes nothing outside the repository. A caller with somewhere
 else to put them (the paper workspace renders the page into its docs tree and
 the figures into ``paper/assets/bench``) passes the paths in.
 
 INPUTS AND OUTPUTS SIT IN DIFFERENT SIBLINGS, deliberately. The CSVs this
-reads are one benchmark family's evidence and live with that family in
-``benchmark/formats/``; the summary page reads across families, so it belongs
-to ``benchmark/`` as a whole rather than to any one of them.
+reads are the committed evidence under ``benchmark/runs/formats/`` (the
+databases' beside it, in ``benchmark/runs/databases/``); a bare run's summary
+goes to the ignored ``benchmark/summary/``, so it never overwrites the
+committed one, which ``just bench-summary`` writes to
+``benchmark/runs/summary/full/``.
 
 stdlib only: ``prep`` imports this and must stay runnable from a bare Python.
 """
@@ -24,7 +26,7 @@ from pathlib import Path
 
 # benchmark/plot/benchviz/paths.py -> benchmark/ is two levels up.
 BENCHMARK_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_BENCH_DIR = BENCHMARK_ROOT / "formats"
+DEFAULT_BENCH_DIR = BENCHMARK_ROOT / "runs" / "formats"
 DEFAULT_OUT_DIR = BENCHMARK_ROOT / "summary"
 DEFAULT_DATA_PATH = DEFAULT_OUT_DIR / "bench_data.json"
 DEFAULT_HTML_PATH = DEFAULT_OUT_DIR / "index.html"

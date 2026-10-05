@@ -1,13 +1,13 @@
 """CSVs -> bench_data.json.
 
-Reads the benchmark result artefacts under ``benchmark/formats/`` — the CSVs a finished
-``just bench`` / ``just bloom-bench`` / ``just sizes`` run
-leaves behind, never a benchmark of its own — and emits the ``bench_data.json``
-data contract described in ``benchviz/DESIGN.md``.
+Reads the benchmark result artefacts under ``benchmark/runs/formats/`` — the
+CSVs a finished ``just bench-run`` leaves behind, never a benchmark of its own —
+and emits the ``bench_data.json`` data contract described in
+``benchviz/DESIGN.md``.
 
 Every path this module touches is derived from one ``Inputs.bench_dir``, so the
-same code serves the in-repo default (``benchmark/formats/``) and an out-of-tree caller
-that points ``--bench-dir`` at a checkout elsewhere.
+same code serves the in-repo default (``benchmark/runs/formats/``) and an
+out-of-tree caller that points ``--bench-dir`` at a checkout elsewhere.
 
 stdlib only -- no third-party imports here, on purpose: this step must be
 runnable from a bare Python with nothing installed.
@@ -35,11 +35,7 @@ class Inputs:
 
     @property
     def read_dir(self) -> Path:
-        return (
-            self.bench_dir / "results"
-            if (self.bench_dir / "results").exists()
-            else self.bench_dir / "read_results"
-        )
+        return self.bench_dir / "results"
 
     # The scaling corpus: one city model cut to several cardinalities, which
     # is how the bloom axis is measured -- a configuration answers "how does
@@ -57,9 +53,9 @@ class Inputs:
         return Path(__file__).resolve().parents[2] / "formats" / "READ_BENCHMARK.md"
 
     def label(self, path: Path) -> str:
-        """A repo-qualified label for a source path, e.g.
+        """A label for a source path, qualified by the results root, e.g.
 
-        ``benchmark/formats/read_results``.
+        ``runs/formats/results``.
 
         The page names the artefacts it reports, so the label has to stay the
         same whether the renderer ran from inside this repository or from a
@@ -261,15 +257,6 @@ def _check_columns(path: Path, got: list[str] | None, want: list[str]) -> list[s
     return columns[len(want) :]
 
 
-def _is_legacy_timing(path: Path) -> bool:
-    """A read CSV from before 2026-09-24, when `time_s` was a median and its
-    dispersion column `time_mad_s` the median absolute deviation.
-    `load_scaling_axis` reports one as a gap rather than plotting it."""
-    with path.open(newline="", encoding="utf-8") as fh:
-        header = next(csv.reader(fh), [])
-    return "time_mad_s" in header and "time_std_s" not in header
-
-
 def _read_rows(path: Path, want: list[str]) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
@@ -433,11 +420,9 @@ def _scenario_key(row: dict[str, str]) -> str:
             )
         return notes.split(";", 1)[0]
     if scenario == "id-lookup":
-        # Two generations of the runner are committed at once: `read_results/`
-        # carries the positional probes, which are one scenario each, while the
-        # scaling directories still hold the single `id=<identifier>` probe of
-        # the run that produced them. An unrecognised tag is that older shape,
-        # not an error — those artefacts are not re-measured to suit a renderer.
+        # The positional probes are one scenario each. A run that measured a
+        # single `id=<identifier>` probe (the renderer's test fixture is one)
+        # keeps the plain `id-lookup` key.
         tag = _primary_tag(notes)
         if ID_NOTE_RE.match(tag):
             return tag
@@ -609,12 +594,6 @@ def load_scaling_axis(
 
     for path in _dataset_csvs(directory):
         name = path.stem
-        if _is_legacy_timing(path):
-            # A configuration axis measured under the median/MAD contract
-            # (its directory carries LEGACY.md). Reported, never plotted: a
-            # median and a mean on one axis would not be the same statistic.
-            gaps.append({"dataset": name, "issue": "legacy median/time_mad_s CSV; not rendered"})
-            continue
         rows = _read_rows(path, READ_COLUMNS)
         if not rows:
             gaps.append({"dataset": name, "issue": "CSV present but header-only"})
@@ -831,32 +810,6 @@ def build_datasets(read_records: list[dict], raw_mb: dict[str, float]) -> list[d
 # --------------------------------------------------------------------------
 # entry point
 # --------------------------------------------------------------------------
-
-
-def _require_read_results(inputs: Inputs) -> None:
-    """Fail with an actionable message when the read results are absent.
-
-    The read results are the spine of the summary page: every other view is
-    keyed by the datasets found there, so an empty `read_dir` produces not an
-    empty page but a `FileNotFoundError` on `sizes.csv` from three frames
-    down. That is a legitimate state rather than a broken checkout — the
-    corpus was replaced on 2026-08-23 and the previous run's CSVs were
-    archived rather than left where this would chart them as current — so it
-    deserves a sentence naming the recipe that fixes it, not a traceback.
-    """
-    if inputs.sizes_csv.exists() and _dataset_csvs(inputs.read_dir):
-        return
-    raise PrepError(
-        f"no read-benchmark results in {inputs.read_dir}.\n"
-        "  The summary page is built from them, so there is nothing to plot "
-        "yet.\n"
-        "  Produce them with:\n"
-        "      just fetch-tools                 # once, needs java 17+\n"
-        "      just fetch-data                  # the corpus (network, 423 MB)\n"
-        "      just bench benchmark/formats/data/benchmark  # the format comparison\n"
-        "  The previous corpus's results were archived on 2026-08-23 under\n"
-        "  benchmark/formats/archive/2026-08-17-catalogue-corpus/ — see its README."
-    )
 
 
 # The database family's scenario vocabulary (benchmark/databases/README.md).

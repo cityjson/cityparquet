@@ -13,11 +13,10 @@ monorepo root. The format family measures reads only; the suite does not
 time writes.
 
 Result files must be interpreted with their own query-parameter sidecars and
-run provenance. Existing `read_results/` CSVs describe
-the datasets and configurations named in those files; they do not establish
-measurements for the replacement large 3DBAG dataset. Detailed caveats below
-include observations on those datasets and remain qualifications on that
-evidence until equivalent checks have been made on a new run.
+run provenance. The committed results (`benchmark/runs/formats/results/`)
+describe the datasets and configurations named in those files. Some caveats
+below record observations made on an earlier corpus; they remain
+qualifications until equivalent checks have been made on a new run.
 
 ## Purpose
 
@@ -290,7 +289,7 @@ part of the comparison set and must not be read as one.
 
 ## Metrics and the CSV contract
 
-`benchmark/formats/read_results/*.csv`, one row per (dataset, format, scenario
+`benchmark/runs/formats/results/*.csv`, one row per (dataset, format, scenario
 [, selectivity target]):
 
 ```
@@ -493,7 +492,7 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
    reported `time_s`/`time_std_s`.
 
 7. **Warm vs cold — never silently mixed.** The headline numbers everywhere
-   in this document and in `benchmark/formats/read_results/*.csv` are warm-cache
+   in this document and in `benchmark/runs/formats/results/*.csv` are warm-cache
    means; the single `cold`-tagged row per format (see "Warm vs cold"
    above) is a distinct, separately-reported measurement, always
    `full-read` only, never averaged into or compared unlabelled against the
@@ -917,7 +916,7 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     axis, or comparing a 1M-row figure against a `citygml` number that does
     not exist. What it still supports: the four-format curve across all seven
     cardinalities, and the five-format comparison up to 100k. CityGML's
-    cross-format cost is measured properly in `read_results/`, on six real
+    cross-format cost is measured properly in `formats/results/`, on six real
     published datasets, which is what that family is for.
 
 24. **The `bloom` family's larger slices show pruning across many row
@@ -956,15 +955,16 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     family's `cityparquet+nobloom` variant is the one package measured
     without them.
 
-31. **The legacy `read_results/` CSVs predate bloom filters.** The
-    `benchmark/formats/read_results/` directory describes packages with no
-    filters, and its `LEGACY.md` records the older median/`time_mad_s`
-    timing; an `id-lookup` row from it must not be compared with one from
-    the current evidence or with the `bloom` family. The shapes keep the two
-    apart mechanically: `readbench_duckdb.sh` refuses to append to a CSV
-    whose header differs from the coordinator's, and the summary loader refuses a
-    legacy-shaped CSV as a read result, and reports one in a
-    configuration-axis directory as a gap, instead of rendering it.
+31. **One generation of results, one statistic, one header.** Every
+    committed results CSV reports `time_s` as the arithmetic mean of the warm
+    samples and `time_std_s` as their population standard deviation, in the
+    coordinator's 16-column shape. Results from before 2026-09-24 (a median
+    with `time_mad_s`) and from before default-on bloom filters exist only in
+    git history and must not be set beside these: a median and a mean are
+    different statistics, and an `id-lookup` without filters is a different
+    operation. The shapes keep them apart mechanically: `readbench_duckdb.sh`
+    refuses to append to a CSV whose header differs from the coordinator's,
+    and the summary loader refuses such a CSV instead of rendering it.
 
 32. **FlatCityBuf is read through the raw FlatBuffers accessors, not
     `cur_cj_feature`.** Every FCB walk — `full-read`, the `attr-filter`
@@ -1112,19 +1112,17 @@ identifies the bytes that were measured.
 
 ### Machine
 
-**Not captured for the committed run.** What the commit that added
-`benchmark/formats/read_results/*.csv` records is the date and the platform family — a Linux
-x86-64 host, AMD EPYC, 2026-08-17 — and nothing in the CSVs carries machine
-metadata, so no CPU model, RAM figure or toolchain version can be recovered from
-the artefacts. Treat the committed numbers as internally comparable (one machine,
+**Captured beside the results.** `benchmark/runs/formats/results/MACHINE.md`
+records the committed run's host: kernel, CPU, memory, the Rust toolchain and
+the commit. Treat the committed numbers as internally comparable (one machine,
 one sitting, per dataset) but do not quote an absolute time against another
 paper's hardware.
 
 `benchmark/scripts/machine_record.sh` is the canonical capture: it runs the
 `uname`, `lscpu`/`sysctl` and `free` lines below, plus `rustc`, `cargo` and the
 commit hash, into a results directory's `MACHINE.md` — how `variant-bench`
-records its host. Run it as part of the next read run, add
-the two lines it does not cover, and paste the result here:
+records its host. The two lines it does not cover are the DuckDB and `fcb`
+versions and the pinned conversion chain:
 
 ```sh
 uname -srm     # kernel, release and architecture; NOT `uname -a`, whose node

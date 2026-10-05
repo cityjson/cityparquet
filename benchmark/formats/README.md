@@ -12,30 +12,20 @@ conversion time would not compare like with like. Preparing an artefact
 (`readbench_prepare.sh`, `convert-all`, the variant packages the bloom family
 builds) is never a measurement.
 
-**The committed evidence is `benchmark/runs/formats/results/`** (the
-`read_results/` directory here is legacy, see its `LEGACY.md`), where the
+**The committed evidence is `benchmark/runs/formats/results/`**, where the
 `formats` family writes its per-dataset read rows and its package `sizes.csv`,
 alongside the bloom family's `scaling_bloom_results/`; both carry a
-`MACHINE.md` describing the host they were measured on. The `read_results/`
-runs carry no such record, so whether they ran on the same host cannot be
-established from what is committed. Absolute times are therefore not
-comparable across a directory that has a machine record and one that does not;
-what the figures cite is the ratios within a single directory. Nothing in this
-document quotes a number, so the methodology here cannot go stale against a
-re-run; the CSVs themselves can, and two caveats already apply.
+`MACHINE.md` describing the host they were measured on. What the figures cite
+is the ratios within a single directory. Nothing in this document quotes a
+number, so the methodology here cannot go stale against a re-run; the CSVs
+themselves can.
 
-**The committed `read_results/` CSVs predate the typed appearance columns.**
-Their byte counts were measured while `material_lod*` / `texture_lod*` were JSON
-text cells; those columns are typed Arrow/Parquet `MAP`s, which the writer
-leaves at parquet's own defaults for dictionary encoding and statistics, so the
-committed bytes do not describe the current writer until the family is re-run.
-
-**The committed `read_results/` CSVs also predate bloom filters; the current
-evidence under `benchmark/runs/formats/` was measured on packages that carry
-them.** Both disclosures are [`READ_BENCHMARK.md`](READ_BENCHMARK.md)'s
-fairness caveats 30 and 31, which is where every family's caveats are kept:
-`benchviz` renders that one numbered list onto the summary page, so a caveat
-written only here would never reach a reader of the figures.
+**The committed evidence was measured on packages that carry bloom filters,
+and reports one timing statistic.** Both disclosures are
+[`READ_BENCHMARK.md`](READ_BENCHMARK.md)'s fairness caveats 30 and 31, which
+is where every family's caveats are kept: `benchviz` renders that one numbered
+list onto the summary page, so a caveat written only here would never reach a
+reader of the figures.
 
 ## Running the suite
 
