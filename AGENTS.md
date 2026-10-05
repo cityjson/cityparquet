@@ -78,8 +78,9 @@ scripts and renderers it belongs to. `lib/citylake` is a third. Consequences:
   `convert-all`, `variant-bench`, the fetchers, the renderers,
   `plot-test`, `scripts-test`, `catalog-*` — are in the **root
   `justfile`** and run from the repository root.
-- The four per-dataset recipes live in ONE file because
-  `benchmark/readbench/tests/strip_extension.rs` extracts all four and runs them
+- The three per-dataset recipes (`convert-all`, `bench`, `variant-bench`) live in
+  ONE file because `benchmark/readbench/tests/strip_extension.rs` extracts all
+  three and runs them
   to prove the input-extension convention has not drifted. Do not split them.
 
 ## Crate directories vs package names
