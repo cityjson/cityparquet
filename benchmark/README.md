@@ -45,7 +45,7 @@ inputs and fewer repetitions; their results are not publication runs.
 Three run profiles decide which slice stands in for the large dataset, how
 many repetitions are measured and where results land, so a test run can
 never overwrite the paper's evidence: `--profile full` (the default; the
-largest 3DBAG slice, seven read and three write repetitions, each family's
+largest 3DBAG slice, seven read repetitions, each family's
 own results directory), `--profile short` (the manifest's
 `short_scaling_dataset`, currently `3dbag_n100000`, the same repetitions,
 results under `<family>/short/`; for iterating on the harness in about an
@@ -81,12 +81,12 @@ largest 3DBAG slice. The selector rejects data roots outside `benchmark/runs/`.
 
 ## Experimental matrix
 
-| Family      | Data                                        | Measurements                                                           | Read queries                                                                            |
-| ----------- | ------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `sizes`     | Corpus with the largest 3DBAG scaling slice | Complete file or package size                                          | None                                                                                    |
-| `formats`   | Same corpus                                 | Write time and peak memory; read time and peak memory                  | All format queries                                                                      |
-| `bloom`     | Nested 3DBAG scaling slices and the corpus  | Size and write time/memory; lookup time, memory and row-group counters | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
-| `databases` | Largest 3DBAG slice                         | Storage including indexes; mean query time and peak memory             | Database query suite                                                                    |
+| Family      | Data                                        | Measurements                                               | Read queries                                                                            |
+| ----------- | ------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `sizes`     | Corpus with the largest 3DBAG scaling slice | Complete file or package size                              | None                                                                                    |
+| `formats`   | Same corpus                                 | Read time and peak memory                                  | All format queries                                                                      |
+| `bloom`     | Nested 3DBAG scaling slices and the corpus  | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
+| `databases` | Largest 3DBAG slice                         | Storage including indexes; mean query time and peak memory | Database query suite                                                                    |
 
 The corpus retains Rotterdam, Ingolstadt, Vienna, New York and Zurich, and
 uses the largest scaling slice for 3DBAG. Dataset IDs identify artefacts;
@@ -107,7 +107,7 @@ order. The bloom experiment holds ordering, codec and row-group size fixed.
 | Figure          | Content                                                                                                                                                                    |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sizes`         | Vertical size bars, one subplot per dataset; actual sizes and ratios to CityJSONSeq                                                                                        |
-| `heatmap`       | One panel per dataset, with write time, write memory, read time and read memory heatmaps                                                                                   |
+| `heatmap`       | One panel per dataset, with read time and read memory heatmaps                                                                                                             |
 | `bloom`         | Five metric panels for the largest measured scaling dataset                                                                                                                |
 | `bloom-scaling` | Absolute metrics against actual CityObject counts                                                                                                                          |
 | `bloom-corpus`  | The bloom pair per corpus dataset, apart from the slice curves                                                                                                             |
@@ -123,15 +123,15 @@ than becoming zeros. The combined HTML reports incomplete coverage.
 ## Evidence and interpretation
 
 Keep source identity, query parameters, software revisions, machine information
-and repetition settings with measurements. Do not combine old write runs and
-new read runs as if they were one experiment. Database memory must cover the
+and repetition settings with measurements. Do not combine results from
+different runs as if they were one experiment. Database memory must cover the
 execution system, not only its client process; the database methodology defines
 the measurement boundary and sampling limitations.
 
 Read the detailed methodology before citing a result:
 
 - [Format queries and fairness caveats](formats/READ_BENCHMARK.md)
-- [Writing and configuration experiments](formats/README.md)
+- [File sizes and configuration experiments](formats/README.md)
 - [Database measurements](databases/README.md)
 
 Relevant qualifications include CityGML synthesis and possible information

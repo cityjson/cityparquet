@@ -1360,7 +1360,7 @@ git log --oneline -3 -- benchmark/formats/read_results
 The two methodology documents beside them state what a committed run means, and
 are kept current: `benchmark/formats/READ_BENCHMARK.md` (the cross-format read benchmark and
 its fairness caveats — the CSVs it describes are committed) and
-`benchmark/formats/README.md` (the write and configuration benchmark).
+`benchmark/formats/README.md` (file sizes and the configuration benchmark).
 
 Two things worth knowing before a re-run, because neither is visible from a
 directory listing:

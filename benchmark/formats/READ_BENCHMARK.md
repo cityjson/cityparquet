@@ -9,7 +9,8 @@ caveat kept anywhere else never reaches a reader of the figures. The
 suite entry points, dataset selection and figure layout are described in
 [`../README.md`](../README.md). Run `just bench-prep --families formats`,
 `just bench-run --families formats`, then `just bench-summary` from the
-monorepo root. The format family measures writes as well as these reads.
+monorepo root. The format family measures reads only; the suite does not
+time writes.
 
 Result files must be interpreted with their own query-parameter sidecars and
 run provenance. Existing `read_results/` CSVs describe
@@ -26,8 +27,8 @@ scenarios that mirror how a consumer of that data actually reads it: a full
 scan, a metadata-only count, a spatial window query at three selectivities,
 an attribute-equality filter, a numeric-attribute aggregate, and a single-id
 lookup. The read side is the geometry- and
-query-facing half of the CityParquet argument; the write side (encoding
-size, write time, row-group pruning) is already covered by `benchmark/formats/README.md`.
+query-facing half of the CityParquet argument; file sizes and the
+bloom-filter configuration are covered by `benchmark/formats/README.md`.
 
 ## Formats
 
@@ -72,9 +73,7 @@ series in the default format comparison. The database family compares DuckDB
 with cjdb and 3DCityDB separately.
 
 The reader's `duckdb-parquet` identifier means DuckDB reading a CityParquet
-package. It does not mean the older writer experiment's `duckdb-copy`, which
-uses the community CityJSON extension to encode a different Parquet table and
-has separate geometry-coverage qualifications in `README.md`.
+package (Caveat 5).
 
 ## HTTP transport
 
@@ -445,8 +444,7 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
    FlatCityBuf decodes its own FlatBuffers representation; CityParquet
    decodes every row's WKB geometry and counts surfaces; DuckDB runs
    `SELECT sum(hash(COLUMNS(*)))` (forcing every column, including every
-   geometry column, to be decoded — the same "force full decode" pattern
-   the write benchmark's baseline uses). Each is that format's own honest
+   geometry column, to be decoded). Each is that format's own honest
    full-read cost — reported per-format, never normalised into a shared
    unit of work that doesn't actually exist across six different
    encodings. Where two of them are _labelled_ the same but are not the same
@@ -463,14 +461,13 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
    window, never fewer, purely from the missing z test — not a query-plan
    or index-quality difference.
 
-5. **`duckdb-parquet` reads OUR CityParquet package directly — the write-side
-   geometry-coverage caveats do NOT carry over.** Unlike
-   `benchmark/formats/README.md`'s `duckdb-copy`/`duckdb-copy-zstd` rows (which go
-   through the community `cityjson` extension's `read_cityjson`/
-   `read_cityjsonseq`, documented there to write 0% `geom_lod0` coverage
-   everywhere and 0% of _everything_ on `lod3_railway.city.json`),
-   `duckdb-parquet` here runs `read_parquet()` straight over a
-   `cityparquet-rs`-written package — full geometry, every LoD column.
+5. **`duckdb-parquet` reads OUR CityParquet package directly — the community
+   extension's geometry-coverage gaps do NOT carry over.** Unlike a table
+   encoded through the community `cityjson` extension's `read_cityjson`/
+   `read_cityjsonseq` (which writes 0% `geom_lod0` coverage everywhere and 0%
+   of _everything_ on `lod3_railway.city.json`), `duckdb-parquet` here runs
+   `read_parquet()` straight over a `cityparquet-rs`-written package — full
+   geometry, every LoD column.
    **However**: our packages' WKB geometry columns carry GeoParquet "geo"
    file metadata, and DuckDB's spatial extension (autoloaded) eagerly
    tries to decode them into its own native `GEOMETRY` type the instant a
@@ -964,8 +961,8 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     filters, and its `LEGACY.md` records the older median/`time_mad_s`
     timing; an `id-lookup` row from it must not be compared with one from
     the current evidence or with the `bloom` family. The shapes keep the two
-    apart mechanically: `format_write.py` refuses to append to a CSV whose
-    header differs from the coordinator's, and the summary loader refuses a
+    apart mechanically: `readbench_duckdb.sh` refuses to append to a CSV
+    whose header differs from the coordinator's, and the summary loader refuses a
     legacy-shaped CSV as a read result, and reports one in a
     configuration-axis directory as a gap, instead of rendering it.
 
@@ -1043,14 +1040,11 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     above it. On Zurich 35 rows share 54 816 768 B. Those numbers are the
     coordinator's memory, not the format's, and any read-memory ratio
     computed from them (the `rss_b` heatmap panel) is a ratio of floors.
-    The write rows had the same defect through Python's `os.wait4` (the
-    constant 14 680 064 B on every `cityjsonseq` write row was the launcher).
 
     Fixed by reading `VmHWM` from `/proc/self/status` in the child (its own
     `mm`, created by `exec`, is not inherited; measured 10.5 MB for a child
-    under a 420 MB parent, against 419 MB from `ru_maxrss`) and by running
-    every write converter under `/usr/bin/time -f %M` (floor ≈ 1 MB). The
-    fix changes no timing. **Read-memory figures from before and after this
+    under a 420 MB parent, against 419 MB from `ru_maxrss`). The fix changes
+    no timing. **Read-memory figures from before and after this
     change must not be mixed**, and the pre-change CSVs' `peak_rss_bytes`
     must not be quoted for any format whose value equals the run's floor.
 

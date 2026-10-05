@@ -23,7 +23,7 @@ The paper (`paper/chapters/05-evaluation.typ` in the parent repo) has been restr
 
 ## 4. Run protocol and provenance
 
-- Repetitions: the last run used 7 read and 3 write repetitions. Confirm with the author (7/7 was mentioned) and record the value used.
+- Repetitions: the last run used 7 read repetitions. Confirm with the author (7/7 was mentioned) and record the value used.
 - Record the memory actually available on the shared host, not only the installed 540 GB.
 - Emit a table of tool versions and the benchmark commit (cityparquet-rs, cjseq, fcb, citygml-tools, DuckDB, PostgreSQL/PostGIS).
 
@@ -31,7 +31,6 @@ The paper (`paper/chapters/05-evaluation.typ` in the parent repo) has been restr
 
 - Network (§5.4): the format benchmark over HTTP against object storage, reporting time, bytes read and request count.
 - Configuration (§5.3): file size with and without Bloom filters.
-- Re-measure the 3DBAG CityGML write row (it is from an older run).
 
 ## 6. Repository
 
