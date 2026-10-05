@@ -530,7 +530,11 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 Scenario::BBoxQuery => {
                     for window in &resolved.windows {
                         let params = QueryParams {
-                            bbox: Some(window.window),
+                            bbox: Some(window_in_artefact_order(
+                                window.window,
+                                format,
+                                resolved.swap_xy,
+                            )),
                             ..Default::default()
                         };
                         // `approx` means the target row fraction was not
@@ -786,6 +790,19 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// `window` (in the CityParquet package's longitude-first order) in the axis
+/// order `format`'s artefact stores: swapped in `x`/`y` for a latitude-first
+/// dataset read through an artefact that keeps the source's order.
+fn window_in_artefact_order(window: [f64; 6], format: Format, swap_xy: bool) -> [f64; 6] {
+    if swap_xy && !format.stores_longitude_first() {
+        [
+            window[1], window[0], window[2], window[4], window[3], window[5],
+        ]
+    } else {
+        window
+    }
 }
 
 /// Keeps only the `requested` tags of `probes`; an empty request, or a tag

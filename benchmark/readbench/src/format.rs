@@ -119,6 +119,17 @@ impl Format {
 
     /// The canonical kebab-case CLI/CSV spelling (round-trips through
     /// [`FromStr`]).
+    /// The artefact stores coordinates as GeoParquet does — `x` longitude,
+    /// `y` latitude, whatever the CRS declares. Every other artefact keeps
+    /// the source's own axis order, so a latitude-first dataset's query
+    /// window reaches it with `x` and `y` swapped.
+    pub fn stores_longitude_first(self) -> bool {
+        matches!(
+            self,
+            Format::CityParquet | Format::CityParquetHilbert | Format::DuckDbParquet
+        )
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Format::CityGml => "citygml",

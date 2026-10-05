@@ -900,6 +900,16 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     the timings comparable; the `selectivity` column is not comparable across
     grains. See Caveat 3 on counting grain.
 
+    The window is defined in the package's axis order: a CityParquet package
+    stores `x` as longitude and `y` as latitude, as GeoParquet requires,
+    whatever order the CRS declares. Every other artefact keeps the source's
+    order, so for a CRS that declares latitude first (Tokyo's JGD2011,
+    EPSG:6697) `citygml`, `cityjson`, `cityjsonseq` and `flatcitybuf` receive
+    the window with `x` and `y` swapped. The parameter sidecar records the
+    fact as `swap_xy`, read from the CRS's declared axis directions, never
+    guessed from coordinate magnitudes; `readbench_duckdb.sh` reads the
+    package and uses the window as written.
+
 23. **The scaling corpus's format set is NOT uniform across its seven
     cardinalities.** The scaling slices measure 1k, 5k, 10k, 50k and
     100k CityObjects with all five formats, but 500k and 1M with **four** —

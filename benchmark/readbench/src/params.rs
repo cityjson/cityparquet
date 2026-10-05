@@ -35,6 +35,41 @@ pub fn open_metadata(table: &Path) -> Result<CityMetadata> {
     Ok(builder.cityparquet_metadata()?)
 }
 
+/// Whether a CRS, given as PROJJSON, declares **latitude (north) before
+/// longitude (east)** — as EPSG does for 4326, 6697 and most geographic codes.
+///
+/// A CityParquet package stores `x` as longitude and `y` as latitude whatever
+/// the authority's axis order says, because its geometry follows GeoParquet;
+/// every other artefact keeps the source's own order. The answer is read from
+/// the CRS's declared axis `direction`s (through a compound CRS's components
+/// and a derived CRS's base), never guessed from coordinate magnitudes. An
+/// unknown or absent CRS needs no swap.
+pub fn crs_is_latitude_first(crs: Option<&serde_json::Value>) -> bool {
+    fn axes(crs: &serde_json::Value) -> Vec<&serde_json::Value> {
+        if let Some(components) = crs.get("components").and_then(|c| c.as_array()) {
+            return components.iter().flat_map(axes).collect();
+        }
+        if let Some(base) = crs.get("base_crs").or_else(|| crs.get("source_crs")) {
+            return axes(base);
+        }
+        crs.get("coordinate_system")
+            .and_then(|cs| cs.get("axis"))
+            .and_then(|a| a.as_array())
+            .map(|a| a.iter().collect())
+            .unwrap_or_default()
+    }
+    let Some(crs) = crs else {
+        return false;
+    };
+    let axes = axes(crs);
+    let direction = |i: usize| {
+        axes.get(i)
+            .and_then(|a| a.get("direction"))
+            .and_then(|d| d.as_str())
+    };
+    direction(0) == Some("north") && direction(1) == Some("east")
+}
+
 /// `table`'s Arrow schema — the types `pick_numeric_attribute` filters on.
 pub fn open_arrow_schema(table: &Path) -> Result<Schema> {
     let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
@@ -168,7 +203,10 @@ pub struct BboxWindow {
     pub target: f64,
     /// The fraction of rows the returned window actually intersects.
     pub achieved: f64,
-    /// `[minx, miny, minz, maxx, maxy, maxz]`.
+    /// `[minx, miny, minz, maxx, maxy, maxz]` in the CityParquet package's
+    /// order — `x` is longitude for a geographic CRS. A runner whose
+    /// artefact keeps a latitude-first source order receives it with `x` and
+    /// `y` swapped (see [`ResolvedParams::swap_xy`]).
     pub window: [f64; 6],
     /// `achieved` is outside [`BBOX_TOLERANCE`] of `target` — the target was
     /// not reachable on this data. Disclosed in `notes`, never silent.
@@ -1052,6 +1090,10 @@ pub struct ResolvedParams {
     /// The dataset-global CityObject total — the SHARED selectivity
     /// denominator for every CityObject-level scenario.
     pub cp_object_total: u64,
+    /// The dataset's CRS declares latitude first ([`crs_is_latitude_first`]),
+    /// so the windows — in the package's longitude-first order — are swapped
+    /// in `x`/`y` for every artefact that keeps the source's order.
+    pub swap_xy: bool,
 }
 
 /// Derives every query parameter for `dataset`.
@@ -1116,6 +1158,7 @@ pub fn resolve(
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| format!("reading {}", cp_table.display()))?;
     let cp_object_total = builder.metadata().file_metadata().num_rows() as u64;
+    let swap_xy = crs_is_latitude_first(meta.crs.known());
 
     Ok(ResolvedParams {
         dataset: dataset.to_string(),
@@ -1125,6 +1168,7 @@ pub fn resolve(
         feature_probes,
         numeric_attr,
         cp_object_total,
+        swap_xy,
     })
 }
 
