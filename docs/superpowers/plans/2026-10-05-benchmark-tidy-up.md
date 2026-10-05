@@ -19,19 +19,22 @@ Recipes, evidence, figures, tests and documentation are gone (`22fc32b`..`5c7118
 
 Drop the measurement of how fast each format is written: the timed-write script and recipe, the write rows in the heatmaps, their evidence, tests and documentation. The reason is fairness: not every format has a native writer, so the files are converted through a common format and the timings do not compare like with like.
 
-To decide before starting:
+Decided:
 
-- Does the bloom axis keep its write time (157 s with filters against 154 s without)? It compares CityParquet with itself, so the fairness objection does not apply.
-- Does the database comparison keep its write tier (add, update, delete, append)? It is a different measurement with its own caveats.
+- The bloom axis loses its write time as well; it keeps its read scenarios and its file sizes.
+- The database comparison keeps its write tier (add, update, delete, append): there it is one of the queries.
 
 ### 2. Make CityGML the baseline
 
 Every relative value answers "CityParquet is x times faster, or smaller, than CityGML". Today the size plot and the heatmaps divide by CityJSONSeq.
 
 - Switch the baseline in the size plot and the heatmaps, with their titles and captions.
-- Emit the ratios as data, not only as colours: the size table of the handout (CSV and Typst rows, factor against CityGML, best and worst dataset) and the per-query ratios against CityGML.
+- Emit the ratios as data, not only as colours: the size table of the handout (factor against CityGML, best and worst dataset) and the per-query ratios against CityGML. CSV only; the author converts it to Typst.
+- One figure per dataset and metric, as SVG and PNG, in a folder per dataset: `formats/<dataset>/time.{svg,png}` and `formats/<dataset>/rss.{svg,png}`.
 - A missing, skipped or failed CityGML cell leaves the ratio explicit as unavailable, never zero.
 - The database figure keeps its own baseline (3DCityDB).
+
+Two small fixes ride along: the specification site's benchmark page says timings are medians where the evidence reports means, and `just bench-summary` calls bare `python3`, which fails on Python older than 3.11, so it runs through `uv`.
 
 ### 3. Interactive review of the benchmark code
 
@@ -39,8 +42,6 @@ After tasks 1 and 2, the author reviews what remains, one stage at a time: corpu
 
 Already noted for the review:
 
-- The specification site's benchmark page says timings are medians; the evidence reports means.
-- `just bench-summary` calls bare `python3` and fails on Python older than 3.11.
 - The handout's smaller items: the "1,000,001 objects" title, the repetition counts, the memory actually available on the host, the table of tool versions, the dataset list with URLs and attribute predicates, the geometry share from `parquet_metadata`.
 
 ### 4. Add the benchmark over the network
@@ -51,7 +52,7 @@ Run the format read benchmark over HTTP against object storage and report time, 
 - Bytes read and request count in the results, and a figure or table for them.
 - The run records the storage location and the network path, and states that it is a snapshot of one path at one time.
 
-To decide before starting: the storage location, the datasets (the 3DBAG slice alone, or the corpus), and which formats take part.
+The author supplies the URLs where the whole corpus is hosted when this task starts. To decide then: which formats take part.
 
 ## Afterwards
 
