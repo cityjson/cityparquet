@@ -77,8 +77,6 @@ ai/skills/
 !/benchmark/runs/formats/
 /benchmark/runs/formats/*
 !/benchmark/runs/formats/results/
-!/benchmark/runs/formats/scaling_codec_results/
-!/benchmark/runs/formats/scaling_rowgroup_results/
 !/benchmark/runs/formats/scaling_bloom_results/
 !/benchmark/runs/summary/
 /benchmark/runs/summary/*

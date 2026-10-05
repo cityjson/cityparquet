@@ -22,11 +22,6 @@ mix the two.
   thread configurations (`threads=single` is the primary figure), the four
   write scenarios, the 0.1 % explained-deviation tolerance. The DuckDB
   system reads the Hilbert package.
-- **Codec and row-group results are unchanged** from the 9 September run
-  and were measured on packages without bloom filters; the author decided
-  not to re-run them, as bloom filters are not part of those axes. They
-  still report a median `time_s` with `time_mad_s` and are labelled by
-  their directories' `LEGACY.md`; the summary lists them as gaps.
 
 `time_s` in every CSV above is the arithmetic mean of the warm samples and
 `time_std_s` their population standard deviation. The run itself reported a
