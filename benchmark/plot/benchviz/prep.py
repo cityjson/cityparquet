@@ -1151,7 +1151,7 @@ def manifest_labels(path: Path = MANIFEST_PATH) -> dict[str, dict]:
     manifest = tomllib.loads(path.read_text(encoding="utf-8"))
     labels: dict[str, dict] = {}
     for entry in manifest.get("datasets", {}).values():
-        label: dict = {}
+        label: dict = {"role": entry.get("role")}
         if entry.get("title"):
             label["title"] = entry["title"]
         if entry.get("role") in SCALING_ROLES and entry.get("target_objects"):
@@ -1163,7 +1163,8 @@ def manifest_labels(path: Path = MANIFEST_PATH) -> dict[str, dict]:
 def apply_manifest_titles(inputs: Inputs, datasets: list[dict]) -> None:
     labels = manifest_labels()
     for dataset in datasets:
-        dataset.update(labels.get(dataset["id"], {}))
+        label = {k: v for k, v in labels.get(dataset["id"], {}).items() if k != "role"}
+        dataset.update(label)
 
 
 def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:

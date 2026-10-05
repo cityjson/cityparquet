@@ -32,7 +32,9 @@ def sections(data: dict) -> list[tuple[str, str, list[str]]]:
     """Every figure the page embeds: (relative path, title, condition lines).
 
     Derived from the data, never from a fixed list of datasets: the size
-    figure, then a time and a memory figure per dataset, then the rest.
+    figure, then a time and a memory figure per dataset — including a
+    manifest corpus dataset with no results, as a missing section — then the
+    rest.
     """
     conditions = data.get("meta", {}).get("conditions", {})
     result = [(f"{FORMATS_DIR}/sizes", "File size on disk", [])]
@@ -43,6 +45,16 @@ def sections(data: dict) -> list[tuple[str, str, list[str]]]:
             result.append(
                 (f"{FORMATS_DIR}/{dataset['id']}/{metric}", f"{name} — {page_title}", lines)
             )
+    # A format-comparison dataset of the manifest with no results stays
+    # visibly missing rather than silently absent.
+    measured = {d["id"] for d in data.get("datasets", [])}
+    labels = data.get("meta", {}).get("dataset_labels", {})
+    for dataset_id, label in labels.items():
+        if label.get("role") != "corpus" or dataset_id in measured:
+            continue
+        name = label.get("title") or dataset_id
+        for metric, _field, page_title, _axis in FORMAT_METRICS:
+            result.append((f"{FORMATS_DIR}/{dataset_id}/{metric}", f"{name} — {page_title}", []))
     for path, title in TAIL:
         result.append((path, title, conditions.get(path, [])))
     return result
