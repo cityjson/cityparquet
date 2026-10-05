@@ -408,15 +408,29 @@ each cold number stands alone, one per format, one `full-read` only.
    in its **subtree** — its own geometries and every descendant's, reached
    through `children` — so a `Building` with no geometry of its own matches a
    window its `BuildingPart`s intersect, and a `CityObjectGroup` matches
-   through its members. This is the CityParquet `bbox` column's definition
-   (the specification's "Spatial metadata"), and `cityjson` computes the same
-   union. A feature's box is its root object's subtree box, which is what
-   `citygml`, `cityjsonseq` and `flatcitybuf` test, so the feature grain
-   counts the root objects that match. A box intersects the window when it
-   overlaps it on every axis, edges included. An object with no geometry
-   anywhere in its subtree has no box and matches nothing. The two grains are
-   therefore two counts of one set, and the coordinator checks both
-   (Caveat 2).
+   through its members. This is the subtree union the CityParquet `bbox`
+   column stores (the specification's "Spatial metadata"), and `cityjson`
+   computes the same union. A feature's box is its root object's subtree box,
+   which is what `citygml`, `cityjsonseq` and `flatcitybuf` test, so the
+   feature grain counts the root objects that match. A box intersects the
+   window when it overlaps it on every axis, edges included. An object with
+   no geometry anywhere in its subtree has no box and matches nothing. The
+   two grains are therefore two counts of one set, and the coordinator
+   checks both (Caveat 2).
+
+   The CityParquet `bbox` column also covers an object's declared
+   `geographicalExtent`, which no other runner reads, so on a dataset that
+   declares one the column can reach beyond the vertex box. On this corpus
+   Zurich and Montréal declare one on every object. Montréal's reaches
+   beyond the vertex box in `x`/`y` on 1,544 objects, by at most 1.5 µm,
+   while every window edge clears every `bbox` edge by more than its
+   quantisation, 10 µm in `x` and 1 mm in `y` (Caveat 21). Zurich's reaches beyond it on 108,396
+   objects, by at most its 1 mm quantisation, and its window edges clear
+   every `bbox` edge by at least 1.5 mm: its declared extents and vertices
+   lie on one 1 mm grid, so a gap wider than 2 mm is at least 3 mm wide. On
+   both datasets no window edge therefore falls between an object's vertex
+   box and its `bbox`, and the coordinator's check confirms the counts on
+   every run.
 
 2. **Selectivity's denominator differs by scenario, on purpose.** The three
    CityObject-granular scenarios (`attr-filter`/`attr-stats`/`id-lookup`)
@@ -844,28 +858,42 @@ each cold number stands alone, one per format, one `full-read` only.
     out any more; whether to restore it to the corpus is a corpus-selection
     question, and it is not measured until it is.
 
-17. **The `attr-stats` scenario is not uniform across the corpus.** Measured
-    2026-08-23. `nyc_da13_buildings` (23,777 objects) carries **no numeric
-    attribute at all**, so it has no `attr-stats` row. `ingolstadt`'s
-    `measuredHeight` covers only **55 of its 379** objects (the `Building`s,
-    not the 323 `BuildingInstallation`s), so its `attr-stats` row aggregates a
-    minority of rows rather than the dataset. The other four are clean:
-    `TerrainHeight` on all 853 of Rotterdam, `measuredHeight` on 1,102 of
-    Vienna, `b3_h_dak_50p` on all 1,110 3DBAG parents, `Geomtype` on 145,862
-    of Zurich.
+17. **The `attr-stats` scenario is not uniform across the corpus.**
+    `nyc_da13_buildings` (23,777 objects) carries **no numeric attribute at
+    all**, so it has no `attr-stats` row. Elsewhere the aggregated column
+    covers all of a dataset's CityObjects or only part of them:
 
-    `just bench` detects the column per dataset and omits the row where there
-    is none, so an absent `attr-stats` row is expected rather than a failed
-    measurement. **Do not read a missing row as a zero, and do not average
-    Ingolstadt's into a cross-dataset aggregate figure.** Every other
+    | dataset                | column                | CityObjects carrying it |
+    | ---------------------- | --------------------- | ----------------------- |
+    | `rotterdam_delfshaven` | `TerrainHeight`       | 853 of 853              |
+    | `ingolstadt`           | `materialUncertainty` | 201 of 379              |
+    | `vienna_102081`        | `measuredHeight`      | 1,102 of 1,322          |
+    | `zurich_building_lod2` | `GebaeudeStatus`      | 52,834 of 198,699       |
+    | `tokyo`                | `measuredHeight`      | 38,743 of 49,915        |
+    | `montreal`             | `measuredHeight`      | 31,415 of 31,415        |
+    | `3dbag_n1000000`       | `b3_bag_bag_overlap`  | 331,363 of 1,000,001    |
+
+    Tokyo's column is on its `Building`s, not its 11,172
+    `BuildingInstallation`s, and 1,041 of its 38,743 values are PLATEAU's
+    `-9999` "not measured" placeholder. They are aggregated with the rest:
+    no runner has an exclusion predicate, and adding one to every runner
+    would change the timed work of every format. Tokyo's `min`, `sum` and
+    hence its mean are therefore not heights, and its `attr-stats` row is a
+    timing, not a statistic of the city.
+
+    `just bench` takes the column from the dataset's hand-picked entry
+    (`HAND_PICKED_STATS` in `benchmark/readbench/src/params.rs`: Tokyo and
+    Montréal) or derives it, and omits the row where there is none, so an
+    absent `attr-stats` row is expected rather than a failed measurement.
+    **Do not read a missing row as a zero, and do not average a
+    partial-coverage row into a cross-dataset aggregate figure.** Every other
     scenario is unaffected: they derive from geometry, object type or id,
-    which all six datasets have.
+    which every dataset has.
 
     The retired corpus had a different version of this problem — two datasets
     with 1 and 13 top-level objects, whose every filter matched either
     everything or nothing — and the current corpus has none: its smallest
-    entry holds 379 objects and its largest 198,699, so every selectivity
-    ratio carries information.
+    entry holds 379 objects, so every selectivity ratio carries information.
 
 18. **Wire size equals disk size on this corpus, but the SOURCE size is not
     the size of what gets measured.** Every current entry is served
@@ -935,7 +963,7 @@ each cold number stands alone, one per format, one `full-read` only.
     window — on `ingolstadt`, 0.055 against CityParquet's 0.011 for
     `bbox-1pct`. The window is the same for every format, which is what makes
     the timings comparable; the `selectivity` column is not comparable across
-    grains. See Caveat 3 on counting grain.
+    grains. See Caveat 1 on counting grain.
 
     The window is defined in the package's axis order: a CityParquet package
     stores `x` as longitude and `y` as latitude, as GeoParquet requires,

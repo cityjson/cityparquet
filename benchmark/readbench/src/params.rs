@@ -936,7 +936,7 @@ const HAND_PICKED: [(Key, &str, Pick); 8] = [
 /// Tokyo's `measuredHeight` carries PLATEAU's `-9999` placeholder for an
 /// unmeasured height on part of the buildings, and it is aggregated with the
 /// placeholder included: no runner has an exclusion predicate, and adding
-/// one would change the timed work (READ_BENCHMARK.md, Caveat 35).
+/// one would change the timed work (READ_BENCHMARK.md, Caveat 17).
 const HAND_PICKED_STATS: [(Key, &str); 2] = [
     (Key::Dataset("tokyo"), "measuredHeight"),
     (Key::Dataset("montreal"), "measuredHeight"),
