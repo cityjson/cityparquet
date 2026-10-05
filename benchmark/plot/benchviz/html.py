@@ -38,7 +38,7 @@ def sections(data: dict) -> list[tuple[str, str, list[str]]]:
     result = [(f"{FORMATS_DIR}/sizes", "File size on disk", [])]
     for dataset in data.get("datasets", []):
         name = dataset.get("title") or dataset["id"]
-        lines = [x for x in conditions.get("heatmap", []) if x.startswith(f"{dataset['id']}:")]
+        lines = [x for x in conditions.get("formats", []) if x.startswith(f"{dataset['id']}:")]
         for metric, _field, page_title, _axis in FORMAT_METRICS:
             result.append(
                 (f"{FORMATS_DIR}/{dataset['id']}/{metric}", f"{name} — {page_title}", lines)

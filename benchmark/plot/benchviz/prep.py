@@ -1066,7 +1066,7 @@ def _attr_filter_text(block: dict) -> str | None:
 
 
 def format_conditions(inputs: Inputs, read_records: list[dict]) -> list[str]:
-    """Per-dataset conditions for the format heatmap."""
+    """Per-dataset conditions for the format comparison's figures."""
     lines: list[str] = []
     for dataset in sorted({r["dataset"] for r in read_records}):
         rows = [r for r in read_records if r["dataset"] == dataset]
@@ -1255,7 +1255,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
             "feature_grain_formats": list(FEATURE_GRAIN_FORMATS),
             "excluded_formats": excluded.as_list(),
             "conditions": {
-                "heatmap": format_conditions(inputs, read_records),
+                "formats": format_conditions(inputs, read_records),
                 **database_conditions(database_data),
             },
             "machine": {
