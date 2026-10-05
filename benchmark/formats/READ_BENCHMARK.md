@@ -158,12 +158,13 @@ coordinator.rs`'s own module doc). This means an http-transport run still
 
 ## The corpus
 
-The format and size families use Rotterdam, Ingolstadt, Vienna, New York,
-Zurich and the largest 3DBAG scaling slice. Published CityJSON inputs are
-listed with their provenance in `corpus_urls.txt`. The suite manifest selects
-five of those inputs and replaces the small 3DBAG tile with the scaling
-source. The source list remains a download inventory, not the experimental
-matrix.
+The format and size families use seven city datasets — Rotterdam,
+Ingolstadt, Vienna, New York, Zurich, Tokyo (Chiyoda) and Montréal — and the
+largest 3DBAG scaling slice. Every CityJSON input is listed with its
+provenance, byte size and sha256 in `corpus_urls.txt`; Tokyo and Montréal are
+derived by this project, and that file records how, step by step.
+`README.md` lists every dataset with its download URL and its query
+predicates.
 
 The 3DBAG slices are nested prefixes of a pinned FlatCityBuf source, cut at
 whole-feature boundaries. Their names give nominal targets; recorded actual
@@ -171,10 +172,10 @@ CityObject counts determine the scaling axis. All families that request the
 largest slice must use the same source bytes and derived query parameters.
 
 The corpus is building-focused and does not establish coverage of all CityGML
-modules. Ingolstadt provides LoD3 data; 3DBAG provides multiple LoDs. Synthesised
-CityGML must be checked for information loss, including collapse of fractional
-LoDs (Caveat 14). This limitation also needs checking on the large 3DBAG slice;
-a successful conversion alone does not prove equivalent content.
+modules. Ingolstadt provides LoD3 data; 3DBAG and Tokyo provide several LoDs
+per building; Tokyo and Montréal are textured. Synthesised CityGML must be
+checked for information loss, including collapse of fractional LoDs
+(Caveat 14); a successful conversion alone does not prove equivalent content.
 
 ## The six scenarios
 
@@ -676,6 +677,17 @@ each cold number stands alone, one per format, one `full-read` only.
     done. **CityGML is the one artefact derived backwards**, and the next
     caveat is entirely about what that costs.
 
+    **One corpus source derives from CityParquet: Montréal.** By the
+    author's decision, the Montréal CityJSON was exported from this project's
+    own published CityParquet packages of three boroughs (the derivation is
+    in `corpus_urls.txt`). The chain above still runs forwards from that
+    CityJSON, so within a run every artefact, CityParquet included, derives
+    from the same document; but the document itself passed through
+    CityParquet first, so whatever the CityParquet encoding could not hold
+    is absent from every Montréal artefact. A Montréal number compares the
+    formats on what survived that round trip, not on the city's published
+    original.
+
     **CityGML synthesis — the one backwards hop, and its cost.** Where the
     source document is not itself CityGML, the `citygml` artefact is produced
     by `citygml-tools from-cityjson -v 2.0 --no-pretty-print` from the
@@ -953,8 +965,8 @@ each cold number stands alone, one per format, one `full-read` only.
     axis, or comparing a 1M-row figure against a `citygml` number that does
     not exist. What it still supports: the four-format curve across all seven
     cardinalities, and the five-format comparison up to 100k. CityGML's
-    cross-format cost is measured properly in `formats/results/`, on six real
-    published datasets, which is what that family is for.
+    cross-format cost is measured properly in `formats/results/`, on the seven
+    city datasets, which is what that family is for.
 
 24. **The `bloom` family's larger slices show pruning across many row
     groups.** At the default 65 536-row groups the small slices are one row
@@ -1109,6 +1121,33 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     mixed**; the added work is one comparison pair and one addition per
     value, next to a full parse, so the difference is expected to be small
     but it has not been measured.
+
+36. **FlatCityBuf's schema has no CityObject `address`.** Tokyo carries an
+    `address` on 35,067 CityObjects; `fcb ser` writes none of them, so the
+    `.fcb` holds less than the other four artefacts. No query reads an
+    address, so no `result_count` is affected, but a Tokyo size or full-read
+    figure compares a FlatCityBuf file without addresses against files with
+    them.
+
+37. **`cityparquet convert` synthesises an LoD0 footprint for an object that
+    has none.** `readbench_prepare.sh` converts with the default, so the
+    package carries a footprint for each of Tokyo's 11,172
+    `BuildingInstallation`s and for the 12 Montréal buildings without LoD0,
+    which no other artefact has. It changes no `result_count` (verified on
+    Tokyo, with and without it), but it adds bytes: on Tokyo the Hilbert package is
+    80,249,026 B with it and 80,184,081 B without (`--no-lod0`), 64,945 B or
+    0.08 %.
+
+38. **On Tokyo the two counting levels are far apart: 49,915 CityObjects in
+    38,743 features.** Each feature is a `Building` with its
+    `BuildingInstallation`s inline, so the feature-grained formats
+    (`citygml`, `cityjsonseq`, `flatcitybuf`) count 38,743 for `count` and
+    `full-read` and a smaller number for each `bbox-*` window than the
+    CityObject-grained ones; Caveat 1 states which is which, and the
+    coordinator checks each level against its own reference (Caveat 2).
+    Ingolstadt (379 in 55), Vienna (1,322 in 307) and Zurich (198,699 in
+    52,834) are nested too; Rotterdam, New York and Montréal hold one
+    CityObject per feature.
 
 ## Environment
 

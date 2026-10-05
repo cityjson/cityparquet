@@ -27,6 +27,54 @@ is where every family's caveats are kept: `benchviz` renders that one numbered
 list onto the summary page, so a caveat written only here would never reach a
 reader of the figures.
 
+## The corpus
+
+Seven city datasets and the largest 3DBAG slice. Each CityJSON source is pinned
+by byte size and sha256 in `benchmark/scripts/fetch_benchmark.sh`, and
+`corpus_urls.txt` records its provenance; every one is also mirrored at
+`https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/<id>.city.json`,
+with the CityGML 2.0 the benchmark synthesises from it at `…/citygml20/<id>.gml`
+(a convenience copy: the benchmark synthesises its own with the pinned
+citygml-tools, identical once the tool's random `ID_<uuid>`s are masked).
+
+| id                     | Dataset             | Source                                                                                                                    | `attr-filter`                                      | `attr-stats`                                   |
+| ---------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- | ---------------------------------------------- |
+| `rotterdam_delfshaven` | Rotterdam           | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json>                                      | `TerrainHeight >=` its 0.75 quantile (2.45)        | `TerrainHeight`                                |
+| `ingolstadt`           | Ingolstadt          | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Ingolstadt.city.json>                                           | `klumMaterialClass == "Wood"`                      | `materialUncertainty`                          |
+| `vienna_102081`        | Vienna              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json>                                        | `roofType == "FLACHDACH"`                          | `measuredHeight`                               |
+| `nyc_da13_buildings`   | New York            | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json>                             | `BIN == "1000000"`                                 | none (no numeric attribute)                    |
+| `zurich_building_lod2` | Zurich              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json>                             | `class == "BB01"`                                  | `GebaeudeStatus`                               |
+| `tokyo`                | Tokyo (Chiyoda)     | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/tokyo.city.json>              | `usage == "401"`                                   | `measuredHeight`, `-9999` placeholder included |
+| `montreal`             | Montréal            | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json>           | `measuredHeight >=` its 0.75 quantile (15.543) | `measuredHeight`                               |
+| `3dbag_n1000000`       | 3DBAG (Netherlands) | cut by `just fetch-scaling-data` from <https://flatcitybuf.open3d.city/data/3dbag_subset2_all_index.fcb>, without LoD 1.2 | `b3_dak_type == "slanted"`                         | `b3_bag_bag_overlap`                           |
+
+The predicates are declared in `benchmark/readbench/src/params.rs`
+(`HAND_PICKED`, `HAND_PICKED_STATS`); a quantile is computed from the data when
+the parameters are derived, and the run's parameter sidecar records the value.
+Tokyo's `measuredHeight` holds PLATEAU's `-9999` "not measured" placeholder on
+1,041 of its 38,743 values, and it is aggregated with the placeholder in: no
+runner has an exclusion predicate, and adding one would change the timed work.
+
+Tokyo and Montréal are derived by this project; `corpus_urls.txt` gives every
+step, and `benchmark/scripts/cityjson_merge.py` rebuilds either byte for byte
+from its inputs:
+
+- **Tokyo** — PLATEAU Chiyoda-ku 2025 `bldg` (CC BY 4.0), 21 CityGML tiles
+  (their sha256s in `tokyo_sources.sha256`). Texture `mimeType` `image/jpg` is
+  normalised to `image/jpeg`; `citygml-tools to-cityjson --vertex-precision=10`
+  converts each tile, skipping the `uro` ADE; the merge re-quantises `z` to
+  1e-6 m, because FlatCityBuf stores 32-bit integer vertices and a uniform
+  1e-10 overflows on height, giving a transform scale of
+  `[1e-10, 1e-10, 1e-6]`. `creationDate` values carry the converting
+  machine's UTC offset (`+01:00` or `+02:00`).
+- **Montréal** — exported from this project's published CityParquet packages
+  of three boroughs (`https://cityparquet.open3d.city/data/montreal-2020/collection.json`,
+  `cityparquet:version` 0.1.0-draft) with the CLI at monorepo commit `2f042db`,
+  merged with the scale refined to `[1e-5, 1e-3, 1e-6]` and every texture
+  given type `JPG` from its file extension. **This dataset derives from
+  CityParquet**, by the author's decision — the one exception to the
+  preparation chain's rule (`READ_BENCHMARK.md`, Caveat 14).
+
 ## Running the suite
 
 Use the root entry points:

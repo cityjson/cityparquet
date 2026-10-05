@@ -63,7 +63,7 @@ just bench-run --data-root benchmark/runs
 just bench-summary --data-root benchmark/runs
 ```
 
-Preparation fetches the six-file corpus (about 423 MB), uses the pinned 7.6 GB
+Preparation fetches the seven-file corpus (about 1.2 GB), uses the pinned 7.6 GB
 3DBAG FlatCityBuf source to make seven nested slices through the nominal
 one-million-object prefix, prepares all required format artefacts, builds the
 release CityParquet CLI, and prepares the database environment. It needs Rust
@@ -88,8 +88,11 @@ largest 3DBAG slice. The selector rejects data roots outside `benchmark/runs/`.
 | `bloom`     | Nested 3DBAG scaling slices and the corpus  | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
 | `databases` | Largest 3DBAG slice                         | Storage including indexes; mean query time and peak memory | Database query suite                                                                    |
 
-The corpus retains Rotterdam, Ingolstadt, Vienna, New York and Zurich, and
-uses the largest scaling slice for 3DBAG. Dataset IDs identify artefacts;
+The corpus is Rotterdam, Ingolstadt, Vienna, New York, Zurich, Tokyo (Chiyoda)
+and Montréal, with the largest scaling slice for 3DBAG
+([`formats/README.md`](formats/README.md) lists each with its source and query
+predicates; Tokyo and Montréal are derived by this project, and Montréal is
+exported from CityParquet). Dataset IDs identify artefacts;
 figures use readable display names. The scaling generator takes whole features
 from a pinned FlatCityBuf source in source order. Slices are nested prefixes,
 not replicated objects. Actual CityObject counts can exceed the nominal target

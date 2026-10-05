@@ -18,7 +18,9 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(bench_suite.paths(root)["prepared"], root / "data/readbench")
     def test_bloom_default_is_the_scaling_series_and_the_corpus(self):
         selected = bench_suite.dataset_selection(self.manifest, ["bloom"], "", "full")
-        self.assertEqual(len(selected), 12)
+        self.assertEqual(len(selected), 14)
+        self.assertIn("tokyo", selected)
+        self.assertIn("montreal", selected)
         self.assertIn("rotterdam", selected)
         self.assertIn("3dbag_n1000000", selected)
     def test_bloom_results_have_their_own_directory(self):

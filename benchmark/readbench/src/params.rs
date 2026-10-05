@@ -532,10 +532,9 @@ pub fn seq_feature_ids(seq_path: &Path) -> Result<Vec<String>> {
 ///
 /// The CityGML is synthesised from the source CityJSON by `citygml-tools`
 /// rather than cut from the seq stream, so its member set is not guaranteed
-/// to match: `benchmark/README.md` records that `3dbag_9-284-556` loses an
-/// LoD in that round trip. An id probe absent here would be timed as a hit
-/// and recorded as a miss, which is why every probe is checked against this
-/// set.
+/// to match (READ_BENCHMARK.md, Caveat 14, on what the synthesis cannot
+/// carry). An id probe absent here would be timed as a hit and recorded as a
+/// miss, which is why every probe is checked against this set.
 pub fn citygml_ids(gml_path: &Path) -> Result<std::collections::HashSet<String>> {
     let source = cityparquet::source::Source::open(gml_path)
         .map_err(|e| anyhow::anyhow!(e))
@@ -908,7 +907,7 @@ enum Key {
 /// member of the CityJSON `attributes` map (so FlatCityBuf's `fcb ser -A`
 /// B+-tree indexes it) and that every format carries, and every predicate
 /// was verified to return the same `result_count` on every runner.
-const HAND_PICKED: [(Key, &str, Pick); 6] = [
+const HAND_PICKED: [(Key, &str, Pick); 8] = [
     // The natural roof-type query; 3DBAG carries it on the Building, one
     // per feature.
     (Key::Family("3dbag_"), "b3_dak_type", Pick::Eq("slanted")),
@@ -941,7 +940,44 @@ const HAND_PICKED: [(Key, &str, Pick); 6] = [
         "TerrainHeight",
         Pick::Quantile(FALLBACK_QUANTILE),
     ),
+    // PLATEAU's building-use code; `401` is the commonest use in Chiyoda.
+    (Key::Dataset("tokyo"), "usage", Pick::Eq("401")),
+    // Montréal's attributes are measurements; the tallest quarter is the
+    // natural selective range query.
+    (
+        Key::Dataset("montreal"),
+        "measuredHeight",
+        Pick::Quantile(FALLBACK_QUANTILE),
+    ),
 ];
+
+/// The per-dataset `attr-stats` column, chosen by hand where the derived rule
+/// ([`pick_numeric_attribute`], the alphabetically-first numeric attribute)
+/// would aggregate something a reader would not recognise as the dataset's
+/// natural measurement. Matched like [`HAND_PICKED`].
+///
+/// Tokyo's `measuredHeight` carries PLATEAU's `-9999` placeholder for an
+/// unmeasured height on part of the buildings, and it is aggregated with the
+/// placeholder included: no runner has an exclusion predicate, and adding
+/// one would change the timed work (READ_BENCHMARK.md, Caveat 35).
+const HAND_PICKED_STATS: [(Key, &str); 2] = [
+    (Key::Dataset("tokyo"), "measuredHeight"),
+    (Key::Dataset("montreal"), "measuredHeight"),
+];
+
+/// The `attr-stats` column for `base`: its [`HAND_PICKED_STATS`] entry when
+/// the package carries it as a numeric attribute, the derived rule otherwise.
+fn pick_stats_attribute(base: &str, meta: &CityMetadata, schema: &Schema) -> Option<String> {
+    HAND_PICKED_STATS
+        .iter()
+        .find(|(key, _)| match key {
+            Key::Dataset(name) => base == *name || base.starts_with(&format!("{name}-")),
+            Key::Family(prefix) => base.starts_with(prefix),
+        })
+        .map(|(_, column)| column.to_string())
+        .filter(|column| attribute_of_type(meta, schema, column, is_numeric_type))
+        .or_else(|| pick_numeric_attribute(meta, schema))
+}
 
 /// The share of rows [`fallback_attr_filter`]'s string branch aims a
 /// predicate at — selective enough that an index can help, common enough
@@ -1251,7 +1287,8 @@ pub struct ResolvedParams {
     /// `feature-50pct` and `feature-miss`, from [`feature_probes`]; EMPTY
     /// exactly when `id_probes` is.
     pub feature_probes: Vec<IdProbe>,
-    /// The alphabetically-first Int64/Float64 attribute column, or `None`
+    /// The `attr-stats` column: a hand-picked one ([`HAND_PICKED_STATS`]) or
+    /// the alphabetically-first Int64/Float64 attribute column, or `None`
     /// when the dataset has no numeric attribute at all. Never fabricated:
     /// `attr-stats` is skipped when this is `None`.
     pub numeric_attr: Option<String>,
@@ -1344,7 +1381,7 @@ pub fn resolve(
     let feature_probes = feature_probes(&id_probes);
     let schema = open_arrow_schema(cp_table)?;
     let attr_filter = pick_attr_filter(dataset, &meta, &schema, cp_table)?;
-    let numeric_attr = pick_numeric_attribute(&meta, &schema);
+    let numeric_attr = pick_stats_attribute(strip_known_extension(dataset), &meta, &schema);
 
     let file =
         std::fs::File::open(cp_table).with_context(|| format!("opening {}", cp_table.display()))?;
@@ -1664,6 +1701,20 @@ mod tests {
             hand_picked_for("zurich_building_lod2"),
             Some(("class", Pick::Eq("BB01")))
         );
+    }
+
+    #[test]
+    fn tokyo_and_montreal_have_their_hand_picked_predicates() {
+        assert_eq!(hand_picked_for("tokyo"), Some(("usage", Pick::Eq("401"))));
+        assert_eq!(
+            hand_picked_for("montreal-hilbert"),
+            Some(("measuredHeight", Pick::Quantile(FALLBACK_QUANTILE)))
+        );
+        let stats: Vec<&str> = HAND_PICKED_STATS
+            .iter()
+            .map(|(_, column)| *column)
+            .collect();
+        assert_eq!(stats, ["measuredHeight", "measuredHeight"]);
     }
 
     #[test]

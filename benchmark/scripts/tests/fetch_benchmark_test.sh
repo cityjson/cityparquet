@@ -373,6 +373,49 @@ case_zip_member_that_matches_several() {
 # PREVIOUS corpus, which used this same directory — so "a file with that name
 # exists" is not evidence that it holds the pinned bytes.
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# A sha256 pin that does not match is a hard failure, and leaves nothing
+# behind — the same-size, different-bytes case a size pin cannot see.
+# --------------------------------------------------------------------------
+case_sha256_mismatch_hard_fails() {
+  local name="a sha256 mismatch hard-fails and leaves nothing behind"
+  local dir
+  dir="$(new_sandbox)"
+  printf '%s|%s\n' "$(manifest_line plain.city.json "$dir/origin/plain.city.json" plain default)" \
+    "0000000000000000000000000000000000000000000000000000000000000000" >"$dir/manifest.txt"
+
+  run_fetch "$dir" "$dir/dest"
+  if [[ $LAST_RC -eq 0 ]]; then
+    fail "$name" "a wrong sha256 was accepted; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "sha256 mismatch"; then
+    fail "$name" "the failure does not say what went wrong; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ -n "$(find "$dir/dest" -mindepth 1 -print)" ]]; then
+    fail "$name" "a failed fetch left files behind"
+    return
+  fi
+  pass "$name"
+}
+
+case_matching_sha256_is_accepted() {
+  local name="a matching sha256 pin is accepted"
+  local dir sha
+  dir="$(new_sandbox)"
+  sha="$(shasum -a 256 "$dir/origin/plain.city.json" 2>/dev/null | awk '{print $1}')"
+  [[ -n "$sha" ]] || sha="$(sha256sum "$dir/origin/plain.city.json" | awk '{print $1}')"
+  printf '%s|%s\n' "$(manifest_line plain.city.json "$dir/origin/plain.city.json" plain default)" \
+    "$sha" >"$dir/manifest.txt"
+  run_fetch "$dir" "$dir/dest"
+  if [[ $LAST_RC -ne 0 ]] || ! log_mentions "sha256 verified"; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
 case_receiptless_file_is_refetched() {
   local name="a present file with no receipt is re-fetched, not trusted"
   local dir
@@ -569,8 +612,13 @@ case_pinned_table_is_well_formed() {
   local -a urls=()
   while IFS= read -r line; do
     IFS='|' read -r -a fields <<<"$line"
-    if [[ "${#fields[@]}" -ne 5 ]]; then
-      fail "$name" "entry '$line' has ${#fields[@]} fields, want 5"
+    if [[ "${#fields[@]}" -ne 6 ]]; then
+      fail "$name" "entry '$line' has ${#fields[@]} fields, want 6"
+      return
+    fi
+    # EVERY pinned entry pins its bytes by sha256 as well as by size.
+    if [[ ! "${fields[5]}" =~ ^[0-9a-f]{64}$ ]]; then
+      fail "$name" "entry '${fields[0]}' has no well-formed sha256 pin: '${fields[5]}'"
       return
     fi
     if [[ ! "${fields[1]}" =~ ^[0-9]+$ ]]; then
@@ -644,6 +692,8 @@ case_unknown_set_rejected
 case_zip_member_that_matches_nothing
 case_zip_member_that_matches_several
 case_receiptless_file_is_refetched
+case_sha256_mismatch_hard_fails
+case_matching_sha256_is_accepted
 case_foreign_inputs_are_refused
 case_other_set_entries_are_not_foreign
 case_unreadable_manifest_is_reported

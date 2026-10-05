@@ -138,35 +138,34 @@ KNOWN_INPUT_FIND := "-name '*.json' -o -name '*.jsonl' -o -name '*.gml' -o -name
 # Corpora — all network-dependent, all kept OUT of `just check`/CI
 # ---------------------------------------------------------------------------
 
-# Fetch the CityParquet benchmark corpus — SIX REAL published city models
-# (CityJSON 2.0 `.city.json`, 2.7 MB .. 293 MB, 423 MB on the wire) from the
-# CityJSON project's own dataset page, into DEST (default
-# benchmark/runs/data/benchmark/, gitignored). Every entry's byte size is
-# pinned and verified and an already-present file is skipped — see
+# Fetch the CityParquet benchmark corpus — SEVEN city models (CityJSON 2.0
+# `.city.json`, 2.7 MB .. 498 MB, about 1.2 GB on the wire): five from the
+# CityJSON project's own dataset page, Tokyo and Montréal from this project's
+# mirror. Into DEST (default benchmark/runs/data/benchmark/, gitignored).
+# Every entry's byte size and sha256 are pinned and verified, and an
+# already-present file is skipped — see
 # benchmark/scripts/fetch_benchmark.sh for the table and
 # benchmark/formats/corpus_urls.txt for each URL's provenance. Needs curl;
 # network-dependent; kept OUT of `just check`/CI.
 #
-# EVERY ENTRY PRODUCES ALL EIGHT COMPARED FORMATS, which is the property the
+# EVERY ENTRY PRODUCES ALL FIVE COMPARED FORMATS, which is the property the
 # corpus is selected for: the read benchmark's claim is a comparison BETWEEN
-# formats, so a dataset producing seven of them contributes a comparison with
-# the baseline missing. The `citygml` artefact is SYNTHESISED from the CityJSON
-# by `readbench_prepare.sh` — see benchmark/formats/READ_BENCHMARK.md's CityGML
-# synthesis section for what that costs. The 30-dataset catalogue corpus this
-# replaced is archived, still fetchable, under
-# the retired catalogue corpus.
+# formats, so a dataset producing four of them contributes a comparison with a
+# hole in it. The `citygml` artefact is SYNTHESISED from the CityJSON by
+# `readbench_prepare.sh` — see benchmark/formats/READ_BENCHMARK.md's CityGML
+# synthesis section for what that costs.
 #
 # ONLY selects the entries that can serve one benchmark set: `default` (the
 # DEFAULT, the default format set with the `citygml` row included),
 # `no-citygml` (every format but citygml), or `all` (every pinned entry). For
-# the pinned corpus all three select the same six entries; the flag matters
-# only for a $CORPUS_MANIFEST input, such as the archived corpus, which does
-# carry entries that cannot serve a default-set run.
+# the pinned corpus all three select the same seven entries; the flag matters
+# only for a $CORPUS_MANIFEST input that carries entries that cannot serve a
+# default-set run.
 #
 # The fetch REFUSES to add to a DEST that already holds city-model files the
 # table does not describe — most likely the previous corpus, which used this
 # same directory (`--allow-foreign` overrides).
-[doc("Fetch the read benchmark's six-dataset corpus (423 MB, pinned)")]
+[doc("Fetch the read benchmark's seven-dataset corpus (about 1.2 GB, pinned)")]
 fetch-data DEST=(BENCH / "runs/data/benchmark") ONLY='default':
     ./{{BENCH_SCRIPTS}}/fetch_benchmark.sh --only {{ONLY}} {{DEST}}
 

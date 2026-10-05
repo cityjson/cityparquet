@@ -37,6 +37,16 @@ source = "zurich_building_lod2.city.json"
 title = "Zurich"
 role = "corpus"
 
+[datasets.tokyo]
+source = "tokyo.city.json"
+title = "Tokyo (Chiyoda)"
+role = "corpus"
+
+[datasets.montreal]
+source = "montreal.city.json"
+title = "Montréal"
+role = "corpus"
+
 # The scaling generator cuts strict CityObject prefixes from one published
 # FlatCityBuf source.  The largest prefix replaces the former small 3DBAG
 # corpus entry in the format and size comparisons.

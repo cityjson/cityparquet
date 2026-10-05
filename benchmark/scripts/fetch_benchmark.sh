@@ -1,71 +1,67 @@
 #!/usr/bin/env bash
-# Fetch the CityParquet benchmark corpus (`just fetch-data`) — SIX real
-# published city models, 423 MB on the wire, from 2.7 MB (Rotterdam
-# Delfshaven) to 293 MB (Zürich), every one of them a single-object-table
-# building dataset that yields ALL EIGHT compared formats.
+# Fetch the CityParquet benchmark corpus (`just fetch-data`) — SEVEN real
+# city models, about 1.2 GB on the wire, from 2.7 MB (Rotterdam Delfshaven)
+# to 498 MB (Montréal), every one of them a single-object-table building
+# dataset that yields ALL FIVE compared formats.
 #
-# That last property is the whole point of this corpus, and the reason it
-# replaced a 30-dataset, 6.5 GB one that covered far more ground. The read
-# benchmark's claim is a comparison BETWEEN formats, so a dataset that cannot
-# produce every format contributes a row with a hole in it — and the previous
-# corpus had holes in exactly the datasets a reader recognises. See
-# the retired catalogue corpus/README.md for what was retired and
-# why. Depth over breadth: six datasets that are fully comparable beat thirty
-# that are partly comparable.
+# That last property is the whole point of this corpus. The read benchmark's
+# claim is a comparison BETWEEN formats, so a dataset that cannot produce
+# every format contributes a row with a hole in it. Depth over breadth: a
+# handful of datasets that are fully comparable beat many that are partly
+# comparable.
 #
-# Provenance: every entry is from the CityJSON project's own dataset page,
+# Provenance: five entries are from the CityJSON project's own dataset page,
 #   https://www.cityjson.org/datasets/
-# recorded with its verification date in `benchmark/formats/corpus_urls.txt` — read that
-# file for WHY an entry is here, and why the two datasets that page offers but
-# this corpus omits are omitted. This script is the other half: WHAT gets
-# fetched, under which local name, and at exactly which byte size. Its test
-# suite (`scripts/tests/fetch_benchmark_test.sh`, `just scripts-test`) requires
-# the two lists to stay the same set, so neither can drift alone.
+# and two (Tokyo, Montréal) are derived and hosted by this project, recorded
+# with their derivation in `benchmark/formats/corpus_urls.txt` — read that
+# file for WHY an entry is here and how the two derived ones were built. This
+# script is the other half: WHAT gets fetched, under which local name, and at
+# exactly which byte size and sha256. Its test suite
+# (`scripts/tests/fetch_benchmark_test.sh`, `just scripts-test`) requires the
+# two lists to stay the same set, so neither can drift alone.
 #
 # EVERY ENTRY IS FETCHED AS CityJSON, and the `citygml` artefact is SYNTHESISED
-# from it by `readbench_prepare.sh` (`citygml-tools from-cityjson -v 2.0`).
-# That is a deliberate reversal of an earlier rule — see the CityGML synthesis
-# section of benchmark/formats/READ_BENCHMARK.md, which states what it costs. In short: the
-# cityjson.org page publishes a matching `.gml` beside each `.city.json`, but
-# NOT ONE of them is readable here — six are CityGML 1.0, two are 3.0, and this
-# repository's reader accepts only 2.0. Deriving every artefact, CityGML
-# included, from one source document is what makes the eight rows comparable.
+# from it by `readbench_prepare.sh` (`citygml-tools from-cityjson -v 2.0`). See
+# the CityGML synthesis section of benchmark/formats/READ_BENCHMARK.md, which
+# states what it costs: no published CityGML for these datasets is CityGML 2.0,
+# the only version this repository reads, and deriving every artefact from one
+# source document is what makes the five rows comparable.
 #
-# Downloaded to DEST (default benchmark/formats/data/benchmark/, an optional positional
-# argument; the whole of benchmark/formats/data/ is gitignored — see .gitignore).
+# Downloaded to DEST (default benchmark/runs/data/benchmark/, an optional
+# positional argument; benchmark/runs/ is gitignored — see .gitignore).
 #
-# Reproducibility beats freshness. Each entry pins the byte size of the
-# download itself, measured 2026-08-23; the size is verified after every
-# fetch and a mismatch HARD-FAILS rather than silently benchmarking against
-# different bytes. Idempotent: an already-present file is skipped when it
-# still matches what was fetched, so a re-run only collects what is missing,
-# truncated or changed.
+# Reproducibility beats freshness. Each entry pins the byte size and the
+# sha256 of the download itself; both are verified after every fetch and a
+# mismatch HARD-FAILS rather than silently benchmarking against different
+# bytes. Idempotent: an already-present file is skipped when its fetch receipt
+# still matches it, so a re-run only collects what is missing, truncated or
+# changed.
 #
-# Every entry is `plain`: this corpus needs no gunzip and no unzip, and what
-# lands in DEST is byte-for-byte what the origin served. The normalisation
-# machinery below (`gz`, `zip:MEMBER`) is retained because $CORPUS_MANIFEST
-# still feeds it — the archived corpus uses both forms.
+# Every entry is `plain`: what lands in DEST is byte-for-byte what the origin
+# served. The normalisation machinery below (`gz`, `zip:MEMBER`) serves
+# $CORPUS_MANIFEST inputs.
 #
-# Needs `curl`. No `gsutil`: every entry is fetched over plain HTTPS.
+# Needs `curl`, and `shasum` or `sha256sum`. No `gsutil`: every entry is
+# fetched over plain HTTPS.
 set -euo pipefail
 
 BENCHMARK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The whole benchmark — harness crate, scripts, corpora, results, plots — lives
-# under this one directory. $BENCH_ROOT is the read benchmark's own subtree;
-# overriding it moves the corpus and everything derived from it.
+# under this one directory. $BENCH_ROOT is where its generated inputs and
+# results go (benchmark/runs/, ignored); overriding it moves the corpus.
 MONO_ROOT="$(cd "$BENCHMARK_DIR/.." && pwd)"
-BENCH_ROOT="${BENCH_ROOT:-$BENCHMARK_DIR/formats}"
+BENCH_ROOT="${BENCH_ROOT:-$BENCHMARK_DIR/runs}"
 
 # --- the pinned corpus -----------------------------------------------------
 #
-#   local_name | wire_bytes | form | sets | url
+#   local_name | wire_bytes | form | sets | url | sha256
 #
 # local_name  What lands in DEST, and therefore the dataset name in every
 #             benchmark CSV and chart. Pinned rather than derived because the
-#             published filenames are not self-describing: the 3DBAG tile
-#             ships as `9-284-556.city.json` and Rotterdam's as
-#             `3-20-DELFSHAVEN.city.json`, neither of which names its city in
-#             a chart legend.
+#             published filenames are not self-describing: Rotterdam's ships
+#             as `3-20-DELFSHAVEN.city.json` and New York's as
+#             `DA13_3D_Buildings_Merged.city.json`, neither of which reads
+#             well in a chart legend.
 #
 # wire_bytes  The bytes of the download, as measured on 2026-08-23 by counting
 #             a streamed GET. Every entry here is served uncompressed, so this
@@ -83,58 +79,52 @@ BENCH_ROOT="${BENCH_ROOT:-$BENCHMARK_DIR/formats}"
 #
 # url         Verbatim from benchmark/formats/corpus_urls.txt.
 #
+# sha256      The sha256 of the download. Optional in a $CORPUS_MANIFEST line
+#             (a sixth field); every pinned entry carries one.
+#
 # Ordered by wire size, smallest first, so a truncated fetch still leaves a
 # usable size ladder.
 #
-# EVERY entry was verified on 2026-08-23 before being pinned, against the three
-# gates that decide whether a dataset can be MEASURED at all:
+# EVERY entry was verified before being pinned against the three gates that
+# decide whether a dataset can be MEASURED at all:
 #
 #   1. CityJSON 2.0.
 #   2. ONE CityParquet object table. `cityparquet-readbench`'s coordinator
 #      refuses a multi-table package outright (`locate_cityparquet_table`), so
-#      a dataset spanning two CityGML modules cannot be measured — not
-#      measured poorly, not measured at all. Every entry below is pure
-#      Building module (`Building` / `BuildingPart` / `BuildingInstallation`).
+#      a dataset spanning two CityGML modules cannot be measured. Every entry
+#      below is pure Building module (`Building` / `BuildingPart` /
+#      `BuildingInstallation`).
 #   3. A `gml:id` on every top-level object of the SYNTHESISED CityGML, so the
-#      `id-lookup` scenario samples an id that is actually present in all
-#      eight artefacts. citygml-tools mints a fresh random id where the source
-#      has none, which would make `citygml` score a miss beside every other
+#      `id-lookup` scenario samples an id that is actually present in all five
+#      artefacts. citygml-tools mints a fresh random id where the source has
+#      none, which would make `citygml` score a miss beside every other
 #      format's hit; `readbench_prepare.sh` re-checks this per run.
 #
-# The object and LoD counts below are from the source CityJSON, counted on the
-# same date. `numeric attr` names the column `just bench` hands to the
-# `attr-stats` scenario; the two entries without one simply omit that row.
+#   dataset               objects   LoD
+#   rotterdam_delfshaven      853   2
+#   ingolstadt                379   3
+#   vienna_102081           1,322   2
+#   nyc_da13_buildings     23,777   2
+#   montreal               31,415   2
+#   tokyo                  49,915   0 / 1 / 2
+#   zurich_building_lod2  198,699   2
 #
-#   dataset               objects   LoD               numeric attr
-#   rotterdam_delfshaven      853   2                 TerrainHeight
-#   ingolstadt                379   3                 measuredHeight (55/379)
-#   vienna_102081           1,322   2                 measuredHeight
-#   3dbag_9-284-556         2,221   0 / 1.2 / 1.3 / 2.2   b3_h_dak_50p
-#   nyc_da13_buildings     23,777   2                 (none)
-#   zurich_building_lod2  198,699   2                 Geomtype
-#
-# NOTE on 3dbag_9-284-556: it is the only multi-LoD entry, and CityGML 2.0
-# cannot hold all four of its LoDs — 1.2 and 1.3 both map to `lod1Solid`, so
-# the synthesised `.gml` carries three LoDs where every other artefact carries
-# four. Its `citygml` row is therefore NOT content-equivalent to its other
-# seven. Kept deliberately (it is the only entry exercising the per-LoD
-# geometry columns, and the collapse is itself a finding about CityGML), and
-# disclosed in benchmark/formats/READ_BENCHMARK.md — do not quote its `citygml` bytes or
-# parse time against another format's without saying so.
+# The 1,000,001-object 3DBAG slice that completes the format comparison is not
+# fetched here: `just fetch-scaling-data` cuts it from its own pinned source.
 CORPUS=(
-  "rotterdam_delfshaven.city.json|2731804|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json"
-  "ingolstadt.city.json|5051369|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Ingolstadt.city.json"
-  "vienna_102081.city.json|5635634|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json"
-  "3dbag_9-284-556.city.json|7032849|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/9-284-556.city.json"
-  "nyc_da13_buildings.city.json|110083137|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json"
-  "zurich_building_lod2.city.json|292500409|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json"
+  "rotterdam_delfshaven.city.json|2731804|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json|958460c670b4cb85a9159d1e5e566905fba8812864f64b554ecad38333badcf6"
+  "ingolstadt.city.json|5051369|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Ingolstadt.city.json|91e45df269dec5a22f80af6c149dca0d64c85ce1796b8fefc6296ae6bfa5cfe5"
+  "vienna_102081.city.json|5635634|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json|849a148b5fb91ebfa6e3efe7bd78be47cc5cdd2fb6699e0cb042f44dd702cc62"
+  "nyc_da13_buildings.city.json|110083137|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json|c885bb6af297531c95b097aff5d38e694935ac22fe1b973cbad15948021f6cb8"
+  "zurich_building_lod2.city.json|292500409|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json|a7dde7f306e69a4134b2bf30b8ead58fe11d3499f8b30d7596ba346aeae6f0f8"
+  "tokyo.city.json|315968009|plain|default,no-citygml|https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/tokyo.city.json|4a3e2e01bf5136e14f4d43bc993861d6d19234488f2867cc4e83e4d7dd8822ac"
+  "montreal.city.json|498371022|plain|default,no-citygml|https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json|e54940e3aec2d2e4157b4dc0b5575c903066a2502e7d4a2e99c95e6180fc74cb"
 )
 
 VALID_SETS=(default no-citygml all)
 
-# Every request carries a browser User-Agent. The current corpus's single
-# origin (3d.bk.tudelft.nl) does not require it, but several origins reachable
-# through $CORPUS_MANIFEST do — the archived corpus's Kuopio and Montréal hosts
+# Every request carries a browser User-Agent. The corpus's origins do not
+# require it, but several origins reachable through $CORPUS_MANIFEST do — the archived corpus's Kuopio and Montréal hosts
 # both serve a 403 to a bare `curl/x.y`. Not a trick to get at private data:
 # all of it is published open data, and those origins simply gate on the
 # header.
@@ -154,10 +144,10 @@ usage: fetch_benchmark.sh [--only SET] [--allow-foreign] [DEST]
   --allow-foreign  proceed even though DEST holds city-model files this
                    table does not describe (they will still be measured by
                    `just bench DEST` — this only says you meant it)
-  DEST             destination directory (default benchmark/formats/data/benchmark)
+  DEST             destination directory (default benchmark/runs/data/benchmark)
 
   $CORPUS_MANIFEST  fetch a manifest file's entries instead of the pinned
-                    corpus. Same `name|bytes|form|sets|url` line format;
+                    corpus. Same `name|bytes|form|sets|url[|sha256]` line format;
                     `#` comments and blank lines are ignored.
 USAGE
 }
@@ -256,6 +246,7 @@ NAMES=()
 WANTS=()
 FORMS=()
 URLS=()
+SHAS=()
 # Every name the TABLE knows, `--only` notwithstanding — the foreign-input
 # check below is about what this corpus is, not about what this run selected.
 ALL_NAMES=()
@@ -263,9 +254,13 @@ SKIPPED_BY_SET=()
 need_gunzip=0
 need_unzip=0
 for entry in ${ENTRIES[@]+"${ENTRIES[@]}"}; do
-  IFS='|' read -r e_name e_want e_form e_sets e_url <<<"$entry"
+  IFS='|' read -r e_name e_want e_form e_sets e_url e_sha <<<"$entry"
   if [[ -z "$e_name" || -z "$e_want" || -z "$e_form" || -z "$e_sets" || -z "$e_url" ]]; then
-    echo "error: malformed corpus entry (want name|bytes|form|sets|url): $entry" >&2
+    echo "error: malformed corpus entry (want name|bytes|form|sets|url[|sha256]): $entry" >&2
+    exit 1
+  fi
+  if [[ -n "$e_sha" && ! "$e_sha" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "error: entry '$e_name' has a malformed sha256 '$e_sha'" >&2
     exit 1
   fi
   ALL_NAMES+=("$e_name")
@@ -287,6 +282,7 @@ for entry in ${ENTRIES[@]+"${ENTRIES[@]}"}; do
   WANTS+=("$e_want")
   FORMS+=("$e_form")
   URLS+=("$e_url")
+  SHAS+=("$e_sha")
 done
 
 if [[ "$need_gunzip" -eq 1 ]] && ! command -v gunzip >/dev/null 2>&1; then
@@ -356,6 +352,15 @@ size_of() {
   stat -f%z "$1" 2>/dev/null || stat -c%s "$1"
 }
 
+sha256_of() {
+  # portable sha256 of $1 (macOS/BSD shasum vs GNU sha256sum)
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
 fetched=0
 skipped=0
 # `${a[@]+"${a[@]}"}`, never a bare `"${!a[@]}"`: under `set -u` an EMPTY array
@@ -366,6 +371,7 @@ for i in ${NAMES[@]+"${!NAMES[@]}"}; do
   want="${WANTS[$i]}"
   form="${FORMS[$i]}"
   url="${URLS[$i]}"
+  sha="${SHAS[$i]}"
   dest="$DATA_DIR/$name"
   receipt="$RECEIPTS/$name.receipt"
 
@@ -402,6 +408,15 @@ for i in ${NAMES[@]+"${!NAMES[@]}"}; do
     exit 1
   fi
   echo "  size verified: $name ($have bytes on the wire)"
+  if [[ -n "$sha" ]]; then
+    got="$(sha256_of "$part")"
+    if [[ "$got" != "$sha" ]]; then
+      echo "error: $name sha256 mismatch after download (got $got, want $sha)" \
+        "-- refusing to benchmark against changed bytes" >&2
+      exit 1
+    fi
+    echo "  sha256 verified: $name"
+  fi
 
   out="$WORK/$name.out"
   case "$form" in
