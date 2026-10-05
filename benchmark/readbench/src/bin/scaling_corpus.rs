@@ -21,6 +21,7 @@ use clap::Parser;
 use fcb_core::FcbReader;
 use fcb_core::deserializer::to_cj_metadata;
 
+use cityparquet_readbench::lod::drop_lods;
 use cityparquet_readbench::scaling::write_scaling_slices;
 
 /// Cut fixed-CityObject-count CityJSONSeq prefixes out of one FlatCityBuf
@@ -42,6 +43,13 @@ struct Args {
     /// counts can slightly exceed the nominal size (reported per slice).
     #[arg(long, value_delimiter = ',', required = true)]
     sizes: Vec<usize>,
+    /// CityJSON `lod` values (exact string match, comma-separated or
+    /// repeated) whose geometries are removed from every feature before it
+    /// is written; unreferenced vertices are removed with them. Objects are
+    /// kept, so slice counts do not change. The 3DBAG slices pass `1.2`:
+    /// CityGML 2.0 cannot carry LoD 1.2 beside LoD 1.3.
+    #[arg(long, value_delimiter = ',')]
+    drop_lod: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -75,7 +83,8 @@ fn main() -> Result<()> {
                 Some(feature) => {
                     seen += 1;
                     let cj = feature.cur_cj_feature()?;
-                    Ok(Some((serde_json::to_string(&cj)?, cj.city_objects.len())))
+                    let line = drop_lods(&serde_json::to_string(&cj)?, &args.drop_lod)?;
+                    Ok(Some((line, cj.city_objects.len())))
                 }
             }
         },
@@ -94,11 +103,16 @@ fn main() -> Result<()> {
         );
     }
     println!(
-        "scaling-corpus: {} slice(s) from {} ({} of {} features read)",
+        "scaling-corpus: {} slice(s) from {} ({} of {} features read; LoDs dropped: {})",
         summaries.len(),
         args.input.display(),
         seen,
-        features_total
+        features_total,
+        if args.drop_lod.is_empty() {
+            "none".to_string()
+        } else {
+            args.drop_lod.join(",")
+        }
     );
     Ok(())
 }

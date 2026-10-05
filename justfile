@@ -187,7 +187,8 @@ fetch-tools:
 # CityJSONSeq prefixes with a fixed number of CityObjects each: one
 # DEST/3dbag_n<SIZE>.city.jsonl per SIZE, every slice a strict prefix of
 # the next larger one, in source feature order. This is the input for the
-# CONFIGURATION-axis benchmark (`bloom-bench`): one dataset at several
+# CONFIGURATION-axis benchmark (`bloom-bench`), and its largest slice is the
+# format comparison's 3DBAG dataset: one dataset at several
 # cardinalities shows the trend over size with the data held constant,
 # where a corpus of unrelated city models would entangle every
 # configuration delta with a data delta.
@@ -197,13 +198,20 @@ fetch-tools:
 # SIZE — the `scaling-corpus` binary prints the exact counts per slice. A
 # SIZE the source cannot fill is an ERROR, not a silently short file.
 #
+# Every slice is cut WITHOUT LoD 1.2 (`--drop-lod 1.2`): 3DBAG carries LoD
+# 0, 1.2, 1.3 and 2.2, but CityGML 2.0 has integer LoDs only, so the
+# synthesised CityGML below could keep just one LoD-1 solid (citygml-tools
+# keeps 1.3). Dropping 1.2 at the source gives all five formats the same
+# content: LoD 0, 1.3 and 2.2. The vertices only LoD 1.2 used go with it,
+# and every CityObject stays, so slice counts are unchanged.
+#
 # These slices carry no .gml of their own, but `readbench_prepare.sh`
 # SYNTHESISES one with citygml-tools, exactly as it does for the read
 # corpus's .city.json entries — so `bench` over DEST measures `citygml`
 # too, and the synthesised artefact is roughly 4x the CityJSONSeq it came
 # from. Budget for that at the large cardinalities: a 1,000,000-object
-# slice is a 2.75 GB stream and a ~10 GB .gml, and `citygml` is the
-# slowest format in the matrix by an order of magnitude.
+# slice is a stream of a few GB and a .gml roughly four times larger, and
+# `citygml` is the slowest format in the matrix by an order of magnitude.
 #
 # Needs curl; network-dependent on the first run (~7.6 GB); kept
 # OUT of `just check`/CI.
@@ -226,7 +234,8 @@ fetch-scaling-data DEST=(BENCH / "runs/data/scaling") SIZES='1000,5000,10000,500
         fi
     fi
     cargo run --release {{READBENCH_CARGO}} --bin scaling-corpus -- \
-        --input "$src" --out-dir "{{DEST}}" --stem 3dbag --sizes "{{SIZES}}"
+        --input "$src" --out-dir "{{DEST}}" --stem 3dbag --sizes "{{SIZES}}" \
+        --drop-lod 1.2
 
 # ---------------------------------------------------------------------------
 # Conversion

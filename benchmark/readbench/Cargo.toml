@@ -78,7 +78,9 @@ fcb_core = "=0.7.6"
 cjseq2 = "=0.1.0"
 peak_alloc = "0.3.0"
 clap = { version = "4", features = ["derive"] }
-serde_json = "1"
+# `preserve_order`: `lod::drop_lods` re-serialises a feature, and its keys must
+# stay in the source order.
+serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 flate2 = "1"
 arrow-array = "58"
