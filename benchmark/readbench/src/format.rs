@@ -119,6 +119,16 @@ impl Format {
 
     /// The canonical kebab-case CLI/CSV spelling (round-trips through
     /// [`FromStr`]).
+    /// The format's runner counts FEATURES (a top-level object with its
+    /// descendants) for `count`, `full-read` and `bbox-query`; the others
+    /// count CityObjects (READ_BENCHMARK.md, Caveat 1).
+    pub fn counts_features(self) -> bool {
+        matches!(
+            self,
+            Format::CityGml | Format::CityJsonSeq | Format::CityJsonSeqGz | Format::FlatCityBuf
+        )
+    }
+
     /// The artefact stores coordinates as GeoParquet does — `x` longitude,
     /// `y` latitude, whatever the CRS declares. Every other artefact keeps
     /// the source's own axis order, so a latitude-first dataset's query

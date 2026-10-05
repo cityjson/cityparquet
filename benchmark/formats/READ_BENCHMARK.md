@@ -332,10 +332,8 @@ dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_byt
   run made about that row:
   - `no-attr-index` / `attr-index-failed` — FlatCityBuf answered this row by
     a full scan, not by its B+-tree (Caveat 11);
-  - `attr-filter-count-mismatch` — the resolved formats disagreed on
-    `attr-filter`'s `result_count`, so this run's object-level rows are not
-    all measuring the same query (see "Self-consistency" in
-    `benchmark/readbench/src/coordinator.rs`).
+  - `count-mismatch` — this row's `result_count` disagreed with the
+    reference or with the other formats, and the run failed (Caveat 2).
 - `bytes_read` / `http_requests` — **empty for every `--transport local`
   row** (no HTTP concept locally); for a `--transport http` row, the total
   bytes transferred and HTTP request count that scenario's own
@@ -418,20 +416,19 @@ each cold number stands alone, one per format, one `full-read` only.
    why selectivity is a meaningful, bounded number in this benchmark rather
    than an artefact to explain away.
 
-   **The guard against a grain mismatch WARNS; it never fails the run.**
-   After `attr-filter` has run for every resolved format, the coordinator
-   compares their `result_count`s — the derived attribute predicate is
-   CityObject-level in every format, so a healthy run sees them agree exactly
-   — and prints either `self-consistency OK: …` or `WARNING: formats disagree
-on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
-   the predicate that was measured. It is a diagnostic,
-   not a correctness gate: a run whose formats disagreed still writes a
-   complete-looking CSV, with nothing in the CSV itself recording that they
-   did. It also covers `attr-filter` **only** — never `id-lookup`, and never
-   the three feature-grain scenarios. **So the stderr log has to be kept with
-   the run**, and a `WARNING: formats disagree` line must be reproduced beside
-   any number quoted from that run. CityGML's nested `cityObjectMember`
-   hierarchy is the likeliest source of such a disagreement.
+   **A count that disagrees fails the run.** Once every format has run, the
+   coordinator checks each row's `result_count` at its own counting level.
+   `count` and `full-read` must equal the CityParquet table's CityObjects or
+   its features (root objects, `id == feature_id`); each `bbox-*` window
+   must select exactly the CityObjects, or the features, whose box
+   intersects it as the CityParquet `bbox` column says (the reference counts
+   are in the parameter sidecar, `windows[].objects` and
+   `windows[].features`); `attr-filter` must match the predicate's
+   `matched`. `attr-stats` and each `id-*` probe have no reference and must
+   agree across every format. A disagreeing row is tagged `count-mismatch`
+   in `notes`, the CSV is written anyway, and the coordinator exits
+   non-zero naming the scenario, the formats and the counts; a clean run
+   prints `cross-format consistency OK` on stderr.
 
 3. **`full-read`'s materialisation is honestly different work per format,
    not identical work in different clothes.** CityGML streams and decodes
@@ -889,6 +886,19 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     a relative tolerance of ±10% and, when it cannot converge inside that,
     takes the nearest achievable window and appends `approx` to the row's
     `notes`. A missed target is disclosed in the artefact, never silent.
+
+    No window edge lies on an object's edge. The search converges on a jump
+    in the row count, so its edges land exactly on object edges, where
+    whether an object counts depends on the last digit of how a format
+    decodes the coordinate — a CityJSON integer times its scale against the
+    Parquet double. Each `x`/`y` edge is therefore moved to the midpoint of
+    the gap between two consecutive distinct object-edge values (a lower
+    edge competes with the boxes' maxima, an upper edge with their minima);
+    the gap must exceed twice the dataset's coordinate quantisation (the
+    CityJSONSeq `transform.scale`) on that axis, and when the edge's own gap
+    is narrower the nearest wide one is used. `z` spans the dataset's range
+    with a margin either side. `achieved` and `approx` describe the moved
+    window.
 
 22. **bbox targets are expressed in CityParquet ROW space.** The search runs
     over the CityParquet package's per-row bboxes, so `cityparquet`'s own

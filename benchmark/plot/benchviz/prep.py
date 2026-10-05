@@ -287,7 +287,7 @@ def unavailable_reason(row: dict[str, str] | None) -> str | None:
 
     A cell is unavailable when its row is absent, when one of its `notes`
     tags reports a skip, an error or a failed cross-format check (the
-    coordinator's `attr-filter-count-mismatch`), when a status column says
+    coordinator's `count-mismatch`), when a status column says
     so, or when it carries no time.
     """
     if row is None:

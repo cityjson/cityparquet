@@ -91,17 +91,44 @@ pub fn open_arrow_schema(table: &Path) -> Result<Schema> {
 /// 199,000 rows, so under 10 MB.
 pub struct RowBoxes {
     pub boxes: Vec<[f64; 6]>,
+    /// Aligned with `boxes`: the row is a feature's root object
+    /// (`id == feature_id`), the unit the feature-level formats count.
+    pub roots: Vec<bool>,
+    /// Root rows in the table, with or without a bbox — the number of
+    /// features a feature-level format's `count` reports.
+    pub root_total: u64,
     pub dataset: [f64; 6],
 }
 
-/// Appends every row's bbox in `batch` to `out`. A row with a null bbox
-/// contributes nothing — it has no extent, so no window can intersect it.
-fn collect_batch_bboxes(batch: &RecordBatch, out: &mut Vec<[f64; 6]>) {
+/// Appends every row's bbox in `batch` to `out`, with whether the row is a
+/// feature's root object to `roots`. A row with a null bbox contributes no
+/// box — it has no extent, so no window can intersect it — but a root row
+/// is counted in `root_total` either way.
+fn collect_batch_bboxes(
+    batch: &RecordBatch,
+    out: &mut Vec<[f64; 6]>,
+    roots: &mut Vec<bool>,
+    root_total: &mut u64,
+) -> Result<()> {
+    let ids = match batch.column_by_name("id") {
+        Some(array) => utf8_values(array.as_ref())?,
+        None => vec![None; batch.num_rows()],
+    };
+    let feature_ids = match batch.column_by_name("feature_id") {
+        Some(array) => utf8_values(array.as_ref())?,
+        None => vec![None; batch.num_rows()],
+    };
+    let is_root: Vec<bool> = ids
+        .iter()
+        .zip(&feature_ids)
+        .map(|(id, feature)| id.is_some() && id == feature)
+        .collect();
+    *root_total += is_root.iter().filter(|r| **r).count() as u64;
     let Some(bbox_col) = batch.column_by_name("bbox") else {
-        return;
+        return Ok(());
     };
     let Some(bbox_col) = bbox_col.as_any().downcast_ref::<StructArray>() else {
-        return;
+        return Ok(());
     };
     let leaf = |name: &str| {
         bbox_col
@@ -116,13 +143,14 @@ fn collect_batch_bboxes(batch: &RecordBatch, out: &mut Vec<[f64; 6]>) {
         leaf("ymax"),
         leaf("zmax"),
     ) else {
-        return;
+        return Ok(());
     };
 
-    for row in 0..batch.num_rows() {
+    for (row, root) in is_root.iter().enumerate() {
         if bbox_col.is_null(row) {
             continue;
         }
+        roots.push(*root);
         out.push([
             xmin.value(row),
             ymin.value(row),
@@ -132,25 +160,30 @@ fn collect_batch_bboxes(batch: &RecordBatch, out: &mut Vec<[f64; 6]>) {
             zmax.value(row),
         ]);
     }
+    Ok(())
 }
 
-/// Scans the whole `bbox` column of `table` (a single-column projection),
-/// keeping every row's own box and unioning them into the dataset extent.
+/// Scans the `bbox`, `id` and `feature_id` columns of `table`, keeping every
+/// row's own box and whether it is a root object, and unioning the boxes
+/// into the dataset extent.
 pub fn scan_row_bboxes(table: &Path) -> Result<RowBoxes> {
     let file =
         std::fs::File::open(table).with_context(|| format!("opening {}", table.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| format!("reading {}", table.display()))?;
-    let projection = ProjectionMask::columns(builder.parquet_schema(), ["bbox"]);
+    let projection =
+        ProjectionMask::columns(builder.parquet_schema(), ["bbox", "id", "feature_id"]);
     let reader = builder
         .with_projection(projection)
         .build()
         .with_context(|| format!("scanning bbox column of {}", table.display()))?;
 
     let mut boxes: Vec<[f64; 6]> = Vec::new();
+    let mut roots: Vec<bool> = Vec::new();
+    let mut root_total = 0u64;
     for batch in reader {
         let batch = batch.with_context(|| format!("reading a batch of {}", table.display()))?;
-        collect_batch_bboxes(&batch, &mut boxes);
+        collect_batch_bboxes(&batch, &mut boxes, &mut roots, &mut root_total)?;
     }
 
     let mut iter = boxes.iter();
@@ -171,7 +204,12 @@ pub fn scan_row_bboxes(table: &Path) -> Result<RowBoxes> {
         ]
     });
 
-    Ok(RowBoxes { boxes, dataset })
+    Ok(RowBoxes {
+        boxes,
+        roots,
+        root_total,
+        dataset,
+    })
 }
 
 /// `(target fraction of rows, notes tag)` for the three bbox windows — one
@@ -215,6 +253,14 @@ pub struct BboxWindow {
     /// `achieved` is outside [`BBOX_TOLERANCE`] of `target` — the target was
     /// not reachable on this data. Disclosed in `notes`, never silent.
     pub approx: bool,
+    /// CityObjects whose bbox intersects the window — what every
+    /// object-level format must report (the coordinator checks it).
+    #[serde(default)]
+    pub objects: u64,
+    /// Features (root objects) whose bbox intersects the window — what every
+    /// feature-level format must report.
+    #[serde(default)]
+    pub features: u64,
 }
 
 /// The same 3D overlap test every format runner applies row-by-row
@@ -321,7 +367,125 @@ pub fn window_for_target(
         achieved,
         window: window_at(centre, best, dataset),
         approx: (achieved - target).abs() > BBOX_TOLERANCE * target,
+        objects: best_count as u64,
+        features: 0,
     }
+}
+
+/// Moves every `x`/`y` edge of `window` off the object edges and widens its
+/// `z` range, then recomputes what it selects.
+///
+/// The search above converges on a jump in the row count, so each edge lands
+/// exactly ON some object's edge, and whether that object is counted then
+/// depends on the last digit of how a format decodes the coordinate — a
+/// CityJSON integer times its scale, against the Parquet double. Each edge is
+/// placed instead at the midpoint of the gap between two consecutive distinct
+/// object-edge values (a lower edge competes with the boxes' maxima, an upper
+/// edge with their minima). The gap must exceed twice `quantum` — the
+/// dataset's coordinate quantisation on that axis — so the midpoint is more
+/// than one quantum from both; the gap containing the edge is used when it is
+/// wide enough, otherwise the nearest one that is. The achieved fraction, the
+/// `approx` flag and both reference counts are recomputed for the moved
+/// window.
+pub fn untie_window(rows: &RowBoxes, mut window: BboxWindow, quantum: [f64; 2]) -> BboxWindow {
+    let mut w = window.window;
+    for axis in 0..2 {
+        let mut maxima: Vec<f64> = rows.boxes.iter().map(|b| b[axis + 3]).collect();
+        let mut minima: Vec<f64> = rows.boxes.iter().map(|b| b[axis]).collect();
+        w[axis] = edge_in_gap(&mut maxima, w[axis], quantum[axis], Edge::Lower);
+        w[axis + 3] = edge_in_gap(&mut minima, w[axis + 3], quantum[axis], Edge::Upper);
+    }
+    // z never excludes a row (see `window_at`); a flat object at the dataset's
+    // own z extreme must not tie either.
+    let pad = (rows.dataset[5] - rows.dataset[2]).abs() * 0.01 + 1.0;
+    w[2] = rows.dataset[2] - pad;
+    w[5] = rows.dataset[5] + pad;
+
+    let objects = rows.boxes.iter().filter(|b| intersects(b, &w)).count();
+    let features = rows
+        .boxes
+        .iter()
+        .zip(&rows.roots)
+        .filter(|(b, root)| **root && intersects(b, &w))
+        .count();
+    window.window = w;
+    window.achieved = objects as f64 / rows.boxes.len() as f64;
+    window.approx = (window.achieved - window.target).abs() > BBOX_TOLERANCE * window.target;
+    window.objects = objects as u64;
+    window.features = features as u64;
+    window
+}
+
+/// Which side of the window an edge bounds.
+#[derive(Clone, Copy, PartialEq)]
+enum Edge {
+    /// Includes the boxes whose maximum is `>=` it.
+    Lower,
+    /// Includes the boxes whose minimum is `<=` it.
+    Upper,
+}
+
+/// The midpoint of the gap in `values` (the competing object edges) nearest
+/// to `edge` that is wider than `2 * quantum`.
+fn edge_in_gap(values: &mut Vec<f64>, edge: f64, quantum: f64, side: Edge) -> f64 {
+    values.sort_by(|a, b| a.partial_cmp(b).expect("bbox coordinates are finite"));
+    values.dedup();
+    if values.is_empty() {
+        return edge;
+    }
+    // Gap `i` lies between values[i - 1] and values[i]; gap 0 and gap
+    // `values.len()` are open-ended. The edge's own gap keeps the included
+    // set unchanged: for a lower edge, every value `>= edge` stays above it;
+    // for an upper edge, every value `<= edge` stays below it.
+    let own = match side {
+        Edge::Lower => values.partition_point(|v| *v < edge),
+        Edge::Upper => values.partition_point(|v| *v <= edge),
+    };
+    let wide = |gap: usize| -> Option<f64> {
+        let margin = |v: f64| (2.0 * quantum).max(v.abs() * 1e-12);
+        match gap {
+            0 => Some(values[0] - 2.0 * margin(values[0])),
+            g if g == values.len() => {
+                let last = values[g - 1];
+                Some(last + 2.0 * margin(last))
+            }
+            g => {
+                let (lo, hi) = (values[g - 1], values[g]);
+                (hi - lo > margin(lo).max(margin(hi))).then_some((lo + hi) / 2.0)
+            }
+        }
+    };
+    for step in 0..=values.len() {
+        let below = own.checked_sub(step);
+        let above = (own + step <= values.len()).then_some(own + step);
+        for gap in [below, above].into_iter().flatten() {
+            if let Some(point) = wide(gap) {
+                return point;
+            }
+        }
+    }
+    edge
+}
+
+/// The `transform.scale` of a CityJSONSeq stream's header line — the
+/// coordinate quantisation of every artefact built from it. `[0, 0, 0]` when
+/// the header carries no transform.
+pub fn seq_scale(seq_path: &Path) -> Result<[f64; 3]> {
+    use std::io::BufRead as _;
+    let file = File::open(seq_path).with_context(|| format!("opening {}", seq_path.display()))?;
+    let mut header = String::new();
+    std::io::BufReader::new(file)
+        .read_line(&mut header)
+        .with_context(|| format!("reading the header of {}", seq_path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&header)
+        .with_context(|| format!("parsing the header of {}", seq_path.display()))?;
+    let scale = |i: usize| {
+        value["transform"]["scale"]
+            .get(i)
+            .and_then(|s| s.as_f64())
+            .unwrap_or(0.0)
+    };
+    Ok([scale(0), scale(1), scale(2)])
 }
 
 /// Every feature's own top-level `id`, in the CityJSONSeq stream's order —
@@ -1094,6 +1258,10 @@ pub struct ResolvedParams {
     /// The dataset-global CityObject total — the SHARED selectivity
     /// denominator for every CityObject-level scenario.
     pub cp_object_total: u64,
+    /// Features (root objects) in the CityParquet table — what every
+    /// feature-level format's `count` must report.
+    #[serde(default)]
+    pub cp_feature_total: u64,
     /// The dataset's CRS declares latitude first ([`crs_is_latitude_first`]),
     /// so the windows — in the package's longitude-first order — are swapped
     /// in `x`/`y` for every artefact that keeps the source's order.
@@ -1124,9 +1292,31 @@ pub fn resolve(
     gml_path: Option<&Path>,
 ) -> Result<ResolvedParams> {
     let rows = scan_row_bboxes(cp_table)?;
+    let meta = open_metadata(cp_table)?;
+    let swap_xy = crs_is_latitude_first(meta.crs.known());
+    // The quantisation of the package's x/y axes: the CityJSONSeq header's
+    // `transform.scale`, in source order — so swapped for a latitude-first
+    // dataset, whose package x is the source's second axis.
+    let quantum = match seq_path {
+        Some(seq) => {
+            let scale = seq_scale(seq)?;
+            if swap_xy {
+                [scale[1], scale[0]]
+            } else {
+                [scale[0], scale[1]]
+            }
+        }
+        None => [0.0, 0.0],
+    };
     let windows = BBOX_TARGETS
         .iter()
-        .map(|(target, tag)| window_for_target(&rows.boxes, rows.dataset, *target, tag))
+        .map(|(target, tag)| {
+            untie_window(
+                &rows,
+                window_for_target(&rows.boxes, rows.dataset, *target, tag),
+                quantum,
+            )
+        })
         .collect();
 
     let id_probes = match seq_path {
@@ -1152,7 +1342,6 @@ pub fn resolve(
     };
 
     let feature_probes = feature_probes(&id_probes);
-    let meta = open_metadata(cp_table)?;
     let schema = open_arrow_schema(cp_table)?;
     let attr_filter = pick_attr_filter(dataset, &meta, &schema, cp_table)?;
     let numeric_attr = pick_numeric_attribute(&meta, &schema);
@@ -1162,7 +1351,6 @@ pub fn resolve(
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| format!("reading {}", cp_table.display()))?;
     let cp_object_total = builder.metadata().file_metadata().num_rows() as u64;
-    let swap_xy = crs_is_latitude_first(meta.crs.known());
 
     Ok(ResolvedParams {
         dataset: dataset.to_string(),
@@ -1172,6 +1360,7 @@ pub fn resolve(
         feature_probes,
         numeric_attr,
         cp_object_total,
+        cp_feature_total: rows.root_total,
         swap_xy,
     })
 }
@@ -1276,6 +1465,82 @@ mod tests {
     }
 
     const FIELD: [f64; 6] = [0.0, 0.0, 0.0, 100.0, 100.0, 10.0];
+
+    fn rows_of(boxes: Vec<[f64; 6]>) -> RowBoxes {
+        let roots = vec![true; boxes.len()];
+        RowBoxes {
+            root_total: boxes.len() as u64,
+            boxes,
+            roots,
+            dataset: FIELD,
+        }
+    }
+
+    /// The search converges on a jump, so its edges sit exactly on object
+    /// edges; untied, every x/y edge is at least one quantum clear of every
+    /// competing object edge, and the window selects the same objects.
+    #[test]
+    fn untied_edges_never_sit_on_an_object_edge() {
+        let rows = rows_of(grid(10, 10));
+        for (target, tag) in BBOX_TARGETS {
+            let raw = window_for_target(&rows.boxes, rows.dataset, target, tag);
+            let untied = untie_window(&rows, raw.clone(), [0.001, 0.001]);
+            assert_eq!(untied.objects, raw.objects, "{tag}");
+            let w = untied.window;
+            for b in &rows.boxes {
+                for axis in 0..2 {
+                    assert!(
+                        (b[axis + 3] - w[axis]).abs() > 0.001,
+                        "{tag}: lower edge {w:?} ties {b:?}"
+                    );
+                    assert!(
+                        (b[axis] - w[axis + 3]).abs() > 0.001,
+                        "{tag}: upper edge {w:?} ties {b:?}"
+                    );
+                }
+            }
+            assert!(
+                w[2] < FIELD[2] && w[5] > FIELD[5],
+                "z is padded beyond the extent"
+            );
+        }
+    }
+
+    /// A gap no wider than twice the quantisation is skipped for the nearest
+    /// wide one, and the counts follow the moved edge.
+    #[test]
+    fn a_gap_narrower_than_the_quantisation_moves_the_edge_to_the_nearest_wide_gap() {
+        // Box maxima at 10, 10.0015 and 20: the gap between the first two is
+        // narrower than 2 x 0.001.
+        let mut maxima = vec![10.0, 10.0015, 20.0];
+        let edge = edge_in_gap(&mut maxima, 10.0015, 0.001, Edge::Lower);
+        assert!(
+            edge > 10.0015 + 0.001 && edge < 20.0 - 0.001 || edge < 10.0 - 0.001,
+            "{edge}"
+        );
+        // The same gap is kept when the quantisation is finer.
+        let mut maxima = vec![10.0, 10.0015, 20.0];
+        let edge = edge_in_gap(&mut maxima, 10.0015, 0.0001, Edge::Lower);
+        assert_eq!(edge, (10.0 + 10.0015) / 2.0);
+    }
+
+    #[test]
+    fn the_feature_reference_counts_root_rows_only() {
+        let mut rows = rows_of(grid(10, 10));
+        for (i, root) in rows.roots.iter_mut().enumerate() {
+            *root = i % 2 == 0;
+        }
+        let raw = window_for_target(&rows.boxes, rows.dataset, 0.25, "bbox-25pct");
+        let w = untie_window(&rows, raw, [0.0, 0.0]);
+        let expected = rows
+            .boxes
+            .iter()
+            .zip(&rows.roots)
+            .filter(|(b, r)| **r && intersects(b, &w.window))
+            .count() as u64;
+        assert_eq!(w.features, expected);
+        assert!(w.features > 0 && w.features < w.objects);
+    }
 
     #[test]
     fn hits_every_target_on_a_uniform_grid() {

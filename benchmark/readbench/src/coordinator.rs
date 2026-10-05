@@ -54,20 +54,16 @@
 //! `<base>.<id>.parquet` packages a local run built, uploaded beside the
 //! prepared artefacts, and writes no `sizes.csv`.
 //!
-//! **Self-consistency (disclosed, never a hard failure).** After the
-//! `AttrFilter` scenario has run for every resolved format, this module
-//! compares their `result_count`s: the derived attribute predicate (see
-//! [`cityparquet_readbench::params::pick_attr_filter`]) is CityObject-level
-//! for every format (CityParquet's own row grain; CityJSONSeq/FlatCityBuf
-//! deliberately flatten to the same grain for this scenario — see their own
-//! module docs), so a healthy run should see them agree exactly. A mismatch
-//! is not a fatal error — this is a diagnostic, not a correctness gate on
-//! the coordinator itself — but it is not stderr-only either: it is recorded
-//! in the `notes` column of every `AttrFilter` row (see
-//! [`ATTR_FILTER_MISMATCH`]), because the CSV is what gets published, and a
-//! spoiled run must not be byte-indistinguishable from a clean one. The same
-//! applies to a runner that fell back from an index to a full scan (see
-//! [`ChildLine::notes`]).
+//! **Cross-format consistency (a hard failure).** Once the matrix has run,
+//! every row's `result_count` is checked ([`check_consistency`]): `count`,
+//! `full-read`, each `bbox-*` window and `attr-filter` against the reference
+//! the parameters were derived with, at the row's own counting level
+//! (CityObjects or features); `attr-stats` and each `id-*` probe for
+//! equality across formats. A disagreeing row is tagged
+//! [`COUNT_MISMATCH`] in `notes`, the CSV is still written so the evidence
+//! survives, and the run then exits non-zero naming the scenario, the
+//! formats and the counts. A runner that fell back from an index to a full
+//! scan discloses it in `notes` too (see [`ChildLine::notes`]).
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -498,13 +494,6 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         }
     }
 
-    // AttrFilter's result_count per measured label, collected for the
-    // self-consistency check below. Keyed by the LABEL rather than the
-    // format so a configuration run compares its variants against each other
-    // — on a format run every label is that format's own name, so nothing
-    // changes there.
-    let mut attr_filter_counts: HashMap<String, u64> = HashMap::new();
-
     for (format, source, label) in &resolved_formats {
         let format = *format;
         let total = total_count_for(format, source)
@@ -574,7 +563,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             ..Default::default()
                         };
                         let notes = spec.notes_tag();
-                        let count = run_measurement(
+                        run_measurement(
                             &mut rows,
                             &mut samples,
                             &dataset,
@@ -587,7 +576,6 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             Some(resolved.cp_object_total),
                             &notes,
                         )?;
-                        attr_filter_counts.insert(label.clone(), count);
                     }
                     None => eprintln!(
                         "cityparquet-readbench: skipping scenario '{scenario}' for format \
@@ -738,30 +726,17 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         }
     }
 
-    // Self-consistency check: never fatal, but never invisible either (see
-    // this module's own doc comment).
-    if attr_filter_counts.len() > 1 {
-        // Named after the column the predicate actually ran against, so the
-        // line says WHICH query the formats agreed (or disagreed) on.
-        let predicate = resolved
-            .attr_filter
-            .as_ref()
-            .map(|spec| spec.notes_tag())
-            .unwrap_or_else(|| "attr-filter".to_string());
-        let mut values = attr_filter_counts.values();
-        let first = *values.next().expect("len > 1 implies at least one value");
-        if values.all(|v| *v == first) {
-            eprintln!(
-                "cityparquet-readbench: self-consistency OK: every resolved format's \
-                 AttrFilter({predicate}) result_count == {first}"
-            );
-        } else {
-            eprintln!(
-                "cityparquet-readbench: WARNING: formats disagree on \
-                 AttrFilter({predicate}) result_count: {attr_filter_counts:?}"
-            );
-            tag_attr_filter_mismatch(&mut rows);
-        }
+    // Cross-format consistency: every count is checked against the reference
+    // the parameters were derived with, or against the other formats, and a
+    // disagreement fails the run — after the CSV is written, with the
+    // disagreeing rows tagged, so the evidence of what went wrong survives.
+    let formats_by_label: HashMap<String, Format> = resolved_formats
+        .iter()
+        .map(|(format, _, label)| (label.clone(), *format))
+        .collect();
+    let failures = check_consistency(&mut rows, &formats_by_label, &resolved);
+    if failures.is_empty() {
+        eprintln!("cityparquet-readbench: cross-format consistency OK");
     }
 
     // A configuration run groups its rows per variant, so a CSV reads top to
@@ -789,6 +764,15 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         write_sizes(&opts.out, base, seq, &sizes)?;
     }
 
+    if !failures.is_empty() {
+        bail!(
+            "cross-format consistency check failed for '{dataset}' ({} disagreement(s); the \
+             rows are tagged `{COUNT_MISMATCH}` in {}):\n  {}",
+            failures.len(),
+            opts.out.display(),
+            failures.join("\n  ")
+        );
+    }
     Ok(())
 }
 
@@ -862,24 +846,119 @@ fn parse_variant_list(ids: &[String]) -> Result<Vec<(String, Variant)>> {
 /// CityParquet ships with, spelled bare.
 const VARIANT_BASELINE: &str = "cityparquet";
 
-/// The `notes` tag a spoiled cross-format comparison carries into the CSV.
-///
-/// The stderr WARNING above is for whoever watched the run; this is for
-/// everyone who only ever sees the artefact. Without it a run whose formats
-/// disagreed on the `AttrFilter` predicate — i.e. one whose object-level rows
-/// are not measuring the same query — is byte-indistinguishable from a clean
-/// one.
-const ATTR_FILTER_MISMATCH: &str = "attr-filter-count-mismatch";
+/// The `notes` tag a row carries when its `result_count` disagrees with the
+/// reference or with the other formats. Without it a spoiled run would be
+/// byte-indistinguishable from a clean one to anyone who only sees the CSV.
+const COUNT_MISMATCH: &str = "count-mismatch";
 
-/// Records [`ATTR_FILTER_MISMATCH`] on every [`Scenario::AttrFilter`] row —
-/// the rows whose `result_count`s are the ones that disagreed.
-fn tag_attr_filter_mismatch(rows: &mut [Row]) {
-    for row in rows
-        .iter_mut()
-        .filter(|r| r.scenario == Scenario::AttrFilter)
-    {
-        row.notes.push(ATTR_FILTER_MISMATCH.to_string());
+/// Checks every row's `result_count` and tags the ones that disagree with
+/// [`COUNT_MISMATCH`]; returns one line per disagreement, naming the
+/// scenario, the formats and the counts.
+///
+/// Formats count at two levels (READ_BENCHMARK.md, Caveat 1):
+/// [`Format::counts_features`] formats count features, the others
+/// CityObjects. Where the parameters carry a reference for both levels the
+/// row is checked against its own level's reference:
+///
+/// - `count` / `full-read`: [`params::ResolvedParams::cp_object_total`] or
+///   `cp_feature_total`;
+/// - each `bbox-*` window: its `objects` or `features` — the CityObjects, or
+///   the features' root objects, whose bbox intersects the window;
+/// - `attr-filter`: the predicate's `matched` (CityObject-level in every
+///   format).
+///
+/// `attr-stats` and each `id-*` probe have no reference and are checked for
+/// equality across every format instead. A configuration run's variants are
+/// all CityParquet, so the same rules apply to them.
+fn check_consistency(
+    rows: &mut [Row],
+    formats: &HashMap<String, Format>,
+    resolved: &params::ResolvedParams,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    let mut tagged = vec![false; rows.len()];
+    let primary = |row: &Row| -> String {
+        row.notes
+            .first()
+            .map(|n| n.split(';').next().unwrap_or("").to_string())
+            .unwrap_or_default()
+    };
+    let is_cold = |row: &Row| row.notes.iter().any(|n| n == "cold");
+
+    // Against a reference, per level.
+    for (i, row) in rows.iter().enumerate() {
+        if is_cold(row) {
+            continue;
+        }
+        let Some(format) = formats.get(&row.label) else {
+            continue;
+        };
+        let features = format.counts_features();
+        let level = if features { "features" } else { "CityObjects" };
+        let expected = match row.scenario {
+            Scenario::Count | Scenario::FullRead => Some(if features {
+                resolved.cp_feature_total
+            } else {
+                resolved.cp_object_total
+            }),
+            Scenario::BBoxQuery => resolved
+                .windows
+                .iter()
+                .find(|w| w.tag == primary(row))
+                .map(|w| if features { w.features } else { w.objects }),
+            Scenario::AttrFilter => resolved.attr_filter.as_ref().map(|spec| spec.matched),
+            _ => None,
+        };
+        if let Some(expected) = expected
+            && row.result_count != expected
+        {
+            let what = match row.scenario {
+                Scenario::BBoxQuery => primary(row),
+                other => other.as_str().to_string(),
+            };
+            failures.push(format!(
+                "{what}: {} reports {}, expected {expected} {level}",
+                row.label, row.result_count
+            ));
+            tagged[i] = true;
+        }
     }
+
+    // Equality across formats where there is no reference.
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        if is_cold(row) || !matches!(row.scenario, Scenario::AttrStats | Scenario::IdLookup) {
+            continue;
+        }
+        let key = match row.scenario {
+            Scenario::IdLookup => primary(row),
+            other => other.as_str().to_string(),
+        };
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, members)) => members.push(i),
+            None => groups.push((key, vec![i])),
+        }
+    }
+    for (key, members) in groups {
+        let first = rows[members[0]].result_count;
+        if members.iter().any(|&i| rows[i].result_count != first) {
+            let counts: Vec<String> = members
+                .iter()
+                .map(|&i| format!("{}={}", rows[i].label, rows[i].result_count))
+                .collect();
+            failures.push(format!("{key}: formats disagree: {}", counts.join(", ")));
+            for i in members {
+                tagged[i] = true;
+            }
+        }
+    }
+
+    for (row, tag) in rows.iter_mut().zip(tagged) {
+        if tag {
+            row.notes.push(COUNT_MISMATCH.to_string());
+        }
+    }
+    failures
 }
 
 /// One requested format's artefact [`Source`], or how it is out of this
@@ -1604,27 +1683,127 @@ mod tests {
         );
     }
 
-    /// A run whose formats disagreed on the `AttrFilter` predicate is not
-    /// measuring the same query in every row of that scenario. Warning about
-    /// it on stderr alone leaves the CSV — the thing that gets published and
-    /// plotted — indistinguishable from a clean run's.
+    fn labelled(label: &str, scenario: Scenario, notes: &[&str], count: u64) -> Row {
+        let mut r = row(scenario, notes);
+        r.label = label.to_string();
+        r.result_count = count;
+        r
+    }
+
+    /// Tokyo's shape: 49,915 CityObjects in 38,743 features, and one window
+    /// selecting 499 objects in 262 features.
+    fn tokyo_like() -> params::ResolvedParams {
+        params::ResolvedParams {
+            dataset: "tokyo.city.json".to_string(),
+            windows: vec![params::BboxWindow {
+                tag: "bbox-1pct".to_string(),
+                target: 0.01,
+                achieved: 0.01,
+                window: [0.0; 6],
+                approx: false,
+                objects: 499,
+                features: 262,
+            }],
+            id_probes: Vec::new(),
+            attr_filter: None,
+            feature_probes: Vec::new(),
+            numeric_attr: None,
+            cp_object_total: 49_915,
+            cp_feature_total: 38_743,
+            swap_xy: true,
+        }
+    }
+
+    fn formats() -> HashMap<String, Format> {
+        [
+            Format::CityJson,
+            Format::CityJsonSeq,
+            Format::CityParquetHilbert,
+        ]
+        .into_iter()
+        .map(|f| (f.as_str().to_string(), f))
+        .collect()
+    }
+
     #[test]
-    fn a_spoiled_run_is_visible_in_the_csv_not_only_on_stderr() {
+    fn counts_that_agree_at_their_own_level_pass() {
         let mut rows = vec![
-            row(Scenario::AttrFilter, &["attr=b3_dak_type=slanted"]),
-            row(Scenario::Count, &[]),
+            labelled("cityjson", Scenario::BBoxQuery, &["bbox-1pct"], 499),
+            labelled(
+                "cityjsonseq",
+                Scenario::BBoxQuery,
+                &["bbox-1pct;approx"],
+                262,
+            ),
+            labelled(
+                "cityparquet-hilbert",
+                Scenario::BBoxQuery,
+                &["bbox-1pct"],
+                499,
+            ),
+            labelled("cityjson", Scenario::Count, &[], 49_915),
+            labelled("cityjsonseq", Scenario::Count, &[], 38_743),
+            labelled("cityjson", Scenario::IdLookup, &["id-50pct"], 1),
+            labelled("cityjsonseq", Scenario::IdLookup, &["id-50pct"], 1),
         ];
-        tag_attr_filter_mismatch(&mut rows);
-        assert!(
-            rows[0].render().contains(ATTR_FILTER_MISMATCH),
-            "the attr-filter row must carry the disclosure: {}",
-            rows[0].render()
+        assert!(check_consistency(&mut rows, &formats(), &tokyo_like()).is_empty());
+        assert!(rows.iter().all(|r| !r.render().contains(COUNT_MISMATCH)));
+    }
+
+    /// The defect this check exists for: every source-order format returned
+    /// 0 on a latitude-first dataset while CityParquet returned 499, and the
+    /// run still reported itself consistent.
+    #[test]
+    fn the_tokyo_zeros_fail_and_name_the_scenario_format_and_counts() {
+        let mut rows = vec![
+            labelled("cityjson", Scenario::BBoxQuery, &["bbox-1pct"], 0),
+            labelled("cityjsonseq", Scenario::BBoxQuery, &["bbox-1pct"], 0),
+            labelled(
+                "cityparquet-hilbert",
+                Scenario::BBoxQuery,
+                &["bbox-1pct"],
+                499,
+            ),
+        ];
+        let failures = check_consistency(&mut rows, &formats(), &tokyo_like());
+        assert_eq!(
+            failures,
+            vec![
+                "bbox-1pct: cityjson reports 0, expected 499 CityObjects".to_string(),
+                "bbox-1pct: cityjsonseq reports 0, expected 262 features".to_string(),
+            ]
+        );
+        assert!(rows[0].render().contains(COUNT_MISMATCH));
+        assert!(!rows[2].render().contains(COUNT_MISMATCH));
+    }
+
+    #[test]
+    fn a_seeded_disagreement_without_a_reference_fails_too() {
+        let mut rows = vec![
+            labelled(
+                "cityjson",
+                Scenario::AttrStats,
+                &["attr=measuredHeight"],
+                38_743,
+            ),
+            labelled(
+                "cityjsonseq",
+                Scenario::AttrStats,
+                &["attr=measuredHeight"],
+                38_742,
+            ),
+            labelled("cityjson", Scenario::IdLookup, &["id-miss"], 0),
+            labelled("cityjsonseq", Scenario::IdLookup, &["id-miss"], 0),
+        ];
+        let failures = check_consistency(&mut rows, &formats(), &tokyo_like());
+        assert_eq!(
+            failures,
+            vec!["attr-stats: formats disagree: cityjson=38743, cityjsonseq=38742".to_string()]
         );
         assert!(
-            !rows[1].render().contains(ATTR_FILTER_MISMATCH),
-            "only the rows whose counts disagreed are tagged: {}",
-            rows[1].render()
+            rows[0].render().contains(COUNT_MISMATCH) && rows[1].render().contains(COUNT_MISMATCH)
         );
+        assert!(!rows[2].render().contains(COUNT_MISMATCH));
     }
 
     /// A `cold` row is excluded from the charts by an EXACT `notes == "cold"`
