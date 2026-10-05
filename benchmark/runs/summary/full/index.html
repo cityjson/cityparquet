@@ -179,7 +179,7 @@ extension loading). `benchmark/scripts/readbench_duckdb.sh` measures this via 5
 timed `SELECT 1;` calls and prints it as a `# calibration:` stderr line
 before every run — it is **disclosed, never subtracted**, from any
 reported `time_s`/`time_std_s`.</li><li>**Warm vs cold — never silently mixed.** The headline numbers everywhere
-in this document and in `benchmark/formats/read_results/*.csv` are warm-cache
+in this document and in `benchmark/runs/formats/results/*.csv` are warm-cache
 means; the single `cold`-tagged row per format (see &quot;Warm vs cold&quot;
 above) is a distinct, separately-reported measurement, always
 `full-read` only, never averaged into or compared unlabelled against the
@@ -571,7 +571,7 @@ without it deliberately.
 axis, or comparing a 1M-row figure against a `citygml` number that does
 not exist. What it still supports: the four-format curve across all seven
 cardinalities, and the five-format comparison up to 100k. CityGML&#x27;s
-cross-format cost is measured properly in `read_results/`, on six real
+cross-format cost is measured properly in `formats/results/`, on six real
 published datasets, which is what that family is for.</li><li>**The `bloom` family&#x27;s larger slices show pruning across many row
 groups.** At the default 65 536-row groups the small slices are one row
 group, which a filter can still prune on a miss but which says nothing
@@ -594,15 +594,16 @@ the 16-column shape with the three lookup counters. The writer puts
 filters on `id`, `feature_id` and high-cardinality string attributes by
 default, so its packages are larger and its lookups prune; the `bloom`
 family&#x27;s `cityparquet+nobloom` variant is the one package measured
-without them.</li><li>**The legacy `read_results/` CSVs predate bloom filters.** The
-`benchmark/formats/read_results/` directory describes packages with no
-filters, and its `LEGACY.md` records the older median/`time_mad_s`
-timing; an `id-lookup` row from it must not be compared with one from
-the current evidence or with the `bloom` family. The shapes keep the two
-apart mechanically: `readbench_duckdb.sh` refuses to append to a CSV
-whose header differs from the coordinator&#x27;s, and the summary loader refuses a
-legacy-shaped CSV as a read result, and reports one in a
-configuration-axis directory as a gap, instead of rendering it.</li><li>**FlatCityBuf is read through the raw FlatBuffers accessors, not
+without them.</li><li>**One generation of results, one statistic, one header.** Every
+committed results CSV reports `time_s` as the arithmetic mean of the warm
+samples and `time_std_s` as their population standard deviation, in the
+coordinator&#x27;s 16-column shape. Results from before 2026-09-24 (a median
+with `time_mad_s`) and from before default-on bloom filters exist only in
+git history and must not be set beside these: a median and a mean are
+different statistics, and an `id-lookup` without filters is a different
+operation. The shapes keep them apart mechanically: `readbench_duckdb.sh`
+refuses to append to a CSV whose header differs from the coordinator&#x27;s,
+and the summary loader refuses such a CSV instead of rendering it.</li><li>**FlatCityBuf is read through the raw FlatBuffers accessors, not
 `cur_cj_feature`.** Every FCB walk — `full-read`, the `attr-filter`
 fallback, `id-lookup`, `attr-stats` — reads
 `FeatureIter::cur_feature()`, the zero-copy `CityFeature` table, and
