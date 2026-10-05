@@ -38,10 +38,13 @@
 //!   so the two JSON runners agree exactly on the same document by
 //!   construction rather than by coincidence.
 //! - [`Scenario::BBoxQuery`] is CityObject-level: each object's bbox is the
-//!   min/max over every vertex its own geometries reference, resolved through
-//!   the document `transform`. An object carrying no geometry at all (e.g.
-//!   the railway fixture's lone `CityObjectGroup`) has no bbox and matches no
-//!   window — it is excluded rather than counted as intersecting everything.
+//!   min/max over every vertex referenced by a geometry in its SUBTREE — its
+//!   own geometries and every descendant's, reached through `children` —
+//!   resolved through the document `transform`. A `Building` with no
+//!   geometry of its own therefore matches a window its `BuildingPart`s
+//!   intersect, as its CityParquet row's `bbox` does (the specification's
+//!   "Spatial metadata"). An object with no geometry anywhere in its subtree
+//!   has no bbox and matches no window.
 //!   A `GeometryInstance` contributes its anchor point (the one vertex index
 //!   its `boundaries` hold), not the bounds of the template it instantiates;
 //!   the same simplification [`super::cityjsonseq`]'s feature bbox makes.
@@ -70,6 +73,7 @@
 //! None of this is silently normalised to match another format; the
 //! methodology doc is responsible for disclosing it alongside the numbers.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -213,6 +217,61 @@ fn object_bounds(
     Ok(acc.finish())
 }
 
+/// An object's box, `(min, max)`, or `None` when it has no geometry.
+type MaybeBox = Option<([f64; 3], [f64; 3])>;
+
+/// The union of two optional boxes.
+fn union(a: MaybeBox, b: MaybeBox) -> MaybeBox {
+    match (a, b) {
+        (None, x) | (x, None) => x,
+        (Some((amin, amax)), Some((bmin, bmax))) => Some((
+            [
+                amin[0].min(bmin[0]),
+                amin[1].min(bmin[1]),
+                amin[2].min(bmin[2]),
+            ],
+            [
+                amax[0].max(bmax[0]),
+                amax[1].max(bmax[1]),
+                amax[2].max(bmax[2]),
+            ],
+        )),
+    }
+}
+
+/// `id`'s box over its whole subtree: its own geometry and, through
+/// `children`, every descendant's — memoised, and guarded against a cycle in
+/// a malformed hierarchy (a child already on the path contributes nothing).
+fn subtree_bounds<'a>(
+    id: &'a str,
+    doc: &'a CityJSON,
+    own: &HashMap<&'a str, MaybeBox>,
+    memo: &mut HashMap<&'a str, MaybeBox>,
+    path: &mut HashSet<&'a str>,
+) -> MaybeBox {
+    if let Some(done) = memo.get(id) {
+        return *done;
+    }
+    let (key, co) = doc.city_objects.get_key_value(id)?;
+    let key = key.as_str();
+    path.insert(key);
+    let mut acc = own.get(key).copied().flatten();
+    for child in co.children.iter().flatten() {
+        if path.contains(child.as_str()) {
+            continue;
+        }
+        if let Some((child_key, _)) = doc.city_objects.get_key_value(child.as_str()) {
+            acc = union(
+                acc,
+                subtree_bounds(child_key.as_str(), doc, own, memo, path),
+            );
+        }
+    }
+    path.remove(key);
+    memo.insert(key, acc);
+    acc
+}
+
 /// The scenario dispatch shared by the local and HTTP branches of
 /// [`FormatRunner::run`]: everything below the parse (which only differs in
 /// WHERE the bytes come from) is transport-independent.
@@ -241,9 +300,21 @@ fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -
         }
         Scenario::BBoxQuery => {
             let query_bbox = *require(&params.bbox, "bbox", scenario)?;
+            let own: HashMap<&str, MaybeBox> = doc
+                .city_objects
+                .iter()
+                .map(|(id, co)| {
+                    Ok((
+                        id.as_str(),
+                        object_bounds(co, &doc.vertices, &doc.transform)?,
+                    ))
+                })
+                .collect::<Result<_>>()?;
+            let mut memo: HashMap<&str, MaybeBox> = HashMap::new();
             let mut matched = 0u64;
-            for co in document.objects() {
-                if let Some((min, max)) = object_bounds(co, &doc.vertices, &doc.transform)?
+            for id in doc.city_objects.keys() {
+                if let Some((min, max)) =
+                    subtree_bounds(id, doc, &own, &mut memo, &mut HashSet::new())
                     && intersects(min, max, &query_bbox)
                 {
                     matched += 1;

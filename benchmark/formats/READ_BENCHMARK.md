@@ -402,6 +402,21 @@ each cold number stands alone, one per format, one `full-read` only.
    `railway_lod3_fragment.gml` is 6 CityObjects / 4 members. Each of those is
    asserted in the runners' own tests, not merely claimed here.
 
+   **What "an object's bbox intersects the window" means, in every format.**
+   An object's box is the min/max over every vertex referenced by a geometry
+   in its **subtree** — its own geometries and every descendant's, reached
+   through `children` — so a `Building` with no geometry of its own matches a
+   window its `BuildingPart`s intersect, and a `CityObjectGroup` matches
+   through its members. This is the CityParquet `bbox` column's definition
+   (the specification's "Spatial metadata"), and `cityjson` computes the same
+   union. A feature's box is its root object's subtree box, which is what
+   `citygml`, `cityjsonseq` and `flatcitybuf` test, so the feature grain
+   counts the root objects that match. A box intersects the window when it
+   overlaps it on every axis, edges included. An object with no geometry
+   anywhere in its subtree has no box and matches nothing. The two grains are
+   therefore two counts of one set, and the coordinator checks both
+   (Caveat 2).
+
 2. **Selectivity's denominator differs by scenario, on purpose.** The three
    CityObject-granular scenarios (`attr-filter`/`attr-stats`/`id-lookup`)
    divide by the **dataset-global CityObject total** — the

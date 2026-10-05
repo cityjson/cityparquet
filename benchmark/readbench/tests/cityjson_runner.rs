@@ -194,7 +194,8 @@ fn id_lookup_finds_a_real_id_and_none_for_a_bogus_id() {
 
 /// Per-object bboxes come from the DOCUMENT-level `vertices` array (a plain
 /// CityJSON document shares one vertex list across every object) decoded
-/// through the document's own `transform`.
+/// through the document's own `transform`, unioned over each object's
+/// `children` subtree.
 #[test]
 fn bbox_query_uses_the_document_level_vertices_and_transform() {
     let input = fixture("lod3_railway.city.json");
@@ -204,10 +205,11 @@ fn bbox_query_uses_the_document_level_vertices_and_transform() {
     let whole_dataset = ["--bbox", "0.56,0.64,7.579,12.64,7.68,9.103"];
     let all = run_child("cityjson", "bbox-query", &input, &whole_dataset);
     assert_eq!(
-        all, 120,
-        "a window covering the whole extent matches all 120 geometry-bearing \
-         CityObjects; the one CityObjectGroup that carries no geometry at all \
-         has no bbox to intersect and is honestly excluded"
+        all, 121,
+        "a window covering the whole extent matches all 121 CityObjects: the \
+         120 with geometry, and the CityObjectGroup, which has none of its own \
+         but whose box is its members' union (an object's box spans its whole \
+         `children` subtree)"
     );
 
     // The western half of the same extent: a genuine sub-selection, so this
@@ -215,8 +217,9 @@ fn bbox_query_uses_the_document_level_vertices_and_transform() {
     let west_half = ["--bbox", "0.56,0.64,7.579,6.6,7.68,9.103"];
     let west = run_child("cityjson", "bbox-query", &input, &west_half);
     assert_eq!(
-        west, 93,
-        "93 CityObjects intersect the western half of the extent"
+        west, 94,
+        "94 CityObjects intersect the western half of the extent: 93 by their \
+         own geometry, and the CityObjectGroup through its members"
     );
 
     // A window far outside the dataset must match nothing.
