@@ -366,19 +366,21 @@ reversal, in the order a sceptical reader will raise them:
   conservative choice — it gives the baseline this benchmark argues
   against its **best** case, so no size or parse-time gap can be dismissed
   as whitespace.
-- **What it cannot preserve.** CityGML 2.0 has only integer LoDs, so a
-  source carrying fractional ones loses some. Measured 2026-08-23 on
-  `3dbag_9-284-556`, whose CityJSON holds LoD 0, 1.2, 1.3 and 2.2: the
-  synthesised `.gml` collapses 1.2 and 1.3 into a single `lod1Solid` and
-  carries **three** LoDs where every other artefact carries four
-  (`lod0FootPrint` 1,110 / `lod1Solid` 1,111 / `lod2Solid` 1,111 /
-  `lod2MultiSurface` 4,031). **That dataset&#x27;s `citygml` row is therefore
-  not content-equivalent to its other seven, and its bytes and parse time
-  must not be quoted against another format&#x27;s without saying so.** It is
-  the only corpus entry affected, it is kept deliberately — it is also the
-  only entry exercising the per-LoD `geometry_lod*` columns — and the
-  collapse is arguably a finding about CityGML rather than a defect in the
-  measurement.
+- **What it cannot preserve, and how the corpus avoids it.** CityGML 2.0
+  has only integer LoDs. 3DBAG carries LoD 0, 1.2, 1.3 and 2.2, and
+  `citygml-tools from-cityjson -v 2.0` writes the LoD 1.3 solid as
+  `lod1Solid` and drops the LoD 1.2 one, so a CityGML artefact
+  synthesised from it would carry less geometry than the other four. The
+  3DBAG slices are therefore cut **without LoD 1.2**
+  (`scaling-corpus --drop-lod 1.2`, which `just fetch-scaling-data`
+  passes): all five artefacts hold the same LoD 0, 1.3 and 2.2. The drop
+  keeps every CityObject and removes the vertices only LoD 1.2 used, so
+  no format carries orphan coordinates;
+  `benchmark/readbench/tests/drop_lod.rs` checks that every object then
+  carries at most one geometry per integer LoD, which is what CityGML 2.0
+  can hold. A source with two fractional LoDs at one integer level needs
+  the same treatment before its `citygml` row is content-equivalent to
+  the others.
 
 The synthesised artefact is verified after it is written, not trusted:
 `readbench_prepare.sh` re-reads it for a 2.0 declaration and for a
@@ -399,7 +401,7 @@ reproduced beside any number quoted from it.**
 No drift check runs across the **synthesis** hop, and running one would be
 wrong: CityGML nests a `BuildingPart` inside its parent `Building` where
 CityJSON lists both at top level, so the counts legitimately differ — on
-`3dbag_9-284-556`, 1,110 top-level GML members against 2,221 CityObjects.
+a 3DBAG tile, 1,110 top-level GML members against 2,221 CityObjects.
 Comparing them would report a 50 % &quot;loss&quot; that did not happen.</li><li>**A known INPUT RESTRICTION: CityGML input whose objects lack `gml:id`
 is refused outright.** citygml-tools mints a **fresh random UUID** for any
 top-level object with no `gml:id` — a different one on every run. Two
