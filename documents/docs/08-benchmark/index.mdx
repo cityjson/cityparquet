@@ -121,10 +121,12 @@ that CityParquet replaces a transactional system.
   measurements. The database suite has its own execution settings, including
   a multithreaded DuckDB configuration. These are local native measurements,
   not HTTP delivery or browser WebAssembly timings.
-- **Aggregation:** the format timings are medians of seven measured runs after
-  warm-up. The database timings are arithmetic means of seven measured runs,
-  as recorded in the exported CSV and shown by the figure's “Mean query time”
-  label. The two summaries use different statistics.
+- **Aggregation:** the format timings and the database timings are both
+  arithmetic means of seven measured runs, reported with their population
+  standard deviation (`time_std_s` in the CSVs); the format reads and the
+  database reads follow a discarded warm-up, and the database write tier has
+  its own protocol. The figure's “Mean query time” label names the same
+  statistic.
 - **Counting and geometry:** feature-level and CityObject-level operations are
   not interchangeable. Attribute filtering, aggregation, projection, and ID
   queries use CityObject granularity; full-read and spatial comparisons require
