@@ -24,10 +24,9 @@
 # substituted.
 #
 # `<x>` is INPUT's basename minus its known input extension — see
-# `KNOWN_INPUT_EXTENSIONS` below, which is one of four implementations of the
-# same convention (this script, the justfile, the coordinator's Rust
-# `naming::strip_known_extension`, and `benchmark/scripts/readbench_duckdb.sh`'s
-# package-name counterpart), held in lockstep by
+# `KNOWN_INPUT_EXTENSIONS` below, which is one of three implementations of the
+# same convention (this script, the justfile and the coordinator's Rust
+# `naming::strip_known_extension`), held in lockstep by
 # `benchmark/readbench/tests/strip_extension.rs`.
 #
 # THE CONVERSION CHAIN, AND WHY IT RUNS FORWARDS ONLY:
@@ -158,17 +157,10 @@ set -euo pipefail
 # lists out of their own sources and fails if they disagree (a duplicated
 # vocabulary drifting apart is exactly how this benchmark's CSV header
 # contract ended up with three incompatible versions).
-#
-# `duckdb-parquet` is deliberately absent: it is an SQL-engine baseline that
-# `benchmark/scripts/readbench_duckdb.sh` runs over an already-prepared CityParquet
-# package, so there is no artefact for this script to build (the Rust side
-# says the same with `Artefact::NotCoordinated`).
 VALID_FORMATS=(citygml cityjson cityjsonseq flatcitybuf cityparquet cityparquet-hilbert)
 
 # What `--formats` defaults to: the full format-comparison set, i.e. every
-# artefact this script can produce. `duckdb-parquet` is absent for the reason
-# given above (no artefact of its own); `citygml` is present but is skipped
-# with a report, not built, when INPUT is not CityGML.
+# artefact this script can produce.
 # NOT the same list as the coordinator's `DEFAULT_FORMATS` (which is what the
 # benchmark MEASURES by default) — this one can only ever name formats a
 # build step below exists for, so that a bare run never fails on its own

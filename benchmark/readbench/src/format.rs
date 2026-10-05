@@ -20,9 +20,9 @@ use std::str::FromStr;
 /// One format the read benchmark measures.
 ///
 /// Variants are ordered as the benchmark presents them: the formats city
-/// models actually ship as today (CityGML → CityJSON → CityJSONSeq), then the indexed/columnar ones (FlatCityBuf →
-/// CityParquet → Hilbert-ordered CityParquet), then the SQL-engine
-/// baseline. See [`Format::ALL`].
+/// models actually ship as today (CityGML → CityJSON → CityJSONSeq), then
+/// the indexed/columnar ones (FlatCityBuf → CityParquet → Hilbert-ordered
+/// CityParquet). See [`Format::ALL`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
     /// CityGML 2.0 XML — the format most national datasets are published in.
@@ -41,45 +41,19 @@ pub enum Format {
     /// still a plain CityParquet package on disk); only the artefact path
     /// differs — see [`Format::artefact`].
     CityParquetHilbert,
-    /// DuckDB reading the CityParquet package through SQL — a SQL-engine
-    /// baseline driven entirely by `benchmark/scripts/readbench_duckdb.sh`, never by
-    /// this binary's `--child` path or its coordinator.
-    DuckDbParquet,
-}
-
-/// Where a [`Format`]'s artefact lives, relative to the coordinator's
-/// `prepared_dir`.
-///
-/// EVERY measured format reads an artefact `benchmark/scripts/readbench_prepare.sh`
-/// built inside `prepared_dir` — no format reads the original `--input`.
-/// There used to be a third case, `TheInputItself`, for
-/// [`Format::CityJsonSeq`]: it was correct only while `--input` was itself a
-/// `.city.jsonl`, and on the catalogue corpus (whose inputs are `.gml` and
-/// `.city.json`) it silently made the `cityjsonseq` row measure the input's
-/// OWN format under this format's name. The prepare script now always
-/// materialises `<base>.city.jsonl`, and this enum no longer has a way to
-/// say otherwise.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Artefact {
-    /// A file or directory the prepare script builds inside `prepared_dir`.
-    Prepared(String),
-    /// Not this coordinator's business at all.
-    NotCoordinated,
 }
 
 impl Format {
     /// Every variant, in the benchmark's canonical order: the formats data
-    /// ships as, then the indexed/columnar ones, then the engine baseline —
-    /// so a chart reads left-to-right from "what you have" to "what we
-    /// propose".
-    pub const ALL: [Format; 7] = [
+    /// ships as, then the indexed/columnar ones — so a chart reads
+    /// left-to-right from "what you have" to "what we propose".
+    pub const ALL: [Format; 6] = [
         Format::CityGml,
         Format::CityJson,
         Format::CityJsonSeq,
         Format::FlatCityBuf,
         Format::CityParquet,
         Format::CityParquetHilbert,
-        Format::DuckDbParquet,
     ];
 
     /// The FORMAT-COMPARISON set: what a run with no `--formats` measures.
@@ -90,10 +64,6 @@ impl Format {
     /// would actually ship, so the comparison is not handicapped by an
     /// ordering choice no other format here faces; the ordering choice itself
     /// is a separate question, asked by [`Format::ORDERING_SET`].
-    ///
-    /// [`Format::DuckDbParquet`] (an SQL-engine baseline, and not driven by
-    /// this coordinator at all) is opt-in: it is not a format, so it does
-    /// not belong on a format axis.
     pub const DEFAULT_SET: [Format; 5] = [
         Format::CityGml,
         Format::CityJson,
@@ -129,10 +99,7 @@ impl Format {
     /// the source's own axis order, so a latitude-first dataset's query
     /// window reaches it with `x` and `y` swapped.
     pub fn stores_longitude_first(self) -> bool {
-        matches!(
-            self,
-            Format::CityParquet | Format::CityParquetHilbert | Format::DuckDbParquet
-        )
+        matches!(self, Format::CityParquet | Format::CityParquetHilbert)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -143,31 +110,28 @@ impl Format {
             Format::FlatCityBuf => "flatcitybuf",
             Format::CityParquet => "cityparquet",
             Format::CityParquetHilbert => "cityparquet-hilbert",
-            Format::DuckDbParquet => "duckdb-parquet",
         }
     }
 
-    /// Where this format's artefact lives, relative to `prepared_dir`.
+    /// The file or directory, relative to the coordinator's `prepared_dir`,
+    /// that holds this format's artefact.
     ///
-    /// Two cases:
-    /// - `Prepared(name)`: a file or directory the prepare script builds.
-    ///   These names are the coordinator's HALF of a contract with
-    ///   `benchmark/scripts/readbench_prepare.sh`, which writes exactly them;
-    ///   `scripts/tests/readbench_prepare_test.sh` reads both sides out of
-    ///   their own sources and fails if they disagree.
-    /// - `NotCoordinated`: `DuckDbParquet` is an SQL-engine baseline driven
-    ///   by `benchmark/scripts/readbench_duckdb.sh`, never by this coordinator.
-    pub fn artefact(self, base: &str) -> Artefact {
+    /// EVERY measured format reads an artefact
+    /// `benchmark/scripts/readbench_prepare.sh` built inside `prepared_dir` —
+    /// no format reads the original `--input`. These names are the
+    /// coordinator's HALF of a contract with that script, which writes
+    /// exactly them; `scripts/tests/readbench_prepare_test.sh` reads both
+    /// sides out of their own sources and fails if they disagree.
+    pub fn artefact(self, base: &str) -> String {
         match self {
-            Format::CityGml => Artefact::Prepared(format!("{base}.gml")),
-            Format::CityJson => Artefact::Prepared(format!("{base}.city.json")),
+            Format::CityGml => format!("{base}.gml"),
+            Format::CityJson => format!("{base}.city.json"),
             // NEVER the `--input` itself: a `.gml`/`.city.json` input would
             // then be measured, and published, as CityJSONSeq.
-            Format::CityJsonSeq => Artefact::Prepared(format!("{base}.city.jsonl")),
-            Format::FlatCityBuf => Artefact::Prepared(format!("{base}.fcb")),
-            Format::CityParquet => Artefact::Prepared(format!("{base}.parquet")),
-            Format::CityParquetHilbert => Artefact::Prepared(format!("{base}-hilbert.parquet")),
-            Format::DuckDbParquet => Artefact::NotCoordinated,
+            Format::CityJsonSeq => format!("{base}.city.jsonl"),
+            Format::FlatCityBuf => format!("{base}.fcb"),
+            Format::CityParquet => format!("{base}.parquet"),
+            Format::CityParquetHilbert => format!("{base}-hilbert.parquet"),
         }
     }
 }
@@ -193,7 +157,6 @@ impl FromStr for Format {
             "flatcitybuf" => Ok(Format::FlatCityBuf),
             "cityparquet" => Ok(Format::CityParquet),
             "cityparquet-hilbert" => Ok(Format::CityParquetHilbert),
-            "duckdb-parquet" => Ok(Format::DuckDbParquet),
             other => Err(format!(
                 "unknown format '{other}'; expected one of: {}",
                 Format::ALL
@@ -222,33 +185,11 @@ mod tests {
     /// only difference between them IS which artefact resolves.
     #[test]
     fn the_two_cityparquet_orderings_resolve_to_different_artefacts() {
-        assert_eq!(
-            Format::CityParquet.artefact("delft"),
-            Artefact::Prepared("delft.parquet".to_string())
-        );
+        assert_eq!(Format::CityParquet.artefact("delft"), "delft.parquet");
         assert_eq!(
             Format::CityParquetHilbert.artefact("delft"),
-            Artefact::Prepared("delft-hilbert.parquet".to_string())
+            "delft-hilbert.parquet"
         );
-    }
-
-    /// `duckdb-parquet` is the ONLY format with no artefact of this
-    /// coordinator's own (see [`Artefact`]'s own doc comment).
-    #[test]
-    fn only_the_sql_engine_baseline_is_uncoordinated() {
-        for format in Format::ALL {
-            match format {
-                Format::DuckDbParquet => assert_eq!(
-                    format.artefact("delft"),
-                    Artefact::NotCoordinated,
-                    "{format} is driven by benchmark/scripts/readbench_duckdb.sh"
-                ),
-                other => assert!(
-                    matches!(other.artefact("delft"), Artefact::Prepared(_)),
-                    "{other} must read an artefact from --prepared-dir"
-                ),
-            }
-        }
     }
 
     /// CityJSONSeq reads a PREPARED `<base>.city.jsonl`, never the original
@@ -260,7 +201,7 @@ mod tests {
     fn cityjsonseq_reads_a_prepared_seq_artefact() {
         assert_eq!(
             Format::CityJsonSeq.artefact("plateau_chuo_fld"),
-            Artefact::Prepared("plateau_chuo_fld.city.jsonl".to_string())
+            "plateau_chuo_fld.city.jsonl"
         );
     }
 }

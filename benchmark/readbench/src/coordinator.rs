@@ -19,7 +19,7 @@
 //! [`cityparquet_readbench::params::resolve`], which this module calls once
 //! per dataset and whose result it also writes beside the CSV as
 //! `<out>.params.json` — the single description of what a run measured, read
-//! by `benchmark/scripts/readbench_duckdb.sh` rather than re-derived there.
+//! back by the renderer (`benchmark/plot`) and hashed into the run manifest.
 //!
 //! That derivation REQUIRES the `cityparquet` package (`<x>.parquet`)
 //! regardless of which `--formats` were requested: it is the source of the
@@ -73,7 +73,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use cityparquet::variant::Variant;
-use cityparquet_readbench::format::{Artefact, Format};
+use cityparquet_readbench::format::Format;
 use cityparquet_readbench::naming::strip_known_extension;
 
 use crate::formats::{IoStats, LOOKUP_STATS_MARKER, LookupCounters, Source};
@@ -273,13 +273,6 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 ArtefactResolution::Source(source @ Source::Http { .. }) => {
                     resolved_formats.push((format, source, format.as_str().to_string()));
                 }
-                ArtefactResolution::NotCoordinated => {
-                    skipped_formats.push(format);
-                    eprintln!(
-                        "cityparquet-readbench: skipping format '{format}': driven by \
-                         benchmark/scripts/readbench_duckdb.sh, not this coordinator"
-                    )
-                }
                 ArtefactResolution::NonUtf8Key => {
                     skipped_formats.push(format);
                     eprintln!(
@@ -333,20 +326,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // the CityJSONSeq stream (the canonical order the id deciles are cut
     // from). The CityGML artefact is checked when present, so an id probe it
     // does not contain is substituted rather than timed as a silent miss.
-    let seq_path = match Format::CityJsonSeq.artefact(base) {
-        Artefact::Prepared(name) => {
-            let path = opts.prepared_dir.join(name);
-            path.exists().then_some(path)
-        }
-        Artefact::NotCoordinated => None,
-    };
-    let gml_path = match Format::CityGml.artefact(base) {
-        Artefact::Prepared(name) => {
-            let path = opts.prepared_dir.join(name);
-            path.exists().then_some(path)
-        }
-        Artefact::NotCoordinated => None,
-    };
+    let seq_path = Some(opts.prepared_dir.join(Format::CityJsonSeq.artefact(base)))
+        .filter(|path| path.exists());
+    let gml_path =
+        Some(opts.prepared_dir.join(Format::CityGml.artefact(base))).filter(|path| path.exists());
     let mut resolved = params::resolve(
         &dataset,
         &cp_table,
@@ -408,9 +391,8 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     }
 
     // The resolved parameters, beside the CSV this run owns. It is the ONE
-    // description of which windows, ids and attributes this run measured —
-    // `benchmark/scripts/readbench_duckdb.sh` reads it rather than
-    // re-deriving the same choices in bash, so the two cannot drift.
+    // description of which windows, ids and attributes this run measured,
+    // read back by the renderer and hashed into the run manifest.
     let sidecar = params_sidecar_path(&opts.out);
     fs::write(
         &sidecar,
@@ -961,13 +943,9 @@ fn check_consistency(
     failures
 }
 
-/// One requested format's artefact [`Source`], or how it is out of this
-/// coordinator's scope.
+/// One requested format's artefact [`Source`], or why it has none.
 enum ArtefactResolution {
     Source(Source),
-    /// [`Artefact::NotCoordinated`] — `duckdb-parquet`, a separate
-    /// SQL-engine baseline (Task 12).
-    NotCoordinated,
     /// The artefact has no valid-UTF-8 relative key, so no HTTP URL can be
     /// built from it (only reachable under [`Transport::Http`]).
     NonUtf8Key,
@@ -980,12 +958,10 @@ enum ArtefactResolution {
 /// wholesale — see `benchmark/scripts/readbench_upload.md`).
 ///
 /// The per-format NAMING itself lives on [`Format::artefact`]; this function
-/// only turns the resulting [`Artefact`] into a path or an HTTP key.
+/// only turns the resulting name into a path or an HTTP key.
 ///
 /// EVERY format reads a PREPARED artefact: `input` itself is never measured,
-/// so this function does not touch it. (`Format::CityJsonSeq` used to read
-/// it, which was correct only while every `--input` was a `.city.jsonl` —
-/// see [`Artefact`]'s own doc comment.)
+/// so this function does not touch it.
 fn resolve_format_artefact(
     format: Format,
     prepared_dir: &Path,
@@ -993,10 +969,7 @@ fn resolve_format_artefact(
     transport: Transport,
     base_url: Option<&str>,
 ) -> ArtefactResolution {
-    let local_path = match format.artefact(base) {
-        Artefact::Prepared(name) => prepared_dir.join(name),
-        Artefact::NotCoordinated => return ArtefactResolution::NotCoordinated,
-    };
+    let local_path = prepared_dir.join(format.artefact(base));
 
     match transport {
         Transport::Local => ArtefactResolution::Source(Source::Local(local_path)),

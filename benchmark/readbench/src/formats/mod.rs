@@ -10,7 +10,7 @@ pub mod flatcitybuf;
 
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use cityparquet_readbench::format::Format;
 
 use crate::scenario::{QueryParams, Scenario};
@@ -182,11 +182,6 @@ pub trait FormatRunner {
 /// [`Format::CityGml`] has its own runner (see [`citygml`]'s module doc): the
 /// format the source data ships in, read with this repository's own CityGML
 /// 2.0 reader, with no index and therefore a full parse per scenario.
-/// [`Format::DuckDbParquet`] is a SQL-engine baseline driven entirely by
-/// `benchmark/scripts/readbench_duckdb.sh`; it is not, and never will be, a `--child`
-/// format — the `bail!` arm below is the single production statement of that
-/// fact, and [`Format::artefact`]'s `NotCoordinated` is its counterpart on
-/// the coordinator side.
 pub fn resolve(format: Format) -> Result<Box<dyn FormatRunner>> {
     match format {
         Format::CityParquet | Format::CityParquetHilbert => {
@@ -196,10 +191,6 @@ pub fn resolve(format: Format) -> Result<Box<dyn FormatRunner>> {
         Format::CityJsonSeq => Ok(Box::new(cityjsonseq::CityJsonSeqRunner)),
         Format::FlatCityBuf => Ok(Box::new(flatcitybuf::FlatCityBufRunner)),
         Format::CityGml => Ok(Box::new(citygml::CityGmlRunner)),
-        Format::DuckDbParquet => bail!(
-            "format 'duckdb-parquet' is a SQL-engine baseline driven by \
-             benchmark/scripts/readbench_duckdb.sh, not this binary's --child path"
-        ),
     }
 }
 
@@ -207,62 +198,14 @@ pub fn resolve(format: Format) -> Result<Box<dyn FormatRunner>> {
 mod tests {
     use super::*;
 
-    /// Enumerates [`Format::ALL`] rather than a hand-written list, so a new
-    /// variant cannot slip past this test unclassified.
+    /// Every format in [`Format::ALL`] resolves to a runner.
     #[test]
-    fn resolve_implemented_formats_succeed_and_others_error_cleanly() {
+    fn every_format_resolves_to_a_runner() {
         for format in Format::ALL {
-            let resolved = resolve(format);
-            match format {
-                // Implemented today.
-                Format::CityGml
-                | Format::CityParquet
-                | Format::CityParquetHilbert
-                | Format::CityJson
-                | Format::CityJsonSeq
-                | Format::FlatCityBuf => {
-                    assert!(resolved.is_ok(), "{format} should resolve to a runner");
-                }
-                // Never a `--child` format at all.
-                Format::DuckDbParquet => {
-                    assert!(resolved.is_err(), "{format} is not a --child format");
-                }
-            }
+            assert!(
+                resolve(format).is_ok(),
+                "{format} should resolve to a runner"
+            );
         }
-    }
-}
-
-#[cfg(test)]
-mod attr_aggregates_tests {
-    use super::AttrAggregates;
-
-    #[test]
-    fn integers_and_floats_fold_into_one_f64_accumulation() {
-        let mut stats = AttrAggregates::EMPTY;
-        for v in [
-            serde_json::json!(3),
-            serde_json::json!(-1.5),
-            serde_json::json!(10),
-        ] {
-            stats.push(v.as_f64().unwrap());
-        }
-        assert_eq!(
-            stats,
-            AttrAggregates {
-                min: -1.5,
-                max: 10.0,
-                sum: 11.5,
-                count: 3
-            }
-        );
-    }
-
-    #[test]
-    fn a_nan_does_not_panic() {
-        let mut stats = AttrAggregates::EMPTY;
-        stats.push(1.0);
-        stats.push(f64::NAN);
-        assert_eq!((stats.min, stats.max, stats.count), (1.0, 1.0, 2));
-        assert!(stats.sum.is_nan());
     }
 }

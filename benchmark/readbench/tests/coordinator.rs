@@ -906,9 +906,8 @@ fn id_lookup_is_skipped_and_disclosed_when_there_is_no_seq_artefact() {
 }
 
 /// The run writes its resolved parameters beside the CSV. That file is the
-/// ONE description of which windows, ids and attributes a run measured —
-/// `benchmark/scripts/readbench_duckdb.sh` reads it rather than re-deriving
-/// the same choices in bash, so the two cannot drift.
+/// ONE description of which windows, ids and attributes a run measured,
+/// read back by the renderer and hashed into the run manifest.
 #[test]
 fn the_run_writes_a_resolved_params_sidecar_beside_the_csv() {
     let prepared = tempfile::tempdir().unwrap();

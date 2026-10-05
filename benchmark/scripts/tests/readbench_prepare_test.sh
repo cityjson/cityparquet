@@ -1466,19 +1466,13 @@ case_current_chain_artefacts_are_reused() {
 # three incompatible versions. This case reads BOTH lists out of their own
 # source files and compares them, the same trick
 # `benchmark/plot/tests/test_csv_contract.py` uses for the CSV header.
-#
-# `duckdb-parquet` is deliberately excluded: it is an SQL-engine baseline
-# driven by `benchmark/scripts/readbench_duckdb.sh` over an already-prepared
-# CityParquet package, so this script has no artefact to build for it (the
-# Rust side says the same thing as `Artefact::NotCoordinated`).
 # --------------------------------------------------------------------------
 case_vocabulary_matches_the_rust_enum() {
-  local name="the script's format list matches Format::ALL minus duckdb-parquet"
+  local name="the script's format list matches Format::ALL"
   local rust_tags script_tags
   rust_tags="$(awk '/pub fn as_str/,/^        }$/' "$FORMAT_RS" \
     | grep -oE '=> "[a-z0-9-]+"' \
     | sed 's/.*"\(.*\)"/\1/' \
-    | grep -v '^duckdb-parquet$' \
     | tr '\n' ' ')"
   script_tags="$(sed -n 's/^VALID_FORMATS=(\(.*\))$/\1/p' "$PREPARE" \
     | tr -s ' ' ' ')"

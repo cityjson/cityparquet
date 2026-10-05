@@ -10,9 +10,8 @@
 //! ([`strip_known_extension`]), once in `benchmark/scripts/readbench_prepare.sh`,
 //! three identical times in the MONOREPO's root `justfile` (which is where
 //! the per-dataset recipes live: they reach both this crate and the corpora
-//! under `benchmark/`), and once (as its composable package-name
-//! counterpart) in `benchmark/scripts/readbench_duckdb.sh` — because a shell script
-//! cannot import a Rust function and `just` has no functions of its own.
+//! under `benchmark/`) — because a shell script cannot import a Rust
+//! function and `just` has no functions of its own.
 //!
 //! Every one of them used to know only `.json`/`.jsonl`. A `.gml` input was
 //! therefore invisible to every `find` pattern in the justfile, and a
@@ -346,52 +345,4 @@ fn every_recipe_discovers_inputs_through_the_shared_pattern() {
         inline, 0,
         "a justfile recipe still carries its own inline `find` name pattern"
     );
-}
-
-// ---------------------------------------------------------------------------
-// 5. benchmark/scripts/readbench_duckdb.sh — the composable package-name counterpart
-// ---------------------------------------------------------------------------
-
-/// `readbench_duckdb.sh` is handed a `<dataset>.parquet` PACKAGE directory,
-/// never the original input, so it strips `.parquet`/`-hilbert` rather than
-/// an input extension — a different convention, which is exactly why it is
-/// checked by COMPOSITION rather than by running it over [`CASES`]
-/// directly. What must hold is that the dataset name the justfile derives
-/// (by stripping the input extension) survives the round trip through the
-/// package name this script is given back, for every input the benchmark
-/// now accepts — including the CityGML ones.
-#[test]
-fn the_duckdb_baseline_recovers_the_justfile_dataset_name() {
-    let script = read("benchmark/scripts/readbench_duckdb.sh");
-    let stripper: String = script
-        .lines()
-        .filter(|l| l.starts_with("PKG_BASE=\"${PKG_BASE%"))
-        .map(|l| format!("{l}\n"))
-        .collect();
-    assert!(
-        stripper.lines().count() >= 2,
-        "expected readbench_duckdb.sh to strip both `.parquet` and `-hilbert`"
-    );
-    for (input, dataset) in CASES {
-        for suffix in [".parquet", "-hilbert.parquet"] {
-            let program = format!(
-                "set -euo pipefail\nPKG_BASE=\"$(basename \"$1\")\"\n{stripper}printf '%s' \"$PKG_BASE\"\n"
-            );
-            let package = format!("benchmark/runs/data/readbench/{dataset}{suffix}");
-            let out = Command::new("bash")
-                .arg("-c")
-                .arg(&program)
-                .arg("bash")
-                .arg(&package)
-                .output()
-                .expect("running readbench_duckdb.sh's package-name stripper");
-            assert!(out.status.success());
-            assert_eq!(
-                String::from_utf8_lossy(&out.stdout),
-                *dataset,
-                "the package the justfile derives from '{input}' ({package}) does not strip \
-                 back to '{dataset}'"
-            );
-        }
-    }
 }

@@ -1,17 +1,14 @@
-"""The read-results CSV header is written in three places; they must agree.
+"""The read-results CSV header is written in one place and read in another.
 
 `benchmark/readbench/src/coordinator.rs`'s `CSV_HEADER` is the single
-authority: the coordinator writes the file, and the other writer only ever
-appends rows to a CSV it created. `benchmark/scripts/readbench_duckdb.sh`
-adds the `duckdb-parquet` rows, and `benchviz.prep.READ_COLUMNS` is what the
-renderer reads back by name. Nothing at run time compares the three, and a
-drifted copy shifts every column after it silently — which is what this file
-exists to stop.
+authority: the coordinator writes the file, and `benchviz.prep.READ_COLUMNS`
+is what the renderer reads back by name. Nothing at run time compares the two,
+and a drifted copy shifts every column after it silently — which is what this
+file exists to stop.
 
-It lives in the plotting project because that is the only Python test suite the
-benchmark tree has (`just plot-test`); it reads the other two out of their own
-sources rather than restating the header itself, so it cannot go stale in the
-way it is checking for.
+It lives in the plotting project because the renderer is the reading side
+(`just plot-test`); it reads the header out of the coordinator's own source
+rather than restating it, so it cannot go stale in the way it is checking for.
 """
 
 import re
@@ -21,7 +18,6 @@ from benchviz import prep
 
 BENCHMARK = Path(__file__).parents[2]
 COORDINATOR = BENCHMARK / "readbench" / "src" / "coordinator.rs"
-DUCKDB_SH = BENCHMARK / "scripts" / "readbench_duckdb.sh"
 
 
 def _rust_header() -> list[str]:
@@ -34,17 +30,9 @@ def _rust_header() -> list[str]:
     return re.sub(r"\\\n\s*", "", match.group(1)).split(",")
 
 
-def _shell_header() -> list[str]:
-    text = DUCKDB_SH.read_text(encoding="utf-8")
-    match = re.search(r'^CSV_HEADER="([^"]*)"', text, re.MULTILINE)
-    assert match, f"{DUCKDB_SH}: no `CSV_HEADER=\"...\"` assignment"
-    return match.group(1).split(",")
-
-
-def test_every_writer_of_the_results_csv_uses_the_same_header():
+def test_the_coordinator_header_is_the_documented_one():
     authority = _rust_header()
     assert authority[0] == "dataset" and len(authority) == 16, authority
-    assert _shell_header() == authority, DUCKDB_SH
 
 
 def test_the_renderer_reads_a_leading_prefix_of_that_header():

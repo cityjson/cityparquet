@@ -108,12 +108,10 @@ docs-build: docs-install
 #
 # A benchmark input is `<dataset><ext>`, and `<dataset>` names everything
 # derived from it (a package directory, a results CSV, every prepared
-# artefact). The rule is implemented four times over — here, in
-# `benchmark/readbench/src/naming.rs`, in
-# `benchmark/scripts/readbench_prepare.sh`, and (as its composable
-# package-name counterpart) in `benchmark/scripts/readbench_duckdb.sh`
-# — because a shell script cannot import a Rust function and `just` has no
-# functions of its own.
+# artefact). The rule is implemented three times over — here, in
+# `benchmark/readbench/src/naming.rs` and in
+# `benchmark/scripts/readbench_prepare.sh` — because a shell script cannot
+# import a Rust function and `just` has no functions of its own.
 # `benchmark/readbench/tests/strip_extension.rs`
 # extracts the shell ones from their own source files and RUNS them over the
 # same table, so a copy that drifts fails `just check`.
@@ -289,9 +287,8 @@ convert-all FOLDER OUT='out/cityparquet':
 # exists. (It was dropped in 16880cf when the bench recipes were consolidated;
 # those four strings were not.)
 #
-# FORMATS is a comma-separated list of artefact-BEARING format names
-# (`Format::ALL` minus `duckdb-parquet`, which has no artefact of its own —
-# see benchmark/readbench/src/format.rs); empty
+# FORMATS is a comma-separated list of format names (`Format::ALL`, see
+# benchmark/readbench/src/format.rs); empty
 # (the default) builds every artefact the script knows how to build. Needs
 # whichever external tools the requested hop of the chain uses (`just
 # fetch-tools` for citygml-tools + cjseq; `fcb`, `jq`);
@@ -311,86 +308,29 @@ readbench-prepare INPUT OUTDIR=(BENCH / "runs/data/readbench") FORMATS='':
     ./{{BENCH_SCRIPTS}}/readbench_prepare.sh ${args[@]+"${args[@]}"} "{{INPUT}}" "{{OUTDIR}}"
 
 # Cross-format READ benchmark (see benchmark/formats/READ_BENCHMARK.md): for
-# every CityGML/CityJSON/CityJSONSeq file found under FOLDER (recursive),
-# prepare every compared format
-# (`benchmark/scripts/readbench_prepare.sh`), then run the
-# `cityparquet-readbench` coordinator across the whole (format x scenario)
-# matrix into one OUT/<name>.csv. Each OUT/<name>.csv is removed first so a
-# re-run is always clean. Once every dataset is done, renders charts from the
-# CSVs via the `plot` recipe (best-effort: a missing `uv`/plotting setup
-# doesn't fail the benchmark run, only skips the charts). Needs `fcb` on PATH
-# (and `duckdb` only for the opt-in baseline below); network-independent given
-# already-fetched inputs; kept OUT of `just check`/CI.
+# every CityGML/CityJSON/CityJSONSeq file found under FOLDER (recursive), run
+# the `cityparquet-readbench` coordinator across the whole (format x scenario)
+# matrix into one OUT/<name>.csv, reading the artefacts `just bench-prep`
+# built in PREPARED. Each OUT/<name>.csv is removed first so a re-run is
+# always clean. Network-independent given prepared artefacts; kept OUT of
+# `just check`/CI.
 #
 # FORMATS is a comma-separated format list (`Format::ALL`'s canonical names,
-# benchmark/readbench/src/format.rs) threaded to
-# BOTH the prepare script and the coordinator, so exactly the requested
-# artefacts are built and exactly they are measured. Empty (the default) means:
-# prepare every artefact, measure `Format::DEFAULT_SET` — the five-tag
-# FORMAT-comparison set, one tag per format family. It is APPENDED to the
-# parameter list rather than inserted before OUT because `just` parameters are
+# benchmark/readbench/src/format.rs) handed to the coordinator; empty (the
+# default) measures every format. It is APPENDED to the parameter list rather
+# than inserted before OUT because `just` parameters are
 # positional-with-defaults — inserting it would silently reinterpret every
 # existing `just bench FOLDER OUT` call's second argument.
-#
-# THE `duckdb-parquet` BASELINE IS OPT-IN. It is appended to the same CSV
-# (`benchmark/scripts/readbench_duckdb.sh`, driven entirely by the
-# coordinator's resolved-parameters sidecar — the windows, the attr-filter
-# predicate and the numeric column all come from it, and it must therefore
-# run after the coordinator) ONLY when `duckdb-parquet` is named in FORMATS.
-# It is an SQL-ENGINE baseline over a file already in the set, not a format, so
-# a run labelled "format comparison" must not carry it unasked:
-# `Format::DEFAULT_SET` excludes it, and this recipe now agrees rather than
-# quietly adding a sixth, non-format series to a CSV that
-# benchmark/formats/READ_BENCHMARK.md documents as holding five.
-# `benchmark/scripts/tests/bench_recipe_test.sh` pins that both ways —
-# a bare run must not append it, naming it must.
 [private]
 [doc("Cross-format READ benchmark over every input under FOLDER")]
 bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
-    # FORMATS reaches two consumers that do NOT accept the same vocabulary:
-    #   - the coordinator takes the list verbatim (it knows every
-    #     `Format::ALL` name, `duckdb-parquet` included, and reports the ones
-    #     it does not itself drive);
-    #   - `readbench_prepare.sh` builds ARTEFACTS, so it rejects
-    #     `duckdb-parquet` outright (that baseline has no artefact of its
-    #     own), and must always be asked for `cityparquet` whatever was
-    #     requested: the coordinator derives EVERY query parameter — bbox
-    #     windows, the id, the attribute predicate — from that one package.
-    # Naming `duckdb-parquet` is also the ONLY thing that appends the
-    # SQL-engine baseline below (see the header): the default format
-    # comparison must not have an extra series quietly added to its CSV.
-    # BEGIN format-selection (extracted and RUN by
-    # benchmark/scripts/tests/bench_recipe_test.sh — keep both markers
-    # in column 5, and keep this block free of anything the test cannot
-    # evaluate standalone)
-    prepare_formats=""
-    want_duckdb=0
-    if [[ -n "{{FORMATS}}" ]]; then
-        IFS=',' read -r -a requested <<<"{{FORMATS}}"
-        for fmt in "${requested[@]}"; do
-            if [[ "$fmt" == "duckdb-parquet" ]]; then
-                want_duckdb=1
-            else
-                prepare_formats+="${prepare_formats:+,}$fmt"
-            fi
-        done
-        case ",$prepare_formats," in
-            *,cityparquet,*) ;;
-            *) prepare_formats="cityparquet${prepare_formats:+,$prepare_formats}" ;;
-        esac
-    fi
-    # END format-selection
     # `${a[@]+"${a[@]}"}`, never a bare `"${a[@]}"`: under `set -u` an EMPTY
     # array is an unbound variable to bash 4.3 and older (macOS still ships
     # 3.2 as /bin/bash), which would abort every default-FORMATS run.
-    prepare_args=()
     run_args=()
-    if [[ -n "$prepare_formats" ]]; then
-        prepare_args=(--formats "$prepare_formats")
-    fi
     if [[ -n "{{FORMATS}}" ]]; then
         run_args=(--formats "{{FORMATS}}")
     fi
@@ -417,20 +357,6 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
             --out "$out" \
             --repeat {{REPEAT}} \
             ${run_args[@]+"${run_args[@]}"}
-
-        if [[ "$want_duckdb" -eq 1 ]]; then
-            pkg="{{PREPARED}}/${name}.parquet"
-            # Every query parameter comes from the coordinator's own
-            # resolved-parameters sidecar, written beside "$out" by the
-            # `cityparquet-readbench run` above. The numeric-column
-            # detection that used to live here (a DESCRIBE plus a
-            # reserved-name exclusion list, reproducing the coordinator's
-            # own choice in SQL) is gone with it: two implementations of one
-            # rule is exactly what the sidecar removes.
-            ./{{BENCH_SCRIPTS}}/readbench_duckdb.sh "$pkg" "$out" --params "${out}.params.json" --repeat 7
-        else
-            echo "-- duckdb-parquet not requested; the SQL-engine baseline is not appended"
-        fi
 
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
@@ -566,16 +492,13 @@ plot-test:
 # performs no real conversion); `fetch_benchmark_test.sh` serves a throwaway
 # corpus of `file://` URLs to the real fetcher, and lints its pinned table
 # against `benchmark/formats/corpus_urls.txt`; `bench_recipe_test.sh` extracts
-# the `bench` recipe's own format-selection block out of THIS file and runs it,
-# which is what keeps the recipe and `Format::DEFAULT_SET` from disagreeing
-# about whether the `duckdb-parquet` baseline is opt-in. Needs `jq`,
-# `zip`/`unzip`.
+# the variant lists and positional arguments the bloom recipes pass out of
+# THIS file. Needs `jq`, `zip`/`unzip`.
 [doc("The benchmark shell scripts' own suites (needs jq)")]
 scripts-test:
     ./{{BENCH_SCRIPTS}}/tests/readbench_prepare_test.sh
     ./{{BENCH_SCRIPTS}}/tests/fetch_benchmark_test.sh
     ./{{BENCH_SCRIPTS}}/tests/bench_recipe_test.sh
-    ./{{BENCH_SCRIPTS}}/tests/readbench_duckdb_test.sh
 
 # ---------------------------------------------------------------------------
 # Database benchmark (benchmark/databases) — its own uv project and justfile

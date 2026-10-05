@@ -43,15 +43,6 @@ fn the_ordering_set_isolates_the_sort_strategy() {
     );
 }
 
-#[test]
-fn the_engine_baseline_is_opt_in() {
-    let d = Format::DEFAULT_SET;
-    assert!(
-        !d.contains(&Format::DuckDbParquet),
-        "an engine baseline is not a format"
-    );
-}
-
 /// Both measured sets are subsets of the canonical vocabulary, in its
 /// canonical order — so a chart built from either reads left-to-right the
 /// same way [`Format::ALL`] does, and neither set can name a format the

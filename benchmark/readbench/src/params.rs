@@ -265,8 +265,8 @@ fn median_of(values: &mut [f64]) -> f64 {
 
 /// A window centred on `centre`, extending `half` of each of the dataset's
 /// own x/y spans, and always covering the dataset's FULL z range — a query
-/// window's z must never exclude a row, because `readbench_duckdb.sh` tests
-/// x/y overlap only and the two must agree.
+/// window is a 2D selection, so its z must never exclude a row, and a reader
+/// that tests x/y overlap only answers it exactly as one that tests all three.
 fn window_at(centre: (f64, f64), half: f64, dataset: [f64; 6]) -> [f64; 6] {
     let span_x = dataset[3] - dataset[0];
     let span_y = dataset[4] - dataset[1];
@@ -805,8 +805,8 @@ fn pick_numeric_attribute(meta: &CityMetadata, schema: &Schema) -> Option<String
 /// The `attr-filter` predicate: either a string equality or a numeric lower
 /// bound, on a real CityJSON ATTRIBUTE.
 ///
-/// Serialised into the sidecar externally tagged and lower-cased, so the
-/// DuckDB baseline can dispatch on it with `jq` alone
+/// Serialised into the sidecar externally tagged and lower-cased, so a
+/// consumer can dispatch on it with `jq` alone
 /// (`{"eq": "slanted"}` / `{"ge": 2.45}`).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1119,9 +1119,8 @@ fn survey_string_columns(table: &Path, columns: &[String]) -> Result<(Vec<String
                     let top = tally
                         .into_iter()
                         // The empty string is excluded for the same reason:
-                        // it renders as a bare `attr=<column>=`, which
-                        // `readbench_duckdb.sh` reads back as "no predicate"
-                        // and refuses.
+                        // it renders as a bare `attr=<column>=`, which reads
+                        // back as "no predicate".
                         .filter(|(value, _)| !value.is_empty() && !value.contains(NOTES_HOSTILE))
                         .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
                     StringSurvey {
@@ -1748,8 +1747,8 @@ mod tests {
         }
     }
 
-    /// The sidecar shape the DuckDB baseline dispatches on with `jq`
-    /// alone — `.attr_filter.pred.eq` / `.attr_filter.pred.ge`.
+    /// The sidecar shape a consumer dispatches on with `jq` alone —
+    /// `.attr_filter.pred.eq` / `.attr_filter.pred.ge`.
     #[test]
     fn the_predicate_serialises_jq_dispatchably() {
         let eq = serde_json::to_value(AttrFilterPred::Eq("BB01".to_string())).unwrap();
