@@ -40,38 +40,15 @@ pub fn open_metadata(table: &Path) -> Result<CityMetadata> {
 ///
 /// A CityParquet package stores `x` as longitude and `y` as latitude whatever
 /// the authority's axis order says, because its geometry follows GeoParquet;
-/// every other artefact keeps the source's own order. The answer is read from
-/// the CRS's declared axis `direction`s (through a compound CRS's components
-/// and a bound CRS's source), never guessed from coordinate magnitudes. An
+/// every other artefact keeps the source's own order. The answer is the
+/// writer's own ([`cityparquet_schema::crs::is_latitude_first`]): the swap the
+/// harness applies to a query window is exactly the one the writer applied to
+/// the coordinates, read from the CRS's declared axis `direction`s (a compound
+/// CRS's components, a bound CRS's source, a projected CRS's own axes rather
+/// than its geographic base's), never guessed from coordinate magnitudes. An
 /// unknown or absent CRS needs no swap.
 pub fn crs_is_latitude_first(crs: Option<&serde_json::Value>) -> bool {
-    fn axes(crs: &serde_json::Value) -> Vec<&serde_json::Value> {
-        if let Some(components) = crs.get("components").and_then(|c| c.as_array()) {
-            return components.iter().flat_map(axes).collect();
-        }
-        // A CRS's OWN coordinate system decides — a projected CRS's
-        // `base_crs` is geographic (latitude first) while the projected
-        // axes are easting, northing. Only a bound CRS, which has none of
-        // its own, defers to its `source_crs`.
-        if let Some(own) = crs
-            .get("coordinate_system")
-            .and_then(|cs| cs.get("axis"))
-            .and_then(|a| a.as_array())
-        {
-            return own.iter().collect();
-        }
-        crs.get("source_crs").map(axes).unwrap_or_default()
-    }
-    let Some(crs) = crs else {
-        return false;
-    };
-    let axes = axes(crs);
-    let direction = |i: usize| {
-        axes.get(i)
-            .and_then(|a| a.get("direction"))
-            .and_then(|d| d.as_str())
-    };
-    direction(0) == Some("north") && direction(1) == Some("east")
+    crs.is_some_and(cityparquet_schema::crs::is_latitude_first)
 }
 
 /// `table`'s Arrow schema — the types `pick_numeric_attribute` filters on.
