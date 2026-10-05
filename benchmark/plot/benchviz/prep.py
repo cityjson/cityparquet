@@ -1,7 +1,7 @@
 """CSVs -> bench_data.json.
 
 Reads the benchmark result artefacts under ``benchmark/formats/`` — the CSVs a finished
-``just bench`` / ``just codec-bench`` / ``just rowgroup-bench`` / ``just sizes`` run
+``just bench`` / ``just bloom-bench`` / ``just sizes`` run
 leaves behind, never a benchmark of its own — and emits the ``bench_data.json``
 data contract described in ``benchviz/DESIGN.md``.
 
@@ -41,17 +41,9 @@ class Inputs:
             else self.bench_dir / "read_results"
         )
 
-    # The scaling corpus: one city model cut to four cardinalities, which is
-    # how the configuration axes are measured -- a codec or a row-group size
-    # answers "how does this scale", not "how does this compare to Vienna".
-    @property
-    def scaling_codec_dir(self) -> Path:
-        return self.bench_dir / "scaling_codec_results"
-
-    @property
-    def scaling_rowgroup_dir(self) -> Path:
-        return self.bench_dir / "scaling_rowgroup_results"
-
+    # The scaling corpus: one city model cut to several cardinalities, which
+    # is how the bloom axis is measured -- a configuration answers "how does
+    # this scale", not "how does this compare to Vienna".
     @property
     def scaling_bloom_dir(self) -> Path:
         return self.bench_dir / "scaling_bloom_results"
@@ -158,13 +150,6 @@ ID_NOTE_RE = re.compile(r"^id-(?:\d+pct|miss)$")
 FEATURE_NOTE_RE = re.compile(r"^feature-(?:\d+pct|miss)$")
 COLD_RE = re.compile(r"\bcold\b", re.IGNORECASE)
 
-CODEC_LEVEL_NOTE = (
-    "The codec axis sweeps zstd, the codec CityParquet ships with, at levels "
-    "1, 3 (the default and the 1x baseline), 9 and 19. The other codecs run "
-    "at the parquet-rs defaults the writer recipe carries (gzip 6, brotli 1; "
-    "crates/core/src/recipe.rs) and are drawn as reference points, not ranked "
-    "against each other: no level was matched across codecs."
-)
 AXIS_BASELINE = "cityparquet"
 AXIS_MEASURES = ("write", "full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct", "id-50pct")
 # The bloom axis measures the identifier lookups only; every other query is
@@ -246,9 +231,8 @@ def _check_columns(path: Path, got: list[str] | None, want: list[str]) -> list[s
 
 def _is_legacy_timing(path: Path) -> bool:
     """A read CSV from before 2026-09-24, when `time_s` was a median and its
-    dispersion column `time_mad_s` the median absolute deviation. Only the
-    configuration axes still hold committed CSVs in that shape;
-    `load_scaling_axis` reports them as gaps."""
+    dispersion column `time_mad_s` the median absolute deviation.
+    `load_scaling_axis` reports one as a gap rather than plotting it."""
     with path.open(newline="", encoding="utf-8") as fh:
         header = next(csv.reader(fh), [])
     return "time_mad_s" in header and "time_std_s" not in header
@@ -534,7 +518,7 @@ def scaling_series_ids(path: Path = MANIFEST_PATH) -> frozenset[str]:
 def load_scaling_axis(
     directory: Path, baseline: str = AXIS_BASELINE, measures: tuple[str, ...] = AXIS_MEASURES
 ) -> dict:
-    """One configuration axis (codec, row group or bloom) from a `--variants` run.
+    """One configuration axis (bloom) from a `--variants` run.
 
     Every record and size row carries `series`: `scaling` for a nested 3DBAG
     slice (`scaling_series_ids`), `corpus` for any other input, so the
@@ -1188,8 +1172,6 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     apply_manifest_titles(inputs, datasets)
     database_data = load_databases(inputs)
     scaling = {
-        "codec": load_scaling_axis(inputs.scaling_codec_dir),
-        "rowgroup": load_scaling_axis(inputs.scaling_rowgroup_dir),
         "bloom": load_scaling_axis(inputs.scaling_bloom_dir, measures=BLOOM_MEASURES),
     }
 
@@ -1209,12 +1191,9 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
             "sources": {
                 "read": inputs.label(inputs.read_dir),
                 "sizes": inputs.label(inputs.sizes_csv),
-                "codec": inputs.label(inputs.scaling_codec_dir),
-                "rowgroup": inputs.label(inputs.scaling_rowgroup_dir),
                 "bloom": inputs.label(inputs.scaling_bloom_dir),
             },
             "caveats_read": read_caveats(inputs),
-            "codec_level_note": CODEC_LEVEL_NOTE,
             "axis_baseline": AXIS_BASELINE,
             "format_axis": list(FORMAT_AXIS),
             "object_grain_formats": list(OBJECT_GRAIN_FORMATS),
@@ -1225,8 +1204,6 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
                 **database_conditions(database_data),
             },
             "machine": {
-                "codec": read_machine(inputs.scaling_codec_dir),
-                "rowgroup": read_machine(inputs.scaling_rowgroup_dir),
                 "bloom": read_machine(inputs.scaling_bloom_dir),
             },
         },
@@ -1248,8 +1225,6 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
     out.write_text(text + "\n", encoding="utf-8")
     completeness = {
         "formats": bool(data["read"] or data["sizes"]),
-        "codec": bool(data["scaling"]["codec"]["records"]),
-        "rowgroup": bool(data["scaling"]["rowgroup"]["records"]),
         "bloom": bool(data["scaling"]["bloom"]["records"]),
         "databases": bool(data["databases"]["records"] or data["databases"]["sizes"]),
     }
@@ -1261,8 +1236,6 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
     print(
         f"  {len(data['datasets'])} datasets, {len(data['read'])} read records, "
         f"{len(data['sizes'])} size records, "
-        f"{len(data['scaling']['codec']['records'])} codec records, "
-        f"{len(data['scaling']['rowgroup']['records'])} row-group records, "
         f"{len(data['scaling']['bloom']['records'])} bloom records"
     )
     for note in anomalies:

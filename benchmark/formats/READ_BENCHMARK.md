@@ -949,27 +949,25 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     object_store coalesced nearby ranges — not raw wire traffic, retries or
     connection reuse.
 
-30. **The committed codec and row-group CSVs predate bloom filters.** Every
-    package they measured, the `cityparquet` baseline included, carries none,
-    and their `id-50pct` rows read the `id` column without bloom pruning. The
-    current writer puts filters on `id`, `feature_id` and high-cardinality
-    string attributes by default, so its packages are larger and its lookups
-    prune: re-run both families before comparing them with the `bloom`
-    family, or with each other across that change.
-
-31. **Only the codec and row-group CSVs predate bloom filters now.** The
+30. **The current evidence was measured on bloom-enabled packages.** The
     `formats`, `sizes` and `bloom` evidence under `benchmark/runs/formats/`
     was measured on 23–24 September 2026 on packages the bloom-enabled
     writer produced (chain version 3, `MACHINE.md` beside the results), in
-    the 16-column shape with the three lookup counters. The legacy
-    `read_results/` directory and the `scaling_codec_results` /
-    `scaling_rowgroup_results` directories still describe packages with no
-    filters; their `LEGACY.md` says so, and an `id-lookup` row from them must
-    not be compared with one from the current evidence or with the `bloom`
-    family. The shapes keep the two apart mechanically: `format_write.py`
-    refuses to append to a CSV whose header differs from the coordinator's,
-    and the summary loader reports a legacy-shaped CSV as a gap instead of
-    rendering it.
+    the 16-column shape with the three lookup counters. The writer puts
+    filters on `id`, `feature_id` and high-cardinality string attributes by
+    default, so its packages are larger and its lookups prune; the `bloom`
+    family's `cityparquet+nobloom` variant is the one package measured
+    without them.
+
+31. **The legacy `read_results/` CSVs predate bloom filters.** The
+    `benchmark/formats/read_results/` directory describes packages with no
+    filters, and its `LEGACY.md` records the older median/`time_mad_s`
+    timing; an `id-lookup` row from it must not be compared with one from
+    the current evidence or with the `bloom` family. The shapes keep the two
+    apart mechanically: `format_write.py` refuses to append to a CSV whose
+    header differs from the coordinator's, and the summary loader refuses a
+    legacy-shaped CSV as a read result, and reports one in a
+    configuration-axis directory as a gap, instead of rendering it.
 
 32. **FlatCityBuf is read through the raw FlatBuffers accessors, not
     `cur_cj_feature`.** Every FCB walk — `full-read`, the `attr-filter`
@@ -1130,8 +1128,8 @@ paper's hardware.
 
 `benchmark/scripts/machine_record.sh` is the canonical capture: it runs the
 `uname`, `lscpu`/`sysctl` and `free` lines below, plus `rustc`, `cargo` and the
-commit hash, into a results directory's `MACHINE.md` — how `codec-bench` and
-`rowgroup-bench` record their host. Run it as part of the next read run, add
+commit hash, into a results directory's `MACHINE.md` — how `variant-bench`
+records its host. Run it as part of the next read run, add
 the two lines it does not cover, and paste the result here:
 
 ```sh

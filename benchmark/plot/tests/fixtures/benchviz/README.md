@@ -15,24 +15,16 @@ datasets kept here span the range the views have to handle —
 - **Ingolstadt** — 379 objects, the smallest, so it sorts last, and 18 of its
   53 read rows fall inside the citation floor.
 
-`scaling_codec_results/` and `scaling_rowgroup_results/` each hold one
-`--variants` run of the coordinator over the `delft.city.jsonl` fixture
-(`--repeat 2 --write-repeat 2 --scenarios full-read,bbox-query`). Three variants each (`cityparquet` plus `+zstd1`/`+lz4`, and
-`cityparquet` plus `+rg512`/`+rg2048`), so the loader's baseline, ratio
-direction, variant order and `sizes.csv` join are all exercised on measured
-rows. One dataset only, and `delft` is a corpus model rather than one of the
-nested 3DBAG slices, so `prep` classifies its rows `series: corpus`: the
-`codec`/`rowgroup` main panels draw from it, and the two `*-scaling` figures
-render their "no 3DBAG scaling slice was measured" placeholder instead of a
-trend strip. That placeholder path is exactly what these fixtures exercise,
-and nothing here is edited by hand.
-
 `scaling_bloom_results/` is the one exception to "nothing is edited by hand":
 its `delft.csv` and `sizes.csv` are renderer fixture values, NOT measurements,
 written in the coordinator's 16-column `--variants` shape (`cityparquet`
 against `cityparquet+nobloom`, `id-lookup` and `feature-lookup` at their middle
 and miss probes, with the three lookup counters) so the bloom axis's keying and
-counter pass-through are exercised on rows of the right shape. No measured
+counter pass-through are exercised on rows of the right shape. One dataset
+only, and `delft` is a corpus model rather than one of the nested 3DBAG
+slices, so `prep` classifies its rows `series: corpus`: the `bloom` main panel
+draws from it, and `bloom-scaling` renders its "no 3DBAG scaling slice was
+measured" placeholder instead of a trend strip. No measured
 `bloom` run is committed under `benchmark/formats/`; these stand in for one,
 and are to be replaced by a measured run's rows rather than kept beside them.
 

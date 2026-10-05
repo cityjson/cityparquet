@@ -30,10 +30,6 @@ def test_preparation_and_paper_figure_set(tmp_path: Path):
         for name in (
             "sizes",
             "heatmap",
-            "codec",
-            "codec-scaling",
-            "rowgroup",
-            "rowgroup-scaling",
             "bloom",
             "bloom-scaling",
         )
@@ -325,9 +321,9 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
         "measures single-table packages only",
         "the same verified-absent string as `id-miss`",
         "counts the requests the reader made after",
-        # 30-31: what predates default-on filters and must be re-run.
-        "The committed codec and row-group CSVs predate bloom filters.",
-        "Only the codec and row-group CSVs predate bloom filters now.",
+        # 30-31: which evidence carries default-on filters, and which predates them.
+        "The current evidence was measured on bloom-enabled packages.",
+        "The legacy `read_results/` CSVs predate bloom filters.",
         "refuses to",
     ):
         assert phrase in caveats, phrase

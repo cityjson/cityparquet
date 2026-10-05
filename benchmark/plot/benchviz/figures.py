@@ -46,12 +46,6 @@ DATABASE_FILL = {
     "cjdb": "#83919C",
     "3dcitydb": "#C2CAD0",
 }
-# The configuration axes' bars: the zstd sweep is one family in the accent hue
-# at four lightness steps; the other codecs split one teal accent and a neutral
-# ramp, so the sweep reads as the subject without a second rainbow. Row groups
-# are one sequential teal from small groups (light) to large (dark).
-CODEC_OTHER_COLOURS = ["#2A9D8F", "#5F6E7A", "#83919C", "#A3AEB7", "#C2CAD0"]
-ROWGROUP_HUE = "#2A9D8F"
 BLOOM_OFF_COLOUR = "#5F6E7A"  # the package without filters, against the accent default
 
 BAD_CELL = "#efeee6"
@@ -188,36 +182,8 @@ def _format_fill(fmt: str) -> str:
     return FORMAT_FILL.get(fmt, MUTED)
 
 
-def _mix(colour: str, white: float) -> str:
-    r, g, b = colors.to_rgb(colour)
-    return colors.to_hex((r + (1 - r) * white, g + (1 - g) * white, b + (1 - b) * white))
-
-
-def _rowgroup_size(variant: str) -> int:
-    suffix = variant.removeprefix("cityparquet+")
-    if suffix.startswith("rg") and suffix[2:].isdigit():
-        return int(suffix[2:])
-    return 0
-
-
-def _axis_palette(key: str, variants: list[str]) -> dict[str, str]:
-    palette: dict[str, str] = {}
-    if key == "codec":
-        zstd = [v for v in variants if v.startswith("cityparquet+zstd")]
-        others = [v for v in variants if v not in zstd and v != "cityparquet"]
-        for i, v in enumerate(zstd):
-            palette[v] = _mix(ACCENT, 0.55 * (1 - i / max(len(zstd) - 1, 1)))
-        for i, v in enumerate(others):
-            palette[v] = CODEC_OTHER_COLOURS[i % len(CODEC_OTHER_COLOURS)]
-    elif key == "rowgroup":
-        ordered = sorted((v for v in variants if v != "cityparquet"), key=_rowgroup_size)
-        for i, v in enumerate(ordered):
-            palette[v] = _mix(ROWGROUP_HUE, 0.6 * (1 - i / max(len(ordered) - 1, 1)))
-    else:
-        for v in variants:
-            if v != "cityparquet":
-                palette[v] = BLOOM_OFF_COLOUR
-    return palette
+def _axis_palette(variants: list[str]) -> dict[str, str]:
+    return {v: BLOOM_OFF_COLOUR for v in variants if v != "cityparquet"}
 
 
 def _save(fig: plt.Figure, name: str, out: Path) -> list[Path]:
@@ -598,7 +564,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     )
     selected = [r for r in records if r.get("dataset") == largest]
     queries = _axis_queries(selected)
-    palette = _axis_palette(key, variants)
+    palette = _axis_palette(variants)
     fig = plt.figure(figsize=(10, 7))
     grid = fig.add_gridspec(
         2,
@@ -707,8 +673,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     cbar.outline.set_visible(False)
     cbar.set_label("Ratio to default; lower is better", fontsize=7)
     fig.suptitle(
-        f"{key.replace('rowgroup', 'row group')} — "
-        f"{max(r.get('objects') or 0 for r in selected):,} objects",
+        f"{key} — {max(r.get('objects') or 0 for r in selected):,} objects",
         x=0.01,
         ha="left",
         fontsize=11,
@@ -727,7 +692,7 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
             "Not rendered: no 3DBAG scaling slice was measured; corpus datasets are drawn apart.",
         )
     queries = _axis_queries(records)
-    palette = _axis_palette(key, variants)
+    palette = _axis_palette(variants)
     colours = {variant: palette.get(variant, MUTED) for variant in variants}
     markers = ["o", "s", "^", "D", "v", "P", "X", "<", ">"]
     fig = plt.figure(figsize=(max(8.5, 2.0 * len(queries)), 7.2), layout="constrained")
@@ -791,7 +756,7 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
         fontsize=7,
         frameon=False,
     )
-    fig.suptitle(f"{key.replace('rowgroup', 'row group').capitalize()} scaling", fontsize=12)
+    fig.suptitle(f"{key.capitalize()} scaling", fontsize=12)
     return _save(fig, f"{key}-scaling", out)
 
 
@@ -800,8 +765,8 @@ def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
 
     Grouped bars, one group per corpus dataset and one bar per variant, for
     the same metrics as the scaling figure. Nothing is written for an axis
-    that measured no corpus dataset (codec and row group run slices only), and
-    any `{key}-corpus` figure already in `out` is removed.
+    that measured no corpus dataset, and any `{key}-corpus` figure already in
+    `out` is removed.
     """
     records, sizes, variants = _axis(data, key)
     datasets = _corpus_datasets(records)
@@ -814,7 +779,7 @@ def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     corpus = [r for r in records if r.get("series") == "corpus"]
     corpus_sizes = [r for r in sizes if r.get("series") == "corpus"]
     queries = _axis_queries(corpus)
-    palette = _axis_palette(key, variants)
+    palette = _axis_palette(variants)
     metrics = [
         ("File size (MiB)", corpus_sizes, "bytes", None),
         ("Write time (s)", corpus, "time_s", "write"),
@@ -862,7 +827,7 @@ def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
         frameon=False,
     )
     fig.suptitle(
-        f"{key.replace('rowgroup', 'row group').capitalize()} — corpus datasets",
+        f"{key.capitalize()} — corpus datasets",
         fontsize=12,
     )
     return _save(fig, f"{key}-corpus", out)
@@ -1208,7 +1173,7 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
         }
     )
     written = sizes(data, out) + format_heatmap(data, out)
-    for key in ("codec", "rowgroup", "bloom"):
+    for key in ("bloom",):
         written += _axis_main(data, key, out) + _axis_scaling(data, key, out)
         written += _axis_corpus(data, key, out)
     written += databases(data, out)

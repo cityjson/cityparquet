@@ -4,9 +4,8 @@
 data root is `benchmark/runs/`:
 
 - `formats/results/` holds the format-comparison CSVs and `sizes.csv`.
-- `formats/scaling_codec_results/`, `formats/scaling_rowgroup_results/` and
-  `formats/scaling_bloom_results/` hold configuration experiments over the
-  scaling corpus.
+- `formats/scaling_bloom_results/` holds the bloom-filter configuration
+  experiment over the scaling corpus and the city datasets.
 - `databases/results/` holds the database summary CSVs and size summaries.
 - `summary/` holds prepared JSON, the self-contained `bench-summary.html`, and
   individual paper figures. `--figures` can export those figures elsewhere.
@@ -14,9 +13,8 @@ data root is `benchmark/runs/`:
 Run `python -m benchviz summary --data-root ROOT`. A smoke run uses its own
 result and summary directories; it must never be combined with a full run.
 
-The static output set is `sizes`, `heatmap`, `codec`, `codec-scaling`,
-`rowgroup`, `rowgroup-scaling`, `bloom`, `bloom-scaling`, `bloom-corpus` and
-`databases`, each as SVG and 300 dpi PNG. The HTML index
+The static output set is `sizes`, `heatmap`, `bloom`, `bloom-scaling`,
+`bloom-corpus` and `databases`, each as SVG and 300 dpi PNG. The HTML index
 embeds the same SVGs, each followed by the conditions it was measured under
 (`meta.conditions`: attribute predicates, achieved window selectivities, the
 write baseline, thread configurations), and has no external dependencies.

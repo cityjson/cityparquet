@@ -78,9 +78,8 @@ def _cmd_prep(args: argparse.Namespace) -> None:
             payload["read"] = []
         if "sizes" not in families:
             payload["sizes"] = []
-        for name in ("codec", "rowgroup", "bloom"):
-            if name not in families:
-                payload["scaling"][name] = {"records": [], "sizes": [], "gaps": [], "variants": []}
+        if "bloom" not in families:
+            payload["scaling"]["bloom"] = {"records": [], "sizes": [], "gaps": [], "variants": []}
         if "databases" not in families:
             _drop_databases(payload)
     data.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -93,18 +92,6 @@ def _cmd_prep(args: argparse.Namespace) -> None:
             "sizes": {
                 "present": bool(payload["sizes"]),
                 "metrics": ["bytes"] if payload["sizes"] else [],
-            },
-            "codec": {
-                "present": bool(payload["scaling"]["codec"]["records"]),
-                "metrics": sorted(
-                    {r.get("measure") for r in payload["scaling"]["codec"]["records"]}
-                ),
-            },
-            "rowgroup": {
-                "present": bool(payload["scaling"]["rowgroup"]["records"]),
-                "metrics": sorted(
-                    {r.get("measure") for r in payload["scaling"]["rowgroup"]["records"]}
-                ),
             },
             "bloom": {
                 "present": bool(payload["scaling"]["bloom"]["records"]),
@@ -187,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--families",
         metavar="CSV",
-        help="selected families: sizes,formats,codec,rowgroup,bloom,databases",
+        help="selected families: sizes,formats,bloom,databases",
     )
     common.add_argument("--datasets", metavar="CSV", help="selected dataset IDs")
 
@@ -199,8 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="benchviz",
         description=(
             "Build the CityParquet benchmark visualisations from the result CSVs "
-            "an earlier `just bench` / `just codec-bench` / `just rowgroup-bench` / "
-            "`just bloom-bench` / "
+            "an earlier `just bench` / `just bloom-bench` / "
             "`just sizes` run left in benchmark/formats/. Runs no benchmark of its own."
         ),
     )
