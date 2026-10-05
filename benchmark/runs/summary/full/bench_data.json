@@ -4,8 +4,6 @@
     "sources": {
       "read": "runs/formats/results",
       "sizes": "runs/formats/results/sizes.csv",
-      "codec": "runs/formats/scaling_codec_results",
-      "rowgroup": "runs/formats/scaling_rowgroup_results",
       "bloom": "runs/formats/scaling_bloom_results"
     },
     "caveats_read": [
@@ -38,14 +36,13 @@
       "**The `bloom` family measures single-table packages only.** The runner\nqueries one object table; a multi-table corpus package is refused, never\npartially read.",
       "**In the `bloom` family, `feature-50pct` is the `id-50pct` feature**, and\n`feature-miss` the same verified-absent string as `id-miss` (absent from\nboth columns).",
       "**The `bloom` family's requests are logical.** Over `--transport http`,\n`CountingObjectStore` counts the requests the reader made after\nobject_store coalesced nearby ranges \u2014 not raw wire traffic, retries or\nconnection reuse.",
-      "**The committed codec and row-group CSVs predate bloom filters.** Every\npackage they measured, the `cityparquet` baseline included, carries none,\nand their `id-50pct` rows read the `id` column without bloom pruning. The\ncurrent writer puts filters on `id`, `feature_id` and high-cardinality\nstring attributes by default, so its packages are larger and its lookups\nprune: re-run both families before comparing them with the `bloom`\nfamily, or with each other across that change.",
-      "**Only the codec and row-group CSVs predate bloom filters now.** The\n`formats`, `sizes` and `bloom` evidence under `benchmark/runs/formats/`\nwas measured on 23\u201324 September 2026 on packages the bloom-enabled\nwriter produced (chain version 3, `MACHINE.md` beside the results), in\nthe 16-column shape with the three lookup counters. The legacy\n`read_results/` directory and the `scaling_codec_results` /\n`scaling_rowgroup_results` directories still describe packages with no\nfilters; their `LEGACY.md` says so, and an `id-lookup` row from them must\nnot be compared with one from the current evidence or with the `bloom`\nfamily. The shapes keep the two apart mechanically: `format_write.py`\nrefuses to append to a CSV whose header differs from the coordinator's,\nand the summary loader reports a legacy-shaped CSV as a gap instead of\nrendering it.",
+      "**The current evidence was measured on bloom-enabled packages.** The\n`formats`, `sizes` and `bloom` evidence under `benchmark/runs/formats/`\nwas measured on 23\u201324 September 2026 on packages the bloom-enabled\nwriter produced (chain version 3, `MACHINE.md` beside the results), in\nthe 16-column shape with the three lookup counters. The writer puts\nfilters on `id`, `feature_id` and high-cardinality string attributes by\ndefault, so its packages are larger and its lookups prune; the `bloom`\nfamily's `cityparquet+nobloom` variant is the one package measured\nwithout them.",
+      "**The legacy `read_results/` CSVs predate bloom filters.** The\n`benchmark/formats/read_results/` directory describes packages with no\nfilters, and its `LEGACY.md` records the older median/`time_mad_s`\ntiming; an `id-lookup` row from it must not be compared with one from\nthe current evidence or with the `bloom` family. The shapes keep the two\napart mechanically: `format_write.py` refuses to append to a CSV whose\nheader differs from the coordinator's, and the summary loader refuses a\nlegacy-shaped CSV as a read result, and reports one in a\nconfiguration-axis directory as a gap, instead of rendering it.",
       "**FlatCityBuf is read through the raw FlatBuffers accessors, not\n`cur_cj_feature`.** Every FCB walk \u2014 `full-read`, the `attr-filter`\nfallback, `id-lookup`, `attr-stats` \u2014 reads\n`FeatureIter::cur_feature()`, the zero-copy `CityFeature` table, and\ntouches only what the scenario's answer needs: one flatbuffer enum for\n`object_type`, one borrowed `&str` for an id, one targeted decode of a\nsingle column out of the packed attribute blob, and \u2014 for `full-read`\nalone \u2014 every geometry's flattened `solids`/`shells`/`surfaces`/\n`strings`/`boundaries` arrays, its per-surface `semantics` indices,\nevery template instance's boundaries and every vertex. Not read by\n`full-read`: `semantics_objects`, `material`, `texture` and the feature\n`appearance`.\n\nThese rows used to call `cur_cj_feature()`, which runs `fcb_core`'s\n`to_cj_feature`: a whole CityJSON feature \u2014 nested `serde_json` boundary\narrays, every vertex converted, every attribute into a\n`serde_json::Map`, a `String` id per CityObject \u2014 built to answer a\nquestion needing one comparison. That made FCB's attribute/id rows\ncost the same as its `full-read` row, and measured the conversion rather\nthan the format. Measured on this machine, 3 repeats, medians, identical\n`result_count` in every pair: on `3dbag_n10000` `full-read` 0.404 s ->\n0.037 s, `attr-filter` on `object_type` 0.405 s -> 0.034 s, `id-miss`\n0.407 s -> 0.035 s, `attr-stats` 0.404 s -> 0.045 s; on\n`zurich_building_lod2` the same four rows 2.22/2.05/2.22/2.22 s ->\n0.55/0.50/0.50/0.51 s. Peak heap falls with\nthem (1.3 MB -> 0.3 MB on zurich). The INDEXED paths\n(`select_attr_query`, `select_query`) were already native and are\nunchanged \u2014 `b3_dak_type == slanted` on `3dbag_n10000` sits at ~1 ms\neither way.\n\nFlatCityBuf is a comparison baseline here, not this repository's\nsubject, so it is owed its best natural implementation. Published\nFlatCityBuf figures produced before this change overstate its\nattribute-, id- and full-read costs and must not be mixed with figures\nproduced after it.",
       "**One FlatCityBuf configuration, chosen by measurement.** The `.fcb`\n    artefacts are written `fcb ser -A` with every other index knob left at\n    its default \u2014 attribute B+-tree branching factor 256, R-tree node size 16. That is a decision, not an oversight, and it is not a swept axis:\n    the paper's configuration axes are CityParquet's own.\n\n    `3dbag_n100000` was written at attribute branching factors 16, 64, 128\n    and 256 and read back with the benchmark's own child (3 repeats,\n    medians): `count` 0.1 ms, `bbox-1pct` 0.3 ms, `bbox-5pct` 1.0 ms,\n    `bbox-25pct` 3.4-4.0 ms, the indexed `attr-filter` (`b3_dak_type ==\nslanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s \u2014 every\n    scenario within noise of every other factor, with identical\n    `result_count`s and file sizes inside 0.5%. `zurich_building_lod2`\n    agrees at 16/128/256, including on an indexed `attr-filter` that really\n    matches (`GebaeudeStatus` in [1, 1], 52 834 rows): 0.605/0.605/0.607 s\n    over 7 interleaved repeats. No factor wins, so the default stands.\n\n    `--index-node-size` must be left alone for a different reason: it is\n    **unreadable**. `fcb_core` 0.7.6's `FcbReader::select_query` \u2014 the\n    seekable path this benchmark reads through \u2014 passes\n    `PackedRTree::DEFAULT_NODE_SIZE` where its streaming sibling\n    `select_query_seq` passes the header's own `index_node_size`, so a file\n    written `fcb ser -A --index-node-size 64` panics with a capacity\n    overflow on every `bbox-query`. Reproduced here, not inferred.",
       "**`peak_rss_bytes` in every CSV committed before 2026-09-22 is floored\nat the coordinator's own RSS, and the floor hides every format that\nused less.** The child used to report `getrusage(RUSAGE_SELF).ru_maxrss`.\nLinux's `exec_mmap` folds the high-water mark of the address space a\ntask had BEFORE `exec` into `signal->maxrss`, and under\n`posix_spawn`/`vfork` that address space is the parent's, so a freshly\nexec'd child can never report less than the coordinator's peak. On the\ncommitted 1M 3DBAG run 36 of the 43 read rows \u2014 every `citygml`,\n`cityjson`, `flatcitybuf` and `cityparquet-hilbert` row \u2014 carry the\nidentical value 269 963 264 B, the coordinator's RSS after deriving the\nquery parameters from the package; only `cityjsonseq` (4.3 GB) rose\nabove it. On Zurich 35 rows share 54 816 768 B. Those numbers are the\ncoordinator's memory, not the format's, and any read-memory ratio\ncomputed from them (the `rss_b` heatmap panel) is a ratio of floors.\nThe write rows had the same defect through Python's `os.wait4` (the\nconstant 14 680 064 B on every `cityjsonseq` write row was the launcher).\n\nFixed by reading `VmHWM` from `/proc/self/status` in the child (its own\n`mm`, created by `exec`, is not inherited; measured 10.5 MB for a child\nunder a 420 MB parent, against 419 MB from `ru_maxrss`) and by running\nevery write converter under `/usr/bin/time -f %M` (floor \u2248 1 MB). The\nfix changes no timing. **Read-memory figures from before and after this\nchange must not be mixed**, and the pre-change CSVs' `peak_rss_bytes`\nmust not be quoted for any format whose value equals the run's floor.",
       "**Before 2026-09-23, only CityParquet's `attr-stats` computed the\naggregate.** The scenario's contract is `(min, max, sum, count)` of a\nnumeric attribute, but the `citygml`, `cityjson`, `cityjsonseq`(+gz) and\n`flatcitybuf` runners only COUNTED the CityObjects carrying a numeric\nvalue: the same `result_count`, a cheaper question. Every runner now\nfolds each value into all four aggregates \u2014 `as_f64()` of the JSON (or\nFCB-decoded) value, integers and floats alike, `f64` `min`/`max`/`+=` \u2014\nand pins them with `std::hint::black_box`, so the optimiser cannot reduce\nthe arithmetic to the count. CityParquet is unchanged: min and max from\ncolumn-chunk statistics, sum and count from a one-column projected scan,\nwhich is the format's own mechanism. The child reports the four values on\nstderr (`cityparquet-readbench: attr-stats <min> <max> <sum> <count>`,\nafter its timed line; the CSV is unchanged), and\n`tests/attr_consistency.rs` holds every format to DuckDB's\n`min/max/sum/count` on `delft.city.jsonl` over two integer and two float\ncolumns \u2014 they agree exactly, not merely within the test's 1e-6\n(CityParquet's statistics-derived minimum of `b3_bag_bag_overlap` prints\nas `-0` where the folding runners print `0`: Parquet writes a zero\nminimum as `-0.0`, and the two are equal under IEEE comparison). The\n`result_count`s did not change. **`attr-stats` timings of the\nnon-CityParquet formats from before and after this change must not be\nmixed**; the added work is one comparison pair and one addition per\nvalue, next to a full parse, so the difference is expected to be small\nbut it has not been measured."
     ],
-    "codec_level_note": "The codec axis sweeps zstd, the codec CityParquet ships with, at levels 1, 3 (the default and the 1x baseline), 9 and 19. The other codecs run at the parquet-rs defaults the writer recipe carries (gzip 6, brotli 1; crates/core/src/recipe.rs) and are drawn as reference points, not ranked against each other: no level was matched across codecs.",
     "axis_baseline": "cityparquet",
     "format_axis": [
       "cityparquet-hilbert",
@@ -91,8 +88,6 @@
       ]
     },
     "machine": {
-      "codec": "# Measurement host\n\nCaptured by benchmark/scripts/machine_record.sh at 2026-09-09T14:32:52Z.\n\n```\nLinux 6.8.0-136-generic x86_64\nArchitecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           48 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  128\nOn-line CPU(s) list:                     0-127\nVendor ID:                               AuthenticAMD\nModel name:                              AMD EPYC 7542 32-Core Processor\nCPU family:                              23\nModel:                                   49\nThread(s) per core:                      2\nCore(s) per socket:                      32\nSocket(s):                               2\nStepping:                                0\nFrequency boost:                         enabled\n               total        used        free      shared  buff/cache   available\nMem:     540725092352 38730059776 20174995456   766955520 490490179584 501995032576\nrustc 1.93.1 (01f6ddf75 2026-02-11)\ncargo 1.93.1 (083ac5135 2025-12-15)\ngit 68a3f0ac1a75abb46c5d08754be40cfe1a367227\n```\n",
-      "rowgroup": "# Measurement host\n\nCaptured by benchmark/scripts/machine_record.sh at 2026-09-09T17:09:10Z.\n\n```\nLinux 6.8.0-136-generic x86_64\nArchitecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           48 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  128\nOn-line CPU(s) list:                     0-127\nVendor ID:                               AuthenticAMD\nModel name:                              AMD EPYC 7542 32-Core Processor\nCPU family:                              23\nModel:                                   49\nThread(s) per core:                      2\nCore(s) per socket:                      32\nSocket(s):                               2\nStepping:                                0\nFrequency boost:                         enabled\n               total        used        free      shared  buff/cache   available\nMem:     540725092352 38974672896  9143681024   767868928 501277786112 501750419456\nrustc 1.93.1 (01f6ddf75 2026-02-11)\ncargo 1.93.1 (083ac5135 2025-12-15)\ngit 68a3f0ac1a75abb46c5d08754be40cfe1a367227\n```\n",
       "bloom": "# Measurement host\n\nCaptured by benchmark/scripts/machine_record.sh at 2026-09-23T15:39:20Z.\n\n```\nLinux 6.8.0-136-generic x86_64\nArchitecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           48 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  128\nOn-line CPU(s) list:                     0-127\nVendor ID:                               AuthenticAMD\nModel name:                              AMD EPYC 7542 32-Core Processor\nCPU family:                              23\nModel:                                   49\nThread(s) per core:                      2\nCore(s) per socket:                      32\nSocket(s):                               2\nStepping:                                0\nFrequency boost:                         enabled\n               total        used        free      shared  buff/cache   available\nMem:     540725092352 47308431360 120777404416  6040477696 384847532032 493416660992\nrustc 1.93.1 (01f6ddf75 2026-02-11)\ncargo 1.93.1 (083ac5135 2025-12-15)\ngit e04b0903ee0c7ea8bd7339b08c641264e8f7357b\n```\n"
     }
   },
@@ -6011,76 +6006,6 @@
     }
   ],
   "scaling": {
-    "codec": {
-      "records": [],
-      "sizes": [],
-      "gaps": [
-        {
-          "dataset": "3dbag_n1000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n10000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n100000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n1000000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n5000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n50000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n500000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        }
-      ],
-      "variants": []
-    },
-    "rowgroup": {
-      "records": [],
-      "sizes": [],
-      "gaps": [
-        {
-          "dataset": "3dbag_n1000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n10000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n100000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n1000000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n5000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n50000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        },
-        {
-          "dataset": "3dbag_n500000",
-          "issue": "legacy median/time_mad_s CSV; not rendered"
-        }
-      ],
-      "variants": []
-    },
     "bloom": {
       "records": [
         {

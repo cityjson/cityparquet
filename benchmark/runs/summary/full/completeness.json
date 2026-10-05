@@ -23,14 +23,6 @@
         "bytes"
       ]
     },
-    "codec": {
-      "present": false,
-      "metrics": []
-    },
-    "rowgroup": {
-      "present": false,
-      "metrics": []
-    },
     "bloom": {
       "present": true,
       "metrics": [
