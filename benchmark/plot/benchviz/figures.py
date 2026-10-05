@@ -172,7 +172,10 @@ def _axis_palette(variants: list[str]) -> dict[str, str]:
 def _save(fig: plt.Figure, name: str, out: Path) -> list[Path]:
     out.mkdir(parents=True, exist_ok=True)
     files = [out / f"{name}.svg", out / f"{name}.png"]
-    fig.savefig(files[0], bbox_inches="tight")
+    # No timestamp, and element ids salted with a constant (`main` sets
+    # `svg.hashsalt`): the same data renders to the same bytes, so a
+    # re-render changes a committed figure only when the figure changed.
+    fig.savefig(files[0], bbox_inches="tight", metadata={"Date": None})
     fig.savefig(files[1], dpi=300, bbox_inches="tight")
     plt.close(fig)
     return files
@@ -1159,6 +1162,7 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
             "savefig.facecolor": BG,
             "axes.spines.top": False,
             "axes.spines.right": False,
+            "svg.hashsalt": "benchviz",
         }
     )
     written = sizes(data, out) + format_figures(data, out) + tables.write_tables(data, out)
