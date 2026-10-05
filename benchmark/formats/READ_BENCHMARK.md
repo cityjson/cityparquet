@@ -419,18 +419,19 @@ each cold number stands alone, one per format, one `full-read` only.
    checks both (Caveat 2).
 
    The CityParquet `bbox` column also covers an object's declared
-   `geographicalExtent`, which no other runner reads, so on a dataset that
-   declares one the column can reach beyond the vertex box. On this corpus
-   Zurich and Montréal declare one on every object. Montréal's reaches
-   beyond the vertex box in `x`/`y` on 1,544 objects, by at most 1.5 µm,
-   while every window edge clears every `bbox` edge by more than its
-   quantisation, 10 µm in `x` and 1 mm in `y` (Caveat 21). Zurich's reaches beyond it on 108,396
-   objects, by at most its 1 mm quantisation, and its window edges clear
-   every `bbox` edge by at least 1.5 mm: its declared extents and vertices
-   lie on one 1 mm grid, so a gap wider than 2 mm is at least 3 mm wide. On
-   both datasets no window edge therefore falls between an object's vertex
-   box and its `bbox`, and the coordinator's check confirms the counts on
-   every run.
+   `geographicalExtent`, which no runner reads (FlatCityBuf's R-tree holds
+   the boxes `fcb ser` computed), so on a dataset that declares one the
+   column can reach beyond the vertex box. On this corpus Zurich and
+   Montréal declare one on every object. Montréal's reaches beyond the
+   vertex box in `x`/`y` on 1,544 objects, by at most 1.5 µm. Zurich's
+   reaches beyond it on 108,396 objects, by at most its 1 mm quantisation.
+   The untied windows guarantee only that every edge lies more than one
+   quantisation step from every `bbox` edge (Caveat 21), which for Zurich is
+   the same 1 mm, so the guarantee alone does not keep a window edge out of
+   the band between an object's vertex box and its `bbox`. The coordinator's
+   check does: a window edge inside that band would make `cityjson`
+   disagree with `cityparquet`, and the run would fail. On the current
+   Zurich artefacts no window edge is closer than 3 mm to a `bbox` edge.
 
 2. **Selectivity's denominator differs by scenario, on purpose.** The three
    CityObject-granular scenarios (`attr-filter`/`attr-stats`/`id-lookup`)
