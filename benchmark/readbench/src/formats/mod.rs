@@ -166,13 +166,6 @@ pub trait FormatRunner {
 /// all, because `Format`'s own [`FromStr`](std::str::FromStr) rejects it at
 /// CLI-parse time.
 ///
-/// [`Format::CityParquetHilbert`] is an ALIAS for the same
-/// [`cityparquet::CityParquetRunner`]: the Hilbert-ordered package is still
-/// a plain CityParquet package on disk (same reader, same query
-/// primitives) — the only difference from [`Format::CityParquet`] is WHICH
-/// artefact path the coordinator resolves `--input` to (see
-/// [`Format::artefact`]), so no separate runner type is needed here.
-///
 /// [`Format::CityJson`] is NOT an alias for [`Format::CityJsonSeq`]: a plain
 /// whole-document `.city.json` parses as one JSON object with a shared
 /// document-level `vertices` array, where a Seq stream is line-oriented with
@@ -184,9 +177,7 @@ pub trait FormatRunner {
 /// 2.0 reader, with no index and therefore a full parse per scenario.
 pub fn resolve(format: Format) -> Result<Box<dyn FormatRunner>> {
     match format {
-        Format::CityParquet | Format::CityParquetHilbert => {
-            Ok(Box::new(cityparquet::CityParquetRunner))
-        }
+        Format::CityParquet => Ok(Box::new(cityparquet::CityParquetRunner)),
         Format::CityJson => Ok(Box::new(cityjson::CityJsonRunner)),
         Format::CityJsonSeq => Ok(Box::new(cityjsonseq::CityJsonSeqRunner)),
         Format::FlatCityBuf => Ok(Box::new(flatcitybuf::FlatCityBufRunner)),

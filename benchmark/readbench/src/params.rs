@@ -863,13 +863,11 @@ enum Pick {
 /// How a [`HAND_PICKED`] entry is matched against a dataset's base name.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Key {
-    /// The dataset IS this name, or a `-<suffix>` ordering variant of it
-    /// (`rotterdam_delfshaven-hilbert`).
+    /// The dataset IS this name.
     Dataset(&'static str),
     /// Every dataset whose name starts with this prefix — the 3DBAG
-    /// scaling slices (`3dbag_n1000` … `3dbag_n1000000`, each also with a
-    /// `-hilbert` variant), which are prefixes of one source stream and so
-    /// all carry the same attributes.
+    /// scaling slices (`3dbag_n1000` … `3dbag_n1000000`), which are
+    /// prefixes of one source stream and so all carry the same attributes.
     Family(&'static str),
 }
 
@@ -948,7 +946,7 @@ fn pick_stats_attribute(base: &str, meta: &CityMetadata, schema: &Schema) -> Opt
     HAND_PICKED_STATS
         .iter()
         .find(|(key, _)| match key {
-            Key::Dataset(name) => base == *name || base.starts_with(&format!("{name}-")),
+            Key::Dataset(name) => base == *name,
             Key::Family(prefix) => base.starts_with(prefix),
         })
         .map(|(_, column)| column.to_string())
@@ -983,7 +981,7 @@ const NOTES_HOSTILE: [char; 5] = [';', ',', '"', '\n', '\r'];
 fn hand_picked_for(base: &str) -> Option<(&'static str, Pick)> {
     HAND_PICKED.iter().find_map(|(key, column, pick)| {
         let hit = match key {
-            Key::Dataset(name) => base == *name || base.starts_with(&format!("{name}-")),
+            Key::Dataset(name) => base == *name,
             Key::Family(prefix) => base.starts_with(prefix),
         };
         hit.then_some((*column, *pick))
@@ -1200,10 +1198,7 @@ fn fallback_attr_filter(
 /// otherwise.
 ///
 /// `dataset` is the input's FILE NAME (extension included, as
-/// [`resolve`] receives it), so the ordering variants share their source
-/// dataset's pick: `3dbag_n1000-hilbert.city.jsonl` is the same data as
-/// `3dbag_n1000.city.jsonl` in a different row order, and measuring the two
-/// with different predicates would compare nothing.
+/// [`resolve`] receives it).
 ///
 /// The predicate is never a reserved structural column. `object_type` — the
 /// column this scenario used to be driven with — is not a member of the
@@ -1647,13 +1642,8 @@ mod tests {
     // column and predicate each rule names — so that is what these pin.
 
     #[test]
-    fn every_3dbag_slice_and_ordering_variant_gets_the_same_hand_picked_pick() {
-        for base in [
-            "3dbag_n1000",
-            "3dbag_n5000",
-            "3dbag_n1000000",
-            "3dbag_n1000-hilbert",
-        ] {
+    fn every_3dbag_slice_gets_the_same_hand_picked_pick() {
+        for base in ["3dbag_n1000", "3dbag_n5000", "3dbag_n1000000"] {
             assert_eq!(
                 hand_picked_for(base),
                 Some(("b3_dak_type", Pick::Eq("slanted"))),
@@ -1663,16 +1653,12 @@ mod tests {
     }
 
     #[test]
-    fn a_hand_picked_dataset_is_matched_through_its_ordering_variant_suffix() {
+    fn a_hand_picked_dataset_is_matched_by_its_exact_name() {
         assert_eq!(
             hand_picked_for("rotterdam_delfshaven"),
             Some(("TerrainHeight", Pick::Quantile(FALLBACK_QUANTILE)))
         );
-        assert_eq!(
-            hand_picked_for("rotterdam_delfshaven-hilbert"),
-            Some(("TerrainHeight", Pick::Quantile(FALLBACK_QUANTILE))),
-            "an ordering variant is the same data and must get the same predicate"
-        );
+        assert_eq!(hand_picked_for("rotterdam_delfshaven_extra"), None);
         assert_eq!(
             hand_picked_for("zurich_building_lod2"),
             Some(("class", Pick::Eq("BB01")))
@@ -1683,7 +1669,7 @@ mod tests {
     fn tokyo_and_montreal_have_their_hand_picked_predicates() {
         assert_eq!(hand_picked_for("tokyo"), Some(("usage", Pick::Eq("401"))));
         assert_eq!(
-            hand_picked_for("montreal-hilbert"),
+            hand_picked_for("montreal"),
             Some(("measuredHeight", Pick::Quantile(FALLBACK_QUANTILE)))
         );
         let stats: Vec<&str> = HAND_PICKED_STATS

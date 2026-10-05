@@ -392,7 +392,7 @@ fn run_skips_a_format_with_no_prepared_artefact_and_still_produces_the_other() {
 /// per-format skip note above and nothing more. When `--formats` is omitted,
 /// the coordinator picked the format-comparison set itself, and a CSV holding
 /// only some of it is not the comparison the operator asked for — silently
-/// dropping four of five formats would be published as "the format
+/// dropping three of five formats would be published as "the format
 /// comparison". So a default-set run that resolves fewer formats than the set
 /// holds must say so loudly, naming exactly what is missing.
 ///
@@ -428,22 +428,22 @@ fn a_default_set_run_says_loudly_when_it_could_not_measure_the_whole_set() {
         "an incomplete default-set run must say the CSV is not a complete format \
          comparison; stderr:\n{stderr}"
     );
-    for missing in ["citygml", "cityjson", "flatcitybuf", "cityparquet-hilbert"] {
+    for missing in ["citygml", "cityjson", "flatcitybuf"] {
         assert!(
             stderr.contains(missing),
             "the warning must name the missing format '{missing}'; stderr:\n{stderr}"
         );
     }
 
-    // Only `cityjsonseq` could resolve, and it still ran.
+    // Only `cityjsonseq` and `cityparquet` could resolve, and both still ran.
     let csv_text = std::fs::read_to_string(&out_csv).unwrap();
     let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    let formats: Vec<&str> = rows.iter().map(|r| r.field("format")).collect();
     assert_eq!(
-        rows.len(),
-        1,
-        "expected only cityjsonseq's count row: {csv_text}"
+        formats,
+        ["cityjsonseq", "cityparquet"],
+        "expected only the two present formats' count rows: {csv_text}"
     );
-    assert_eq!(rows[0].field("format"), "cityjsonseq");
 }
 
 /// The mirror of the case above: when the operator NAMED the formats, the

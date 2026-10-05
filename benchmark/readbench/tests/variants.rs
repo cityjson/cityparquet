@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::package::{ConvertOptions, RowOrder, convert};
 
 const HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_std_s,\
 peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
@@ -22,16 +22,95 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 /// A prepared dir the way `readbench_prepare.sh` leaves it for a
-/// CityJSONSeq input: `<base>.parquet` (the package the query parameters
-/// derive from) and `<base>.city.jsonl`.
+/// CityJSONSeq input: `<base>.parquet` (the Hilbert-ordered package the query
+/// parameters derive from) and `<base>.city.jsonl`.
 fn prepared_delft() -> (tempfile::TempDir, PathBuf) {
     let prepared = tempfile::tempdir().unwrap();
     let input = fixture("delft.city.jsonl");
-    let mut opts = ConvertOptions::new(input.clone(), prepared.path().join("delft.parquet"));
-    opts.generate_lod0 = true;
-    convert(&opts).unwrap();
+    convert_delft(
+        &input,
+        &prepared.path().join("delft.parquet"),
+        RowOrder::Hilbert,
+    );
     std::fs::copy(&input, prepared.path().join("delft.city.jsonl")).unwrap();
     (prepared, input)
+}
+
+fn convert_delft(input: &std::path::Path, out: &std::path::Path, ordering: RowOrder) {
+    let mut opts = ConvertOptions::new(input.to_path_buf(), out.to_path_buf());
+    opts.generate_lod0 = true;
+    opts.ordering = ordering;
+    convert(&opts).unwrap();
+}
+
+/// The `id` column of a package's one table, in row order.
+fn ids_in(package: &std::path::Path) -> Vec<String> {
+    use arrow_array::{Array, StringArray};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let table = std::fs::read_dir(package)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "parquet"))
+        .expect("the package holds a .parquet table");
+    let reader = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(table).unwrap())
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut ids = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        let column = batch.column_by_name("id").expect("an id column");
+        let column = column
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("a Utf8 id");
+        ids.extend((0..column.len()).map(|i| column.value(i).to_string()));
+    }
+    ids
+}
+
+/// Every variant package is written in Hilbert order — the benchmark's only
+/// CityParquet configuration — whatever its id says about the recipe.
+#[test]
+fn every_variant_package_is_written_in_hilbert_order() {
+    let (prepared, input) = prepared_delft();
+    let out_csv = prepared.path().join("out.csv");
+    let output = run(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+        "--variants",
+        "cityparquet,cityparquet+nobloom",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reference = tempfile::tempdir().unwrap();
+    let source_order = reference.path().join("source.parquet");
+    convert_delft(&input, &source_order, RowOrder::Source);
+    let hilbert = ids_in(&prepared.path().join("delft.parquet"));
+    assert_ne!(
+        hilbert,
+        ids_in(&source_order),
+        "delft's Hilbert order must differ from its source order, or this test proves nothing"
+    );
+    for id in ["cityparquet", "cityparquet+nobloom"] {
+        assert_eq!(
+            ids_in(&prepared.path().join(format!("delft.{id}.parquet"))),
+            hilbert,
+            "{id} was not written in Hilbert order"
+        );
+    }
 }
 
 fn run(args: &[&str]) -> Output {
@@ -277,6 +356,10 @@ fn variants_and_formats_are_exclusive_and_the_list_is_validated() {
     expect_rejection(
         &with(&base, &["--variants", "cityparquet,cityparquet+gzip6"]),
         "only zstd takes a level",
+    );
+    expect_rejection(
+        &with(&base, &["--variants", "cityparquet,cityparquet+hilbert"]),
+        "Hilbert order already",
     );
     expect_rejection(
         &with(&base, &["--variants", "cityparquet", "--write-repeat", "1"]),

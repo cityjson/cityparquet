@@ -216,8 +216,8 @@ if [[ "$sub" != "convert" ]]; then
 fi
 # The WHOLE command line, kept before the parse loop below consumes it. A
 # recorded `src` proves which file was converted; only the full argv proves
-# HOW -- and `--ordering hilbert` is the entire difference between the two
-# CityParquet rows the ordering benchmark compares.
+# HOW -- and `--ordering hilbert` is what makes the package the benchmark's
+# one CityParquet configuration.
 argv=("$@")
 out=""
 src=""
@@ -567,7 +567,7 @@ case_unknown_format_rejected() {
     return
   fi
   local valid
-  for valid in cityparquet-hilbert flatcitybuf cityjsonseq; do
+  for valid in cityparquet flatcitybuf cityjsonseq; do
     if ! log_mentions "$valid"; then
       fail "$name" "message does not list '$valid'; log: $(cat "$LAST_LOG")"
       return
@@ -586,8 +586,8 @@ case_unknown_format_rejected() {
 # `from-cityjson`. This case used to assert the opposite (that CityGML was
 # reported as not derivable and skipped); see the header's CITYGML IS
 # SYNTHESISED block for why that reversed. The property that matters now is
-# that all EIGHT formats exist for one input, because a dataset producing
-# seven of them contributes a comparison with the baseline missing.
+# that all FIVE formats exist for one input, because a dataset producing
+# four of them contributes a comparison with the baseline missing.
 #
 # The synthesised CityGML is derived from the CityJSON STAGE, not from the
 # input directly — asserted below from the stub's recorded source, not from
@@ -604,7 +604,7 @@ case_default_on_cityjsonseq_builds_every_format() {
   fi
   local artefact
   for artefact in tiny.gml tiny.city.json tiny.city.jsonl tiny.parquet \
-    tiny-hilbert.parquet tiny.fcb; do
+    tiny.fcb; do
     if [[ ! -e "$dir/out/$artefact" ]]; then
       fail "$name" "missing $artefact; log: $(cat "$LAST_LOG")"
       return
@@ -689,7 +689,7 @@ case_citygml_input_builds_the_whole_chain() {
   fi
   local artefact
   for artefact in tiny.gml tiny.city.json tiny.city.jsonl \
-    tiny.fcb tiny.parquet tiny-hilbert.parquet; do
+    tiny.fcb tiny.parquet; do
     if [[ ! -e "$dir/out/$artefact" ]]; then
       fail "$name" "missing $artefact; log: $(cat "$LAST_LOG")"
       return
@@ -714,8 +714,7 @@ case_citygml_input_builds_the_whole_chain() {
   # script's own echo of the path: a step that logs one file and converts
   # another would sail past a log-only assertion.
   local fed
-  for fed in "$dir/out/tiny.fcb" "$dir/out/tiny.parquet/stub-source.txt" \
-    "$dir/out/tiny-hilbert.parquet/stub-source.txt"; do
+  for fed in "$dir/out/tiny.fcb" "$dir/out/tiny.parquet/stub-source.txt"; do
     if [[ "$(cat "$fed")" != "$dir/out/tiny.city.jsonl" ]]; then
       fail "$name" "$fed records input '$(cat "$fed")', not the derived CityJSONSeq"
       return
@@ -1186,8 +1185,7 @@ case_cityjson_input_builds_a_real_seq_artefact() {
   # …and the seq is what FlatCityBuf and both packages were fed, so the two
   # halves of every comparison read the same bytes.
   local fed
-  for fed in "$dir/out/tiny.fcb" "$dir/out/tiny.parquet/stub-source.txt" \
-    "$dir/out/tiny-hilbert.parquet/stub-source.txt"; do
+  for fed in "$dir/out/tiny.fcb" "$dir/out/tiny.parquet/stub-source.txt"; do
     if [[ "$(cat "$fed")" != "$dir/out/tiny.city.jsonl" ]]; then
       fail "$name" "$fed records input '$(cat "$fed")', not the derived CityJSONSeq"
       return
@@ -1204,10 +1202,10 @@ case_cityjson_input_builds_a_real_seq_artefact() {
 # correctly, and still passes every other case here — while silently changing
 # what the benchmark measures:
 #
-#   --ordering hilbert  without it the "Hilbert" package is byte-identical to
-#                       the source-order one, and the format comparison
-#                       publishes "ordering makes no difference" — a null
-#                       result that reads as a finding.
+#   --ordering hilbert  without it the package is written in source order,
+#                       and the format comparison publishes a configuration
+#                       CityParquet would not ship with — with bbox rows that
+#                       prune far fewer row groups.
 #   fcb ser -A          without it there is no B+-tree attribute index, so
 #                       FlatCityBuf falls back to a full scan on
 #                       attr-filter/id-lookup and the row is published as an
@@ -1226,17 +1224,9 @@ case_measurement_flags_are_passed() {
   fi
   # One line per argument, so `grep -qFx` matches a whole argument and never
   # a fragment of a path.
-  if ! grep -qFx -- "--ordering" "$dir/out/tiny-hilbert.parquet/stub-argv.txt" \
-    || ! grep -qFx -- "hilbert" "$dir/out/tiny-hilbert.parquet/stub-argv.txt"; then
-    fail "$name" "the Hilbert package was not written with --ordering hilbert: $(
-      tr '\n' ' ' <"$dir/out/tiny-hilbert.parquet/stub-argv.txt"
-    )"
-    return
-  fi
-  # …and its source-order twin must NOT carry it, or the two rows are the
-  # same package twice and the comparison is vacuous in the other direction.
-  if grep -qFx -- "--ordering" "$dir/out/tiny.parquet/stub-argv.txt"; then
-    fail "$name" "the source-order package was written with --ordering: $(
+  if ! grep -qFx -- "--ordering" "$dir/out/tiny.parquet/stub-argv.txt" \
+    || ! grep -qFx -- "hilbert" "$dir/out/tiny.parquet/stub-argv.txt"; then
+    fail "$name" "the package was not written with --ordering hilbert: $(
       tr '\n' ' ' <"$dir/out/tiny.parquet/stub-argv.txt"
     )"
     return
@@ -1400,6 +1390,39 @@ case_stale_chain_artefacts_are_refused() {
 # chain", never "fresh directory": treating an unknown provenance as current
 # would let exactly the directories this guard exists for through.
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Case 8e': a bump that changed ONE stage refuses only that stage's artefact.
+#
+# Chain version 5 changed the CityParquet stage alone (Hilbert row order), so
+# a directory stamped 4 holds a stale package but a FlatCityBuf file this
+# chain would write again byte for byte — and the hours-long stages must not
+# be rebuilt for nothing.
+# --------------------------------------------------------------------------
+case_a_one_stage_bump_refuses_only_that_stage() {
+  local name="a chain bump refuses only the artefacts of the stage it changed"
+  local dir
+  dir="$(new_sandbox cargo fcb)"
+  run_prepare "$dir" --formats cityparquet,flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "first run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  printf '4\n' >"$dir/out/.readbench-chain/tiny"
+  run_prepare "$dir" --formats cityparquet,flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "built by an older derivation chain"; then
+    return
+  fi
+  if ! grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.parquet"; then
+    fail "$name" "the refusal does not name the stale package; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.fcb"; then
+    fail "$name" "the refusal names the FlatCityBuf file, whose stage did not change; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
 case_unstamped_artefacts_are_refused() {
   local name="artefacts with no chain-version stamp at all are refused"
   local dir
@@ -1543,6 +1566,7 @@ case_cityjson_input_builds_a_real_seq_artefact
 case_measurement_flags_are_passed
 case_fcb_info_count_is_reported
 case_stale_chain_artefacts_are_refused
+case_a_one_stage_bump_refuses_only_that_stage
 case_unstamped_artefacts_are_refused
 case_current_chain_artefacts_are_reused
 case_vocabulary_matches_the_rust_enum

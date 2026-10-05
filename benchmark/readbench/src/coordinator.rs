@@ -72,6 +72,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use cityparquet::package::RowOrder;
 use cityparquet::variant::Variant;
 use cityparquet_readbench::format::Format;
 use cityparquet_readbench::naming::strip_known_extension;
@@ -98,8 +99,8 @@ pub struct RunOptions {
     /// Warm repeats per measurement (a further, discarded warmup precedes
     /// every one). Must be >= 1.
     pub repeat: usize,
-    /// Requested formats; `None`/empty selects [`Format::DEFAULT_SET`], the
-    /// format-comparison set.
+    /// Requested formats; `None`/empty selects [`Format::ALL`], the
+    /// format comparison.
     pub formats: Option<Vec<Format>>,
     /// Requested variant ids (`cityparquet::variant`'s grammar). When set,
     /// this is a CONFIGURATION run rather than a format comparison: every id
@@ -239,7 +240,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         // published as "the format comparison" (see the summary after this loop).
         let (requested_formats, chosen_by_default): (Vec<Format>, bool) = match &opts.formats {
             Some(v) if !v.is_empty() => (v.clone(), false),
-            _ => (Format::DEFAULT_SET.to_vec(), true),
+            _ => (Format::ALL.to_vec(), true),
         };
 
         let mut skipped_formats: Vec<Format> = Vec::new();
@@ -596,9 +597,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 // target would make the published time a function of where
                 // that id happened to sit in the stream, which is a property
                 // of the sample rather than of the format.
-                Scenario::FeatureLookup
-                    if !matches!(format, Format::CityParquet | Format::CityParquetHilbert) =>
-                {
+                Scenario::FeatureLookup if format != Format::CityParquet => {
                     eprintln!(
                         "cityparquet-readbench: skipping scenario '{scenario}' for format \
                          '{format}': {}",
@@ -803,11 +802,21 @@ fn retain_requested_probes(
 
 /// The variant list, parsed, de-duplicated by canonical id, and required to
 /// carry the bare `cityparquet` baseline every ratio is taken against.
+///
+/// A `+hilbert` suffix is refused: every package this benchmark builds is
+/// written in Hilbert order ([`build_variant`]), so the suffix would name
+/// the same package as the id without it.
 fn parse_variant_list(ids: &[String]) -> Result<Vec<(String, Variant)>> {
     let mut seen: Vec<String> = Vec::new();
     let mut out = Vec::with_capacity(ids.len());
     for raw in ids {
         let variant = Variant::parse(raw).map_err(|e| anyhow::anyhow!("--variants: {e}"))?;
+        if variant.ordering() == RowOrder::Hilbert {
+            bail!(
+                "--variants: '{raw}' carries +hilbert, but every benchmark package is written in \
+                 Hilbert order already; drop the suffix"
+            );
+        }
         let id = variant.id();
         if seen.contains(&id) {
             bail!("--variants: duplicate variant '{id}'");
@@ -1375,10 +1384,11 @@ fn run_measurement(
 /// path. Untimed: the configuration run measures the reads of the package
 /// and its size, not how long it took to build.
 ///
-/// `ConvertOptions` is filled the way the CLI's `convert` fills it
-/// (`generate_lod0: true`, the default batch size), so a variant package has
-/// the same content as the prepare script's `<base>.parquet` and differs from
-/// it only in the recipe under test. A library-default `ConvertOptions::new`
+/// `ConvertOptions` is filled the way the prepare script's `cityparquet
+/// convert --ordering hilbert` fills it (Hilbert row order,
+/// `generate_lod0: true`, the default batch size), so a variant package has
+/// the same content as `<base>.parquet` and differs from it only in the
+/// recipe under test. A library-default `ConvertOptions::new`
 /// would leave LoD0 generation OFF and the row counts would not line up.
 fn build_variant(
     base: &str,
@@ -1394,7 +1404,7 @@ fn build_variant(
     let built = scratch.path().join("pkg");
     let mut opts = cityparquet::package::ConvertOptions::new(seq.to_path_buf(), built.clone());
     opts.recipe = variant.recipe();
-    opts.ordering = variant.ordering();
+    opts.ordering = RowOrder::Hilbert;
     opts.generate_lod0 = true;
     cityparquet::package::convert(&opts)
         .with_context(|| format!("converting with variant '{id}'"))?;
@@ -1688,14 +1698,10 @@ mod tests {
     }
 
     fn formats() -> HashMap<String, Format> {
-        [
-            Format::CityJson,
-            Format::CityJsonSeq,
-            Format::CityParquetHilbert,
-        ]
-        .into_iter()
-        .map(|f| (f.as_str().to_string(), f))
-        .collect()
+        [Format::CityJson, Format::CityJsonSeq, Format::CityParquet]
+            .into_iter()
+            .map(|f| (f.as_str().to_string(), f))
+            .collect()
     }
 
     #[test]
@@ -1708,12 +1714,7 @@ mod tests {
                 &["bbox-1pct;approx"],
                 262,
             ),
-            labelled(
-                "cityparquet-hilbert",
-                Scenario::BBoxQuery,
-                &["bbox-1pct"],
-                499,
-            ),
+            labelled("cityparquet", Scenario::BBoxQuery, &["bbox-1pct"], 499),
             labelled("cityjson", Scenario::Count, &[], 49_915),
             labelled("cityjsonseq", Scenario::Count, &[], 38_743),
             labelled("cityjson", Scenario::IdLookup, &["id-50pct"], 1),
@@ -1731,12 +1732,7 @@ mod tests {
         let mut rows = vec![
             labelled("cityjson", Scenario::BBoxQuery, &["bbox-1pct"], 0),
             labelled("cityjsonseq", Scenario::BBoxQuery, &["bbox-1pct"], 0),
-            labelled(
-                "cityparquet-hilbert",
-                Scenario::BBoxQuery,
-                &["bbox-1pct"],
-                499,
-            ),
+            labelled("cityparquet", Scenario::BBoxQuery, &["bbox-1pct"], 499),
         ];
         let failures = check_consistency(&mut rows, &formats(), &tokyo_like());
         assert_eq!(

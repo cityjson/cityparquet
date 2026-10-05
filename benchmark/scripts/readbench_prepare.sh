@@ -8,8 +8,7 @@
 #   citygml              OUTDIR/<x>.gml               CityGML 2.0 — copied from a CityGML INPUT, else synthesised
 #   cityjson             OUTDIR/<x>.city.json         one whole-document CityJSON
 #   cityjsonseq          OUTDIR/<x>.city.jsonl        CityJSONSeq
-#   cityparquet          OUTDIR/<x>.parquet/          core-profile CityParquet package (source order)
-#   cityparquet-hilbert  OUTDIR/<x>-hilbert.parquet/  CityParquet package, Hilbert-ordered rows
+#   cityparquet          OUTDIR/<x>.parquet/          core-profile CityParquet package, Hilbert-ordered rows
 #   flatcitybuf          OUTDIR/<x>.fcb               FlatCityBuf, spatial index + ALL-attribute B+Tree index
 #
 # EVERY ONE OF THOSE IS A REAL FILE IN OUTDIR, `cityjsonseq` included — from a
@@ -32,8 +31,8 @@
 # THE CONVERSION CHAIN, AND WHY IT RUNS FORWARDS ONLY:
 #
 #   CityGML --citygml-tools to-cityjson--> CityJSON --cjseq cat--> CityJSONSeq
-#                                                 |           |--fcb ser -A--------> FlatCityBuf
-#                                                 |           |--cityparquet convert-> CityParquet
+#                                                 |           |--fcb ser -A------------------------> FlatCityBuf
+#                                                 |           |--cityparquet convert --ordering hilbert--> CityParquet
 #                                                 |
 #                                                 |--citygml-tools from-cityjson -v 2.0--> CityGML
 #                                                    (only when INPUT is not itself CityGML)
@@ -77,7 +76,7 @@
 # for a reason that outweighs it:
 #
 #   The read benchmark's claim is a comparison BETWEEN formats. A dataset that
-#   produces seven artefacts and skips the eighth does not weaken that
+#   produces four artefacts and skips the fifth does not weaken that
 #   comparison, it removes the baseline from it — and under the previous
 #   corpus the skipped ones were exactly the datasets a reader recognises
 #   (3DBAG, Rotterdam, Vienna, NYC, Zurich all ship as CityJSON). Worse, the
@@ -86,7 +85,7 @@
 #   repository's reader accepts only 2.0.
 #
 # So every artefact, CityGML included, is now derived from ONE source
-# document, which is what makes the eight rows content-comparable in the first
+# document, which is what makes the five rows content-comparable in the first
 # place. The cost is real and must be quoted with the numbers: the `citygml`
 # row then measures citygml-tools' SERIALISATION, not a published file. Two
 # things bound that cost, both in benchmark/formats/READ_BENCHMARK.md's CityGML synthesis
@@ -157,7 +156,7 @@ set -euo pipefail
 # lists out of their own sources and fails if they disagree (a duplicated
 # vocabulary drifting apart is exactly how this benchmark's CSV header
 # contract ended up with three incompatible versions).
-VALID_FORMATS=(citygml cityjson cityjsonseq flatcitybuf cityparquet cityparquet-hilbert)
+VALID_FORMATS=(citygml cityjson cityjsonseq flatcitybuf cityparquet)
 
 # What `--formats` defaults to: the full format-comparison set, i.e. every
 # artefact this script can produce.
@@ -165,7 +164,7 @@ VALID_FORMATS=(citygml cityjson cityjsonseq flatcitybuf cityparquet cityparquet-
 # benchmark MEASURES by default) — this one can only ever name formats a
 # build step below exists for, so that a bare run never fails on its own
 # default.
-DEFAULT_BUILD_FORMATS=(citygml cityjson cityjsonseq flatcitybuf cityparquet cityparquet-hilbert)
+DEFAULT_BUILD_FORMATS=(citygml cityjson cityjsonseq flatcitybuf cityparquet)
 
 # The INPUT-EXTENSION CONVENTION, most specific first — the same list, in the
 # same order, as `KNOWN_INPUT_EXTENSIONS` in
@@ -419,8 +418,7 @@ fi
 # requested, which is a REAL artefact for every input kind (see the header).
 NEED_SEQ=0
 if [[ "$INPUT_KIND" == "citygml" ]]; then
-  if want cityjsonseq || want flatcitybuf \
-    || want cityparquet || want cityparquet-hilbert; then
+  if want cityjsonseq || want flatcitybuf || want cityparquet; then
     NEED_SEQ=1
   fi
 elif want cityjsonseq; then
@@ -553,7 +551,7 @@ if [[ "$INPUT_KIND" == "citygml" ]] \
 fi
 
 NEED_CLI=0
-if want cityparquet || want cityparquet-hilbert; then
+if want cityparquet; then
   NEED_CLI=1
 fi
 if want flatcitybuf; then
@@ -572,7 +570,6 @@ GML_OUT="$OUTDIR/${BASE}.gml"
 CITYJSON_OUT="$OUTDIR/${BASE}.city.json"
 SEQ_OUT="$OUTDIR/${BASE}.city.jsonl"
 PARQUET_OUT="$OUTDIR/${BASE}.parquet"
-HILBERT_OUT="$OUTDIR/${BASE}-hilbert.parquet"
 FCB_OUT="$OUTDIR/${BASE}.fcb"
 
 # Non-empty directory: at least one file inside (a CityParquet package is
@@ -628,11 +625,16 @@ same_file() {
 #   3  `cityparquet convert` writes bloom filters by default.
 #   4  the 3DBAG slices are cut without LoD 1.2, under unchanged names, and
 #      the corpus changed; every stage of every dataset is rebuilt.
-CHAIN_VERSION=4
+#   5  `<x>.parquet` is written in Hilbert order (`--ordering hilbert`), the
+#      benchmark's one CityParquet configuration.
+CHAIN_VERSION=5
 # The chain version at which each STAGE last changed what it writes. An
 # artefact is stale when its stage changed after the version that built it,
 # so a bump that touches one stage does not force the hours-long stages it
 # left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#   5  the CityParquet stage: a package built before holds the same rows in
+#      source order, and every bbox row measured on it is a different
+#      artefact.
 #   4  every stage: a re-cut slice has new content under its old name, so no
 #      artefact built from it before is current.
 #   3  `cityparquet convert` writes bloom filters by default (id, feature_id,
@@ -641,7 +643,10 @@ CHAIN_VERSION=4
 #   2  the CityJSONSeq stage became a real artefact for every input kind
 #      (the gzip case above); FlatCityBuf and CityGML derive from it.
 stage_version() {
-  echo 4
+  case "$1" in
+    "$PARQUET_OUT") echo 5 ;;
+    *) echo 4 ;;
+  esac
 }
 CHAIN_DIR="$OUTDIR/.readbench-chain"
 CHAIN_STAMP="$CHAIN_DIR/$BASE"
@@ -649,8 +654,7 @@ CHAIN_STAMP="$CHAIN_DIR/$BASE"
 # Every artefact path this script owns for this dataset, whatever was
 # requested: a stale artefact nobody asked for today is still one the
 # coordinator will measure tomorrow.
-ALL_OUTPUTS=("$GML_OUT" "$CITYJSON_OUT" "$SEQ_OUT" "$PARQUET_OUT" "$HILBERT_OUT" \
-  "$FCB_OUT")
+ALL_OUTPUTS=("$GML_OUT" "$CITYJSON_OUT" "$SEQ_OUT" "$PARQUET_OUT" "$FCB_OUT")
 
 STALE=()
 STAMPED=""
@@ -940,12 +944,13 @@ if [[ "$NEED_SEQ" -eq 1 ]]; then
   fi
 fi
 
-# 4. Core-profile CityParquet package (source row order).
+# 4. Core-profile CityParquet package, rows in Hilbert-curve order — the
+#    configuration CityParquet would ship with, and the benchmark's only one.
 if want cityparquet; then
   if dir_is_valid "$PARQUET_OUT"; then
     echo "skip $PARQUET_OUT (already present)"
   else
-    echo "-- convert $SEQ_INPUT -> $PARQUET_OUT"
+    echo "-- convert --ordering hilbert $SEQ_INPUT -> $PARQUET_OUT"
     # By-type is the only, mandatory table layout (2026-07-21): one
     # `<snake>.parquet` table per 1st-level CityObject family. The
     # read-benchmark's CityParquetRunner only supports a package whose
@@ -953,23 +958,12 @@ if want cityparquet; then
     # single-family dataset (e.g. a Building-only 3D BAG tile) — a
     # multi-family INPUT prepares fine here but the read-benchmark itself
     # rejects it later with a clear error.
-    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --overwrite
+    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --ordering hilbert --overwrite
   fi
   BUILT+=("$PARQUET_OUT")
 fi
 
-# 5. Hilbert-ordered CityParquet package.
-if want cityparquet-hilbert; then
-  if dir_is_valid "$HILBERT_OUT"; then
-    echo "skip $HILBERT_OUT (already present)"
-  else
-    echo "-- convert --ordering hilbert $SEQ_INPUT -> $HILBERT_OUT"
-    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$HILBERT_OUT" --ordering hilbert --overwrite
-  fi
-  BUILT+=("$HILBERT_OUT")
-fi
-
-# 6. FlatCityBuf, spatial index (default-on) + all-attribute B+Tree index.
+# 5. FlatCityBuf, spatial index (default-on) + all-attribute B+Tree index.
 if want flatcitybuf; then
   if file_is_valid "$FCB_OUT"; then
     echo "skip $FCB_OUT (already present)"
@@ -1062,9 +1056,6 @@ fi
 
 if want cityparquet; then
   dir_is_valid "$PARQUET_OUT" || { echo "error: missing/empty package: $PARQUET_OUT" >&2; exit 1; }
-fi
-if want cityparquet-hilbert; then
-  dir_is_valid "$HILBERT_OUT" || { echo "error: missing/empty package: $HILBERT_OUT" >&2; exit 1; }
 fi
 if want flatcitybuf; then
   file_is_valid "$FCB_OUT" || { echo "error: missing/empty file: $FCB_OUT" >&2; exit 1; }

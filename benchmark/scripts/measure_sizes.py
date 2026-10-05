@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse, csv
 from pathlib import Path
 HEADER = ["dataset","format","bytes","mb","ratio_vs_cityjsonseq","baseline_format","ratio_vs_baseline"]
-FORMATS = {"citygml":".gml", "cityjson":".city.json", "cityjsonseq":".city.jsonl", "flatcitybuf":".fcb", "cityparquet-hilbert":"-hilbert.parquet"}
+FORMATS = {"citygml":".gml", "cityjson":".city.json", "cityjsonseq":".city.jsonl", "flatcitybuf":".fcb", "cityparquet":".parquet"}
 def stem(path: Path) -> str:
  for suffix in (".city.jsonl", ".city.json", ".citygml", ".jsonl", ".json", ".gml", ".xml"):
   if path.name.endswith(suffix): return path.name[:-len(suffix)]

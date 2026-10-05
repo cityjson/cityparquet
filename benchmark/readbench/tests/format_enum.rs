@@ -33,7 +33,6 @@ fn the_canonical_spellings_are_the_documented_tags() {
             "cityjsonseq",
             "flatcitybuf",
             "cityparquet",
-            "cityparquet-hilbert",
         ]
     );
 }

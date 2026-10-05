@@ -21,8 +21,8 @@ use std::str::FromStr;
 ///
 /// Variants are ordered as the benchmark presents them: the formats city
 /// models actually ship as today (CityGML → CityJSON → CityJSONSeq), then
-/// the indexed/columnar ones (FlatCityBuf → CityParquet → Hilbert-ordered
-/// CityParquet). See [`Format::ALL`].
+/// the indexed/columnar ones (FlatCityBuf → CityParquet). See
+/// [`Format::ALL`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
     /// CityGML 2.0 XML — the format most national datasets are published in.
@@ -34,53 +34,24 @@ pub enum Format {
     CityJsonSeq,
     /// FlatCityBuf: the indexed FlatBuffers encoding.
     FlatCityBuf,
-    /// A CityParquet package in source order.
+    /// A CityParquet package, its rows written in Hilbert-curve order
+    /// (`cityparquet convert --ordering hilbert`): the configuration
+    /// CityParquet would ship with, and the benchmark's only one.
     CityParquet,
-    /// A CityParquet package written in Hilbert-curve order. Read by the
-    /// SAME runner as [`Format::CityParquet`] (a Hilbert-ordered package is
-    /// still a plain CityParquet package on disk); only the artefact path
-    /// differs — see [`Format::artefact`].
-    CityParquetHilbert,
 }
 
 impl Format {
     /// Every variant, in the benchmark's canonical order: the formats data
     /// ships as, then the indexed/columnar ones — so a chart reads
-    /// left-to-right from "what you have" to "what we propose".
-    pub const ALL: [Format; 6] = [
+    /// left-to-right from "what you have" to "what we propose". It is also
+    /// what a run with no `--formats` measures: one tag per format family.
+    pub const ALL: [Format; 5] = [
         Format::CityGml,
         Format::CityJson,
         Format::CityJsonSeq,
         Format::FlatCityBuf,
         Format::CityParquet,
-        Format::CityParquetHilbert,
     ];
-
-    /// The FORMAT-COMPARISON set: what a run with no `--formats` measures.
-    ///
-    /// One tag per format family, so the CSV answers exactly one question —
-    /// *how do the formats a city model can ship as compare?* CityParquet is
-    /// represented by [`Format::CityParquetHilbert`], the configuration we
-    /// would actually ship, so the comparison is not handicapped by an
-    /// ordering choice no other format here faces; the ordering choice itself
-    /// is a separate question, asked by [`Format::ORDERING_SET`].
-    pub const DEFAULT_SET: [Format; 5] = [
-        Format::CityGml,
-        Format::CityJson,
-        Format::CityJsonSeq,
-        Format::FlatCityBuf,
-        Format::CityParquetHilbert,
-    ];
-
-    /// The ORDERING-COMPARISON set — the answer to *does Hilbert-curve
-    /// ordering pay for itself?*, and nothing else.
-    ///
-    /// Both members are the same writer, the same reader and the same
-    /// scenarios; the ONLY difference is the row order the package was
-    /// written in (see [`Format::artefact`]). Running this set alongside
-    /// other formats would confound the two axes, which is why it is its own
-    /// set rather than extra members of [`Format::DEFAULT_SET`].
-    pub const ORDERING_SET: [Format; 2] = [Format::CityParquet, Format::CityParquetHilbert];
 
     /// The canonical kebab-case CLI/CSV spelling (round-trips through
     /// [`FromStr`]).
@@ -99,7 +70,7 @@ impl Format {
     /// the source's own axis order, so a latitude-first dataset's query
     /// window reaches it with `x` and `y` swapped.
     pub fn stores_longitude_first(self) -> bool {
-        matches!(self, Format::CityParquet | Format::CityParquetHilbert)
+        matches!(self, Format::CityParquet)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -109,7 +80,6 @@ impl Format {
             Format::CityJsonSeq => "cityjsonseq",
             Format::FlatCityBuf => "flatcitybuf",
             Format::CityParquet => "cityparquet",
-            Format::CityParquetHilbert => "cityparquet-hilbert",
         }
     }
 
@@ -131,7 +101,6 @@ impl Format {
             Format::CityJsonSeq => format!("{base}.city.jsonl"),
             Format::FlatCityBuf => format!("{base}.fcb"),
             Format::CityParquet => format!("{base}.parquet"),
-            Format::CityParquetHilbert => format!("{base}-hilbert.parquet"),
         }
     }
 }
@@ -156,7 +125,6 @@ impl FromStr for Format {
             "cityjsonseq" => Ok(Format::CityJsonSeq),
             "flatcitybuf" => Ok(Format::FlatCityBuf),
             "cityparquet" => Ok(Format::CityParquet),
-            "cityparquet-hilbert" => Ok(Format::CityParquetHilbert),
             other => Err(format!(
                 "unknown format '{other}'; expected one of: {}",
                 Format::ALL
@@ -176,20 +144,15 @@ mod tests {
     #[test]
     fn from_str_is_case_insensitive() {
         assert_eq!(
-            "CityParquet-Hilbert".parse::<Format>().unwrap(),
-            Format::CityParquetHilbert
+            "CityParquet".parse::<Format>().unwrap(),
+            Format::CityParquet
         );
     }
 
-    /// The two CityParquet variants share a runner but never a path: the
-    /// only difference between them IS which artefact resolves.
+    /// The one CityParquet package lives at `<base>.parquet`.
     #[test]
-    fn the_two_cityparquet_orderings_resolve_to_different_artefacts() {
+    fn cityparquet_reads_the_one_package() {
         assert_eq!(Format::CityParquet.artefact("delft"), "delft.parquet");
-        assert_eq!(
-            Format::CityParquetHilbert.artefact("delft"),
-            "delft-hilbert.parquet"
-        );
     }
 
     /// CityJSONSeq reads a PREPARED `<base>.city.jsonl`, never the original
