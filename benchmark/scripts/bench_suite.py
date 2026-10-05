@@ -23,7 +23,7 @@ FAMILIES = ("sizes", "formats", "bloom", "databases")
 # A run profile fixes which slice stands in for "the large dataset", how many
 # repetitions are measured and where the results go, so that a test run can
 # never overwrite the paper's evidence:
-#   full   the largest scaling slice, 7 read / 3 write repetitions,
+#   full   the largest scaling slice, 7 read repetitions,
 #          results in each family's own directory;
 #   short  the manifest's `short_scaling_dataset` (3dbag_n100000), the same
 #          repetitions, results under `<family>/short/`; for iterating on the
@@ -186,15 +186,12 @@ def code_identity() -> dict[str, object]:
     }
 
 
-def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repeat: int, write_repeat: int | None, smoke: bool, fixed_configuration: str, profile: str = "full") -> None:
+def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repeat: int, smoke: bool, fixed_configuration: str, profile: str = "full") -> None:
     """Persist enough local evidence to identify one benchmark result exactly."""
     artefacts = [
         result_csv,
         Path(f"{result_csv}.samples.json"),
         Path(f"{result_csv}.params.json"),
-        # One immutable raw write table belongs to this aggregate.  A shared
-        # table would change after later datasets and invalidate this manifest.
-        result_csv.with_suffix(".write.samples.csv"),
     ]
     files = {str(path.name): sha256(path) for path in artefacts if path.is_file()}
     params = Path(f"{result_csv}.params.json")
@@ -205,7 +202,7 @@ def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repe
         "profile": profile,
         "source": {"path": str(source_path.resolve()), "sha256": sha256(source_path)},
         "result": {"csv": str(result_csv.resolve()), "files_sha256": files, "params_sha256": sha256(params) if params.is_file() else None},
-        "measurement": {"read_repeat": repeat, "write_repeat": write_repeat, "fixed_configuration": fixed_configuration},
+        "measurement": {"read_repeat": repeat, "fixed_configuration": fixed_configuration},
         "code": code_identity(),
         "machine": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "processor": platform.processor(), "python": sys.version.split()[0]},
         "tools": {"rust": version("rustc", "--version"), "fcb": version("fcb", "--version"), "cjseq": version("cjseq", "--version"), "cityparquet": version("lib/cityparquet-rs/target/release/cityparquet", "--version")},
@@ -233,11 +230,9 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
         just("fetch-tools")
     if any(family in {"sizes", "formats"} for family in families):
         command("cargo", "build", "--release", "--manifest-path", "lib/cityparquet-rs/Cargo.toml", "-p", "cityparquet-cli", "--bin", "cityparquet")
-        # `format_write.py`'s CityJSONSeq writer is a subcommand of the read
-        # harness, which lives in its own workspace — a second manifest, a
-        # second target directory. It is the write row every ratio divides by,
-        # so building it belongs in prep beside the converter, not in the
-        # timed run.
+        # The read harness lives in its own workspace — a second manifest, a
+        # second target directory. Building it here keeps compilation out of
+        # the run.
         command("cargo", "build", "--release", "--manifest-path", "benchmark/readbench/Cargo.toml", "--bin", "cityparquet-readbench")
     locations["prepared"].mkdir(parents=True, exist_ok=True)
     for key in datasets:
@@ -293,7 +288,7 @@ def require_prepared(inputs: list[Path], locations: dict[str, Path]) -> None:
         raise SystemExit(f"prepared artefacts missing: run just bench-prep first ({locations['prepared']})")
 
 
-def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, write_formats: str = "", read_formats: str = "") -> None:
+def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "") -> None:
     smoke = profile == "smoke"
     large = large_dataset(manifest, profile)
     selected = {key: manifest["datasets"][key] for key in datasets}
@@ -303,29 +298,18 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
     if any(family in {"sizes", "formats"} for family in families):
         if not format_inputs:
             raise SystemExit("formats and sizes need corpus data or the largest 3DBAG slice")
-        # `bench` remains the low-level format runner until its external-write
-        # sampler lands. It must be passed explicit external output paths.
+        # `bench` is the low-level format runner. It must be passed explicit
+        # external output paths.
         if "formats" in families:
             output = result_dir(locations, "formats", profile)
             just("bench", str(stage(locations, "formats", format_inputs)), str(output), read_formats, str(locations["prepared"]), "1" if smoke else "7")
             for input_path in format_inputs:
-                command(
-                    "python3", "benchmark/scripts/format_write.py", "--input", str(input_path),
-                    "--canonical-seq", str(locations["prepared"] / f"{dataset_stem(input_path)}.city.jsonl"),
-                    "--out", str(output / f"{dataset_stem(input_path)}.csv"),
-                    "--raw-out", str(output / f"{dataset_stem(input_path)}.write.samples.csv"),
-                    "--scratch", str(locations["work"] / "write-samples"),
-                    "--repeat", "1" if smoke else "3",
-                    *(["--formats", write_formats] if write_formats else []),
-                )
-                # A write subset is part of the run's identity: a CSV whose
-                # write rows were measured for four formats must say so.
-                configuration = "CityParquet=Hilbert; direct writers from canonical CityJSONSeq"
-                if write_formats:
-                    configuration += f"; write-formats={write_formats}"
+                # A read subset is part of the run's identity: a CSV whose
+                # read rows were measured for four formats must say so.
+                configuration = "CityParquet=Hilbert"
                 if read_formats:
                     configuration += f"; read-formats={read_formats}"
-                write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=1 if smoke else 7, write_repeat=1 if smoke else 3, smoke=smoke, fixed_configuration=configuration, profile=profile)
+                write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=1 if smoke else 7, smoke=smoke, fixed_configuration=configuration, profile=profile)
         if "sizes" in families:
             output = result_dir(locations, "sizes", profile) / "sizes.csv"
             for input_path in format_inputs:
@@ -335,9 +319,9 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         if not bloom_inputs:
             raise SystemExit("bloom needs a corpus dataset or a 3DBAG scaling slice")
         output = result_dir(locations, "bloom", profile)
-        just("bloom-bench", str(stage(locations, "bloom", bloom_inputs)), str(output), str(locations["prepared"]), "1" if smoke else "7", "1" if smoke else "3")
+        just("bloom-bench", str(stage(locations, "bloom", bloom_inputs)), str(output), str(locations["prepared"]), "1" if smoke else "7")
         for input_path in bloom_inputs:
-            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=1 if smoke else 7, write_repeat=1 if smoke else 3, smoke=smoke, fixed_configuration="bloom/zstd-3/default-row-groups", profile=profile)
+            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=1 if smoke else 7, smoke=smoke, fixed_configuration="bloom/zstd-3/default-row-groups", profile=profile)
     if "databases" in families:
         database_input = scaling_inputs[0] if smoke and scaling_inputs else source(manifest["datasets"][large], locations)
         if not database_input.is_file():
@@ -359,10 +343,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("command", choices=("prep", "run", "summary"))
     result.add_argument("--families", default="all", help=f"comma-separated families from {','.join(FAMILIES)}, or all")
     result.add_argument("--datasets", default="")
-    result.add_argument("--profile", choices=PROFILES, default="full", help="full: the largest slice, 7/3 repetitions, the families' own result directories (the paper's evidence); short: the manifest's short_scaling_dataset with the same repetitions under <family>/short/, for iterating on the harness; smoke: the 1000-object slice and Rotterdam, 1 repetition, under <family>/smoke/")
+    result.add_argument("--profile", choices=PROFILES, default="full", help="full: the largest slice, 7 read repetitions, the families' own result directories (the paper's evidence); short: the manifest's short_scaling_dataset with the same repetitions under <family>/short/, for iterating on the harness; smoke: the 1000-object slice and Rotterdam, 1 repetition, under <family>/smoke/")
     result.add_argument("--smoke", action="store_true", help="the same as --profile smoke")
     result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")
-    result.add_argument("--write-formats", default="", help="comma-separated subset of the formats whose write rows are measured (forwarded to format_write.py --formats; default: all). A subset keeps the other formats' existing write rows out of the CSV, so use it only to re-measure part of a run and merge deliberately")
     result.add_argument("--data-root", type=Path, default=Path(os.environ.get("CITYPARQUET_BENCH_ROOT", DEFAULT_DATA_ROOT)))
     result.add_argument("--out", type=Path)
     result.add_argument("--figures", type=Path)
@@ -385,7 +368,7 @@ def main() -> None:
     if args.command == "prep":
         prepare(data, locations, families, datasets, profile)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, profile, args.write_formats, args.read_formats)
+        run_suite(data, locations, families, datasets, profile, args.read_formats)
     else:
         output = (args.out or locations["summary"] / profile).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None

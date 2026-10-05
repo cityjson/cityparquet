@@ -3,9 +3,7 @@ mod coordinator;
 mod formats;
 mod scenario;
 
-use std::fs::File;
-use std::io::{BufRead as _, BufReader, BufWriter, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::time::Instant;
 
@@ -17,16 +15,14 @@ use scenario::{AttrPred, QueryParams, Scenario};
 
 /// Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParquet, etc.).
 ///
-/// This binary has three entry points sharing one CLI surface: the `run`
+/// This binary has two entry points sharing one CLI surface: the `run`
 /// subcommand (the coordinator — drives a whole (format x scenario) matrix,
-/// means the repeats, and writes the results CSV; see [`coordinator`]);
+/// means the repeats, and writes the results CSV; see [`coordinator`]); and
 /// `--child` (a plain top-level flag, no subcommand keyword) — a
 /// single-scenario worker the coordinator spawns once per (format, scenario,
 /// dataset, repeat) measurement, which resets the heap allocator, times
 /// exactly one `FormatRunner::run` call, and prints one line to stdout:
-/// `time_s peak_heap_bytes ru_maxrss_bytes result_count`; and
-/// `write-cityjsonseq` (see [`write_cityjsonseq`]) — the CityJSONSeq WRITER
-/// the cross-format write benchmark needs, which does no timing of its own.
+/// `time_s peak_heap_bytes ru_maxrss_bytes result_count`.
 #[derive(Parser, Debug)]
 #[command(name = "cityparquet-readbench", version, about)]
 struct Cli {
@@ -41,22 +37,6 @@ struct Cli {
     /// this mode.
     #[arg(long)]
     child: bool,
-
-    /// With `--child`: measure one CONVERSION instead of one read. Needs
-    /// `--variant`, `--input` (a CityJSONSeq artefact) and `--out` (a
-    /// directory that does not exist yet). Prints the same four-field line
-    /// a read child prints, with the conversion's object count last.
-    #[arg(long)]
-    write: bool,
-
-    /// With `--child --write`: the variant id whose recipe to convert with
-    /// (`cityparquet::variant`'s grammar).
-    #[arg(long)]
-    variant: Option<String>,
-
-    /// With `--child --write`: where the package is written.
-    #[arg(long)]
-    out: Option<PathBuf>,
 
     /// Format backend — one of `Format::ALL`'s canonical names, which
     /// `Format::from_str` validates (and whose error lists them all), so no
@@ -132,24 +112,6 @@ enum Command {
     /// Drive a whole (format x scenario) benchmark matrix and write the
     /// results CSV (see [`coordinator::run`]).
     Run(Box<RunArgs>),
-
-    /// Re-serialise a canonical CityJSONSeq stream into a fresh one (see
-    /// [`write_cityjsonseq`]). The name is pinned because clap's derived
-    /// kebab-casing would otherwise split it into `write-city-json-seq`.
-    #[command(name = "write-cityjsonseq")]
-    WriteCityJsonSeq(WriteCityJsonSeqArgs),
-}
-
-/// `cityparquet-readbench write-cityjsonseq`'s own flags.
-#[derive(Args, Debug)]
-struct WriteCityJsonSeqArgs {
-    /// The canonical `.city.jsonl` stream to read.
-    #[arg(long)]
-    input: PathBuf,
-
-    /// Where the re-serialised stream is written (truncated if it exists).
-    #[arg(long)]
-    output: PathBuf,
 }
 
 /// `cityparquet-readbench run`'s own flags — the CLI-facing mirror of
@@ -185,19 +147,14 @@ struct RunArgs {
     formats: Option<Vec<Format>>,
 
     /// Comma-separated variant ids (`cityparquet::variant`'s grammar). A
-    /// CONFIGURATION run: every id is written with its recipe by a write
-    /// child, kept as `<prepared-dir>/<base>.<id>.parquet`, then read by the
+    /// CONFIGURATION run: every id is converted with its recipe (untimed),
+    /// kept as `<prepared-dir>/<base>.<id>.parquet`, then read by the
     /// CityParquet runner. Exclusive with `--formats`; the list must contain
     /// the bare `cityparquet` baseline. Over `--transport http` the run is
     /// read-only: it reads the `<base>.<id>.parquet` packages a local run
-    /// wrote, uploaded beside the prepared artefacts, and writes none.
+    /// built, uploaded beside the prepared artefacts, and builds none.
     #[arg(long, value_delimiter = ',')]
     variants: Option<Vec<String>>,
-
-    /// Warm write repeats per variant (a discarded warmup precedes them).
-    /// Only read by a local `--variants` run. Must be >= 1.
-    #[arg(long, default_value_t = 3)]
-    write_repeat: usize,
 
     /// Comma-separated scenario names, or their [`Scenario::from_str`]
     /// aliases. Omitting this selects [`Scenario::ALL`] — the six
@@ -242,9 +199,6 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    if let Some(Command::WriteCityJsonSeq(args)) = &cli.command {
-        return write_cityjsonseq(&args.input, &args.output);
-    }
     if let Some(Command::Run(run_args)) = cli.command {
         let run_args = *run_args;
         let transport = match run_args.transport.as_str() {
@@ -259,7 +213,6 @@ fn run(cli: Cli) -> Result<()> {
             repeat: run_args.repeat,
             formats: run_args.formats,
             variants: run_args.variants,
-            write_repeat: run_args.write_repeat,
             scenarios: run_args.scenarios,
             id_probes: run_args.id_probes,
             feature_probes: run_args.feature_probes,
@@ -275,10 +228,6 @@ fn run(cli: Cli) -> Result<()> {
              coordinator) or `--child --format <f> --scenario <s> --input <path>` (a single \
              measurement)"
         );
-    }
-
-    if cli.write {
-        return run_write_child(cli);
     }
 
     let format = cli.format.context("--child requires --format")?;
@@ -392,137 +341,6 @@ fn run(cli: Cli) -> Result<()> {
             stats.count
         );
     }
-    Ok(())
-}
-
-/// One timed conversion, in a process of its own so its peak RSS is its own.
-///
-/// `ConvertOptions` is filled the way the CLI's `convert` fills it
-/// (`generate_lod0: true`, the default batch size), so a variant package has
-/// the same content as the prepare script's `<base>.parquet` and differs from
-/// it only in the recipe under test. A library-default `ConvertOptions::new`
-/// would leave LoD0 generation OFF and the row counts would not line up.
-fn run_write_child(cli: Cli) -> Result<()> {
-    let id = cli.variant.context("--write requires --variant")?;
-    let input = cli.input.context("--write requires --input")?;
-    let out = cli.out.context("--write requires --out")?;
-    let variant = cityparquet::variant::Variant::parse(&id).map_err(|e| anyhow::anyhow!("{e}"))?;
-    if out.exists() {
-        bail!(
-            "--out {} exists; the write child needs a fresh directory",
-            out.display()
-        );
-    }
-
-    let mut opts = cityparquet::package::ConvertOptions::new(input, out);
-    opts.recipe = variant.recipe();
-    opts.ordering = variant.ordering();
-    opts.generate_lod0 = true;
-
-    alloc::reset();
-    let start = Instant::now();
-    let report = cityparquet::package::convert(&opts)
-        .with_context(|| format!("converting with variant '{id}'"))?;
-    let time_s = start.elapsed().as_secs_f64();
-    let peak_heap_bytes = alloc::peak_heap_bytes();
-    let ru_maxrss_bytes = max_rss_bytes()?;
-    println!(
-        "{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {}",
-        report.object_count
-    );
-    Ok(())
-}
-
-/// The CityJSONSeq **writer** of the cross-format write benchmark: reads a
-/// canonical `.city.jsonl` stream and writes an equivalent one out again.
-///
-/// It exists because the benchmark's cityjsonseq write row has to be the same
-/// KIND of work every other row is. Each of those parses the canonical stream
-/// into the target format's own typed model and serialises that model out
-/// (`cjseq collect` for cityjson, `+ citygml-tools` for citygml, `fcb ser -A`
-/// for flatcitybuf, `cityparquet convert` for cityparquet). The row that
-/// divides all of them — cityjsonseq — used to be a plain `cat`, which on a
-/// reflink-capable filesystem is a metadata-only extent clone: nothing is
-/// parsed, nothing is serialised, and the "write" costs milliseconds at any
-/// dataset size. This subcommand does for CityJSONSeq exactly what the other
-/// four writers do for their formats, and nothing more.
-///
-/// Streaming, by construction: the header line is parsed into a
-/// [`cityparquet::cjseq::CityJSON`] and every following line into a
-/// [`cityparquet::cjseq::CityJSONFeature`], each written straight back out
-/// through a [`BufWriter`] before the next is read, so at most one feature is
-/// ever live. Any line that does not parse is an error — the timing would be
-/// meaningless if malformed input were passed through untouched, which is what
-/// `cjseq filter` does (it parses to a `serde_json::Value` and writes the
-/// ORIGINAL line bytes back, so it is not a writer either).
-///
-/// Blank lines are dropped, matching every reader in `formats::cityjsonseq`.
-///
-/// Fidelity is that of cjseq's own model, and the model is the point: unknown
-/// keys survive on `CityJSON` and on every `CityObject` (both carry
-/// `#[serde(flatten)]`), but cjseq's typed `Metadata` names its keys and has
-/// no catch-all, so an unnamed one — `fullMetadataUrl` and `version` in the
-/// 3DBAG-derived streams — is dropped. That is confined to the single header
-/// line and never touches a feature's geometry or attributes; `cjseq collect`,
-/// the writer behind the benchmark's neighbouring `cityjson` row, parses
-/// through the same struct and drops the same keys, so the two rows are
-/// equally faithful by construction rather than by coincidence. See
-/// `tests/write_cityjsonseq.rs`, which pins the gap to exactly that.
-///
-/// **Allocator caveat.** This binary installs `peak_alloc` as its
-/// `#[global_allocator]` (see [`alloc`]), so every allocation here pays two
-/// atomics that `cjseq`, `fcb` and the `cityparquet` CLI do not. Measured on
-/// `3dbag_n10000` — this loop built with and without `peak_alloc`, 25
-/// interleaved runs each — the difference is below the run-to-run noise floor
-/// (medians 0.81 s without, 0.80 s with), the counters being relaxed atomics
-/// on a single-threaded workload. Disclosed in `benchmark/formats/README.md`
-/// because this row is the divisor, not because it moves it.
-fn write_cityjsonseq(input: &Path, output: &Path) -> Result<()> {
-    use cityparquet::cjseq::{CityJSON, CityJSONFeature};
-
-    let reader =
-        BufReader::new(File::open(input).with_context(|| format!("opening {}", input.display()))?);
-    let mut writer = BufWriter::new(
-        File::create(output).with_context(|| format!("creating {}", output.display()))?,
-    );
-
-    let mut lines = reader.lines();
-    let header_line = lines
-        .next()
-        .with_context(|| {
-            format!(
-                "{} is empty; a CityJSONSeq stream needs a header line",
-                input.display()
-            )
-        })?
-        .with_context(|| format!("reading the header line of {}", input.display()))?;
-    let header = CityJSON::from_str(&header_line)
-        .with_context(|| format!("invalid CityJSONSeq header in {}", input.display()))?;
-    serde_json::to_writer(&mut writer, &header)
-        .with_context(|| format!("writing the header line to {}", output.display()))?;
-    writer.write_all(b"\n")?;
-
-    for (index, line) in lines.enumerate() {
-        let line = line.with_context(|| format!("reading {}", input.display()))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        // Line numbers are 1-based and the header is line 1.
-        let feature = CityJSONFeature::from_str(&line).with_context(|| {
-            format!(
-                "invalid CityJSONFeature on line {} of {}",
-                index + 2,
-                input.display()
-            )
-        })?;
-        serde_json::to_writer(&mut writer, &feature)
-            .with_context(|| format!("writing feature {} to {}", index + 1, output.display()))?;
-        writer.write_all(b"\n")?;
-    }
-
-    writer
-        .flush()
-        .with_context(|| format!("flushing {}", output.display()))?;
     Ok(())
 }
 

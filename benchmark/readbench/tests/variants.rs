@@ -1,8 +1,8 @@
-//! `run --variants`: the configuration-axis run. Per variant, one timed write
-//! in a child of its own, the package kept under
+//! `run --variants`: the configuration-axis run. Per variant, one untimed
+//! conversion with the variant's recipe, the package kept under
 //! `<prepared_dir>/<base>.<variant>.parquet`, then the ordinary read
-//! children against it. The CSV shape is the read run's, with a `write` row
-//! per variant and the variant id in the `format` column.
+//! children against it. The CSV shape is the read run's, with the variant id
+//! in the `format` column and no row for the conversion itself.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -46,8 +46,20 @@ fn field(row: &str, i: usize) -> &str {
     row.split(',').nth(i).unwrap()
 }
 
+fn row_groups_in(package: &std::path::Path) -> usize {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    let table = std::fs::read_dir(package)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "parquet"))
+        .expect("the package holds a .parquet table");
+    let reader = SerializedFileReader::new(std::fs::File::open(table).unwrap()).unwrap();
+    reader.metadata().num_row_groups()
+}
+
 #[test]
-fn a_variants_run_writes_reads_keeps_the_packages_and_records_sizes() {
+fn a_variants_run_builds_reads_keeps_the_packages_and_records_sizes() {
     let (prepared, input) = prepared_delft();
     let out_csv = prepared.path().join("out.csv");
     let output = run(&[
@@ -58,8 +70,6 @@ fn a_variants_run_writes_reads_keeps_the_packages_and_records_sizes() {
         "--out",
         out_csv.to_str().unwrap(),
         "--repeat",
-        "1",
-        "--write-repeat",
         "1",
         "--scenarios",
         "full-read,bbox",
@@ -77,19 +87,17 @@ fn a_variants_run_writes_reads_keeps_the_packages_and_records_sizes() {
     assert_eq!(lines.next().unwrap(), HEADER);
     let rows: Vec<&str> = lines.collect();
 
-    // Grouped per variant, write row first, then the reads in scenario order.
+    // Grouped per variant, the reads in scenario order; the conversion that
+    // built each package is not a row.
     let expected_order = [
-        ("cityparquet", "write"),
         ("cityparquet", "full-read"),
         ("cityparquet", "bbox-query"),
         ("cityparquet", "bbox-query"),
         ("cityparquet", "bbox-query"),
-        ("cityparquet+rg512", "write"),
         ("cityparquet+rg512", "full-read"),
         ("cityparquet+rg512", "bbox-query"),
         ("cityparquet+rg512", "bbox-query"),
         ("cityparquet+rg512", "bbox-query"),
-        ("cityparquet+zstd1", "write"),
         ("cityparquet+zstd1", "full-read"),
         ("cityparquet+zstd1", "bbox-query"),
         ("cityparquet+zstd1", "bbox-query"),
@@ -100,20 +108,21 @@ fn a_variants_run_writes_reads_keeps_the_packages_and_records_sizes() {
     )
     .unwrap();
     let samples = samples.as_array().unwrap();
-    assert_eq!(samples.len(), 30, "15 measurements x warmup + one sample");
+    assert_eq!(samples.len(), 24, "12 measurements x warmup + one sample");
     assert_eq!(
         samples
             .iter()
             .filter(|sample| sample["scenario"] == "write")
             .count(),
-        6
+        0,
+        "the conversion is not sampled"
     );
     assert_eq!(
         samples
             .iter()
             .filter(|sample| sample["warmup"] == true)
             .count(),
-        15
+        12
     );
 
     assert_eq!(rows.len(), expected_order.len(), "rows:\n{text}");
@@ -123,23 +132,6 @@ fn a_variants_run_writes_reads_keeps_the_packages_and_records_sizes() {
         assert_eq!(field(row, 2), scenario, "row: {row}");
     }
 
-    for row in rows.iter().filter(|r| field(r, 2) == "write") {
-        assert_eq!(field(row, 3), "", "a write row has no selectivity: {row}");
-        assert_eq!(
-            field(row, 4),
-            "2231",
-            "result_count is the object count: {row}"
-        );
-        assert!(field(row, 5).parse::<f64>().unwrap() > 0.0);
-        assert!(
-            field(row, 8).parse::<u64>().unwrap() > 0,
-            "peak_rss_bytes: {row}"
-        );
-        assert_eq!(field(row, 9), "1", "repeat is --write-repeat: {row}");
-        assert_eq!(field(row, 10), "");
-        assert_eq!(field(row, 11), "");
-        assert_eq!(field(row, 12), "");
-    }
     let full_reads: Vec<&&str> = rows.iter().filter(|r| field(r, 2) == "full-read").collect();
     assert!(full_reads.iter().all(|r| field(r, 4) == "2231"));
 
@@ -151,6 +143,16 @@ fn a_variants_run_writes_reads_keeps_the_packages_and_records_sizes() {
             pkg.display()
         );
     }
+    // 2231 rows / 512 per group = 5 groups: the rg512 recipe reached the
+    // writer, and the baseline keeps the default single group.
+    assert_eq!(
+        row_groups_in(&prepared.path().join("delft.cityparquet+rg512.parquet")),
+        5
+    );
+    assert_eq!(
+        row_groups_in(&prepared.path().join("delft.cityparquet.parquet")),
+        1
+    );
     assert!(
         prepared.path().join("delft.parquet").is_dir(),
         "the prepare script's package is untouched"
@@ -163,7 +165,7 @@ fn a_variants_run_writes_reads_keeps_the_packages_and_records_sizes() {
         .collect();
     assert!(
         leftovers.is_empty(),
-        "repeat directories were not cleaned up: {leftovers:?}"
+        "scratch directories were not cleaned up: {leftovers:?}"
     );
 
     let sizes = std::fs::read_to_string(prepared.path().join("sizes.csv")).unwrap();
@@ -208,8 +210,6 @@ fn a_rerun_replaces_its_own_sizes_rows_instead_of_appending() {
         out_csv.to_str().unwrap(),
         "--repeat",
         "1",
-        "--write-repeat",
-        "1",
         "--scenarios",
         "full-read",
         "--variants",
@@ -232,10 +232,6 @@ fn expect_rejection(args: &[&str], needle: &str) {
     assert!(stderr.contains(needle), "expected {needle:?} in:\n{stderr}");
 }
 
-/// `base` deliberately carries no `--write-repeat`: clap rejects a repeated
-/// `--write-repeat` before the coordinator ever sees it, which would make the
-/// `--write-repeat 0` case below assert clap's error rather than this run's
-/// own validation.
 fn with<'a>(base: &[&'a str], extra: &[&'a str]) -> Vec<&'a str> {
     base.iter().copied().chain(extra.iter().copied()).collect()
 }
@@ -283,7 +279,7 @@ fn variants_and_formats_are_exclusive_and_the_list_is_validated() {
         "only zstd takes a level",
     );
     expect_rejection(
-        &with(&base, &["--variants", "cityparquet", "--write-repeat", "0"]),
+        &with(&base, &["--variants", "cityparquet", "--write-repeat", "1"]),
         "--write-repeat",
     );
     expect_rejection(
@@ -305,8 +301,7 @@ fn variants_and_formats_are_exclusive_and_the_list_is_validated() {
 }
 
 /// The bloom pair: the same package with and without filters. Lookup rows
-/// carry counters — no filter bytes and nothing pruned without filters —
-/// and write rows carry none. delft is ONE row group, so the pruning the
+/// carry counters — no filter bytes and nothing pruned without filters. delft is ONE row group, so the pruning the
 /// family exists to show is exactly visible: a `*-miss` probe rules that group
 /// out (`bloom_pruned` 1) with filters and cannot without them, and a hit
 /// probe never prunes on either side.
@@ -322,8 +317,6 @@ fn a_bloom_pair_records_lookup_counters() {
         "--out",
         out_csv.to_str().unwrap(),
         "--repeat",
-        "1",
-        "--write-repeat",
         "1",
         "--scenarios",
         "id-lookup,feature-lookup",
@@ -341,16 +334,13 @@ fn a_bloom_pair_records_lookup_counters() {
     let mut lines = text.lines();
     assert_eq!(lines.next().unwrap(), HEADER);
     let rows: Vec<&str> = lines.collect();
-    // Per variant: write, id-50pct, id-miss, feature-50pct, feature-miss.
-    assert_eq!(rows.len(), 10, "{text}");
+    // Per variant: id-50pct, id-miss, feature-50pct, feature-miss.
+    assert_eq!(rows.len(), 8, "{text}");
     for row in &rows {
         let (label, scenario, notes) = (field(row, 1), field(row, 2), field(row, 10));
         let counters: Vec<&str> = (13..16).map(|i| field(row, i)).collect();
         assert_eq!(row.split(',').count(), 16, "{row}");
-        if scenario == "write" {
-            assert_eq!(counters, vec!["", "", ""], "{row}");
-            continue;
-        }
+        assert_ne!(scenario, "write", "{row}");
         assert_eq!(counters[0], "1", "delft is one row group: {row}");
         let is_miss = notes.starts_with("id-miss") || notes.starts_with("feature-miss");
         if label == "cityparquet+nobloom" {
@@ -377,13 +367,13 @@ async fn spawn_server(dir: PathBuf) -> std::net::SocketAddr {
     addr
 }
 
-/// Over HTTP a `--variants` run reads the packages a local run wrote and an
+/// Over HTTP a `--variants` run reads the packages a local run built and an
 /// operator uploaded — here, the prepared directory served as it is. No
-/// write rows, no sizes, and every lookup row carries its transport and
+/// sizes, and every lookup row carries its transport and
 /// lookup counters. `multi_thread`: `run` blocks on a child process while the
 /// server task must keep accepting.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_variants_run_over_http_reads_the_uploaded_packages_without_writing() {
+async fn a_variants_run_over_http_reads_the_uploaded_packages_without_building() {
     let (prepared, input) = prepared_delft();
     let common = |out: &PathBuf| -> Vec<String> {
         [
@@ -394,8 +384,6 @@ async fn a_variants_run_over_http_reads_the_uploaded_packages_without_writing() 
             "--out",
             out.to_str().unwrap(),
             "--repeat",
-            "1",
-            "--write-repeat",
             "1",
             "--scenarios",
             "id-lookup",
@@ -432,11 +420,7 @@ async fn a_variants_run_over_http_reads_the_uploaded_packages_without_writing() 
 
     let text = std::fs::read_to_string(&http_csv).unwrap();
     let rows: Vec<&str> = text.lines().skip(1).collect();
-    assert_eq!(
-        rows.len(),
-        2,
-        "one id-miss row per variant, no write rows:\n{text}"
-    );
+    assert_eq!(rows.len(), 2, "one id-miss row per variant:\n{text}");
     for row in &rows {
         assert_eq!(field(row, 2), "id-lookup", "{row}");
         assert!(!field(row, 11).is_empty(), "bytes_read: {row}");

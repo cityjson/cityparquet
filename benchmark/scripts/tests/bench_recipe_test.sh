@@ -279,6 +279,72 @@ case_bloom_http_matches_the_local_pair() {
   pass "$name"
 }
 
+# --------------------------------------------------------------------------
+# Case 8: every positional argument lands on the parameter it is meant for.
+#
+# `bloom-bench` and `bloom-bench-http` call `variant-bench` POSITIONALLY, so
+# removing or reordering one of its parameters silently shifts every
+# argument after it. Map each passed argument onto `variant-bench`'s own
+# parameter list and check the ones that carry meaning.
+# --------------------------------------------------------------------------
+variant_bench_params() {
+  # Parameter names in order: defaults (parenthesised or quoted) stripped first.
+  grep -E '^variant-bench ' "$JUSTFILE" \
+    | sed -e 's/([^)]*)//g' -e "s/'[^']*'//g" -e 's/^variant-bench //' -e 's/:$//' \
+    | grep -oE '[A-Z_]+'
+}
+
+recipe_arguments() {
+  sed -n "/^$1 /,/^$/p" "$JUSTFILE" | grep 'just variant-bench' | grep -oE '"[^"]*"' | tr -d '"'
+}
+
+argument_for() {
+  # argument_for RECIPE PARAM: what RECIPE passes in PARAM's position.
+  local recipe="$1" param="$2" index=-1 i=0 line
+  while IFS= read -r line; do
+    if [[ "$line" == "$param" ]]; then index=$i; fi
+    i=$((i + 1))
+  done < <(variant_bench_params)
+  [[ $index -ge 0 ]] || return 0
+  i=0
+  while IFS= read -r line; do
+    if [[ $i -eq $index ]]; then
+      printf '%s' "$line"
+      return
+    fi
+    i=$((i + 1))
+  done < <(recipe_arguments "$recipe")
+}
+
+case_positional_arguments_line_up() {
+  local name="bloom-bench and bloom-bench-http pass each argument in its own parameter's position"
+  local params
+  params="$(variant_bench_params | tr '\n' ' ')"
+  if [[ "$params" != "FOLDER OUT VARIANTS PREPARED REPEAT SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL " ]]; then
+    fail "$name" "variant-bench's parameters changed: $params"
+    return
+  fi
+  local recipe
+  for recipe in bloom-bench bloom-bench-http; do
+    if [[ "$(argument_for "$recipe" REPEAT)" != "{{REPEAT}}" \
+      || "$(argument_for "$recipe" SCENARIOS)" != "id-lookup,feature-lookup" \
+      || "$(argument_for "$recipe" ID_PROBES)" != "id-50pct,id-miss" \
+      || "$(argument_for "$recipe" FEATURE_PROBES)" != "feature-50pct,feature-miss" ]]; then
+      fail "$name" "$recipe passes its arguments out of position: $(recipe_arguments "$recipe" | tr '\n' ' ')"
+      return
+    fi
+  done
+  if [[ "$(argument_for bloom-bench-http BASE_URL)" != "{{BASE_URL}}" ]]; then
+    fail "$name" "bloom-bench-http does not pass BASE_URL in BASE_URL's position"
+    return
+  fi
+  if [[ -n "$(argument_for bloom-bench BASE_URL)" ]]; then
+    fail "$name" "bloom-bench passes a BASE_URL; the local run must not go over HTTP"
+    return
+  fi
+  pass "$name"
+}
+
 case_block_is_extractable
 case_bare_run_omits_the_baseline
 case_naming_the_baseline_appends_it
@@ -287,6 +353,7 @@ case_prepare_list_invariants
 case_baseline_invocation_is_guarded
 case_bloom_bench_list
 case_bloom_http_matches_the_local_pair
+case_positional_arguments_line_up
 
 echo "bench_recipe_test: $PASSED passed, $FAILED failed"
 [[ "$FAILED" -eq 0 ]]

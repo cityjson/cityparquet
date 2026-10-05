@@ -41,20 +41,18 @@
 //! carries its [`LookupCounters`] in the three trailing CSV columns.
 //!
 //! **`--variants`: the configuration run.** Given variant ids rather than
-//! formats, this module measures ONE format's writer axes instead of
-//! comparing formats: per variant it spawns `--child --write` (a warmup plus
-//! `write_repeat` warm repeats, each converting the prepared CityJSONSeq
-//! artefact into a scratch directory inside `prepared_dir`), keeps the last
-//! repeat's package as `<prepared_dir>/<base>.<id>.parquet`, and then runs
-//! the ordinary read children against it. The CSV keeps its shape — the
-//! variant id goes in the `format` column, and the conversion is a `write`
-//! row — and the packages' sizes go to `sizes.csv` beside it (see
-//! [`write_sizes`]). Every write runs before any read, so the two kinds of
-//! load never interleave; the rows are sorted back into per-variant groups
-//! before they are written.
+//! formats, this module compares ONE format's writer configurations instead
+//! of comparing formats: per variant it converts the prepared CityJSONSeq
+//! artefact with that variant's recipe (untimed — building a package is not
+//! a measurement here), keeps the package as
+//! `<prepared_dir>/<base>.<id>.parquet`, and then runs the ordinary read
+//! children against it. The CSV keeps its shape — the variant id goes in
+//! the `format` column — and the packages' sizes go to `sizes.csv` beside it
+//! (see [`write_sizes`]). Every package is built before any read runs; the
+//! rows are sorted back into per-variant groups before they are written.
 //! Over `--transport http` the run is read-only: it reads the
-//! `<base>.<id>.parquet` packages a local run wrote, uploaded beside the
-//! prepared artefacts, and writes no `write` row and no `sizes.csv`.
+//! `<base>.<id>.parquet` packages a local run built, uploaded beside the
+//! prepared artefacts, and writes no `sizes.csv`.
 //!
 //! **Self-consistency (disclosed, never a hard failure).** After the
 //! `AttrFilter` scenario has run for every resolved format, this module
@@ -109,14 +107,10 @@ pub struct RunOptions {
     pub formats: Option<Vec<Format>>,
     /// Requested variant ids (`cityparquet::variant`'s grammar). When set,
     /// this is a CONFIGURATION run rather than a format comparison: every id
-    /// is converted by a write child into
-    /// `<prepared_dir>/<base>.<id>.parquet` and then read by the CityParquet
-    /// runner. Exclusive with `formats`. Over HTTP the packages are read,
-    /// never written.
+    /// is converted into `<prepared_dir>/<base>.<id>.parquet` and then read
+    /// by the CityParquet runner. Exclusive with `formats`. Over HTTP the
+    /// packages are read, never built.
     pub variants: Option<Vec<String>>,
-    /// Warm write repeats per variant (a discarded warmup precedes them);
-    /// read only on a local `variants` run, where it must be >= 1.
-    pub write_repeat: usize,
     /// Requested scenario names (canonical [`Scenario::as_str`] spelling,
     /// case-insensitive); `None`/empty selects every [`Scenario::ALL`].
     pub scenarios: Option<Vec<String>>,
@@ -217,9 +211,6 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         (_, Some(v)) if !v.is_empty() => Some(parse_variant_list(v)?),
         _ => None,
     };
-    if variants.is_some() && opts.transport == Transport::Local && opts.write_repeat == 0 {
-        bail!("--write-repeat must be >= 1");
-    }
 
     let dataset = opts
         .input
@@ -242,8 +233,8 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // The measured sources, each with the LABEL its `format` column carries
     // (a format name here; a variant id on a `--variants` run). A
     // configuration run resolves nothing in this block: its sources are the
-    // packages its own write children have yet to produce, so it is filled
-    // in after the CSV header is written, below.
+    // packages it has yet to build, so it is filled in after the CSV header
+    // is written, below.
     let mut resolved_formats: Vec<(Format, Source, String)> = Vec::new();
     if variants.is_none() {
         // Who chose the format list matters to how a skip below is reported: an
@@ -449,16 +440,16 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     let mut rows: Vec<Row> = Vec::new();
     let mut samples: Vec<Sample> = Vec::new();
 
-    // A configuration run's own sources: one write child per variant, timed
-    // into `rows` and measured into `sizes`, each leaving the package the
-    // read children below then run against. It happens here, after the
-    // sidecar and the header, so a run that dies in a write still leaves a
-    // clean, empty CSV and the parameters it was going to measure with.
+    // A configuration run's own sources: one package per variant, measured
+    // into `sizes`, each the package the read children below then run
+    // against. It happens here, after the sidecar and the header, so a run
+    // that dies in a conversion still leaves a clean, empty CSV and the
+    // parameters it was going to measure with.
     //
-    // Order: every write first, then every read. Writing and reading one
-    // variant at a time would interleave two different kinds of load on the
-    // page cache; the CSV is sorted back into per-variant groups at the end
-    // (see the sort before the rows are written).
+    // Order: every package is built first, then every read runs, so no read
+    // shares the page cache with a conversion in flight; the CSV is sorted
+    // back into per-variant groups at the end (see the sort before the rows
+    // are written).
     let mut sizes: Vec<SizeRow> = Vec::new();
     let variant_seq: Option<PathBuf> = match (&variants, opts.transport) {
         (Some(_), Transport::Local) => Some(seq_path.clone().ok_or_else(|| {
@@ -472,22 +463,13 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         _ => None,
     };
     if let Some(list) = &variants {
-        for (id, _) in list {
+        for (id, variant) in list {
             match opts.transport {
                 Transport::Local => {
                     let seq = variant_seq
                         .as_deref()
                         .expect("set for every local `variants` run");
-                    let package = run_write(
-                        &mut rows,
-                        &mut samples,
-                        &dataset,
-                        base,
-                        id,
-                        &opts.prepared_dir,
-                        seq,
-                        opts.write_repeat,
-                    )?;
+                    let package = build_variant(base, id, variant, &opts.prepared_dir, seq)?;
                     sizes.push(SizeRow {
                         dataset: base.to_string(),
                         label: id.clone(),
@@ -499,9 +481,8 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         id.clone(),
                     ));
                 }
-                // Read-only: the package a local run wrote under this same
-                // name, uploaded beside the prepared artefacts. The write is a
-                // local measurement and is not repeated over the network.
+                // Read-only: the package a local run built under this same
+                // name, uploaded beside the prepared artefacts.
                 Transport::Http => resolved_formats.push((
                     Format::CityParquet,
                     Source::Http {
@@ -723,7 +704,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
             let row = Row {
                 dataset: dataset.clone(),
                 label: label.clone(),
-                measure: Measure::Read(Scenario::FullRead),
+                scenario: Scenario::FullRead,
                 selectivity: None,
                 result_count: line.result_count,
                 time_s: line.time_s,
@@ -779,18 +760,16 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         }
     }
 
-    // A configuration run groups its rows per variant, write first, so a CSV
-    // reads top to bottom the way the recipe listed the variants (the writes
-    // all happened before the reads; see the variants block above).
-    // `sort_by_key` is stable, so the read rows keep their scenario order
-    // within each group.
+    // A configuration run groups its rows per variant, so a CSV reads top to
+    // bottom the way the recipe listed the variants. `sort_by_key` is
+    // stable, so the rows keep their scenario order within each group.
     if let Some(list) = &variants {
         let position = |label: &str| {
             list.iter()
                 .position(|(id, _)| id == label)
                 .unwrap_or(usize::MAX)
         };
-        rows.sort_by_key(|r| (position(&r.label), r.measure != Measure::Write));
+        rows.sort_by_key(|r| position(&r.label));
     }
 
     for row in &rows {
@@ -880,7 +859,7 @@ const ATTR_FILTER_MISMATCH: &str = "attr-filter-count-mismatch";
 fn tag_attr_filter_mismatch(rows: &mut [Row]) {
     for row in rows
         .iter_mut()
-        .filter(|r| r.measure == Measure::Read(Scenario::AttrFilter))
+        .filter(|r| r.scenario == Scenario::AttrFilter)
     {
         row.notes.push(ATTR_FILTER_MISMATCH.to_string());
     }
@@ -1304,7 +1283,7 @@ fn run_measurement(
     rows.push(Row {
         dataset: dataset.to_string(),
         label: label.to_string(),
-        measure: Measure::Read(scenario),
+        scenario,
         selectivity,
         result_count,
         time_s,
@@ -1320,125 +1299,44 @@ fn run_measurement(
     Ok(result_count)
 }
 
-/// One variant's write: a discarded warmup and `write_repeat` warm repeats,
-/// each a child process converting into a fresh directory INSIDE
-/// `prepared_dir` (a rename across filesystems would fail, and a 1M-object
-/// package does not belong in /tmp). The last repeat's package is kept as
-/// `<prepared_dir>/<base>.<id>.parquet`; returns that path.
-#[allow(clippy::too_many_arguments)]
-fn run_write(
-    rows: &mut Vec<Row>,
-    samples: &mut Vec<Sample>,
-    dataset: &str,
+/// Builds one variant's package: the prepared CityJSONSeq converted with the
+/// variant's recipe into a scratch directory INSIDE `prepared_dir` (a rename
+/// across filesystems would fail, and a 1M-object package does not belong in
+/// /tmp), then moved to `<prepared_dir>/<base>.<id>.parquet`; returns that
+/// path. Untimed: the configuration run measures the reads of the package
+/// and its size, not how long it took to build.
+///
+/// `ConvertOptions` is filled the way the CLI's `convert` fills it
+/// (`generate_lod0: true`, the default batch size), so a variant package has
+/// the same content as the prepare script's `<base>.parquet` and differs from
+/// it only in the recipe under test. A library-default `ConvertOptions::new`
+/// would leave LoD0 generation OFF and the row counts would not line up.
+fn build_variant(
     base: &str,
     id: &str,
+    variant: &Variant,
     prepared_dir: &Path,
     seq: &Path,
-    write_repeat: usize,
 ) -> Result<PathBuf> {
-    let self_exe = std::env::current_exe().context("cannot determine own executable path")?;
-    let mut times = Vec::with_capacity(write_repeat);
-    let mut peak_heap_max = 0u64;
-    let mut peak_rss_max = 0u64;
-    let mut object_count: Option<u64> = None;
-    let mut kept: Option<tempfile::TempDir> = None;
+    let scratch = tempfile::Builder::new()
+        .prefix(&format!(".{base}.{id}.build."))
+        .tempdir_in(prepared_dir)
+        .with_context(|| format!("creating a scratch directory in {}", prepared_dir.display()))?;
+    let built = scratch.path().join("pkg");
+    let mut opts = cityparquet::package::ConvertOptions::new(seq.to_path_buf(), built.clone());
+    opts.recipe = variant.recipe();
+    opts.ordering = variant.ordering();
+    opts.generate_lod0 = true;
+    cityparquet::package::convert(&opts)
+        .with_context(|| format!("converting with variant '{id}'"))?;
 
-    for i in 0..=write_repeat {
-        let scratch = tempfile::Builder::new()
-            .prefix(&format!(".{base}.{id}.repeat."))
-            .tempdir_in(prepared_dir)
-            .with_context(|| {
-                format!("creating a scratch directory in {}", prepared_dir.display())
-            })?;
-        let out = scratch.path().join("pkg");
-        let output = Command::new(&self_exe)
-            .arg("--child")
-            .arg("--write")
-            .arg("--variant")
-            .arg(id)
-            .arg("--input")
-            .arg(seq)
-            .arg("--out")
-            .arg(&out)
-            .output()
-            .with_context(|| format!("spawning the write child (variant={id})"))?;
-        if !output.status.success() {
-            bail!(
-                "write child failed (variant={id}); stderr:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        let stdout =
-            String::from_utf8(output.stdout).context("write child stdout was not valid UTF-8")?;
-        let line = protocol_line(&stdout);
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() != 4 {
-            bail!(
-                "expected 4 fields from the write child, got {} in '{line}'",
-                fields.len(),
-            );
-        }
-        let time_s: f64 = fields[0]
-            .parse()
-            .with_context(|| format!("parsing time_s from '{}'", fields[0]))?;
-        let heap: u64 = fields[1]
-            .parse()
-            .with_context(|| format!("parsing peak_heap_bytes from '{}'", fields[1]))?;
-        let rss: u64 = fields[2]
-            .parse()
-            .with_context(|| format!("parsing ru_maxrss_bytes from '{}'", fields[2]))?;
-        let count: u64 = fields[3]
-            .parse()
-            .with_context(|| format!("parsing object_count from '{}'", fields[3]))?;
-        samples.push(Sample {
-            dataset: dataset.to_string(),
-            format: id.to_string(),
-            scenario: "write".to_string(),
-            query_tag: String::new(),
-            sample_index: i,
-            warmup: i == 0,
-            time_s,
-            peak_rss_bytes: rss,
-            peak_heap_bytes: heap,
-            result_count: count,
-        });
-        if i == 0 {
-            continue; // warmup: the directory drops here and is deleted
-        }
-        times.push(time_s);
-        peak_heap_max = peak_heap_max.max(heap);
-        peak_rss_max = peak_rss_max.max(rss);
-        object_count = Some(count);
-        kept = Some(scratch); // an earlier warm repeat's TempDir drops and is deleted
-    }
-
-    let kept = kept.expect("write_repeat >= 1 guarantees a kept repeat");
     let target = prepared_dir.join(format!("{base}.{id}.parquet"));
     if target.exists() {
         fs::remove_dir_all(&target)
             .with_context(|| format!("removing the previous {}", target.display()))?;
     }
-    let scratch = kept.keep();
-    fs::rename(scratch.join("pkg"), &target)
-        .with_context(|| format!("moving the kept package to {}", target.display()))?;
-    fs::remove_dir(&scratch).with_context(|| format!("removing {}", scratch.display()))?;
-
-    let time_s = mean(&times);
-    rows.push(Row {
-        dataset: dataset.to_string(),
-        label: id.to_string(),
-        measure: Measure::Write,
-        selectivity: None,
-        result_count: object_count.expect("at least one warm repeat"),
-        time_s,
-        time_std_s: std_dev(&times, time_s),
-        peak_heap_bytes: peak_heap_max,
-        peak_rss_bytes: peak_rss_max,
-        repeat: write_repeat,
-        notes: Vec::new(),
-        io: None,
-        lookup: None,
-    });
+    fs::rename(&built, &target)
+        .with_context(|| format!("moving the built package to {}", target.display()))?;
     Ok(target)
 }
 
@@ -1468,24 +1366,6 @@ fn std_dev(values: &[f64], centre: f64) -> f64 {
     variance.sqrt()
 }
 
-/// What one CSV row measured: a conversion or one read scenario. `write`
-/// never enters [`Scenario::ALL`], so `--scenarios write` is rejected by the
-/// scenario parser and a write row can only come from the `--variants` path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Measure {
-    Write,
-    Read(Scenario),
-}
-
-impl std::fmt::Display for Measure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Measure::Write => f.write_str("write"),
-            Measure::Read(s) => f.write_str(s.as_str()),
-        }
-    }
-}
-
 /// One results-CSV row, held until the whole matrix has run.
 ///
 /// Everything but `notes` is fixed the moment its measurement finishes;
@@ -1499,7 +1379,7 @@ struct Row {
     /// What the `format` column prints: `format.as_str()` on a format run,
     /// the variant id on a `--variants` run.
     label: String,
-    measure: Measure,
+    scenario: Scenario,
     selectivity: Option<f64>,
     result_count: u64,
     time_s: f64,
@@ -1537,7 +1417,7 @@ impl Row {
         let (dataset, format, scenario, result_count, time_s, time_std_s) = (
             &self.dataset,
             &self.label,
-            self.measure,
+            self.scenario.as_str(),
             self.result_count,
             self.time_s,
             self.time_std_s,
@@ -1640,7 +1520,7 @@ mod tests {
         Row {
             dataset: "delft.city.jsonl".to_string(),
             label: Format::FlatCityBuf.as_str().to_string(),
-            measure: Measure::Read(scenario),
+            scenario,
             selectivity: None,
             result_count: 1116,
             time_s: 0.5,

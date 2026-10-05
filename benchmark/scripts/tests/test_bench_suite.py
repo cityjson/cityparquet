@@ -44,7 +44,7 @@ class SelectionTests(unittest.TestCase):
 if __name__ == "__main__": unittest.main()
 
 class ProvenanceTests(unittest.TestCase):
-    def test_per_dataset_write_samples_keep_manifest_hash_stable(self):
+    def test_the_run_manifest_hashes_the_result_and_its_sidecars(self):
         import json
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
@@ -53,13 +53,7 @@ class ProvenanceTests(unittest.TestCase):
             result = root / "slice.csv"; result.write_text("dataset\n")
             Path(f"{result}.samples.json").write_text("[]\n")
             Path(f"{result}.params.json").write_text("{}\n")
-            own = result.with_suffix(".write.samples.csv"); own.write_text("own\n")
-            shared = root / "write.samples.csv"; shared.write_text("first\n")
-            bench_suite.write_run_manifest(source, result, family="formats", repeat=1, write_repeat=1, smoke=True, fixed_configuration="test")
-            first = json.loads(result.with_suffix(".run.json").read_text())
-            shared.write_text("first\nsecond\n")
-            bench_suite.write_run_manifest(source, result, family="formats", repeat=1, write_repeat=1, smoke=True, fixed_configuration="test")
-            second = json.loads(result.with_suffix(".run.json").read_text())
-            self.assertEqual(first["result"]["files_sha256"], second["result"]["files_sha256"])
-            self.assertIn("slice.write.samples.csv", second["result"]["files_sha256"])
-            self.assertNotIn("write.samples.csv", {name for name in second["result"]["files_sha256"] if name == "write.samples.csv"})
+            bench_suite.write_run_manifest(source, result, family="formats", repeat=1, smoke=True, fixed_configuration="test")
+            manifest = json.loads(result.with_suffix(".run.json").read_text())
+            self.assertEqual(set(manifest["result"]["files_sha256"]), {"slice.csv", "slice.csv.samples.json", "slice.csv.params.json"})
+            self.assertEqual(manifest["measurement"], {"read_repeat": 1, "fixed_configuration": "test"})
