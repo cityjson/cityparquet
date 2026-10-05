@@ -13,8 +13,7 @@
         "id-10pct",
         "id-50pct",
         "id-90pct",
-        "id-miss",
-        "write"
+        "id-miss"
       ]
     },
     "sizes": {
@@ -29,8 +28,7 @@
         "feature-50pct",
         "feature-miss",
         "id-50pct",
-        "id-miss",
-        "write"
+        "id-miss"
       ]
     },
     "databases": {
