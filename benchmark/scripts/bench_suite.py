@@ -313,7 +313,7 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         if "sizes" in families:
             output = result_dir(locations, "sizes", profile) / "sizes.csv"
             for input_path in format_inputs:
-                command("python3", "benchmark/scripts/measure_sizes.py", "--input", str(input_path), "--prepared", str(locations["prepared"]), "--out", str(output))
+                command(sys.executable, "benchmark/scripts/measure_sizes.py", "--input", str(input_path), "--prepared", str(locations["prepared"]), "--out", str(output))
     if "bloom" in families:
         bloom_inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in {"corpus", "scaling", "largest-scaling"}]
         if not bloom_inputs:

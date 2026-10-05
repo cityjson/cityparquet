@@ -691,18 +691,22 @@ usecase-energy-features input output="features.parquet":
     cd usecase/energy && uv run energy features --input '{{input}}' --output '{{output}}'
 
 # The concise public benchmark interface. The selector validates families and
-# datasets before delegating to the measured low-level recipes above.
+# datasets before delegating to the measured low-level recipes above. It runs
+# under `uv` in benchmark/plot's project (Python 3.11 or later, for
+# `tomllib`), so it does not depend on the system `python3`. `--project`, not
+# `--directory`: relative paths such as `--data-root benchmark/runs` stay
+# relative to the repository root.
 [doc("Fetch and prepare selected benchmark inputs without measuring")]
 [positional-arguments]
 bench-prep *ARGS:
-    python3 benchmark/scripts/bench_suite.py prep "$@"
+    uv run --project {{PLOT}} python benchmark/scripts/bench_suite.py prep "$@"
 
 [doc("Run selected benchmark families; --smoke keeps validation outputs separate")]
 [positional-arguments]
 bench-run *ARGS:
-    python3 benchmark/scripts/bench_suite.py run "$@"
+    uv run --project {{PLOT}} python benchmark/scripts/bench_suite.py run "$@"
 
 [doc("Render paper figures and one combined HTML page from existing results")]
 [positional-arguments]
 bench-summary *ARGS:
-    python3 benchmark/scripts/bench_suite.py summary "$@"
+    uv run --project {{PLOT}} python benchmark/scripts/bench_suite.py summary "$@"
