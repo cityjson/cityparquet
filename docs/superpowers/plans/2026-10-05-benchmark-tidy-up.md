@@ -15,7 +15,7 @@ A high-level overview of the work that brings the benchmark in line with the pap
 
 Recipes, evidence, figures, tests and documentation are gone (`22fc32b`..`5c71188`). The bloom axis is the only configuration axis left.
 
-### 1. Remove the write benchmark
+### 1. Remove the write benchmark — done
 
 Drop the measurement of how fast each format is written: the timed-write script and recipe, the write rows in the heatmaps, their evidence, tests and documentation. The reason is fairness: not every format has a native writer, so the files are converted through a common format and the timings do not compare like with like.
 
@@ -24,7 +24,7 @@ Decided:
 - The bloom axis loses its write time as well; it keeps its read scenarios and its file sizes.
 - The database comparison keeps its write tier (add, update, delete, append): there it is one of the queries.
 
-### 2. Make CityGML the baseline
+### 2. Make CityGML the baseline — done
 
 Every relative value answers "CityParquet is x times faster, or smaller, than CityGML". Today the size plot and the heatmaps divide by CityJSONSeq.
 
