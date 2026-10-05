@@ -151,10 +151,10 @@ FEATURE_NOTE_RE = re.compile(r"^feature-(?:\d+pct|miss)$")
 COLD_RE = re.compile(r"\bcold\b", re.IGNORECASE)
 
 AXIS_BASELINE = "cityparquet"
-AXIS_MEASURES = ("write", "full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct", "id-50pct")
+AXIS_MEASURES = ("full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct", "id-50pct")
 # The bloom axis measures the identifier lookups only; every other query is
 # untouched by the filters.
-BLOOM_MEASURES = ("write", "id-50pct", "id-miss", "feature-50pct", "feature-miss")
+BLOOM_MEASURES = ("id-50pct", "id-miss", "feature-50pct", "feature-miss")
 # The lookup counters a CityParquet lookup row carries, appended to the read
 # CSV after `http_requests`.
 LOOKUP_COLUMNS = ("row_groups_total", "bloom_pruned", "filter_bytes")
@@ -485,8 +485,23 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
 # --------------------------------------------------------------------------
 
 
-def _measure_key(row: dict[str, str]) -> str:
-    return "write" if row["scenario"] == "write" else _scenario_key(row)
+def _object_total(path: Path, by_measure: dict[str, dict[str, dict[str, str]]], baseline: str):
+    """The dataset's CityObject count: the run's own parameter sidecar.
+
+    `<csv>.params.json` carries `cp_object_total`, the count of the package
+    the run derived its queries from. Without a sidecar, the baseline's valid
+    `full-read` row counts the same objects; a lookup row's `result_count` is
+    a lookup's answer, never a size, so it is not a fallback.
+    """
+    sidecar = Path(f"{path}.params.json")
+    if sidecar.is_file():
+        total = json.loads(sidecar.read_text(encoding="utf-8")).get("cp_object_total")
+        if isinstance(total, int):
+            return total
+    full = by_measure.get("full-read", {}).get(baseline)
+    if full is not None and full.get("status", "").strip().lower() in {"", "ok"}:
+        return _int(full["result_count"])
+    return None
 
 
 MANIFEST_PATH = Path(__file__).resolve().parents[2] / "manifest.toml"
@@ -553,28 +568,13 @@ def load_scaling_axis(
         for row in rows:
             if COLD_RE.search(row["notes"]):
                 continue
-            by_measure.setdefault(_measure_key(row), {})[row["format"]] = row
+            by_measure.setdefault(_scenario_key(row), {})[row["format"]] = row
             if row["format"] not in variants:
                 variants.append(row["format"])
         if not any(baseline in bucket for bucket in by_measure.values()):
             gaps.append({"dataset": name, "issue": f"no '{baseline}' baseline rows"})
             continue
-        write_base = by_measure.get("write", {}).get(baseline)
-        write_valid = write_base is not None and write_base.get("status", "").strip().lower() in {"", "ok"}
-        objects_by[name] = (
-            _int(write_base["result_count"])
-            if write_valid and _int(write_base["result_count"]) is not None
-            else next(
-                (
-                    _int(r["result_count"])
-                    for bucket in by_measure.values()
-                    for r in bucket.values()
-                    if r.get("status", "").strip().lower() in {"", "ok"}
-                    and _int(r["result_count"]) is not None
-                ),
-                None,
-            )
-        )
+        objects_by[name] = _object_total(path, by_measure, baseline)
         present = {v for bucket in by_measure.values() for v in bucket}
         for key in measures:
             bucket = by_measure.get(key)
@@ -1038,15 +1038,6 @@ def format_conditions(inputs: Inputs, read_records: list[dict]) -> list[str]:
         ]
         if windows:
             parts.append("windows " + ", ".join(windows))
-        if any(
-            "cityjsonseq=readbench-reserialise" in str(r.get("notes", ""))
-            for r in rows
-            if r["scenario_key"] == "write"
-        ):
-            parts.append(
-                "write baseline: CityJSONSeq re-serialised by the read harness "
-                "(cityjsonseq=readbench-reserialise)"
-            )
         if parts:
             lines.append(f"{dataset}: " + "; ".join(parts))
     return lines

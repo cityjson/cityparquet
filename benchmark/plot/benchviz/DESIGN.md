@@ -16,20 +16,17 @@ result and summary directories; it must never be combined with a full run.
 The static output set is `sizes`, `heatmap`, `bloom`, `bloom-scaling`,
 `bloom-corpus` and `databases`, each as SVG and 300 dpi PNG. The HTML index
 embeds the same SVGs, each followed by the conditions it was measured under
-(`meta.conditions`: attribute predicates, achieved window selectivities, the
-write baseline, thread configurations), and has no external dependencies.
+(`meta.conditions`: attribute predicates, achieved window selectivities,
+thread configurations), and has no external dependencies.
 
 Format size panels use actual on-disk bytes (a GB unit once a bar clears a
 gigabyte, a MB unit otherwise), with a CityJSONSeq ratio in each bar label, and
 run from CityGML to CityParquet so the subject is the last bar. Heatmap cells
 print the absolute value over its ×ratio to the stated baseline, and colour the
 logarithmic ratio;
-teal is better, the warm accent is worse, and each metric carries its own colour
-scale — a read ratio range cannot bound a write time, which is orders of
-magnitude larger, and one shared bound would paint the write column a single
-colour. Write metrics use a one-sided ramp because they never beat the streaming
-baseline; read metrics stay diverging. The scales are drawn once, beneath the
-grid, one per metric. Missing, unsupported, failed, and unverified measurements
+teal is better, the warm accent is worse, and each metric (read time, read peak
+memory) carries its own diverging colour scale. The scales are drawn once,
+beneath the grid, one per metric. Missing, unsupported, failed, and unverified measurements
 remain labelled cells. Both the size and heatmap sheets share the same format
 order; the format-comparison heatmap puts the formats across the top and the
 queries down the side. CityParquet's Hilbert package is displayed as

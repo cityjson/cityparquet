@@ -53,8 +53,8 @@ BAD_CELL = "#efeee6"
 # a pale warm rule only tells the eye where one cell ends.
 CELL_EDGE = "#e6e3d7"
 # Ratio cells share one vocabulary: teal beats the baseline, the page colour is
-# the baseline, the warm accent is worse. The write metrics are never cheaper
-# than the streaming baseline, so they use a one-sided version of the same ramp
+# the baseline, the warm accent is worse. A metric that can never beat its
+# baseline (the database write tier) uses a one-sided version of the same ramp
 # rather than spending the teal half of a diverging map on values that never
 # occur.
 CMAP_DIVERGING = colors.LinearSegmentedColormap.from_list("cp_ratio", ["#2A9D8F", BG, ACCENT])
@@ -89,7 +89,6 @@ DATABASE_LABELS = {
 # (notes/benchmark-queries.md); a key without an entry falls back to a
 # title-cased key.
 SCENARIO_LABELS = {
-    "write": "Write",
     "full-read": "Read all",
     "geometry-scan": "Read all (geometry)",
     "count": "Count",
@@ -360,19 +359,13 @@ def format_heatmap(data: dict[str, Any], out: Path) -> list[Path]:
         return _missing("heatmap", out)
     formats = list(FIGURE_FORMATS)
     records = data.get("read", [])
-    present = {
-        r.get("scenario_key")
-        for r in records
-        if r.get("scenario_key") and r.get("scenario_key") != "write"
-    }
+    present = {r.get("scenario_key") for r in records if r.get("scenario_key")}
     queries = [q for q in QUERIES if q in present]
     queries += sorted(present - set(QUERIES))
     queries = queries or ["read"]
     metrics = (
-        ("time_s", "write", "Write time (s)", "cost"),
-        ("rss_b", "write", "Write peak RSS (MiB)", "cost"),
-        ("time_s", None, "Read time (s)", "diverging"),
-        ("rss_b", None, "Read peak RSS (MiB)", "diverging"),
+        ("time_s", "Read time (s)", "diverging"),
+        ("rss_b", "Read peak RSS (MiB)", "diverging"),
     )
 
     def valid(record: dict) -> bool:
@@ -381,18 +374,17 @@ def format_heatmap(data: dict[str, Any], out: Path) -> list[Path]:
             notes.startswith(("error", "skipped")) or "mismatch" in notes
         )
 
-    def matrix_for(dataset: dict[str, Any], field: str, scenario: str | None) -> list:
+    def matrix_for(dataset: dict[str, Any], field: str) -> list:
         # Rows are queries, columns are formats: the format axis is short and
         # fixed, so it reads across the top, and the query labels get the tall
         # axis where they fit without turning.
-        row_labels = [scenario] if scenario else queries
         index = {
             (r.get("format"), r.get("scenario_key")): r
             for r in records
             if r.get("dataset") == dataset.get("id")
         }
         rows = []
-        for query in row_labels:
+        for query in queries:
             row = []
             for fmt in formats:
                 value, base = index.get((fmt, query), {}), index.get(("cityjsonseq", query), {})
@@ -410,24 +402,20 @@ def format_heatmap(data: dict[str, Any], out: Path) -> list[Path]:
             rows.append(row)
         return rows
 
-    # A single ratio scale cannot serve four metrics: a write time on a million
-    # objects is tens of thousands of times the streaming baseline and would
-    # saturate any bound a read metric sets, painting a whole column one colour.
-    # Each metric therefore gets its own bound, shared across the datasets.
+    # Each metric gets its own colour bound, shared across the datasets: a
+    # memory ratio range cannot bound a time ratio range.
     metric_matrices = [
-        [matrix_for(dataset, field, scenario) for field, scenario, _t, _s in metrics]
-        for dataset in datasets
+        [matrix_for(dataset, field) for field, _t, _s in metrics] for dataset in datasets
     ]
     bounds = [
         _cell_bound([row for matrices in metric_matrices for row in matrices[mi]], scale)
-        for mi, (_field, _scenario, _name, scale) in enumerate(metrics)
+        for mi, (_field, _name, scale) in enumerate(metrics)
     ]
 
     def render(chosen: list[int], name: str, heading: str) -> list[Path]:
         # A complete query matrix is deliberately a tall standalone sheet. Its
         # width is fixed; adding datasets increases height, never shrinks labels.
         n = len(chosen)
-        row_units = max(1, len(queries))
         # Width and height are sized so a two-line cell keeps a margin inside its
         # border: the numbers never touch the rule, at any column count.
         fig = plt.figure(figsize=(10.0, 4.5 * n + 1.3), layout="constrained")
@@ -438,23 +426,15 @@ def format_heatmap(data: dict[str, Any], out: Path) -> list[Path]:
             dataset = datasets[i]
             subfig = subfigures[row, 0]
             subfig.suptitle(_title(dataset), fontsize=11, x=0.01, ha="left")
-            # Write above idle write, read beside read: the two read metrics share
-            # the query rows, so they read across; the write metrics share the same
-            # format columns and sit directly above.
-            grid = subfig.add_gridspec(2, 2, height_ratios=[1.2, row_units], wspace=0.2)
-            axes = [
-                subfig.add_subplot(grid[0, 0]),
-                subfig.add_subplot(grid[0, 1]),
-                subfig.add_subplot(grid[1, 0]),
-                subfig.add_subplot(grid[1, 1]),
-            ]
-            for mi, (_field, scenario, title, scale) in enumerate(metrics):
+            # The two metrics share the query rows, so they read across.
+            grid = subfig.add_gridspec(1, 2, wspace=0.2)
+            axes = [subfig.add_subplot(grid[0, 0]), subfig.add_subplot(grid[0, 1])]
+            for mi, (_field, title, scale) in enumerate(metrics):
                 ax = axes[mi]
-                row_labels = [scenario] if scenario else queries
                 _heat(
                     ax,
                     metric_matrices[i][mi],
-                    row_labels,
+                    queries,
                     formats,
                     title,
                     vmax=bounds[mi],
@@ -465,11 +445,8 @@ def format_heatmap(data: dict[str, Any], out: Path) -> list[Path]:
                     text.set_fontsize(5.8)
                 ax.tick_params(axis="y", labelsize=7)
                 ax.tick_params(axis="x", labelsize=6.5)
-                # Format labels live under the read row only; the write row shares
-                # its columns. Query labels live left of the read-time panel only.
-                if mi in (0, 1):
-                    ax.set_xticks([])
-                if mi in (1, 3):
+                # Query labels live left of the time panel only.
+                if mi == 1:
                     ax.set_yticks([])
         key = subfigures[n, 0]
         key.suptitle(
@@ -479,7 +456,7 @@ def format_heatmap(data: dict[str, Any], out: Path) -> list[Path]:
             ha="left",
         )
         key_grid = key.add_gridspec(1, len(metrics), wspace=0.55)
-        for mi, (_field, _scenario, title, scale) in enumerate(metrics):
+        for mi, (_field, title, scale) in enumerate(metrics):
             cax = key.add_subplot(key_grid[0, mi])
             cmap, norm = _heat_colors(scale, bounds[mi])
             bar = key.colorbar(
@@ -586,8 +563,6 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
                 "bytes",
                 None,
             ),
-            ("write time (s)", selected, "time_ratio", "time_s", "write"),
-            ("write peak RSS (MiB)", selected, "rss_ratio", "rss_b", "write"),
         )
     ):
         ax = fig.add_subplot(grid[0, col])
@@ -652,7 +627,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
                 row.append((ratio, text))
             cells.append(row)
         cell_blocks.append(cells)
-    # Both rows are read ratios against the default write, so one diverging
+    # Both rows are read ratios against the default package, so one diverging
     # bound can serve them; the cells carry the precision either way.
     bound = _cell_bound([row for block in cell_blocks for row in block], "diverging")
     for col, (ax, cells, title) in enumerate(
@@ -701,11 +676,7 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     panels = [
         (fig.add_subplot(top[i]), title, source, field, measure)
         for i, (title, source, field, measure) in enumerate(
-            (
-                ("File size (MiB)", sizes, "bytes", None),
-                ("Write time (s)", records, "time_s", "write"),
-                ("Write peak RSS (MiB)", records, "rss_b", "write"),
-            )
+            (("File size (MiB)", sizes, "bytes", None),)
         )
     ]
     for row, (field, title) in enumerate(
@@ -782,8 +753,6 @@ def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     palette = _axis_palette(variants)
     metrics = [
         ("File size (MiB)", corpus_sizes, "bytes", None),
-        ("Write time (s)", corpus, "time_s", "write"),
-        ("Write peak RSS (MiB)", corpus, "rss_b", "write"),
     ] + [(f"Read time (s)\n{_label(q)}", corpus, "time_s", q) for q in queries]
     columns = 3
     rows = -(-len(metrics) // columns)

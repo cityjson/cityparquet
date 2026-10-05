@@ -176,7 +176,7 @@ def test_retired_project_rows_are_ignored_not_fatal(tmp_path: Path):
     assert "project" not in figures.QUERIES and "project" not in figures.SCENARIO_LABELS
 
 
-def test_format_conditions_print_the_predicate_and_the_write_baseline(tmp_path: Path):
+def test_format_conditions_print_the_predicate_and_the_windows(tmp_path: Path):
     bench = _bench(tmp_path, databases=False)
     inputs = prep.Inputs(bench)
     (inputs.read_dir / "delft.csv.params.json").write_text(
@@ -195,18 +195,16 @@ def test_format_conditions_print_the_predicate_and_the_write_baseline(tmp_path: 
     )
     records = [
         {"dataset": "delft", "scenario_key": "attr-filter", "notes": "attr=TerrainHeight>=2.45"},
-        {
-            "dataset": "delft",
-            "scenario_key": "write",
-            "notes": "canonical-cityjsonseq;cityjsonseq=readbench-reserialise",
-        },
         {"dataset": "nyc", "scenario_key": "attr-filter", "notes": "attr=BIN=1000000;no-attr-index"},
     ]
     lines = prep.format_conditions(inputs, records)
     delft = next(line for line in lines if line.startswith("delft:"))
     assert "TerrainHeight >= 2.45 (217 matched, share 25.4 %, hand-picked)" in delft
     assert "bbox-1pct achieved 1.06 %" in delft
-    assert "re-serialised by the read harness" in delft and "copy" not in delft
+    assert delft == (
+        "delft: attribute filter TerrainHeight >= 2.45 (217 matched, share 25.4 %, hand-picked); "
+        "windows bbox-1pct achieved 1.06 %"
+    )
     # Without a sidecar the predicate comes from the notes, disclosures dropped.
     assert next(line for line in lines if line.startswith("nyc:")) == (
         "nyc: attribute filter attr=BIN=1000000"

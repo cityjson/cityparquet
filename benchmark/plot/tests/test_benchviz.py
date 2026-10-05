@@ -179,7 +179,19 @@ def test_bloom_axis_keys_the_lookup_probes_and_carries_the_counters(tmp_path: Pa
     off = record("cityparquet+nobloom", "id-miss")
     assert (off["bloom_pruned"], off["filter_bytes"]) == (0, 0)
     assert off["time_ratio"] == 0.0049 / 0.0021
-    assert record("cityparquet", "write")["row_groups_total"] is None
+
+
+def test_bloom_objects_come_from_the_parameter_sidecar_not_a_lookup_count(tmp_path: Path):
+    bench = fixture_bench(tmp_path)
+    data, _ = prep.build(prep.Inputs(bench))
+    axis = data["scaling"]["bloom"]
+    assert {r["objects"] for r in axis["records"] + axis["sizes"]} == {2231}
+    # Without the sidecar the lookups' result counts (0, 1, 2) say nothing
+    # about the dataset's size, so the count is unknown rather than wrong.
+    (bench / "scaling_bloom_results" / "delft.csv.params.json").unlink()
+    data, _ = prep.build(prep.Inputs(bench))
+    axis = data["scaling"]["bloom"]
+    assert {r["objects"] for r in axis["records"]} == {None}
 
 
 def _mixed_bloom_fixture(bench: Path) -> None:
@@ -191,6 +203,7 @@ def _mixed_bloom_fixture(bench: Path) -> None:
     directory = bench / "scaling_bloom_results"
     template = (directory / "delft.csv").read_text().splitlines()
     (directory / "delft.csv").unlink()
+    (directory / "delft.csv.params.json").unlink()
     counts = {
         "3dbag_n1000": 2231,
         "3dbag_n5000": 2231,
@@ -203,11 +216,10 @@ def _mixed_bloom_fixture(bench: Path) -> None:
         for line in template[1:]:
             cells = line.split(",")
             cells[0] = f"{name}.city.jsonl"
-            if cells[2] == "write":
-                cells[4] = str(count)
             cells[5] = f"{float(cells[5]) * (i + 1):.6f}"
             rows.append(",".join(cells))
         (directory / f"{name}.csv").write_text("\n".join(rows) + "\n")
+        (directory / f"{name}.csv.params.json").write_text(f'{{"cp_object_total": {count}}}')
         sizes.append(f"{name},cityparquet,{1000 * (i + 1)},0.1,1.0,cityparquet,1.0")
         sizes.append(f"{name},cityparquet+nobloom,{900 * (i + 1)},0.1,1.0,cityparquet,0.9")
     (directory / "sizes.csv").write_text("\n".join(sizes) + "\n")
@@ -229,15 +241,15 @@ def test_bloom_scaling_curve_holds_only_the_slices_and_the_corpus_stands_apart(t
     # Every slice keeps its own point, the two equal counts included, and the
     # corpus dataset of the same count joins neither the curve nor overwrites it.
     for source, measure in (
-        (axis["records"], "write"),
+        (axis["records"], "id-50pct"),
         (axis["records"], "id-miss"),
         (axis["sizes"], None),
     ):
         for variant in axis["variants"]:
             points = figures._scaling_points(source, variant, measure)
             assert [r["dataset"] for r in points] == ["3dbag_n1000", "3dbag_n5000", "3dbag_n10000"]
-    write = figures._scaling_points(axis["records"], "cityparquet", "write")
-    assert [r["time_s"] for r in write] == [1.17, 2.34, 3.51]
+    hits = figures._scaling_points(axis["records"], "cityparquet", "id-50pct")
+    assert [r["time_s"] for r in hits] == [0.0041, 0.0082, 0.0123]
     assert figures._corpus_datasets(axis["records"]) == ["rotterdam_delfshaven"]
 
     output = figures.main(_dump(data, tmp_path), tmp_path / "figures")
