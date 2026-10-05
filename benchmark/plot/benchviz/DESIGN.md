@@ -13,23 +13,39 @@ data root is `benchmark/runs/`:
 Run `python -m benchviz summary --data-root ROOT`. A smoke run uses its own
 result and summary directories; it must never be combined with a full run.
 
-The static output set is `sizes`, `heatmap`, `bloom`, `bloom-scaling`,
-`bloom-corpus` and `databases`, each as SVG and 300 dpi PNG. The HTML index
-embeds the same SVGs, each followed by the conditions it was measured under
-(`meta.conditions`: attribute predicates, achieved window selectivities,
-thread configurations), and has no external dependencies.
+The static output set is `formats/sizes`, `formats/<dataset>/time` and
+`formats/<dataset>/rss` for every dataset id in the results, `bloom`,
+`bloom-scaling`, `bloom-corpus` and `databases`, each as SVG and 300 dpi PNG,
+plus the format comparison's ratio tables `formats/size_factors.csv`,
+`formats/size_extremes.csv` and `formats/query_factors.csv`. `--figures DIR`
+moves the whole tree. The HTML index embeds the same SVGs, each followed by the
+conditions it was measured under (`meta.conditions`: attribute predicates,
+achieved window selectivities, thread configurations), and the three tables; it
+has no external dependencies.
+
+The format comparison's baseline is CityGML (`meta.baseline`). Every relative
+value is a **factor**, CityGML's value divided by the format's — read time,
+read peak RSS and on-disk bytes alike — so a larger factor is better and a
+sentence such as "CityParquet is 5× faster than CityGML" reads straight off the
+figure and the tables. A cell whose row is absent, or whose `notes` report a
+skip, an error or a failed cross-format check, carries no value; a format cell
+whose CityGML cell is unavailable keeps its own value and its factor is
+unavailable (`× n/a` in a figure, an empty cell with a `note` in a table) —
+never zero, and never a factor against another format. Nothing names a
+dataset: the figures and tables follow the results.
 
 Format size panels use actual on-disk bytes (a GB unit once a bar clears a
-gigabyte, a MB unit otherwise), with a CityJSONSeq ratio in each bar label, and
-run from CityGML to CityParquet so the subject is the last bar. Heatmap cells
-print the absolute value over its ×ratio to the stated baseline, and colour the
-logarithmic ratio;
-teal is better, the warm accent is worse, and each metric (read time, read peak
-memory) carries its own diverging colour scale. The scales are drawn once,
-beneath the grid, one per metric. Missing, unsupported, failed, and unverified measurements
-remain labelled cells. Both the size and heatmap sheets share the same format
-order; the format-comparison heatmap puts the formats across the top and the
-queries down the side. CityParquet's Hilbert package is displayed as
+gigabyte, a MB unit otherwise), with the factor against CityGML in each bar
+label, and run from CityGML to CityParquet so the subject is the last bar. The
+per-dataset heatmaps put the formats across the top and the queries down the
+side; each cell prints the absolute value over its factor and colours the
+logarithmic factor — teal is better than CityGML, the warm accent worse. Each
+metric's colour bound is shared across the datasets, so a colour means the same
+factor in every figure, and saturates at 1024× either way; the printed factor
+carries the precision. Missing, unsupported, failed and unverified measurements
+remain labelled cells. A slice's title names the size it was cut to; its exact
+CityObject count, which can exceed that because a feature is indivisible, is
+stated beneath the figure. CityParquet's Hilbert package is displayed as
 **CityParquet** while retaining `cityparquet-hilbert` internally.
 
 Configuration panels use the default CityParquet configuration as baseline and

@@ -25,30 +25,23 @@ def test_preparation_and_paper_figure_set(tmp_path: Path):
     path.write_text(prep.json.dumps(data), encoding="utf-8")
     output = figures.main(path, tmp_path / "figures")
     names = {p.name for p in output.glob("*")}
-    expected = {
-        f"{name}.{kind}"
-        for name in (
-            "sizes",
-            "heatmap",
-            "bloom",
-            "bloom-scaling",
-        )
-        for kind in ("svg", "png")
-    }
+    expected = {f"{name}.{kind}" for name in ("bloom", "bloom-scaling") for kind in ("svg", "png")}
     assert expected <= names
-    assert not any("pareto" in name for name in names)
+    assert {"sizes.svg", "sizes.png"} <= {p.name for p in (output / "formats").glob("*")}
+    assert not any("pareto" in name or "heatmap" in name for name in names)
 
 
-def test_heatmap_is_also_written_per_dataset(tmp_path: Path):
+def test_every_dataset_gets_its_own_formats_folder(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     data, _ = prep.build(prep.Inputs(bench))
     path = tmp_path / "bench_data.json"
     path.write_text(prep.json.dumps(data), encoding="utf-8")
     output = figures.main(path, tmp_path / "figures")
-    names = {p.name for p in output.glob("*")}
     ids = [dataset["id"] for dataset in data["datasets"]]
     assert ids
-    assert {f"heatmap-{i}.{kind}" for i in ids for kind in ("svg", "png")} <= names
+    for i in ids:
+        names = {p.name for p in (output / "formats" / i).glob("*")}
+        assert {f"{m}.{k}" for m in ("time", "rss") for k in ("svg", "png")} <= names
 
 
 def test_cityparquet_label_and_missing_database_are_honest(tmp_path: Path):

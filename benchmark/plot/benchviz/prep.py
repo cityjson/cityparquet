@@ -73,7 +73,39 @@ class Inputs:
             return str(path)
 
 
-BASELINE_FORMAT = "cityjsonseq"
+# The format comparison's baseline: every relative value is a FACTOR, the
+# baseline's value divided by the format's, so "CityParquet is 5x faster (or
+# smaller) than CityGML" reads straight off it and a larger factor is better.
+BASELINE_FORMAT = "citygml"
+# The stream the dataset subtitles quote a raw size for and count features in.
+STREAM_FORMAT = "cityjsonseq"
+# The format comparison's display order, reference encodings first and ours
+# last, and the names a reader sees.
+FIGURE_FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet-hilbert")
+FORMAT_NAMES = {
+    "citygml": "CityGML",
+    "cityjson": "CityJSON",
+    "cityjsonseq": "CityJSONSeq",
+    "flatcitybuf": "FlatCityBuf",
+    "cityparquet-hilbert": "CityParquet",
+}
+# Preferred query order: the whole-table read first, then the spatial probes
+# narrow-to-wide, the attribute probes, then the id probes. A run that
+# measured something else appends it after these.
+QUERY_ORDER = (
+    "full-read",
+    "count",
+    "bbox-1pct",
+    "bbox-5pct",
+    "bbox-25pct",
+    "attr-filter",
+    "attr-stats",
+    "id-10pct",
+    "id-50pct",
+    "id-90pct",
+    "id-lookup",
+    "id-miss",
+)
 
 KNOWN_FORMATS = (
     "citygml",
@@ -263,6 +295,28 @@ def _ratio(value: float | None, base: float | None) -> float | None:
     return value / base
 
 
+def unavailable_reason(row: dict[str, str] | None) -> str | None:
+    """Why a format-comparison cell has no citable value, or None if it has one.
+
+    A cell is unavailable when its row is absent, when one of its `notes`
+    tags reports a skip, an error or a failed cross-format check (the
+    coordinator's `attr-filter-count-mismatch`), when a status column says
+    so, or when it carries no time.
+    """
+    if row is None:
+        return "not measured"
+    notes = str(row.get("notes", "") or "").strip()
+    status = str(row.get("status", "") or "").strip().lower()
+    if status not in ("", "ok"):
+        return f"status={status}"
+    for tag in (tag.strip() for tag in notes.split(";")):
+        if tag.startswith(("error", "skipped")) or "mismatch" in tag:
+            return tag
+    if _float(row.get("time_s")) is None:
+        return "no time recorded"
+    return None
+
+
 def _dataset_csvs(directory: Path) -> list[Path]:
     """Dataset CSVs in a results directory, keyed by filename stem.
 
@@ -439,17 +493,21 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
         for key in sorted(groups):
             bucket = groups[key]
             base = bucket.get(BASELINE_FORMAT)
-            base_time = _float(base["time_s"]) if base else None
-            base_heap = _float(base["peak_heap_bytes"]) if base else None
-            base_rss = _float(base["peak_rss_bytes"]) if base else None
+            # An unavailable baseline cell leaves every factor in this query
+            # unavailable: it is never replaced by another format.
+            base_unavailable = unavailable_reason(base)
+            base_time = _float(base["time_s"]) if base_unavailable is None else None
+            base_rss = _float(base["peak_rss_bytes"]) if base_unavailable is None else None
 
             for fmt in KNOWN_FORMATS:
                 row = bucket.get(fmt)
                 if row is None:
                     continue
-                time_s = _float(row["time_s"])
-                heap_b = _int(row["peak_heap_bytes"])
-                rss_b = _int(row["peak_rss_bytes"])
+                unavailable = unavailable_reason(row)
+                available = unavailable is None
+                time_s = _float(row["time_s"]) if available else None
+                heap_b = _int(row["peak_heap_bytes"]) if available else None
+                rss_b = _int(row["peak_rss_bytes"]) if available else None
 
                 records.append(
                     {
@@ -457,22 +515,19 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
                         "format": fmt,
                         "scenario_key": key,
                         "time_s": time_s,
-                        "time_std_s": _float(row["time_std_s"]),
-                        # The reference's own seconds, so a view can turn a
-                        # ratio back into wall-clock without re-deriving it.
-                        "base_time_s": base_time,
+                        "time_std_s": _float(row["time_std_s"]) if available else None,
                         "heap_b": heap_b,
                         "rss_b": rss_b,
-                        "result_count": _int(row["result_count"]),
-                        "time_ratio": _ratio(time_s, base_time),
-                        "heap_ratio": _ratio(
-                            float(heap_b) if heap_b is not None else None,
-                            base_heap,
-                        ),
-                        "rss_ratio": _ratio(
-                            float(rss_b) if rss_b is not None else None,
-                            base_rss,
-                        ),
+                        "result_count": _int(row["result_count"]) if available else None,
+                        # The baseline's own values, so a view can turn a
+                        # factor back into wall-clock without re-deriving it.
+                        "base_time_s": base_time,
+                        "base_rss_b": base_rss,
+                        # Baseline over format: larger is faster / leaner.
+                        "time_factor": _ratio(base_time, time_s),
+                        "rss_factor": _ratio(base_rss, float(rss_b) if rss_b is not None else None),
+                        "unavailable": unavailable,
+                        "base_unavailable": base_unavailable,
                         "notes": row["notes"],
                         "status": row.get("status", ""),
                     }
@@ -695,8 +750,9 @@ def load_sizes(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], d
         group = by_dataset[dataset]
         base = next((r for r in group if r["format"] == BASELINE_FORMAT), None)
         base_bytes = _float(base["bytes"]) if base else None
-        if base is not None:
-            raw_mb[dataset] = float(base["mb"])
+        stream = next((r for r in group if r["format"] == STREAM_FORMAT), None)
+        if stream is not None:
+            raw_mb[dataset] = float(stream["mb"])
         for row in group:
             if row["format"] not in KNOWN_FORMATS:
                 excluded.record(row["format"], "sizes")
@@ -706,7 +762,8 @@ def load_sizes(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], d
                     "dataset": dataset,
                     "format": row["format"],
                     "bytes": _int(row["bytes"]),
-                    "frac_of_baseline": _ratio(_float(row["bytes"]), base_bytes),
+                    # Baseline bytes over format bytes: larger is smaller.
+                    "factor": _ratio(base_bytes, _float(row["bytes"])),
                 }
             )
     return records, raw_mb
@@ -739,7 +796,7 @@ def build_datasets(read_records: list[dict], raw_mb: dict[str, float]) -> list[d
             entry["objects"] = rec["result_count"]
         elif rec["format"] == "cityparquet-hilbert":
             entry.setdefault("objects_hilbert", rec["result_count"])
-        elif rec["format"] == BASELINE_FORMAT:
+        elif rec["format"] == STREAM_FORMAT:
             entry["features"] = rec["result_count"]
 
     datasets = []
@@ -1088,9 +1145,7 @@ def database_conditions(db: dict) -> dict[str, list[str]]:
     probes = params.get("id_probes") or []
     if probes:
         read_lines.append(
-            "Id lookups: "
-            + ", ".join(f"{p.get('tag')} {p.get('id')}" for p in probes)
-            + "."
+            "Id lookups: " + ", ".join(f"{p.get('tag')} {p.get('id')}" for p in probes) + "."
         )
     writes = [r for r in records if r["tier"] == "write"]
     if not writes:
@@ -1130,24 +1185,32 @@ def _system_name(system: str) -> str:
     }.get(system, system)
 
 
-def apply_manifest_titles(inputs: Inputs, datasets: list[dict]) -> None:
-    path = Path(__file__).resolve().parents[2] / "manifest.toml"
+def manifest_labels(path: Path = MANIFEST_PATH) -> dict[str, dict]:
+    """Each manifest dataset's display title and, for a slice, its nominal size.
+
+    Keyed by the dataset id the results use (the source file's stem). A
+    slice's `target_objects` is the size it was cut to; its actual CityObject
+    count can exceed it because a feature is indivisible, so a title names the
+    nominal size and the exact count is stated beside it.
+    """
     if not path.exists():
-        return
+        return {}
     manifest = tomllib.loads(path.read_text(encoding="utf-8"))
-    entries = manifest.get("datasets", {})
-    for dataset in datasets:
-        entry = next(
-            (
-                item
-                for item in entries.values()
-                if item.get("source", "").removesuffix(".city.jsonl").removesuffix(".city.json")
-                == dataset["id"]
-            ),
-            {},
-        )
+    labels: dict[str, dict] = {}
+    for entry in manifest.get("datasets", {}).values():
+        label: dict = {}
         if entry.get("title"):
-            dataset["title"] = entry["title"]
+            label["title"] = entry["title"]
+        if entry.get("role") in SCALING_ROLES and entry.get("target_objects"):
+            label["nominal_objects"] = entry["target_objects"]
+        labels[_manifest_stem(entry.get("source", ""))] = label
+    return labels
+
+
+def apply_manifest_titles(inputs: Inputs, datasets: list[dict]) -> None:
+    labels = manifest_labels()
+    for dataset in datasets:
+        dataset.update(labels.get(dataset["id"], {}))
 
 
 def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
@@ -1179,6 +1242,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     data = {
         "meta": {
             "baseline": BASELINE_FORMAT,
+            "dataset_labels": manifest_labels(),
             "sources": {
                 "read": inputs.label(inputs.read_dir),
                 "sizes": inputs.label(inputs.sizes_csv),

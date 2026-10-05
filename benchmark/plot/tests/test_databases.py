@@ -162,7 +162,8 @@ def test_the_page_lists_one_database_figure_with_its_conditions(tmp_path: Path):
     figures_dir = tmp_path / "figures"
     figures.databases(data, figures_dir)
     page = html.main(data_path, tmp_path / "index.html", figures_dir).read_text(encoding="utf-8")
-    assert "Database write tier" not in page and "databases-write" not in html.ORDER
+    paths = [path for path, _title, _lines in html.sections(data)]
+    assert "Database write tier" not in page and "databases-write" not in paths
     section = page.split("<h2>Database comparison</h2>", 1)[1].split("</section>", 1)[0]
     assert "<img" in section and "bbox-5pct achieved" in section and "not one scale" in section
 
@@ -173,7 +174,7 @@ def test_retired_project_rows_are_ignored_not_fatal(tmp_path: Path):
     data, anomalies = prep.build(prep.Inputs(bench))
     assert "project" not in {r["scenario_key"] for r in data["read"]}
     assert any("retired scenario 'project'" in note for note in anomalies)
-    assert "project" not in figures.QUERIES and "project" not in figures.SCENARIO_LABELS
+    assert "project" not in prep.QUERY_ORDER and "project" not in figures.SCENARIO_LABELS
 
 
 def test_format_conditions_print_the_predicate_and_the_windows(tmp_path: Path):

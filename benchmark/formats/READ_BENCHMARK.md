@@ -1039,7 +1039,7 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     query parameters from the package; only `cityjsonseq` (4.3 GB) rose
     above it. On Zurich 35 rows share 54 816 768 B. Those numbers are the
     coordinator's memory, not the format's, and any read-memory ratio
-    computed from them (the `rss_b` heatmap panel) is a ratio of floors.
+    computed from them (the read-memory figures) is a ratio of floors.
 
     Fixed by reading `VmHWM` from `/proc/self/status` in the child (its own
     `mm`, created by `exec`, is not inherited; measured 10.5 MB for a child

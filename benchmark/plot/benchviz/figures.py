@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
 
-from . import prep
+from . import prep, tables
 from .paths import DEFAULT_DATA_PATH, DEFAULT_FIGURES_DIR
 
 BG = "#fffff8"
@@ -58,6 +58,10 @@ CELL_EDGE = "#e6e3d7"
 # rather than spending the teal half of a diverging map on values that never
 # occur.
 CMAP_DIVERGING = colors.LinearSegmentedColormap.from_list("cp_ratio", ["#2A9D8F", BG, ACCENT])
+# The format comparison's FACTORS run the other way — CityGML's value over the
+# format's, larger is better — so the same vocabulary is mirrored: teal for a
+# factor above 1 (faster or leaner than CityGML), the accent below it.
+CMAP_FACTOR = colors.LinearSegmentedColormap.from_list("cp_factor", [ACCENT, BG, "#2A9D8F"])
 CMAP_COST = colors.LinearSegmentedColormap.from_list("cp_cost", [BG, "#F3B199", ACCENT])
 
 LABELS = {
@@ -113,26 +117,6 @@ SCENARIO_LABELS = {
     "attr-delete": "Delete attribute",
     "append-object": "Append one building",
 }
-# Both the size and heatmap sheets read from the reference encodings to ours, so
-# CityParquet is the last bar/row and the eye lands on it.
-FIGURE_FORMATS = ["citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet-hilbert"]
-# Preferred scenario order for the heatmap rows: the whole-table read first,
-# then the spatial probes narrow-to-wide, the attribute probes, then the id
-# probes. A run that measured something else appends it after these.
-QUERIES = [
-    "full-read",
-    "count",
-    "bbox-1pct",
-    "bbox-5pct",
-    "bbox-25pct",
-    "attr-filter",
-    "attr-stats",
-    "id-10pct",
-    "id-50pct",
-    "id-90pct",
-    "id-lookup",
-    "id-miss",
-]
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -195,10 +179,30 @@ def _save(fig: plt.Figure, name: str, out: Path) -> list[Path]:
 
 
 def _title(dataset: dict[str, Any]) -> str:
-    count = dataset.get("objects") or dataset.get("object_count")
+    """A dataset's figure title: its name and its size.
+
+    A slice is titled by the size it was cut to (`nominal_objects`); its exact
+    CityObject count can exceed that, because a feature is indivisible, and
+    `slice_note` states it beside the figure. A corpus dataset is titled by
+    its CityObject count.
+    """
     name = dataset.get("title") or dataset.get("id")
-    suffix = f" — {int(count):,} objects" if count else ""
-    return f"{name}{suffix}"
+    nominal = dataset.get("nominal_objects")
+    if nominal:
+        return f"{name} — {int(nominal):,}-object slice"
+    count = dataset.get("objects") or dataset.get("object_count")
+    return f"{name} — {int(count):,} CityObjects" if count else str(name)
+
+
+def slice_note(dataset: dict[str, Any]) -> str:
+    """The exact CityObject count of a slice whose title names its nominal size."""
+    nominal, count = dataset.get("nominal_objects"), dataset.get("objects")
+    if not nominal or not count:
+        return ""
+    return (
+        f"The slice holds {int(count):,} CityObjects: it is cut at whole features, "
+        f"so it can exceed its nominal {int(nominal):,}."
+    )
 
 
 def _nice_vmax(value: float) -> float:
@@ -261,6 +265,10 @@ def _heat_ticks(vmax: float, scale: str) -> list[float]:
 
 
 def _heat_colors(scale: str, vmax: float) -> tuple[colors.Colormap, colors.Normalize]:
+    if scale == "factor":
+        return CMAP_FACTOR.with_extremes(bad=BAD_CELL), colors.TwoSlopeNorm(
+            vmin=-vmax, vcenter=0, vmax=vmax
+        )
     if scale == "cost":
         return CMAP_COST.with_extremes(bad=BAD_CELL), colors.Normalize(vmin=0, vmax=vmax)
     return CMAP_DIVERGING.with_extremes(bad=BAD_CELL), colors.TwoSlopeNorm(
@@ -305,11 +313,27 @@ def _heat(
         spine.set_visible(False)
 
 
+FORMATS_DIR = tables.FORMATS_DIR
+FORMAT_METRICS = tables.FORMAT_METRICS
+# log2 of the factor at which a cell's colour saturates: 1024x.
+FACTOR_COLOUR_LIMIT = 10.0
+FACTOR_KEY = (
+    "Cell text: absolute value over its factor against CityGML (CityGML's value ÷ the "
+    "format's; higher is better). × n/a: the CityGML cell is missing, skipped or failed."
+)
+
+
+def _factor_text(value: float | None) -> str:
+    return "× n/a" if value is None else f"{_ratio_short(value)}"
+
+
 def sizes(data: dict[str, Any], out: Path) -> list[Path]:
+    """File size per dataset, with each format's factor against CityGML."""
     datasets = data.get("datasets", [])
+    folder = out / FORMATS_DIR
     if not data.get("sizes"):
-        return _missing("sizes", out)
-    formats = list(FIGURE_FORMATS)
+        return _missing("sizes", folder)
+    formats = list(prep.FIGURE_FORMATS)
     nrows = max(1, math.ceil(len(datasets) / 3))
     fig, axes = plt.subplots(
         nrows, 3, figsize=(8.5, 2.8 * nrows), squeeze=False, constrained_layout=True
@@ -319,7 +343,6 @@ def sizes(data: dict[str, Any], out: Path) -> list[Path]:
             r["format"]: r for r in data.get("sizes", []) if r.get("dataset") == dataset.get("id")
         }
         values = [by.get(f, {}).get("bytes") for f in formats]
-        base = by.get("cityjsonseq", {}).get("bytes")
         unit = _size_unit(values)
         divisor = 1024**3 if unit == "GB" else 1024**2
         bars = ax.bar(
@@ -328,155 +351,150 @@ def sizes(data: dict[str, Any], out: Path) -> list[Path]:
             color=[_format_fill(f) for f in formats],
         )
         ax.set_title(_title(dataset), fontsize=8)
+        # Headroom for the two-line label over the tallest bar.
+        top = max((float(v) / divisor for v in values if v is not None), default=1.0)
+        ax.set_ylim(0, top * 1.22)
         ax.set_ylabel(unit, fontsize=7)
         ax.set_xticks(
             range(len(formats)), [_label(f) for f in formats], rotation=35, ha="right", fontsize=6
         )
         ax.tick_params(axis="y", labelsize=5.5)
-        for x, (bar, value) in enumerate(zip(bars, values, strict=False)):
+        for x, (bar, fmt, value) in enumerate(zip(bars, formats, values, strict=False)):
             if value is None:
                 ax.text(x, 0, "missing", ha="center", va="bottom", fontsize=5)
-            else:
-                ratio = _ratio(value, base)
-                ax.text(
-                    x,
-                    bar.get_height(),
-                    f"{_size_text(value)}\n{ratio:.2g}×" if ratio else _size_text(value),
-                    ha="center",
-                    va="bottom",
-                    fontsize=5,
-                )
+                continue
+            factor = by[fmt].get("factor")
+            ax.text(
+                x,
+                bar.get_height(),
+                f"{_size_text(value)}\n{_factor_text(factor)}",
+                ha="center",
+                va="bottom",
+                fontsize=5,
+            )
     for ax in list(axes.flat)[len(datasets) :]:
         ax.axis("off")
-    fig.suptitle("File size on disk — multiples of CityJSONSeq", x=0.01, ha="left", fontsize=12)
-    return _save(fig, "sizes", out)
+    fig.suptitle(
+        "File size on disk — factor against CityGML (CityGML bytes ÷ format bytes; "
+        "higher is smaller)",
+        x=0.01,
+        ha="left",
+        fontsize=11,
+    )
+    return _save(fig, "sizes", folder)
 
 
-def format_heatmap(data: dict[str, Any], out: Path) -> list[Path]:
-    """One ratio matrix per metric and dataset, each on its own colour scale."""
+def _unavailable_label(record: dict | None) -> str:
+    """The text of a format cell with no citable value."""
+    if record is None:
+        return "—"
+    reason = str(record.get("unavailable") or "")
+    if reason.startswith("skipped"):
+        return "skipped"
+    if reason.startswith(("error", "status=")):
+        return "failed"
+    if "mismatch" in reason:
+        return "mismatch"
+    return "—"
+
+
+def format_cells(
+    data: dict[str, Any], dataset: dict[str, Any], field: str
+) -> tuple[list[str], list[list[tuple[float | None, str]]]]:
+    """One dataset's (queries, cells) for one metric: rows are queries, columns
+    the formats in display order, each cell (factor, text).
+
+    The text is the absolute value over its factor against CityGML; a cell
+    without a CityGML value keeps its own value and says `n/a` where the
+    factor would be, and a cell that was not measured, skipped or failed
+    carries that word instead of a number. A factor is never zero and never against another format.
+    """
+    records = [r for r in data.get("read", []) if r.get("dataset") == dataset.get("id")]
+    queries = tables.dataset_queries(records)
+    index = {(r.get("format"), r.get("scenario_key")): r for r in records}
+    factor_field = "time_factor" if field == "time_s" else "rss_factor"
+    cells = []
+    for query in queries:
+        row = []
+        for fmt in prep.FIGURE_FORMATS:
+            record = index.get((fmt, query))
+            value = (record or {}).get(field)
+            if value is None:
+                row.append((None, _unavailable_label(record)))
+                continue
+            number = float(value) / (1024**2 if field == "rss_b" else 1)
+            factor = record.get(factor_field)
+            row.append((factor, f"{number:.3g}\n{_factor_text(factor)}"))
+        cells.append(row)
+    return queries, cells
+
+
+def format_figures(data: dict[str, Any], out: Path) -> list[Path]:
+    """`formats/<dataset>/time` and `formats/<dataset>/rss`, one figure each.
+
+    Each metric's colour bound is shared across the datasets, so a colour
+    means the same factor in every figure.
+    """
     datasets = data.get("datasets", [])
     if not datasets or not data.get("read"):
-        return _missing("heatmap", out)
-    formats = list(FIGURE_FORMATS)
-    records = data.get("read", [])
-    present = {r.get("scenario_key") for r in records if r.get("scenario_key")}
-    queries = [q for q in QUERIES if q in present]
-    queries += sorted(present - set(QUERIES))
-    queries = queries or ["read"]
-    metrics = (
-        ("time_s", "Read time (s)", "diverging"),
-        ("rss_b", "Read peak RSS (MiB)", "diverging"),
-    )
-
-    def valid(record: dict) -> bool:
-        notes = str(record.get("notes", ""))
-        return record.get("status", "ok") in (None, "", "ok") and not (
-            notes.startswith(("error", "skipped")) or "mismatch" in notes
+        return _missing("formats", out / FORMATS_DIR)
+    blocks = {
+        (dataset["id"], field): format_cells(data, dataset, field)
+        for dataset in datasets
+        for _name, field, _page, _axis in FORMAT_METRICS
+    }
+    # Factors span six orders of magnitude (a count read from metadata against
+    # a full CityGML parse), so the colour saturates at FACTOR_COLOUR_LIMIT
+    # either way; the printed factor carries the precision.
+    bounds = {
+        field: min(
+            FACTOR_COLOUR_LIMIT,
+            _cell_bound(
+                [row for (_d, f), (_q, cells) in blocks.items() if f == field for row in cells],
+                "diverging",
+            ),
         )
-
-    def matrix_for(dataset: dict[str, Any], field: str) -> list:
-        # Rows are queries, columns are formats: the format axis is short and
-        # fixed, so it reads across the top, and the query labels get the tall
-        # axis where they fit without turning.
-        index = {
-            (r.get("format"), r.get("scenario_key")): r
-            for r in records
-            if r.get("dataset") == dataset.get("id")
-        }
-        rows = []
-        for query in queries:
-            row = []
-            for fmt in formats:
-                value, base = index.get((fmt, query), {}), index.get(("cityjsonseq", query), {})
-                measured = value.get(field) if valid(value) else None
-                baseline = base.get(field) if valid(base) else None
-                ratio = _ratio(measured, baseline)
-                if measured is None:
-                    label = "—"
-                else:
-                    number = float(measured) / (1024**2 if field == "rss_b" else 1)
-                    # The absolute value and its multiplier, stacked: the colour
-                    # gives the pattern, the numbers give the reading.
-                    label = f"{number:.3g}\n{_ratio_short(ratio)}" if ratio else f"{number:.3g}"
-                row.append((ratio, label))
-            rows.append(row)
-        return rows
-
-    # Each metric gets its own colour bound, shared across the datasets: a
-    # memory ratio range cannot bound a time ratio range.
-    metric_matrices = [
-        [matrix_for(dataset, field) for field, _t, _s in metrics] for dataset in datasets
-    ]
-    bounds = [
-        _cell_bound([row for matrices in metric_matrices for row in matrices[mi]], scale)
-        for mi, (_field, _name, scale) in enumerate(metrics)
-    ]
-
-    def render(chosen: list[int], name: str, heading: str) -> list[Path]:
-        # A complete query matrix is deliberately a tall standalone sheet. Its
-        # width is fixed; adding datasets increases height, never shrinks labels.
-        n = len(chosen)
-        # Width and height are sized so a two-line cell keeps a margin inside its
-        # border: the numbers never touch the rule, at any column count.
-        fig = plt.figure(figsize=(10.0, 4.5 * n + 1.3), layout="constrained")
-        subfigures = fig.subfigures(
-            nrows=n + 1, ncols=1, squeeze=False, height_ratios=[*([4] * n), 1.2]
-        )
-        for row, i in enumerate(chosen):
-            dataset = datasets[i]
-            subfig = subfigures[row, 0]
-            subfig.suptitle(_title(dataset), fontsize=11, x=0.01, ha="left")
-            # The two metrics share the query rows, so they read across.
-            grid = subfig.add_gridspec(1, 2, wspace=0.2)
-            axes = [subfig.add_subplot(grid[0, 0]), subfig.add_subplot(grid[0, 1])]
-            for mi, (_field, title, scale) in enumerate(metrics):
-                ax = axes[mi]
-                _heat(
-                    ax,
-                    metric_matrices[i][mi],
-                    queries,
-                    formats,
-                    title,
-                    vmax=bounds[mi],
-                    scale=scale,
-                    x_rotation=0,
-                )
-                for text in ax.texts:
-                    text.set_fontsize(5.8)
-                ax.tick_params(axis="y", labelsize=7)
-                ax.tick_params(axis="x", labelsize=6.5)
-                # Query labels live left of the time panel only.
-                if mi == 1:
-                    ax.set_yticks([])
-        key = subfigures[n, 0]
-        key.suptitle(
-            "Cell text: absolute value over ×ratio to CityJSONSeq; lower is better",
-            fontsize=8,
-            x=0.01,
-            ha="left",
-        )
-        key_grid = key.add_gridspec(1, len(metrics), wspace=0.55)
-        for mi, (_field, title, scale) in enumerate(metrics):
-            cax = key.add_subplot(key_grid[0, mi])
-            cmap, norm = _heat_colors(scale, bounds[mi])
-            bar = key.colorbar(
-                ScalarMappable(norm=norm, cmap=cmap), cax=cax, orientation="horizontal"
+        for _name, field, _page, _axis in FORMAT_METRICS
+    }
+    written: list[Path] = []
+    formats = list(prep.FIGURE_FORMATS)
+    for dataset in datasets:
+        note = slice_note(dataset)
+        for name, field, _page, axis_title in FORMAT_METRICS:
+            queries, cells = blocks[(dataset["id"], field)]
+            fig = plt.figure(figsize=(7.2, 0.42 * max(1, len(queries)) + 2.4), layout="constrained")
+            grid = fig.add_gridspec(2, 1, height_ratios=[max(1, len(queries)), 0.35])
+            ax = fig.add_subplot(grid[0])
+            _heat(
+                ax,
+                cells,
+                queries,
+                formats,
+                axis_title,
+                vmax=bounds[field],
+                scale="factor",
+                x_rotation=0,
             )
-            ticks = _heat_ticks(bounds[mi], scale)
+            for text in ax.texts:
+                text.set_fontsize(6)
+            ax.tick_params(axis="y", labelsize=7)
+            ax.tick_params(axis="x", labelsize=6.5)
+            cax = fig.add_subplot(grid[1])
+            cmap, norm = _heat_colors("factor", bounds[field])
+            bar = fig.colorbar(
+                ScalarMappable(norm=norm, cmap=cmap),
+                cax=cax,
+                orientation="horizontal",
+                extend="both" if bounds[field] >= FACTOR_COLOUR_LIMIT else "neither",
+            )
+            ticks = _heat_ticks(bounds[field], "factor")
             bar.set_ticks(ticks)
             bar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
             bar.ax.tick_params(labelsize=6, length=0)
             bar.outline.set_visible(False)
-            bar.set_label(title, fontsize=7)
-        fig.suptitle(heading, fontsize=13, x=0.01, ha="left")
-        return _save(fig, name, out)
-
-    # The combined sheet, then one sheet per dataset for a paper to place at
-    # its own size. The per-dataset sheets keep the shared colour bounds, so
-    # a colour means the same ratio in every one of them.
-    written = render(list(range(len(datasets))), "heatmap", "Format comparison")
-    for i, dataset in enumerate(datasets):
-        written += render([i], f"heatmap-{dataset.get('id')}", "Format comparison")
+            bar.set_label(FACTOR_KEY + (f" {note}" if note else ""), fontsize=6, wrap=True)
+            fig.suptitle(_title(dataset), fontsize=11, x=0.01, ha="left")
+            written += _save(fig, name, out / FORMATS_DIR / dataset["id"])
     return written
 
 
@@ -646,12 +664,15 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     cbar.ax.tick_params(labelsize=6, length=0)
     cbar.outline.set_visible(False)
     cbar.set_label("Ratio to default; lower is better", fontsize=7)
-    fig.suptitle(
-        f"{key} — {max(r.get('objects') or 0 for r in selected):,} objects",
-        x=0.01,
-        ha="left",
-        fontsize=11,
-    )
+    headline = {
+        "id": largest,
+        "objects": max(r.get("objects") or 0 for r in selected) or None,
+        **data.get("meta", {}).get("dataset_labels", {}).get(largest, {}),
+    }
+    fig.suptitle(f"{key.capitalize()} filters — {_title(headline)}", x=0.01, ha="left", fontsize=11)
+    note = slice_note(headline)
+    if note:
+        fig.text(0.01, 0.02, note, fontsize=6, color=MUTED, ha="left")
     return _save(fig, key, out)
 
 
@@ -1140,7 +1161,7 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
             "axes.spines.right": False,
         }
     )
-    written = sizes(data, out) + format_heatmap(data, out)
+    written = sizes(data, out) + format_figures(data, out) + tables.write_tables(data, out)
     for key in ("bloom",):
         written += _axis_main(data, key, out) + _axis_scaling(data, key, out)
         written += _axis_corpus(data, key, out)

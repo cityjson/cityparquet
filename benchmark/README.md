@@ -101,23 +101,30 @@ order. The bloom experiment holds ordering, codec and row-group size fixed.
 
 ## Figures
 
-`just bench-summary` produces individual SVG and PNG files and a self-contained
-`index.html` collecting the same figures and their conditions.
+`just bench-summary` produces individual SVG and PNG files, the format
+comparison's ratio tables as CSV, and a self-contained `index.html` collecting
+the same figures, tables and conditions. The format comparison lives in its own
+`formats/` folder of the figures directory, one sub-folder per dataset id.
 
-| Figure          | Content                                                                                                                                                                    |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sizes`         | Vertical size bars, one subplot per dataset; actual sizes and ratios to CityJSONSeq                                                                                        |
-| `heatmap`       | One panel per dataset, with read time and read memory heatmaps                                                                                                             |
-| `bloom`         | Five metric panels for the largest measured scaling dataset                                                                                                                |
-| `bloom-scaling` | Absolute metrics against actual CityObject counts                                                                                                                          |
-| `bloom-corpus`  | The bloom pair per corpus dataset, apart from the slice curves                                                                                                             |
-| `databases`     | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |
+| Figure                                                  | Content                                                                                                                                                                    |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `formats/sizes`                                         | Vertical size bars, one subplot per dataset; actual sizes and factors against CityGML                                                                                      |
+| `formats/<dataset>/time`, `formats/<dataset>/rss`       | One heatmap per dataset and metric: read time or read peak memory per query and format, with factors against CityGML                                                       |
+| `formats/size_factors.csv`, `formats/size_extremes.csv` | Bytes and size factors against CityGML per dataset; the best and worst dataset by CityParquet's factor                                                                     |
+| `formats/query_factors.csv`                             | Time and peak memory per dataset, query and format, with both factors against CityGML                                                                                      |
+| `bloom`                                                 | Package size and the two read heatmaps for the largest measured scaling dataset                                                                                            |
+| `bloom-scaling`                                         | Absolute metrics against actual CityObject counts                                                                                                                          |
+| `bloom-corpus`                                          | The bloom pair per corpus dataset, apart from the slice curves                                                                                                             |
+| `databases`                                             | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |
 
-Heatmap colours encode measurement divided by baseline: **lower is better**,
-with 1× neutral. Cell labels show actual values and units. Format comparisons
-use CityJSONSeq; configuration comparisons use their fixed default; database
-comparisons use **3DCityDB**. A missing baseline is not replaced by another
-system. Missing, unsupported or failed measurements remain explicit rather
+The format comparison's baseline is **CityGML**, and every relative value is a
+factor: CityGML's value divided by the format's, so **higher is better** ("CityParquet
+is 5× faster, or smaller, than CityGML"), with 1× neutral. The configuration and
+database comparisons keep a ratio of measurement to baseline, **lower is
+better**: configuration comparisons use their fixed default and database
+comparisons use **3DCityDB**. Cell labels show actual values and units. A
+missing, skipped or failed baseline cell leaves its factor or ratio unavailable
+and is not replaced by another system. Missing, unsupported or failed measurements remain explicit rather
 than becoming zeros. The combined HTML reports incomplete coverage.
 
 ## Evidence and interpretation
