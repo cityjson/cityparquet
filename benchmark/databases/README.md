@@ -1,7 +1,7 @@
 # CityParquet vs cjdb vs 3DCityDB v5: database benchmark harness
 
 `citybench` compares CityParquet — read by DuckDB (`duckdb-cityparquet`) and,
-optionally, by the native Rust reader (`cityparquet`, `cityparquet-hilbert`) —
+optionally, by the native Rust reader (`cityparquet`) —
 against two PostgreSQL-based 3D city model databases, **cjdb** and
 **3DCityDB v5**. It follows the discipline of
 `benchmark/formats/READ_BENCHMARK.md` (real inputs, repeated warm samples,
@@ -39,7 +39,7 @@ measurement gap.
 ## Committed evidence
 
 The committed database results are one run over the 1,000,001-object 3DBAG
-scaling slice (`3dbag_n1000000`), measured on 23 September 2026 on this
+slice (`3dbag_n1000000`), measured on 23 September 2026 on this
 scenario set, in both thread configurations, with the write tier:
 
 | File                                                                | Contents                                                                                                                                                        |
@@ -78,38 +78,32 @@ before citing a number. In brief:
 
 | tag                            | what it is                                                                                                                                                                           | runs                                                                       | index support                                                                                                                                                                  |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `duckdb-cityparquet`           | DuckDB (Python client) `read_parquet()` over the **Hilbert** CityParquet package `<prepared>/<dataset>-hilbert.parquet`; no separate ingest                                          | every scenario                                                             | Parquet statistics used by DuckDB's own scan, and the package's bloom filters on `id`, `feature_id` and high-cardinality string attributes for equality predicates (Caveat 21) |
-| `duckdb-cityparquet-source`    | the same, over the **source-order** package `<prepared>/<dataset>.parquet`                                                                                                           | `bbox-query` only — the one scenario whose answer depends on row order     | the same statistics, with row groups in source order                                                                                                                           |
+| `duckdb-cityparquet`           | DuckDB (Python client) `read_parquet()` over the CityParquet package `<prepared>/<dataset>.parquet`, rows in Hilbert-curve order; no separate ingest                                 | every scenario                                                             | Parquet statistics used by DuckDB's own scan, and the package's bloom filters on `id`, `feature_id` and high-cardinality string attributes for equality predicates (Caveat 21) |
 | `duckdb-cityparquet-writeback` | the same as `duckdb-cityparquet`, with `cityparquet_write` inside the timed window                                                                                                   | the write tier only                                                        | —                                                                                                                                                                              |
 | `cjdb`                         | cjdb 2.2.0, **patched (Caveat 2)**, imported into PostgreSQL/PostGIS. Full geometry is JSONB (`city_object.geometry`); only a 2D footprint is a PostGIS geometry (`ground_geometry`) | every scenario                                                             | cjdb's own defaults plus one added btree(`object_id`) — see "Index sets"                                                                                                       |
 | `3dcitydb`                     | 3DCityDB v5.1.2, imported with `citydb-tool` 1.3.2 into PostgreSQL/PostGIS. Generic `feature`/`property`/`geometry_data` schema: CityGML classes are rows, attributes are EAV rows   | every scenario                                                             | the indexes `citydb-tool import cityjson` creates; none added                                                                                                                  |
-| `cityparquet`                  | the native Rust reader over the source-order package, driven per sample as `cityparquet-readbench --child`                                                                           | `count`, `bbox-query`, `attr-filter`, `attr-stats`, `id-lookup` (Caveat 7) | Parquet row-group min/max statistics and column projection                                                                                                                     |
-| `cityparquet-hilbert`          | the same reader over `<prepared>/<dataset>-hilbert.parquet`, rows in Hilbert-curve order                                                                                             | the same five                                                              | the same statistics, with tighter per-row-group bounding boxes                                                                                                                 |
+| `cityparquet`                  | the native Rust reader over the same package, driven per sample as `cityparquet-readbench --child --format cityparquet`                                                              | `count`, `bbox-query`, `attr-filter`, `attr-stats`, `id-lookup` (Caveat 7) | Parquet row-group min/max statistics and column projection                                                                                                                     |
 
-`citybench run` uses the three `duckdb-cityparquet*` tags plus `cjdb` and
-`3dcitydb` by default. The native readers run only when named in
-`--systems` and need the binary
+`citybench run` uses the two `duckdb-cityparquet*` tags plus `cjdb` and
+`3dcitydb` by default. The native reader runs only when named in
+`--systems` and needs the binary
 `benchmark/readbench/target/release/cityparquet-readbench`
 (`cargo build --release --manifest-path benchmark/readbench/Cargo.toml`).
 
 ### Which package is "CityParquet"
 
-`duckdb-cityparquet` reads the **Hilbert** package, because that is the
-one the format family's figures display under the name "CityParquet"
-(`benchmark/plot/benchviz/figures.py`). Until this was changed the two
-benchmark families published _different artefacts_ under one name: the
-database family read the source-order package, on which Hilbert ordering
-was measured to be 1.44x/2.02x/3.13x **slower** at the 1/5/25 % windows,
-so the old choice flattered CityParquet on exactly the bbox rows
+Each dataset has one CityParquet package, `<prepared>/<dataset>.parquet`,
+written by `cityparquet convert --ordering hilbert`: rows in Hilbert-curve
+order, so each row group covers a compact region and its `bbox` statistics
+are tight. It is the artefact the format family's figures display under the
+name "CityParquet" (`benchmark/plot/benchviz/figures.py`), so the two
+benchmark families publish the same artefact under one name
 (`notes/benchmark-fairness-review-2026-09-22.md` §4.5).
 
-Row order can only change the answer's _cost_, never the answer, and only
-where a predicate is spatial. So the source-order package is published as a
-second system tag for `bbox-query` alone — the only spatial scenario left
-in the set — rather than doubling every row for a difference that would be
-noise. One scenario is enough for a control, and the tag stays: without it
-the two families would again publish different artefacts under one name.
-Publish both orders; do not pick a winner afterwards.
+Row order can change only an answer's _cost_, never the answer, and only
+where a predicate is spatial. In this scenario set that is `bbox-query`:
+its rows are measured on the Hilbert order the writer chose, and are not a
+measurement of CityParquet in some other row order.
 
 ## Query parameters
 
@@ -121,9 +115,10 @@ Derivation reads two things: the source CityJSON/CityJSONSeq file, and the
 **CityParquet package**. The package supplies the extent, the query
 windows, the `attr-filter` predicate and `attr-range`'s threshold — every
 parameter the format harness also derives from the package — so the two
-families ask the same questions of the same dataset. (The source-order and
-Hilbert packages hold the same rows in a different order, so either yields
-identical parameters; the source-order one is named for determinism.)
+families ask the same questions of the same dataset. None of these
+parameters depends on the package's row order: the windows come from the
+`bbox` column and the attribute picks from value counts, and the id probes
+are taken from the source's CityJSONSeq stream order.
 
 | field                | derivation                                                                                                               | from    |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------- |
@@ -608,7 +603,7 @@ JSON)` to obtain `server_time_s` (Caveat 4).
   `notes` carries `fetch: arrow`. The PostgreSQL adapters already read
   every row to exhaustion inside their own timed window, so no system wins
   by handing back a lazy cursor.
-- The native readers start a fresh child process per sample, and the harness
+- The native reader starts a fresh child process per sample, and the harness
   uses the child's own reported elapsed time, so process start-up is
   excluded.
 - **Write rows follow a different protocol** — no warm-up, an untimed reset
@@ -688,7 +683,7 @@ there) and are separate experiments.
   `count`, `geometry-scan` and the write tier (a mutation's rows-touched is
   not a selection). The window's target is in `notes`, not here.
 - **`time_s` / `time_std_s`** — see "The warm protocol".
-- **`peak_heap_bytes`** — populated only for the native readers (the child's
+- **`peak_heap_bytes`** — populated only for the native reader (the child's
   allocator high-water mark); empty for every SQL system.
 - **`peak_rss_bytes`** — peak resident set size of the process executing the
   query, in bytes, the maximum over the timed samples (Caveat 6). The
@@ -760,7 +755,7 @@ Read these before citing a number.
    geometry, but `ST_MakeEnvelope(xmin, ymin, xmax, ymax, srid)` is a 2D
    polygon, so the comparison is 2D. `duckdb-cityparquet` tests only the
    x/y members of the `bbox` STRUCT, although it carries `zmin`/`zmax`. Only
-   the native readers test all six bounds. Because the query windows never
+   the native reader tests all six bounds. Because the query windows never
    narrow z, this changes no count; the structural difference is that cjdb's
    storage cannot answer a z-restricted query, while the others' storage
    could but is not asked to.
@@ -809,7 +804,7 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
      mark, converted to bytes on every platform (`rss_to_bytes` in
      `benchmark/readbench/src/main.rs`), including its idle baseline.
 
-7. **The native readers answer only five of the fourteen scenarios.**
+7. **The native reader answers only five of the fourteen scenarios.**
    `cityparquet-readbench --child` implements `count`, `bbox-query`,
    `attr-filter`, `attr-stats` and `id-lookup`
    (`benchmark/readbench/src/scenario.rs`). `geometry-scan`, `attr-range`,
@@ -921,7 +916,7 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     only "in principle"; both are wrong. On the committed 3DBAG run the
     float4 term contributes **+4 objects at the 25 % window on both
     PostgreSQL systems** (Caveat 11's table). `duckdb-cityparquet` and the
-    native readers compare double-precision bounds and are not exposed.
+    native reader compare double-precision bounds and are not exposed.
 
     The harness keeps `&&`, the idiomatic, index-cooperating PostGIS form.
     The exact predicate (`ST_Intersects(envelope, env)`, or `&& env AND
@@ -1105,17 +1100,19 @@ just bench-prep --families databases   # prepare the 3DBAG slice and packages; b
 just bench-run  --families databases   # isolated databases, one run
 ```
 
-`bench-prep` fetches and prepares the largest scaling slice named in
-`benchmark/manifest.toml` (`largest_scaling_dataset`, currently
+`bench-prep` fetches and prepares the 3DBAG slice named in
+`benchmark/manifest.toml` (`slice_dataset`, the 1,000,000-object slice
 `3dbag_n1000000`) into `benchmark/runs/data/`, and runs `citybench prep`,
 which runs `just build-citydb` and `just patch-cjdb`. `bench-run` calls
 `citybench run --data-root benchmark/runs --prepared-dir
 benchmark/runs/data/readbench --dataset <slice> --output-dir
-benchmark/runs/databases/results`. With `--smoke`, the suite uses the
-first selected scaling slice (by default `3dbag_n1000`) and writes to
-`benchmark/runs/databases/smoke/`.
-The suite always uses the largest slice for a full database run. Figures
-come from `just bench-summary`, which only reads results.
+benchmark/runs/databases/results`. Under `--profile short` and
+`--profile smoke` (or `--smoke`), the database family measures the
+manifest's `small_database_dataset`, Rotterdam, through its prepared
+`rotterdam_delfshaven.city.jsonl`, and writes to
+`benchmark/runs/databases/short/` or `benchmark/runs/databases/smoke/`.
+Only the `full` profile measures the slice. Figures come from
+`just bench-summary`, which only reads results.
 
 ### A single run with the CLI
 
@@ -1126,7 +1123,7 @@ uv run python -m citybench.cli run \
   --data-root ../runs \
   --prepared-dir ../runs/data/readbench \
   --dataset <path/to/dataset>.city.jsonl \
-  [--systems duckdb-cityparquet,duckdb-cityparquet-source,duckdb-cityparquet-writeback,cjdb,3dcitydb] \
+  [--systems duckdb-cityparquet,duckdb-cityparquet-writeback,cjdb,3dcitydb] \
   [--repeat 7] [--srid 7415] [--count-tolerance 0.001] \
   [--output-dir <dir>]
 ```
@@ -1161,10 +1158,9 @@ PostgreSQL system reports after import (`cj_metadata` and `database_srs`),
 not the requested value.
 
 The CityParquet package must already exist as
-`<prepared-dir>/<dataset>.parquet` (and `<dataset>-hilbert.parquet` for
-`cityparquet-hilbert`), for example from
-`just readbench-prepare <input> <outdir> cityparquet,cityparquet-hilbert` at
-the repository root. Without `--output-dir`, results are written to
+`<prepared-dir>/<dataset>.parquet`, for example from
+`just readbench-prepare <input> <outdir> cityparquet` at the repository
+root. Without `--output-dir`, results are written to
 `benchmark/runs/databases/results/`. Every run overwrites
 `<dataset>.csv`, `<dataset>.manifest.json`, `<dataset>.params.json` and
 `<dataset>.indexes.sql`.
@@ -1274,7 +1270,7 @@ uv run --with .cjdb-patched/cjdb-2.2.0+<patch-hash> cjio data/lod3_railway.city.
 ```
 
 and use the `.jsonl` file for every system. lod3_railway is multi-family and
-has no numeric attribute, so the native readers cannot read it (Caveat 14)
+has no numeric attribute, so the native reader cannot read it (Caveat 14)
 and `attr-stats` is `skipped:` on every system. `lod3_railway.city.json` is
 also the case `append-object` cannot serve from a single document: derive
 its parameters from the exported `.jsonl`, or the row is `skipped:`.

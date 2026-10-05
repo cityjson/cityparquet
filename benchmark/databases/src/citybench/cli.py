@@ -261,8 +261,8 @@ def cmd_bench(args) -> int:
     ]
     systems = _build_systems(tags, ports=getattr(args, "ports", None))
 
-    # Never reuse name-keyed parameters: scaling inputs can be regenerated at
-    # the same path. Derive from this run's source and persist beside output.
+    # Never reuse name-keyed parameters: a prepared input can be regenerated
+    # at the same path. Derive from this run's source and persist beside output.
     #
     # The package-derived parameters do not depend on the package's row
     # order: the windows come from the `bbox` column, the attribute picks

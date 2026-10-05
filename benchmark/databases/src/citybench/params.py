@@ -36,8 +36,8 @@ from citybench.config import (
 #
 # Each entry names a column that is a member of the CityJSON `attributes`
 # map and that every format carries. `family` matches any dataset name with
-# that prefix (the 3DBAG scaling slices are prefixes of one stream and so
-# share their attributes); `dataset` matches that exact name only, as
+# that prefix (any 3DBAG slice is a prefix of one stream and so shares its
+# attributes); `dataset` matches that exact name only, as
 # `params.rs::hand_picked_for` does.
 HAND_PICKED: tuple[tuple[str, str, str, tuple[str, Any]], ...] = (
     # The natural roof-type query; 3DBAG carries it on the Building, one
