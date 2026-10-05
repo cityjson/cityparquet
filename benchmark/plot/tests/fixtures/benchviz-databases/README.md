@@ -8,8 +8,7 @@ figures are exercised on rows of the right shape:
 
 - every read scenario under both `threads=single` and `threads=parallel`;
 - `bbox-query` windows carrying `achieved=<fraction>`, the four `id-lookup`
-  probes, the `duckdb-cityparquet-source` control on the windows only, and the
-  DuckDB-only `parts-per-building-join`;
+  probes, and the DuckDB-only `parts-per-building-join`;
 - one `ok-deviation` window (a `count-mismatch: … spread=…` decomposition below
   the tolerance), one `mismatch`, one `skipped`, and the upstream
   `error: BinderException` on DuckDB's `append-object`;

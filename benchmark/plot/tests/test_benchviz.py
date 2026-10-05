@@ -47,7 +47,7 @@ def test_every_dataset_gets_its_own_formats_folder(tmp_path: Path):
 def test_cityparquet_label_and_missing_database_are_honest(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     data, _ = prep.build(prep.Inputs(bench))
-    assert figures._label("cityparquet-hilbert") == "CityParquet"
+    assert figures._label("cityparquet") == "CityParquet"
     assert data["databases"] == {"baseline": "3dcitydb", "records": [], "sizes": []}
 
 

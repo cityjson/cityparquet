@@ -36,12 +36,7 @@ def test_every_row_is_keyed_by_system_scenario_and_thread_configuration(tmp_path
     for config in ("single", "parallel"):
         probes = {r["scenario"] for r in _records(db, format="cjdb", threads=config)}
         assert {"id-10pct", "id-50pct", "id-90pct", "id-miss"} <= probes
-    # The source-order control answers the windows only; the join control is DuckDB's.
-    assert {r["scenario"] for r in _records(db, format="duckdb-cityparquet-source")} == {
-        "bbox-1pct",
-        "bbox-5pct",
-        "bbox-25pct",
-    }
+    # The join control is DuckDB's.
     assert {r["format"] for r in _records(db, scenario="parts-per-building-join")} == {
         "duckdb-cityparquet"
     }
@@ -133,8 +128,7 @@ def test_one_database_figure_carries_reads_writes_and_the_write_footnote(tmp_pat
         "Spatial 25 %",
         "Id lookup (miss)",
         "Parts per building (join)",
-        "(DuckDB,",
-        "source order)",
+        "(DuckDB)",
         "*1",
         "ok-deviation, Spatial 25 %, threads=single",
         ">mismatch<",

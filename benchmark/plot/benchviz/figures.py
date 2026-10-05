@@ -30,19 +30,14 @@ ACCENT = "#E4572E"
 # printed values are the second identity channel.
 FORMAT_FILL = {
     "cityparquet": "#E4572E",
-    "cityparquet-hilbert": "#E4572E",
     "citygml": "#C2CAD0",
     "cityjson": "#A3AEB7",
     "cityjsonseq": "#83919C",
     "flatcitybuf": "#5F6E7A",
-    "cityjsonseq-gz": "#D6DBDF",
-    "duckdb-parquet": "#D6DBDF",
 }
 DATABASE_FILL = {
     "duckdb-cityparquet": "#E4572E",
-    "duckdb-cityparquet-source": "#F3B199",
-    "cityparquet-hilbert": "#E4572E",
-    "cityparquet": "#F3B199",
+    "cityparquet": "#E4572E",
     "cjdb": "#83919C",
     "3dcitydb": "#C2CAD0",
 }
@@ -65,8 +60,7 @@ CMAP_FACTOR = colors.LinearSegmentedColormap.from_list("cp_factor", [ACCENT, BG,
 CMAP_COST = colors.LinearSegmentedColormap.from_list("cp_cost", [BG, "#F3B199", ACCENT])
 
 LABELS = {
-    "cityparquet-hilbert": "CityParquet",
-    "cityparquet": "CityParquet (source order)",
+    "cityparquet": "CityParquet",
     "cityjsonseq": "CityJSONSeq",
     "citygml": "CityGML",
     "cityjson": "CityJSON",
@@ -75,17 +69,14 @@ LABELS = {
     "cjdb": "cjdb",
     "citylake": "CityParquet (DuckDB)",
     "duckdb-cityparquet": "CityParquet (DuckDB)",
-    "duckdb-cityparquet-source": "CityParquet (DuckDB, source order)",
     "duckdb-cityparquet-writeback": "CityParquet (DuckDB, + package write-back)",
 }
-# The database figures put the native readers beside the DuckDB tags, where the
+# The database figures put the native reader beside the DuckDB tags, where the
 # format family's "CityParquet" would be ambiguous; column headers wrap.
 DATABASE_LABELS = {
     "duckdb-cityparquet": "CityParquet\n(DuckDB)",
-    "duckdb-cityparquet-source": "CityParquet\n(DuckDB,\nsource order)",
     "duckdb-cityparquet-writeback": "CityParquet\n(DuckDB, + package\nwrite-back)",
-    "cityparquet-hilbert": "CityParquet\n(native reader)",
-    "cityparquet": "CityParquet\n(native reader,\nsource order)",
+    "cityparquet": "CityParquet\n(native reader)",
     "cjdb": "cjdb",
     "3dcitydb": "3DCityDB",
 }
@@ -336,7 +327,7 @@ def sizes(data: dict[str, Any], out: Path) -> list[Path]:
     folder = out / FORMATS_DIR
     if not data.get("sizes"):
         return _missing("sizes", folder)
-    formats = list(prep.FIGURE_FORMATS)
+    formats = list(prep.FORMATS)
     nrows = max(1, math.ceil(len(datasets) / 3))
     fig, axes = plt.subplots(
         nrows, 3, figsize=(8.5, 2.8 * nrows), squeeze=False, constrained_layout=True
@@ -419,7 +410,7 @@ def format_cells(
     cells = []
     for query in queries:
         row = []
-        for fmt in prep.FIGURE_FORMATS:
+        for fmt in prep.FORMATS:
             record = index.get((fmt, query))
             value = (record or {}).get(field)
             if value is None:
@@ -460,7 +451,7 @@ def format_figures(data: dict[str, Any], out: Path) -> list[Path]:
         for _name, field, _page, _axis in FORMAT_METRICS
     }
     written: list[Path] = []
-    formats = list(prep.FIGURE_FORMATS)
+    formats = list(prep.FORMATS)
     for dataset in datasets:
         note = slice_note(dataset)
         for name, field, _page, axis_title in FORMAT_METRICS:
@@ -850,8 +841,6 @@ def _missing(
 # `duckdb-cityparquet` cell (`DATABASE_STACKED`).
 DATABASE_READ_SYSTEMS = (
     "duckdb-cityparquet",
-    "duckdb-cityparquet-source",
-    "cityparquet-hilbert",
     "cityparquet",
     "cjdb",
     "3dcitydb",

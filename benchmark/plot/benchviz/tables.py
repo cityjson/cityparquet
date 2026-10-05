@@ -25,13 +25,9 @@ from pathlib import Path
 
 from . import prep
 
-# The size table's columns after CityGML: (column prefix, format id).
-SIZE_FORMATS = {
-    "cityjson": "cityjson",
-    "cityjsonseq": "cityjsonseq",
-    "flatcitybuf": "flatcitybuf",
-    "cityparquet": "cityparquet-hilbert",
-}
+# The size table's formats after CityGML; each names its `<format>_bytes` and
+# `<format>_factor` columns.
+SIZE_FORMATS = tuple(f for f in prep.FORMATS if f != prep.BASELINE_FORMAT)
 # The format comparison's sub-folder of the figures directory, and its
 # per-dataset metrics: (file name, record field, page title, axis title).
 FORMATS_DIR = "formats"
@@ -63,10 +59,10 @@ def size_table(data: dict) -> list[dict]:
             "city_objects": dataset.get("objects"),
             "citygml_bytes": by.get((name, prep.BASELINE_FORMAT), {}).get("bytes"),
         }
-        for prefix, fmt in SIZE_FORMATS.items():
+        for fmt in SIZE_FORMATS:
             record = by.get((name, fmt), {})
-            row[f"{prefix}_bytes"] = record.get("bytes")
-            row[f"{prefix}_factor"] = record.get("factor")
+            row[f"{fmt}_bytes"] = record.get("bytes")
+            row[f"{fmt}_factor"] = record.get("factor")
         rows.append(row)
     return rows
 
@@ -109,7 +105,7 @@ def query_table(data: dict) -> list[dict]:
         for query in dataset_queries(records):
             base = index.get((prep.BASELINE_FORMAT, query))
             base_reason = (base or {}).get("unavailable") if base else "not measured"
-            for fmt in prep.FIGURE_FORMATS:
+            for fmt in prep.FORMATS:
                 record = index.get((fmt, query))
                 if record is None:
                     note = "not measured"
@@ -167,8 +163,8 @@ def write_tables(data: dict, out: Path) -> list[Path]:
     folder = out / FORMATS_DIR
     sizes = size_table(data)
     size_columns = ["dataset", "title", "city_objects", "citygml_bytes"]
-    for prefix in SIZE_FORMATS:
-        size_columns += [f"{prefix}_bytes", f"{prefix}_factor"]
+    for fmt in SIZE_FORMATS:
+        size_columns += [f"{fmt}_bytes", f"{fmt}_factor"]
     queries = query_table(data)
     query_columns = [
         "dataset",

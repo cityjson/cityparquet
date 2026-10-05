@@ -75,15 +75,18 @@ class Inputs:
 BASELINE_FORMAT = "citygml"
 # The stream the dataset subtitles quote a raw size for and count features in.
 STREAM_FORMAT = "cityjsonseq"
-# The format comparison's display order, reference encodings first and ours
-# last, and the names a reader sees.
-FIGURE_FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet-hilbert")
+# The format comparison's formats in display order, reference encodings first
+# and ours last, mirroring `Format::ALL` (benchmark/readbench/src/format.rs).
+# This is also the presentation vocabulary: a row whose format is not listed
+# here has no colour, label or panel, so it is excluded and the exclusion is
+# stated (`ExcludedFormats`).
+FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet")
 FORMAT_NAMES = {
     "citygml": "CityGML",
     "cityjson": "CityJSON",
     "cityjsonseq": "CityJSONSeq",
     "flatcitybuf": "FlatCityBuf",
-    "cityparquet-hilbert": "CityParquet",
+    "cityparquet": "CityParquet",
 }
 # Preferred query order: the whole-table read first, then the spatial probes
 # narrow-to-wide, the attribute probes, then the id probes. A run that
@@ -103,52 +106,11 @@ QUERY_ORDER = (
     "id-miss",
 )
 
-KNOWN_FORMATS = (
-    "citygml",
-    "cityjson",
-    "cityjsonseq",
-    "cityjsonseq-gz",
-    "cityparquet",
-    "cityparquet-hilbert",
-    "duckdb-parquet",
-    "flatcitybuf",
-)
-
-# The FORMAT-COMPARISON axis, mirroring `Format::DEFAULT_SET`
-# (benchmark/readbench/src/format.rs): one tag per format family, with
-# CityParquet represented by the Hilbert-ordered package — the configuration
-# that would actually ship, so the comparison is not handicapped by an ordering
-# choice no other format faces.
-#
-# `cityjsonseq-gz` and `duckdb-parquet` are deliberately absent: the first is a
-# compression variant of a format already on the axis, the second an SQL-engine
-# baseline. Neither is a format, so neither belongs on a format axis — a panel
-# putting gzipped CityJSONSeq beside CityJSONSeq compares a codec, not a format.
-# Rows for them still reach `bench_data.json` when a run opts in; the views omit
-# them and say so.
-FORMAT_AXIS = (
-    "cityparquet-hilbert",
-    "citygml",
-    "cityjson",
-    "cityjsonseq",
-    "flatcitybuf",
-)
-
 # Counting grain, from READ_BENCHMARK.md fairness caveat 1's own table. Only
 # `count`/`full-read`/`bbox-*` split this way; the other scenarios are
 # CityObject-granular in every format.
-OBJECT_GRAIN_FORMATS = (
-    "cityparquet",
-    "cityparquet-hilbert",
-    "cityjson",
-    "duckdb-parquet",
-)
-FEATURE_GRAIN_FORMATS = (
-    "citygml",
-    "cityjsonseq",
-    "cityjsonseq-gz",
-    "flatcitybuf",
-)
+OBJECT_GRAIN_FORMATS = ("cityjson", "cityparquet")
+FEATURE_GRAIN_FORMATS = ("citygml", "cityjsonseq", "flatcitybuf")
 
 READ_COLUMNS = [
     "dataset",
@@ -196,10 +158,10 @@ class PrepError(RuntimeError):
 class ExcludedFormats:
     """Rows dropped because no view here has a vocabulary for their format.
 
-    ``KNOWN_FORMATS`` is a *presentation* vocabulary — a colour, a marker shape
-    and a caption exist for each of its members — and the corpus grows formats
-    faster than the views do (a CityGML-native column arrived with the CityGML
-    reader). Dropping such rows is the honest option: they cannot be drawn.
+    ``FORMATS`` is a *presentation* vocabulary — a colour, a marker shape
+    and a caption exist for each of its members — and a results directory can
+    carry rows for a format the views do not know, such as an older run's.
+    Dropping such rows is the honest option: they cannot be drawn.
     Dropping them *silently* is not, since the page is a format comparison and
     a reader cannot tell a format that lost from one that was never plotted.
     So every drop is tallied here, lands in ``meta.excluded_formats``, and is
@@ -451,7 +413,7 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
             if row["scenario"] in RETIRED_SCENARIOS:
                 retired[row["scenario"]] = retired.get(row["scenario"], 0) + 1
                 continue
-            if row["format"] not in KNOWN_FORMATS:
+            if row["format"] not in FORMATS:
                 excluded.record(row["format"], "read")
                 continue
             kept.append(row)
@@ -484,7 +446,7 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
             base_time = _float(base["time_s"]) if base_unavailable is None else None
             base_rss = _float(base["peak_rss_bytes"]) if base_unavailable is None else None
 
-            for fmt in KNOWN_FORMATS:
+            for fmt in FORMATS:
                 row = bucket.get(fmt)
                 if row is None:
                     continue
@@ -733,7 +695,7 @@ def load_sizes(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], d
         if stream is not None:
             raw_mb[dataset] = float(stream["mb"])
         for row in group:
-            if row["format"] not in KNOWN_FORMATS:
+            if row["format"] not in FORMATS:
                 excluded.record(row["format"], "sizes")
                 continue
             records.append(
@@ -765,16 +727,8 @@ def build_datasets(read_records: list[dict], raw_mb: dict[str, float]) -> list[d
         if rec["scenario_key"] != "full-read":
             continue
         entry = counts.setdefault(rec["dataset"], {})
-        # Either CityParquet variant answers "how many CityObjects?": the count
-        # is a property of the dataset, and Hilbert ordering changes the row
-        # order, not the rows. A run that measured only one of the two (the
-        # 2026-08-17 corpus run measured only the Hilbert package) still gets a
-        # subtitle. Plain `cityparquet` wins where both were measured, so a
-        # run carrying both reads exactly as it did before.
         if rec["format"] == "cityparquet":
             entry["objects"] = rec["result_count"]
-        elif rec["format"] == "cityparquet-hilbert":
-            entry.setdefault("objects_hilbert", rec["result_count"])
         elif rec["format"] == STREAM_FORMAT:
             entry["features"] = rec["result_count"]
 
@@ -782,8 +736,6 @@ def build_datasets(read_records: list[dict], raw_mb: dict[str, float]) -> list[d
     for dataset in sorted(set(counts) | set(raw_mb) | {r["dataset"] for r in read_records}):
         entry = counts.get(dataset, {})
         objects = entry.get("objects")
-        if objects is None:
-            objects = entry.get("objects_hilbert")
         features = entry.get("features")
         mb = raw_mb.get(dataset)
         datasets.append(
@@ -1129,10 +1081,8 @@ def database_conditions(db: dict) -> dict[str, list[str]]:
 def _system_name(system: str) -> str:
     return {
         "duckdb-cityparquet": "CityParquet (DuckDB)",
-        "duckdb-cityparquet-source": "CityParquet (DuckDB, source order)",
         "duckdb-cityparquet-writeback": "CityParquet (DuckDB, + package write-back)",
-        "cityparquet": "CityParquet (native reader, source order)",
-        "cityparquet-hilbert": "CityParquet (native reader)",
+        "cityparquet": "CityParquet (native reader)",
         "cjdb": "cjdb",
         "3dcitydb": "3DCityDB",
     }.get(system, system)
@@ -1204,7 +1154,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
             },
             "caveats_read": read_caveats(inputs),
             "axis_baseline": AXIS_BASELINE,
-            "format_axis": list(FORMAT_AXIS),
+            "format_axis": list(FORMATS),
             "object_grain_formats": list(OBJECT_GRAIN_FORMATS),
             "feature_grain_formats": list(FEATURE_GRAIN_FORMATS),
             "excluded_formats": excluded.as_list(),

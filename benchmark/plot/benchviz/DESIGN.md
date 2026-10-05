@@ -45,8 +45,8 @@ factor in every figure, and saturates at 1024× either way; the printed factor
 carries the precision. Missing, unsupported, failed and unverified measurements
 remain labelled cells. A slice's title names the size it was cut to; its exact
 CityObject count, which can exceed that because a feature is indivisible, is
-stated beneath the figure. CityParquet's Hilbert package is displayed as
-**CityParquet** while retaining `cityparquet-hilbert` internally.
+stated beneath the figure. The `cityparquet` format is the Hilbert-ordered
+package, displayed as **CityParquet**.
 
 Configuration panels use the default CityParquet configuration as baseline and
 show the largest scaling dataset plus trends over observed object counts.

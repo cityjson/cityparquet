@@ -3,7 +3,9 @@
 Result CSVs extracted verbatim from commit `cc7f2f7`
 ("bench(corpus): full-corpus read/size/compression results + report"), the
 full-corpus run whose numbers the first `bench-summary.html` reported. Nothing
-here is hand-written: they are measured rows, trimmed to three datasets.
+here is hand-written: they are measured rows, trimmed to three datasets and to
+the formats the read benchmark measures, with the Hilbert-ordered package's
+rows labelled `cityparquet`, the id the benchmark gives it.
 
 Why a pinned copy rather than the live `benchmark/runs/formats/results`: a benchmark run
 replaces those CSVs with whatever corpus, formats and columns it measured, so a

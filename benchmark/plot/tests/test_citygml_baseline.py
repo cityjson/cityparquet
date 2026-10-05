@@ -19,7 +19,7 @@ HEADER = (
     "peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,"
     "filter_bytes"
 )
-FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet-hilbert")
+FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet")
 
 
 def _row(dataset, fmt, scenario, count, time, rss, notes=""):
@@ -78,7 +78,7 @@ def _record(data, dataset, fmt, key):
 def test_read_factors_are_citygml_over_the_format(tmp_path: Path):
     data, _ = prep.build(prep.Inputs(_bench(tmp_path)))
     assert data["meta"]["baseline"] == "citygml"
-    record = _record(data, "alpha", "cityparquet-hilbert", "full-read")
+    record = _record(data, "alpha", "cityparquet", "full-read")
     assert record["time_factor"] == 2.5 / 0.5
     assert record["rss_factor"] == 5_000_000 / 1_000_000
     assert _record(data, "alpha", "citygml", "full-read")["time_factor"] == 1.0
@@ -87,7 +87,7 @@ def test_read_factors_are_citygml_over_the_format(tmp_path: Path):
 def test_a_failed_or_missing_citygml_cell_leaves_the_factor_unavailable(tmp_path: Path):
     data, _ = prep.build(prep.Inputs(_bench(tmp_path)))
     for key in ("full-read", "bbox-1pct"):
-        record = _record(data, "beta", "cityparquet-hilbert", key)
+        record = _record(data, "beta", "cityparquet", key)
         assert record["time_s"] == 0.5, "the absolute value is kept"
         assert record["time_factor"] is None and record["rss_factor"] is None
     # Never a fallback to another format as the baseline.
@@ -157,11 +157,11 @@ def test_the_query_table_orients_every_factor_against_citygml(tmp_path: Path):
         "note",
     ]
     by = {(r["dataset"], r["query"], r["format_id"]): r for r in rows}
-    parquet = by[("alpha", "full-read", "cityparquet-hilbert")]
+    parquet = by[("alpha", "full-read", "cityparquet")]
     assert parquet["format"] == "CityParquet"
     assert parquet["time_factor_vs_citygml"] == 5.0
     assert parquet["note"] == ""
-    no_base = by[("beta", "full-read", "cityparquet-hilbert")]
+    no_base = by[("beta", "full-read", "cityparquet")]
     assert no_base["time_s"] == 0.5 and no_base["time_factor_vs_citygml"] is None
     assert no_base["note"] == "CityGML unavailable: error: out of memory"
     assert by[("beta", "bbox-1pct", "cityjson")]["note"] == "CityGML unavailable: not measured"
