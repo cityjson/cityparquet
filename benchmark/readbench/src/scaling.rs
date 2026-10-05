@@ -1,9 +1,8 @@
 //! Cut fixed-cardinality CityJSONSeq prefixes ("scaling slices") out of one
 //! source feature stream.
 //!
-//! The configuration-axis benchmarks (`just codec-bench`, `just
-//! rowgroup-bench`, `just ordering-bench`) vary an encoding parameter —
-//! codec, row-group size, row ordering — and want the DATASET axis held
+//! The configuration-axis benchmark (`just bloom-bench`) varies an encoding
+//! parameter — bloom filters on or off — and wants the DATASET axis held
 //! still. A corpus of unrelated city models (3DBAG next to PLATEAU next to
 //! Vienna) confounds that: every configuration delta is entangled with a
 //! data delta. A scaling corpus instead takes ONE source and cuts it at
