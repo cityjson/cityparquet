@@ -23,7 +23,8 @@ leaves at parquet's own defaults for dictionary encoding and statistics, so the
 committed bytes do not describe the current writer until the family is re-run.
 
 **The committed `read_results/` CSVs also predate bloom filters; the current
-evidence under `benchmark/runs/formats/` was measured with them.** Both
+evidence under `benchmark/runs/formats/` was measured on packages that carry
+them.** Both
 disclosures are
 [`READ_BENCHMARK.md`](READ_BENCHMARK.md)'s fairness caveats 30 and 31, which is
 where every family's caveats are kept: `benchviz` renders that one numbered
