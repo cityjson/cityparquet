@@ -187,10 +187,10 @@ fetch-tools:
 # CityJSONSeq prefixes with a fixed number of CityObjects each: one
 # DEST/3dbag_n<SIZE>.city.jsonl per SIZE, every slice a strict prefix of
 # the next larger one, in source feature order. This is the input for the
-# CONFIGURATION-axis benchmarks (`codec-bench`, `rowgroup-bench`,
-# `bloom-bench`): one dataset at several cardinalities shows the trend
-# over size with the data held constant, where a corpus of unrelated city
-# models would entangle every configuration delta with a data delta.
+# CONFIGURATION-axis benchmark (`bloom-bench`): one dataset at several
+# cardinalities shows the trend over size with the data held constant,
+# where a corpus of unrelated city models would entangle every
+# configuration delta with a data delta.
 #
 # Slices cut at FEATURE boundaries (a CityJSONSeq feature is indivisible),
 # so a slice's actual CityObject count can slightly exceed its nominal
@@ -435,8 +435,7 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
     echo "bench: ${found} file(s) benchmarked into {{OUT}}"
 
 
-# The configuration-axis runner behind `codec-bench`, `rowgroup-bench` and
-# `bloom-bench`:
+# The configuration-axis runner behind `bloom-bench` and `bloom-bench-http`:
 # for every CityJSON/CityJSONSeq file under FOLDER (recursive), build the
 # `cityparquet` artefact the query parameters derive from (and the
 # CityJSONSeq the writes convert from), then run the coordinator's
@@ -455,8 +454,8 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
 # packages a local run left in PREPARED, uploaded to BASE_URL, and
 # WRITE_REPEAT is unused.
 #
-# VARIANTS is the whole benchmark: the three public recipes below pass their
-# lists here and nowhere else, and benchmark/scripts/tests/bench_recipe_test.sh
+# VARIANTS is the whole benchmark: the two recipes below pass their lists
+# here and nowhere else, and benchmark/scripts/tests/bench_recipe_test.sh
 # reads those lists back out of this file.
 [private]
 [doc("Configuration-axis run: timed writes + two reads per variant, over every input under FOLDER")]
@@ -510,23 +509,6 @@ variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEA
     fi
     ./{{BENCH_SCRIPTS}}/machine_record.sh > "{{OUT}}/MACHINE.md"
     echo "variant-bench: ${found} file(s) benchmarked into {{OUT}}"
-
-# The CODEC axis: which compression codec, and when. zstd — the codec
-# CityParquet ships with — is swept at levels 1, 3 (the default and the 1x
-# baseline), 9 and 19; the other codecs run at the parquet-rs defaults the
-# writer recipe carries (gzip 6, brotli 1) and are reference points, not a
-# ranking against each other. Every variant at the default 65536-row groups.
-[private]
-[doc("Codec axis over the scaling slices: zstd 1/3/9/19, lz4, snappy, gzip, brotli, none")]
-codec-bench FOLDER OUT=(BENCH / "runs/formats/scaling_codec_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3':
-    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+zstd1,cityparquet+zstd9,cityparquet+zstd19,cityparquet+lz4,cityparquet+snappy,cityparquet+gzip,cityparquet+brotli,cityparquet+uncompressed" "{{PREPARED}}" "{{REPEAT}}" "{{WRITE_REPEAT}}"
-
-# The ROW-GROUP axis: which group size, and when. The 65536-row default is
-# the 1x baseline; every variant at the default codec (zstd 3).
-[private]
-[doc("Row-group axis over the scaling slices: 65536 (default), 32768, 8192, 2048, 512")]
-rowgroup-bench FOLDER OUT=(BENCH / "runs/formats/scaling_rowgroup_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3':
-    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+rg32768,cityparquet+rg8192,cityparquet+rg2048,cityparquet+rg512" "{{PREPARED}}" "{{REPEAT}}" "{{WRITE_REPEAT}}"
 
 # The BLOOM axis: the default package, which carries bloom filters, against
 # the same package without them. Identifier lookups only — what the filters

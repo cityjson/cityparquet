@@ -18,7 +18,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / "benchmark" / "manifest.toml"
-FAMILIES = ("sizes", "formats", "codec", "rowgroup", "bloom", "databases")
+FAMILIES = ("sizes", "formats", "bloom", "databases")
 
 # A run profile fixes which slice stands in for "the large dataset", how many
 # repetitions are measured and where the results go, so that a test run can
@@ -99,8 +99,6 @@ def dataset_selection(manifest: dict, families: list[str], requested: str, profi
         if any(family in {"sizes", "formats"} for family in families):
             result.extend(key for key, entry in datasets.items() if entry["role"] == "corpus")
             result.append(large)
-        if any(family in {"codec", "rowgroup"} for family in families):
-            result.extend(scaling)
         if "bloom" in families:
             result.extend(key for key, entry in datasets.items() if entry["role"] == "corpus")
             result.extend(scaling)
@@ -283,7 +281,7 @@ def result_dir(locations: dict[str, Path], family: str, profile: str) -> Path:
     if profile is True or profile is False:  # the old boolean spelling
         profile = "smoke" if profile else "full"
     root = locations["formats"] / profile_subdir(profile) if profile_subdir(profile) else locations["formats"]
-    names = {"formats": "results", "sizes": "results", "codec": "scaling_codec_results", "rowgroup": "scaling_rowgroup_results", "bloom": "scaling_bloom_results"}
+    names = {"formats": "results", "sizes": "results", "bloom": "scaling_bloom_results"}
     return root / names[family]
 
 
@@ -332,15 +330,6 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
             output = result_dir(locations, "sizes", profile) / "sizes.csv"
             for input_path in format_inputs:
                 command("python3", "benchmark/scripts/measure_sizes.py", "--input", str(input_path), "--prepared", str(locations["prepared"]), "--out", str(output))
-    for family, recipe in (("codec", "codec-bench"), ("rowgroup", "rowgroup-bench")):
-        if family not in families:
-            continue
-        if not scaling_inputs:
-            raise SystemExit(f"{family} needs a 3DBAG scaling dataset")
-        output = result_dir(locations, family, profile)
-        just(recipe, str(stage(locations, family, scaling_inputs)), str(output), str(locations["prepared"]), "1" if smoke else "7", "1" if smoke else "3")
-        for input_path in scaling_inputs:
-            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family=family, repeat=1 if smoke else 7, write_repeat=1 if smoke else 3, smoke=smoke, fixed_configuration="codec/default-row-groups" if family == "codec" else "row-groups/zstd-3", profile=profile)
     if "bloom" in families:
         bloom_inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in {"corpus", "scaling", "largest-scaling"}]
         if not bloom_inputs:

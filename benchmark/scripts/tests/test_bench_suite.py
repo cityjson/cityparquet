@@ -9,10 +9,8 @@ class SelectionTests(unittest.TestCase):
     def setUpClass(cls): cls.manifest = bench_suite.load_manifest()
     def test_format_default_replaces_small_3dbag_with_largest_prefix(self):
         self.assertEqual(bench_suite.dataset_selection(self.manifest, ["formats"], "", "full")[-1], "3dbag_n1000000")
-    def test_configuration_default_is_the_entire_scaling_series(self):
-        self.assertEqual(len(bench_suite.dataset_selection(self.manifest, ["codec"], "", "full")), 7)
     def test_smoke_3dbag_selects_only_small_prefix(self):
-        self.assertEqual(bench_suite.dataset_selection(self.manifest, ["codec"], "3dbag", "smoke"), ["3dbag_n1000"])
+        self.assertEqual(bench_suite.dataset_selection(self.manifest, ["bloom"], "3dbag", "smoke"), ["3dbag_n1000"])
     def test_unknown_family_is_rejected(self):
         with self.assertRaises(SystemExit): bench_suite.family_selection("wrong")
     def test_paths_are_under_data_root(self):
