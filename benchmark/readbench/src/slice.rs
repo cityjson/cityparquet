@@ -1,14 +1,10 @@
-//! Cut fixed-cardinality CityJSONSeq prefixes ("scaling slices") out of one
-//! source feature stream.
+//! Cut fixed-cardinality CityJSONSeq prefixes ("slices") out of one source
+//! feature stream.
 //!
-//! The configuration-axis benchmark (`just bloom-bench`) varies an encoding
-//! parameter — bloom filters on or off — and wants the DATASET axis held
-//! still. A corpus of unrelated city models (3DBAG next to PLATEAU next to
-//! Vienna) confounds that: every configuration delta is entangled with a
-//! data delta. A scaling corpus instead takes ONE source and cuts it at
-//! several CityObject cardinalities, so a measurement series shows the
-//! trend over size with the data held constant — every slice is a strict
-//! prefix of the next larger one, in source feature order.
+//! The benchmark's 3DBAG dataset is such a slice: the first 1,000,000
+//! CityObjects, in source feature order, of one published 3DBAG export
+//! (`just fetch-3dbag`). Several sizes can be cut in one pass, every slice a
+//! strict prefix of the next larger one.
 //!
 //! The slice boundary is the FEATURE, not the CityObject: a CityJSONSeq
 //! feature is indivisible (one top-level CityObject plus all its children
@@ -23,8 +19,8 @@
 //!
 //! This module is deliberately ignorant of FlatCityBuf: it consumes any
 //! pull source of `(serialised feature line, CityObject count)` pairs, so
-//! its tests need no fixture and no network. The `scaling-corpus` binary
-//! (`src/bin/scaling_corpus.rs`) is the FCB adapter.
+//! its tests need no fixture and no network. The `fcb-slice` binary
+//! (`src/bin/fcb_slice.rs`) is the FCB adapter.
 
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -125,7 +121,7 @@ impl SliceWriter {
 /// [`SliceSummary`] per target, ascending. If the stream ends before every
 /// target is reached, completed slices are kept, unreachable slices'
 /// `.tmp` files are removed, and the error names what was dropped.
-pub fn write_scaling_slices(
+pub fn write_slices(
     header_line: &str,
     mut next_feature: impl FnMut() -> Result<Option<(String, usize)>>,
     targets: &[usize],
@@ -136,10 +132,10 @@ pub fn write_scaling_slices(
     sizes.sort_unstable();
     sizes.dedup();
     if sizes.is_empty() {
-        bail!("scaling: no slice sizes given");
+        bail!("slice: no slice sizes given");
     }
     if sizes.first() == Some(&0) {
-        bail!("scaling: a slice size of 0 is meaningless");
+        bail!("slice: a slice size of 0 is meaningless");
     }
     fs::create_dir_all(out_dir)
         .with_context(|| format!("creating output directory {}", out_dir.display()))?;
@@ -174,7 +170,7 @@ pub fn write_scaling_slices(
             })
             .collect();
         bail!(
-            "scaling: source has too few CityObjects for: {} — completed slices were kept, \
+            "slice: source has too few CityObjects for: {} — completed slices were kept, \
              the short ones were not written",
             dropped.join(", ")
         );
@@ -210,8 +206,7 @@ mod tests {
     #[test]
     fn slices_are_prefixes_and_include_the_crossing_feature() {
         let dir = tempfile::tempdir().unwrap();
-        let got =
-            write_scaling_slices("H", source(&[2, 2, 2, 2, 2]), &[5, 3], dir.path(), "x").unwrap();
+        let got = write_slices("H", source(&[2, 2, 2, 2, 2]), &[5, 3], dir.path(), "x").unwrap();
 
         // Ascending, whole features, crossing feature included: n3 takes
         // features 0..=1 (4 objects), n5 takes 0..=2 (6 objects).
@@ -245,7 +240,7 @@ mod tests {
         let counts = [1usize; 4];
         let mut pulls = 0usize;
         let mut i = 0usize;
-        let got = write_scaling_slices(
+        let got = write_slices(
             "H",
             || {
                 pulls += 1;
@@ -267,8 +262,7 @@ mod tests {
     #[test]
     fn unreachable_target_errors_but_keeps_completed_slices() {
         let dir = tempfile::tempdir().unwrap();
-        let err =
-            write_scaling_slices("H", source(&[2, 2]), &[3, 100], dir.path(), "x").unwrap_err();
+        let err = write_slices("H", source(&[2, 2]), &[3, 100], dir.path(), "x").unwrap_err();
         assert!(err.to_string().contains("n100"), "unexpected error: {err}");
         assert!(
             err.to_string().contains("4 CityObjects"),
@@ -287,18 +281,17 @@ mod tests {
     #[test]
     fn duplicate_targets_collapse_and_zero_or_empty_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let got = write_scaling_slices("H", source(&[3, 3]), &[2, 2], dir.path(), "x").unwrap();
+        let got = write_slices("H", source(&[3, 3]), &[2, 2], dir.path(), "x").unwrap();
         assert_eq!(got.len(), 1);
 
-        assert!(write_scaling_slices("H", source(&[1]), &[], dir.path(), "y").is_err());
-        assert!(write_scaling_slices("H", source(&[1]), &[0, 2], dir.path(), "z").is_err());
+        assert!(write_slices("H", source(&[1]), &[], dir.path(), "y").is_err());
+        assert!(write_slices("H", source(&[1]), &[0, 2], dir.path(), "z").is_err());
     }
 
     #[test]
     fn source_errors_propagate() {
         let dir = tempfile::tempdir().unwrap();
-        let err =
-            write_scaling_slices("H", || bail!("stream broke"), &[1], dir.path(), "x").unwrap_err();
+        let err = write_slices("H", || bail!("stream broke"), &[1], dir.path(), "x").unwrap_err();
         assert!(err.to_string().contains("stream broke"));
     }
 }

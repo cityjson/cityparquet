@@ -10,7 +10,7 @@
 # --- benchmark corpora and derived artefacts -------------------------------
 #
 # ~24 GB of city models, all fetched from pinned URLs with pinned byte sizes
-# by `just fetch-data` / `just fetch-scaling-data`. The pins live in
+# by `just fetch-data` / `just fetch-3dbag`. The pins live in
 # benchmark/scripts/fetch_benchmark.sh and benchmark/formats/
 # corpus_urls.txt, both committed — the bytes themselves never were.
 #
@@ -77,7 +77,7 @@ ai/skills/
 !/benchmark/runs/formats/
 /benchmark/runs/formats/*
 !/benchmark/runs/formats/results/
-!/benchmark/runs/formats/scaling_bloom_results/
+!/benchmark/runs/formats/bloom_results/
 !/benchmark/runs/summary/
 /benchmark/runs/summary/*
 !/benchmark/runs/summary/full/

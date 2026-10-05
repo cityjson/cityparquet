@@ -1,10 +1,12 @@
 //! Bloom-filter acceptance at corpus scale (spec Acceptance 2, 3, 4, 4b).
-//! Ignored by default: they need the 3DBAG scaling slices and minutes of
-//! conversion. Run from the repository root with
+//! Ignored by default: they need two 3DBAG slices — the benchmark's
+//! 1,000,000-object one and a 10,000-object prefix of the same stream — and
+//! minutes of conversion. Cut both and run from the repository root with
 //!
 //! ```sh
+//! just fetch-3dbag benchmark/runs/data/3dbag 10000,1000000
 //! mkdir -p benchmark/runs/work/bloom-acceptance
-//! CITYPARQUET_SCALING_DIR=$PWD/benchmark/runs/data/scaling \
+//! CITYPARQUET_3DBAG_DIR=$PWD/benchmark/runs/data/3dbag \
 //! CITYPARQUET_BLOOM_SCRATCH=$PWD/benchmark/runs/work/bloom-acceptance \
 //! cargo test --release --all-features --manifest-path lib/cityparquet-rs/Cargo.toml \
 //!   -p cityparquet --test bloom_corpus -- --ignored --nocapture --test-threads 1
@@ -39,8 +41,8 @@ use parquet::schema::types::ColumnPath;
 const MISS: &str = "NL.IMBAG.Pand.readbench-absent";
 
 fn slice(name: &str) -> PathBuf {
-    let dir = std::env::var("CITYPARQUET_SCALING_DIR")
-        .expect("set CITYPARQUET_SCALING_DIR to the directory holding the 3DBAG slices");
+    let dir = std::env::var("CITYPARQUET_3DBAG_DIR")
+        .expect("set CITYPARQUET_3DBAG_DIR to the directory holding the 3DBAG slices");
     let path = Path::new(&dir).join(name);
     assert!(path.exists(), "missing {}", path.display());
     path

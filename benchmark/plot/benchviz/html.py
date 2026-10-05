@@ -16,7 +16,6 @@ from .tables import FORMAT_METRICS, FORMATS_DIR
 # directory without its extension, page title).
 TAIL = (
     ("bloom", "Bloom-filter configuration"),
-    ("bloom-scaling", "Bloom-filter scaling"),
     ("bloom-corpus", "Bloom filters on the corpus"),
     ("databases", "Database comparison"),
 )
@@ -33,8 +32,8 @@ def sections(data: dict) -> list[tuple[str, str, list[str]]]:
 
     Derived from the data, never from a fixed list of datasets: the size
     figure, then a time and a memory figure per dataset — including a
-    manifest corpus dataset with no results, as a missing section — then the
-    rest.
+    manifest corpus or slice dataset with no results, as a missing section —
+    then the rest.
     """
     conditions = data.get("meta", {}).get("conditions", {})
     result = [(f"{FORMATS_DIR}/sizes", "File size on disk", [])]
@@ -50,7 +49,7 @@ def sections(data: dict) -> list[tuple[str, str, list[str]]]:
     measured = {d["id"] for d in data.get("datasets", [])}
     labels = data.get("meta", {}).get("dataset_labels", {})
     for dataset_id, label in labels.items():
-        if label.get("role") != "corpus" or dataset_id in measured:
+        if label.get("role") not in {"corpus", "slice"} or dataset_id in measured:
             continue
         name = label.get("title") or dataset_id
         for metric, _field, page_title, _axis in FORMAT_METRICS:

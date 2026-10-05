@@ -4,8 +4,8 @@
 data root is `benchmark/runs/`:
 
 - `formats/results/` holds the format-comparison CSVs and `sizes.csv`.
-- `formats/scaling_bloom_results/` holds the bloom-filter configuration
-  experiment over the scaling corpus and the city datasets.
+- `formats/bloom_results/` holds the bloom-filter configuration experiment
+  over the slice dataset and the corpus datasets.
 - `databases/results/` holds the database summary CSVs and size summaries.
 - `summary/` holds prepared JSON, the self-contained `bench-summary.html`, and
   individual paper figures. `--figures` can export those figures elsewhere.
@@ -15,7 +15,7 @@ result and summary directories; it must never be combined with a full run.
 
 The static output set is `formats/sizes`, `formats/<dataset>/time` and
 `formats/<dataset>/rss` for every dataset id in the results, `bloom`,
-`bloom-scaling`, `bloom-corpus` and `databases`, each as SVG and 300 dpi PNG,
+`bloom-corpus` and `databases`, each as SVG and 300 dpi PNG,
 plus the format comparison's ratio tables `formats/size_factors.csv`,
 `formats/size_extremes.csv` and `formats/query_factors.csv`. `--figures DIR`
 moves the whole tree. The HTML index embeds the same SVGs, each followed by the
@@ -48,8 +48,12 @@ CityObject count, which can exceed that because a feature is indivisible, is
 stated beneath the figure. The `cityparquet` format is the Hilbert-ordered
 package, displayed as **CityParquet**.
 
-Configuration panels use the default CityParquet configuration as baseline and
-show the largest scaling dataset plus trends over observed object counts.
+Configuration panels use the default CityParquet configuration as baseline.
+The `bloom` figure shows the manifest's slice dataset (`[suite] slice_dataset`,
+carried as `meta.slice_dataset`) and is a labelled placeholder when the run did
+not measure it; `bloom-corpus` shows every other measured dataset, and is not
+written when there is none. The page reports a manifest `corpus` or `slice`
+dataset without format results as a missing section.
 Database panels use 3DCityDB as baseline; storage includes indexes and memory
 means peak execution-process RSS, not total database-server memory. Every read
 cell is keyed by system, scenario and thread configuration: `threads=single`

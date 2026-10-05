@@ -1,6 +1,6 @@
 //! Remove every geometry of the given LoDs from one CityJSONSeq feature.
 //!
-//! The scaling corpus uses this to cut the 3DBAG slices without LoD 1.2.
+//! `fcb-slice` uses this to cut the 3DBAG slice without LoD 1.2.
 //! CityGML 2.0 has integer LoDs only, so `citygml-tools from-cityjson` keeps
 //! one LoD-1 solid per object (the 1.3 one) and drops the other: a slice
 //! carrying both would give the CityGML artefact less geometry than the other

@@ -110,7 +110,7 @@ BENCH_ROOT="${BENCH_ROOT:-$BENCHMARK_DIR/runs}"
 #   zurich_building_lod2  198,699   2
 #
 # The 1,000,001-object 3DBAG slice that completes the format comparison is not
-# fetched here: `just fetch-scaling-data` cuts it from its own pinned source.
+# fetched here: `just fetch-3dbag` cuts it from its own pinned source.
 CORPUS=(
   "rotterdam_delfshaven.city.json|2731804|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json|958460c670b4cb85a9159d1e5e566905fba8812864f64b554ecad38333badcf6"
   "ingolstadt.city.json|5051369|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Ingolstadt.city.json|91e45df269dec5a22f80af6c149dca0d64c85ce1796b8fefc6296ae6bfa5cfe5"

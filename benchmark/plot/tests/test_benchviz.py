@@ -25,7 +25,7 @@ def test_preparation_and_paper_figure_set(tmp_path: Path):
     path.write_text(prep.json.dumps(data), encoding="utf-8")
     output = figures.main(path, tmp_path / "figures")
     names = {p.name for p in output.glob("*")}
-    expected = {f"{name}.{kind}" for name in ("bloom", "bloom-scaling") for kind in ("svg", "png")}
+    expected = {f"{name}.{kind}" for name in ("bloom", "bloom-corpus") for kind in ("svg", "png")}
     assert expected <= names
     assert {"sizes.svg", "sizes.png"} <= {p.name for p in (output / "formats").glob("*")}
     assert not any("pareto" in name or "heatmap" in name for name in names)
@@ -157,7 +157,7 @@ def test_database_loader_uses_explicit_smoke_mode(tmp_path: Path):
 def test_bloom_axis_keys_the_lookup_probes_and_carries_the_counters(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     data, _ = prep.build(prep.Inputs(bench))
-    axis = data["scaling"]["bloom"]
+    axis = data["bloom"]
     assert axis["variants"] == ["cityparquet", "cityparquet+nobloom"]
     assert {r["measure"] for r in axis["records"]} == set(prep.BLOOM_MEASURES)
 
@@ -177,32 +177,30 @@ def test_bloom_axis_keys_the_lookup_probes_and_carries_the_counters(tmp_path: Pa
 def test_bloom_objects_come_from_the_parameter_sidecar_not_a_lookup_count(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     data, _ = prep.build(prep.Inputs(bench))
-    axis = data["scaling"]["bloom"]
+    axis = data["bloom"]
     assert {r["objects"] for r in axis["records"] + axis["sizes"]} == {2231}
     # Without the sidecar the lookups' result counts (0, 1, 2) say nothing
     # about the dataset's size, so the count is unknown rather than wrong.
-    (bench / "scaling_bloom_results" / "delft.csv.params.json").unlink()
+    (bench / "bloom_results" / "delft.csv.params.json").unlink()
     data, _ = prep.build(prep.Inputs(bench))
-    axis = data["scaling"]["bloom"]
+    axis = data["bloom"]
     assert {r["objects"] for r in axis["records"]} == {None}
 
 
-def _mixed_bloom_fixture(bench: Path) -> None:
-    """Corpus and 3DBAG slices in one bloom directory, with colliding counts.
+SLICE = "3dbag_n1000000"
 
-    `3dbag_n1000`, `3dbag_n5000` and the corpus `rotterdam_delfshaven` all
-    report 2,231 objects; `3dbag_n10000` reports 10,004.
+
+def _mixed_bloom_fixture(bench: Path) -> None:
+    """The slice and two corpus datasets in one bloom directory.
+
+    The slice reports 1,000,004 objects; the corpus `rotterdam_delfshaven`
+    and `ingolstadt` report 2,231 and 379.
     """
-    directory = bench / "scaling_bloom_results"
+    directory = bench / "bloom_results"
     template = (directory / "delft.csv").read_text().splitlines()
     (directory / "delft.csv").unlink()
     (directory / "delft.csv.params.json").unlink()
-    counts = {
-        "3dbag_n1000": 2231,
-        "3dbag_n5000": 2231,
-        "3dbag_n10000": 10004,
-        "rotterdam_delfshaven": 2231,
-    }
+    counts = {SLICE: 1_000_004, "rotterdam_delfshaven": 2231, "ingolstadt": 379}
     sizes = ["dataset,format,bytes,mb,ratio_vs_cityjsonseq,baseline_format,ratio_vs_baseline"]
     for i, (name, count) in enumerate(counts.items()):
         rows = [template[0]]
@@ -218,36 +216,37 @@ def _mixed_bloom_fixture(bench: Path) -> None:
     (directory / "sizes.csv").write_text("\n".join(sizes) + "\n")
 
 
-def test_bloom_scaling_curve_holds_only_the_slices_and_the_corpus_stands_apart(tmp_path: Path):
+def test_the_bloom_headline_is_the_manifest_slice_and_the_corpus_stands_apart(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     _mixed_bloom_fixture(bench)
     data, _ = prep.build(prep.Inputs(bench))
-    axis = data["scaling"]["bloom"]
-    series = {r["dataset"]: r["series"] for r in axis["records"] + axis["sizes"]}
-    assert series == {
-        "3dbag_n1000": "scaling",
-        "3dbag_n5000": "scaling",
-        "3dbag_n10000": "scaling",
-        "rotterdam_delfshaven": "corpus",
-    }
-
-    # Every slice keeps its own point, the two equal counts included, and the
-    # corpus dataset of the same count joins neither the curve nor overwrites it.
-    for source, measure in (
-        (axis["records"], "id-50pct"),
-        (axis["records"], "id-miss"),
-        (axis["sizes"], None),
-    ):
-        for variant in axis["variants"]:
-            points = figures._scaling_points(source, variant, measure)
-            assert [r["dataset"] for r in points] == ["3dbag_n1000", "3dbag_n5000", "3dbag_n10000"]
-    hits = figures._scaling_points(axis["records"], "cityparquet", "id-50pct")
-    assert [r["time_s"] for r in hits] == [0.0041, 0.0082, 0.0123]
-    assert figures._corpus_datasets(axis["records"]) == ["rotterdam_delfshaven"]
+    assert data["meta"]["slice_dataset"] == SLICE
+    axis = data["bloom"]
+    assert {r["dataset"] for r in axis["records"]} == {SLICE, "rotterdam_delfshaven", "ingolstadt"}
+    # The corpus is every measured dataset but the slice, smallest first.
+    assert figures._corpus_datasets(axis["records"], SLICE) == [
+        "ingolstadt",
+        "rotterdam_delfshaven",
+    ]
 
     output = figures.main(_dump(data, tmp_path), tmp_path / "figures")
     names = {p.name for p in output.glob("*")}
-    assert {"bloom-scaling.svg", "bloom-corpus.svg", "bloom.svg"} <= names
+    assert {"bloom.svg", "bloom-corpus.svg"} <= names
+
+
+def test_an_unmeasured_slice_leaves_the_bloom_headline_a_placeholder(tmp_path: Path):
+    """The fixture's one bloom dataset is a corpus model, not the slice: the
+    headline says so instead of promoting a corpus city to it."""
+    import matplotlib.pyplot as plt
+
+    bench = fixture_bench(tmp_path)
+    data, _ = prep.build(prep.Inputs(bench))
+    data["meta"]["slice_dataset"] = SLICE
+    with plt.rc_context({"svg.fonttype": "none"}):
+        figures._axis_main(data, "bloom", tmp_path / "figures")
+    text = (tmp_path / "figures" / "bloom.svg").read_text(encoding="utf-8")
+    assert f"the slice dataset ({SLICE}) was not measured" in text
+    assert figures._corpus_datasets(data["bloom"]["records"], SLICE) == ["delft"]
 
 
 def _dump(data: dict, tmp_path: Path) -> Path:
@@ -267,11 +266,9 @@ def test_a_rerun_without_corpus_data_leaves_no_stale_corpus_figure(tmp_path: Pat
     assert (figures_dir / "bloom-corpus.svg").exists()
 
     # The same output directory, re-used by a run whose bloom axis measured
-    # slices only: the earlier corpus figure must not survive into the page.
+    # the slice only: the earlier corpus figure must not survive into the page.
     for key in ("records", "sizes"):
-        data["scaling"]["bloom"][key] = [
-            r for r in data["scaling"]["bloom"][key] if r["series"] == "scaling"
-        ]
+        data["bloom"][key] = [r for r in data["bloom"][key] if r["dataset"] == SLICE]
     data_path = _dump(data, tmp_path)
     figures.main(data_path, figures_dir)
     assert not (figures_dir / "bloom-corpus.svg").exists()
@@ -292,8 +289,8 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
     `prep.read_caveats` extracts that one list and `html.main` is the only
     thing that prints caveats — it reads `meta.caveats_read` and nothing else.
     So a bloom caveat kept in `benchmark/formats/README.md` instead would leave
-    the bloom, bloom-scaling and bloom-corpus figures on the page with no
-    warning beside them at all. Phrases, not a count: the list is allowed to
+    the bloom and bloom-corpus figures on the page with no warning beside them
+    at all. Phrases, not a count: the list is allowed to
     grow (see `prep.read_caveats`), and each phrase is one source line with no
     character `html.escape` rewrites.
     """
@@ -311,7 +308,6 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
     # The premise: the page really is showing bloom figures.
     for title in (
         "Bloom-filter configuration",
-        "Bloom-filter scaling",
         "Bloom filters on the corpus",
     ):
         section = text.split(f"<h2>{title}</h2>", 1)[1].split("</section>", 1)[0]
@@ -345,7 +341,7 @@ def test_a_median_shaped_csv_is_refused_loudly_in_both_loaders(tmp_path: Path):
         "peak_heap_bytes,peak_rss_bytes,repeat,notes\n"
         "delft.city.jsonl,cityparquet,full-read,,2231,0.1,0.01,1,2,7,\n"
     )
-    for directory in ("results", "scaling_bloom_results"):
+    for directory in ("results", "bloom_results"):
         bench = fixture_bench(tmp_path / directory)
         (bench / directory / "delft.csv").write_text(legacy, encoding="utf-8")
         with pytest.raises(prep.PrepError, match="unexpected columns"):

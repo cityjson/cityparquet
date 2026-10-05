@@ -493,7 +493,7 @@ def format_figures(data: dict[str, Any], out: Path) -> list[Path]:
 
 
 def _axis(data: dict[str, Any], key: str) -> tuple[list[dict], list[dict], list[str]]:
-    axis = data.get("scaling", {}).get(key, {})
+    axis = data.get(key, {})
     return axis.get("records", []), axis.get("sizes", []), axis.get("variants", [])
 
 
@@ -513,29 +513,12 @@ def _axis_queries(records: list[dict]) -> list[str]:
     return [q for q in wanted if q in present]
 
 
-def _scaling_points(source: list[dict], variant: str, measure: str | None) -> list[dict]:
-    """One variant's curve: the nested 3DBAG slices only, one point per dataset.
-
-    Keyed by dataset, never by object count, so two inputs of equal count both
-    stay; ordered by count (then id) for the x axis. Corpus rows are never
-    points on a curve — a different city model is not a larger slice.
-    """
-    points = [
-        r
-        for r in source
-        if r.get("series") == "scaling"
-        and r.get("variant") == variant
-        and (measure is None or r.get("measure") == measure)
-        and r.get("objects") is not None
-    ]
-    return sorted(points, key=lambda r: (r["objects"], r["dataset"]))
-
-
-def _corpus_datasets(records: list[dict]) -> list[str]:
-    """The corpus datasets an axis measured, smallest first."""
+def _corpus_datasets(records: list[dict], slice_id: str | None) -> list[str]:
+    """The corpus datasets an axis measured, smallest first: every dataset but
+    the slice, which the headline figure shows on its own."""
     objects: dict[str, int] = {}
     for r in records:
-        if r.get("series") == "corpus":
+        if r["dataset"] != slice_id:
             objects[r["dataset"]] = max(objects.get(r["dataset"], 0), r.get("objects") or 0)
     return sorted(objects, key=lambda d: (objects[d], d))
 
@@ -544,14 +527,18 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     records, sizes, variants = _axis(data, key)
     if not records:
         return _missing(key, out)
-    # The headline dataset is the largest SLICE when the axis has any: the
-    # scaling figure's right-hand end, not a corpus model of another city.
-    slices = [r for r in records if r.get("series") == "scaling"]
-    largest = max(
-        {r["dataset"] for r in (slices or records)},
-        key=lambda d: max(r.get("objects") or 0 for r in records if r["dataset"] == d),
-    )
+    # The headline dataset is the manifest's slice: the suite's largest input
+    # and the one dataset every family measures. A run that did not measure it
+    # gets a placeholder rather than a corpus city standing in for it.
+    largest = data.get("meta", {}).get("slice_dataset")
     selected = [r for r in records if r.get("dataset") == largest]
+    if not selected:
+        return _missing(
+            key,
+            out,
+            f"Not rendered: the slice dataset ({largest or 'unnamed'}) was not measured; "
+            f"the corpus datasets are drawn in {key}-corpus.",
+        )
     queries = _axis_queries(selected)
     palette = _axis_palette(variants)
     # One row: the package size beside the two read heatmaps it explains.
@@ -670,99 +657,25 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     return _save(fig, key, out)
 
 
-def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
-    records, sizes, variants = _axis(data, key)
-    if not records:
-        return _missing(f"{key}-scaling", out)
-    if not any(r.get("series") == "scaling" for r in records):
-        return _missing(
-            f"{key}-scaling",
-            out,
-            "Not rendered: no 3DBAG scaling slice was measured; corpus datasets are drawn apart.",
-        )
-    queries = _axis_queries(records)
-    palette = _axis_palette(variants)
-    colours = {variant: palette.get(variant, MUTED) for variant in variants}
-    markers = ["o", "s", "^", "D", "v", "P", "X", "<", ">"]
-    fig = plt.figure(figsize=(max(8.5, 2.0 * len(queries)), 7.2), layout="constrained")
-    outer = fig.add_gridspec(3, 1)
-    top = outer[0].subgridspec(1, 3)
-    panels = [
-        (fig.add_subplot(top[i]), title, source, field, measure)
-        for i, (title, source, field, measure) in enumerate(
-            (("File size (MiB)", sizes, "bytes", None),)
-        )
-    ]
-    for row, (field, title) in enumerate(
-        (("time_s", "Read time (s)"), ("rss_b", "Read peak RSS (MiB)")), 1
-    ):
-        subgrid = outer[row].subgridspec(1, max(1, len(queries)))
-        for i, query in enumerate(queries):
-            panels.append(
-                (fig.add_subplot(subgrid[i]), f"{title}\n{_label(query)}", records, field, query)
-            )
-    for ax, title, source, field, measure in panels:
-        for vi, variant in enumerate(variants):
-            points = _scaling_points(source, variant, measure)
-            counts = [r["objects"] for r in points]
-            divisor = 1024**2 if field in ("bytes", "rss_b") else 1
-            values = [
-                float(r[field]) / divisor if r.get(field) is not None else float("nan")
-                for r in points
-            ]
-            ax.plot(
-                counts,
-                values,
-                color=colours[variant],
-                marker=markers[vi % len(markers)],
-                markersize=3,
-                linewidth=1.6 if variant == "cityparquet" else 0.9,
-                label=variant.replace("cityparquet+", "").replace("cityparquet", "default"),
-            )
-            if field == "time_s":
-                spreads = [float(r.get("time_std_s") or 0) for r in points]
-                ax.fill_between(
-                    counts,
-                    [v - spread for v, spread in zip(values, spreads, strict=True)],
-                    [v + spread for v, spread in zip(values, spreads, strict=True)],
-                    color=colours[variant],
-                    alpha=0.08,
-                )
-        ax.set_title(title, fontsize=8)
-        ax.set_xlabel("CityObjects", fontsize=7)
-        ax.set_xscale("log")
-        ax.tick_params(labelsize=6)
-    handles, labels = panels[0][0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels,
-        loc="outside lower center",
-        ncol=min(5, len(variants)),
-        fontsize=7,
-        frameon=False,
-    )
-    fig.suptitle(f"{key.capitalize()} scaling", fontsize=12)
-    return _save(fig, f"{key}-scaling", out)
-
-
 def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
-    """The corpus datasets of an axis, per dataset and apart from the curve.
+    """The corpus datasets of an axis, per dataset, apart from the slice.
 
     Grouped bars, one group per corpus dataset and one bar per variant, for
-    the same metrics as the scaling figure. Nothing is written for an axis
-    that measured no corpus dataset, and any `{key}-corpus` figure already in
-    `out` is removed.
+    the file size and the read time of each lookup. Nothing is written for an
+    axis that measured no corpus dataset, and any `{key}-corpus` figure
+    already in `out` is removed.
     """
     records, sizes, variants = _axis(data, key)
-    datasets = _corpus_datasets(records)
+    slice_id = data.get("meta", {}).get("slice_dataset")
+    datasets = _corpus_datasets(records, slice_id)
     if not datasets:
         # Remove a corpus figure an earlier run left in a re-used directory,
         # so the summary page cannot embed it as if this run had measured it.
         for suffix in ("svg", "png"):
             (out / f"{key}-corpus.{suffix}").unlink(missing_ok=True)
         return []
-    corpus = [r for r in records if r.get("series") == "corpus"]
-    corpus_sizes = [r for r in sizes if r.get("series") == "corpus"]
+    corpus = [r for r in records if r["dataset"] != slice_id]
+    corpus_sizes = [r for r in sizes if r["dataset"] != slice_id]
     queries = _axis_queries(corpus)
     palette = _axis_palette(variants)
     metrics = [
@@ -1155,9 +1068,7 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
         }
     )
     written = sizes(data, out) + format_figures(data, out) + tables.write_tables(data, out)
-    for key in ("bloom",):
-        written += _axis_main(data, key, out) + _axis_scaling(data, key, out)
-        written += _axis_corpus(data, key, out)
+    written += _axis_main(data, "bloom", out) + _axis_corpus(data, "bloom", out)
     written += databases(data, out)
     print(f"benchviz figures -> {out}")
     for path in written:

@@ -30,7 +30,7 @@ description = "Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParq
 # library mean "the three crates people actually consume" — and living outside
 # that workspace entirely, as it now does, says the same thing structurally.
 publish = false
-# Two [[bin]]s live here (the coordinator and `scaling-corpus`); a bare
+# Two [[bin]]s live here (the coordinator and `fcb-slice`); a bare
 # `cargo run -p cityparquet-readbench` — the `bench` recipe's own
 # invocation — must keep meaning the coordinator.
 default-run = "cityparquet-readbench"
@@ -45,8 +45,8 @@ path = "src/main.rs"
 doc = false
 
 [[bin]]
-name = "scaling-corpus"
-path = "src/bin/scaling_corpus.rs"
+name = "fcb-slice"
+path = "src/bin/fcb_slice.rs"
 doc = false
 
 # Versions are written out rather than inherited: a one-package workspace has

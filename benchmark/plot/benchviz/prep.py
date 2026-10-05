@@ -37,12 +37,11 @@ class Inputs:
     def read_dir(self) -> Path:
         return self.bench_dir / "results"
 
-    # The scaling corpus: one city model cut to several cardinalities, which
-    # is how the bloom axis is measured -- a configuration answers "how does
-    # this scale", not "how does this compare to Vienna".
+    # The bloom-filter configuration run: the default package against the
+    # package without filters, over the slice and the corpus datasets.
     @property
-    def scaling_bloom_dir(self) -> Path:
-        return self.bench_dir / "scaling_bloom_results"
+    def bloom_dir(self) -> Path:
+        return self.bench_dir / "bloom_results"
 
     @property
     def sizes_csv(self) -> Path:
@@ -141,7 +140,6 @@ FEATURE_NOTE_RE = re.compile(r"^feature-(?:\d+pct|miss)$")
 COLD_RE = re.compile(r"\bcold\b", re.IGNORECASE)
 
 AXIS_BASELINE = "cityparquet"
-AXIS_MEASURES = ("full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct", "id-50pct")
 # The bloom axis measures the identifier lookups only; every other query is
 # untouched by the filters.
 BLOOM_MEASURES = ("id-50pct", "id-miss", "feature-50pct", "feature-miss")
@@ -483,7 +481,7 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
 
 
 # --------------------------------------------------------------------------
-# scaling corpus
+# bloom axis
 # --------------------------------------------------------------------------
 
 
@@ -507,47 +505,39 @@ def _object_total(path: Path, by_measure: dict[str, dict[str, dict[str, str]]], 
 
 
 MANIFEST_PATH = Path(__file__).resolve().parents[2] / "manifest.toml"
-SCALING_ROLES = frozenset({"scaling", "largest-scaling"})
 
 
 def _manifest_stem(source: str) -> str:
     return source.removesuffix(".city.jsonl").removesuffix(".city.json")
 
 
-def scaling_series_ids(path: Path = MANIFEST_PATH) -> frozenset[str]:
-    """Dataset ids of the nested 3DBAG slices, from the suite manifest.
+def slice_dataset(path: Path = MANIFEST_PATH) -> str | None:
+    """The result id of the manifest's slice dataset (`[suite] slice_dataset`).
 
-    Only these form a scaling curve: the slices are prefixes of one source, so
-    their differences are differences of size. A corpus dataset is a different
-    city model, and joining it to the curve would read a data difference as a
-    scale effect.
+    The manifest names the slice by its dataset key; the results name a
+    dataset by its source file's stem, so the key is resolved through its
+    entry. None when the manifest is absent or names no slice.
     """
     if not path.exists():
-        return frozenset()
+        return None
     manifest = tomllib.loads(path.read_text(encoding="utf-8"))
-    return frozenset(
-        _manifest_stem(entry.get("source", ""))
-        for entry in manifest.get("datasets", {}).values()
-        if entry.get("role") in SCALING_ROLES
-    )
+    key = manifest.get("suite", {}).get("slice_dataset")
+    if not key:
+        return None
+    entry = manifest.get("datasets", {}).get(key, {})
+    return _manifest_stem(entry.get("source", "")) or key
 
 
-def load_scaling_axis(
-    directory: Path, baseline: str = AXIS_BASELINE, measures: tuple[str, ...] = AXIS_MEASURES
+def load_bloom_axis(
+    directory: Path, baseline: str = AXIS_BASELINE, measures: tuple[str, ...] = BLOOM_MEASURES
 ) -> dict:
-    """One configuration axis (bloom) from a `--variants` run.
-
-    Every record and size row carries `series`: `scaling` for a nested 3DBAG
-    slice (`scaling_series_ids`), `corpus` for any other input, so the
-    renderer draws curves from the slices alone.
+    """The bloom-filter configuration axis from a `--variants` run.
 
     Every ratio is variant over default, so values below 1x use less time,
-    memory or disk. The
-    variant order is the CSVs' own first-seen order, because the recipe's
-    list is the figure's order and sorting would lose it. Absolute seconds
-    and bytes stay: the trend strip plots them.
+    memory or disk. The variant order is the CSVs' own first-seen order,
+    because the recipe's list is the figure's order and sorting would lose
+    it. Absolute seconds and bytes stay: the corpus figure plots them.
     """
-    series_ids = scaling_series_ids()
     records: list[dict] = []
     sizes: list[dict] = []
     gaps: list[dict] = []
@@ -605,7 +595,6 @@ def load_scaling_axis(
                 records.append(
                     {
                         "dataset": name,
-                        "series": "scaling" if name in series_ids else "corpus",
                         "objects": objects_by[name],
                         "variant": variant,
                         "kind": "default" if variant == baseline else "variant",
@@ -647,7 +636,6 @@ def load_scaling_axis(
                 sizes.append(
                     {
                         "dataset": ds,
-                        "series": "scaling" if ds in series_ids else "corpus",
                         "objects": objects_by.get(ds),
                         "variant": fmt,
                         "bytes": b,
@@ -1104,7 +1092,7 @@ def manifest_labels(path: Path = MANIFEST_PATH) -> dict[str, dict]:
         label: dict = {"role": entry.get("role")}
         if entry.get("title"):
             label["title"] = entry["title"]
-        if entry.get("role") in SCALING_ROLES and entry.get("target_objects"):
+        if entry.get("role") == "slice" and entry.get("target_objects"):
             label["nominal_objects"] = entry["target_objects"]
         labels[_manifest_stem(entry.get("source", ""))] = label
     return labels
@@ -1129,9 +1117,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     datasets = build_datasets(read_records, raw_mb)
     apply_manifest_titles(inputs, datasets)
     database_data = load_databases(inputs)
-    scaling = {
-        "bloom": load_scaling_axis(inputs.scaling_bloom_dir, measures=BLOOM_MEASURES),
-    }
+    bloom = load_bloom_axis(inputs.bloom_dir)
 
     order = {d["id"]: i for i, d in enumerate(datasets)}
     read_records.sort(
@@ -1147,10 +1133,11 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
         "meta": {
             "baseline": BASELINE_FORMAT,
             "dataset_labels": manifest_labels(),
+            "slice_dataset": slice_dataset(),
             "sources": {
                 "read": inputs.label(inputs.read_dir),
                 "sizes": inputs.label(inputs.sizes_csv),
-                "bloom": inputs.label(inputs.scaling_bloom_dir),
+                "bloom": inputs.label(inputs.bloom_dir),
             },
             "caveats_read": read_caveats(inputs),
             "axis_baseline": AXIS_BASELINE,
@@ -1163,13 +1150,13 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
                 **database_conditions(database_data),
             },
             "machine": {
-                "bloom": read_machine(inputs.scaling_bloom_dir),
+                "bloom": read_machine(inputs.bloom_dir),
             },
         },
         "datasets": datasets,
         "read": read_records,
         "sizes": size_records,
-        "scaling": scaling,
+        "bloom": bloom,
         "databases": database_data,
     }
     return data, anomalies + excluded.notes()
@@ -1184,7 +1171,7 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
     out.write_text(text + "\n", encoding="utf-8")
     completeness = {
         "formats": bool(data["read"] or data["sizes"]),
-        "bloom": bool(data["scaling"]["bloom"]["records"]),
+        "bloom": bool(data["bloom"]["records"]),
         "databases": bool(data["databases"]["records"] or data["databases"]["sizes"]),
     }
     (out.parent / "completeness.json").write_text(
@@ -1195,7 +1182,7 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
     print(
         f"  {len(data['datasets'])} datasets, {len(data['read'])} read records, "
         f"{len(data['sizes'])} size records, "
-        f"{len(data['scaling']['bloom']['records'])} bloom records"
+        f"{len(data['bloom']['records'])} bloom records"
     )
     for note in anomalies:
         print(f"  anomaly: {note}")

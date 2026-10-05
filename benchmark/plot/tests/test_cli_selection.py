@@ -10,10 +10,7 @@ def test_selection_filters_real_payload(tmp_path: Path, monkeypatch):
             "datasets": [{"id": "rotterdam_delfshaven"}, {"id": "other"}],
             "read": [{"dataset": "rotterdam_delfshaven", "scenario_key": "write"}],
             "sizes": [{"dataset": "rotterdam_delfshaven", "bytes": 12}],
-            "scaling": {
-                "bloom": {"records": [], "sizes": []},
-                "datasets": [],
-            },
+            "bloom": {"records": [], "sizes": []},
             "databases": {
                 "dataset": "3dbag_n1000",
                 "records": [{"scenario": "count"}],

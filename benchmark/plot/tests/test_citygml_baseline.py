@@ -247,11 +247,19 @@ def test_figures_dir_redirects_the_whole_formats_tree(tmp_path: Path):
 def test_a_manifest_dataset_without_results_stays_explicitly_missing(tmp_path: Path):
     data, _ = prep.build(prep.Inputs(_bench(tmp_path)))
     data["meta"]["dataset_labels"]["kyoto"] = {"role": "corpus", "title": "Kyoto"}
+    data["meta"]["dataset_labels"]["3dbag_n1000000"] = {
+        "role": "slice",
+        "title": "3DBAG",
+        "nominal_objects": 1_000_000,
+    }
     data_path = tmp_path / "bench_data.json"
     data_path.write_text(json.dumps(data), encoding="utf-8")
     out = figures.main(data_path, tmp_path / "figures")
     page = html.main(data_path=data_path, out_path=tmp_path / "index.html", figures_dir=out)
     text = page.read_text(encoding="utf-8")
     section = text.split("<h2>Kyoto — read time</h2>", 1)[1].split("</section>", 1)[0]
+    assert "Not rendered" in section and "<img" not in section
+    # The slice is an expected dataset too: unmeasured, it is reported missing.
+    section = text.split("<h2>3DBAG — read time</h2>", 1)[1].split("</section>", 1)[0]
     assert "Not rendered" in section and "<img" not in section
     assert not any(r["dataset"] == "kyoto" for r in tables.size_table(data))

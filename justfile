@@ -178,42 +178,36 @@ fetch-data DEST=(BENCH / "runs/data/benchmark") ONLY='default':
 fetch-tools:
     ./{{BENCH_SCRIPTS}}/fetch_tools.sh
 
-# Fetch the SCALING corpus source — one 7.6 GB FlatCityBuf export of a
-# 3DBAG subset (flatcitybuf.open3d.city, pinned byte size, resumable,
-# cached under benchmark/runs/data/ and skipped once complete) — and cut
-# CityJSONSeq prefixes with a fixed number of CityObjects each: one
-# DEST/3dbag_n<SIZE>.city.jsonl per SIZE, every slice a strict prefix of
-# the next larger one, in source feature order. This is the input for the
-# CONFIGURATION-axis benchmark (`bloom-bench`), and its largest slice is the
-# format comparison's 3DBAG dataset: one dataset at several
-# cardinalities shows the trend over size with the data held constant,
-# where a corpus of unrelated city models would entangle every
-# configuration delta with a data delta.
+# Fetch the 3DBAG source — one 7.6 GB FlatCityBuf export of a 3DBAG subset
+# (flatcitybuf.open3d.city, pinned byte size, resumable, cached under
+# benchmark/runs/data/ and skipped once complete) — and cut the benchmark's
+# 3DBAG dataset from it: DEST/3dbag_n<SIZE>.city.jsonl, the first SIZE
+# CityObjects in source feature order. The manifest's one 3DBAG dataset is
+# the default SIZE, 1000000; another SIZE cuts a smaller prefix of the same
+# stream for trying the harness out, which no profile measures.
 #
-# Slices cut at FEATURE boundaries (a CityJSONSeq feature is indivisible),
-# so a slice's actual CityObject count can slightly exceed its nominal
-# SIZE — the `scaling-corpus` binary prints the exact counts per slice. A
-# SIZE the source cannot fill is an ERROR, not a silently short file.
+# The slice is cut at FEATURE boundaries (a CityJSONSeq feature is
+# indivisible), so its actual CityObject count can slightly exceed its
+# nominal SIZE — the `fcb-slice` binary prints the exact count. A SIZE the
+# source cannot fill is an ERROR, not a silently short file.
 #
-# Every slice is cut WITHOUT LoD 1.2 (`--drop-lod 1.2`): 3DBAG carries LoD
+# The slice is cut WITHOUT LoD 1.2 (`--drop-lod 1.2`): 3DBAG carries LoD
 # 0, 1.2, 1.3 and 2.2, but CityGML 2.0 has integer LoDs only, so the
-# synthesised CityGML below could keep just one LoD-1 solid (citygml-tools
-# keeps 1.3). Dropping 1.2 at the source gives all five formats the same
-# content: LoD 0, 1.3 and 2.2. The vertices only LoD 1.2 used go with it,
-# and every CityObject stays, so slice counts are unchanged.
+# synthesised CityGML could keep just one LoD-1 solid (citygml-tools keeps
+# 1.3). Dropping 1.2 at the source gives all five formats the same content:
+# LoD 0, 1.3 and 2.2. The vertices only LoD 1.2 used go with it, and every
+# CityObject stays, so the count is unchanged.
 #
-# These slices carry no .gml of their own, but `readbench_prepare.sh`
-# SYNTHESISES one with citygml-tools, exactly as it does for the read
-# corpus's .city.json entries — so `bench` over DEST measures `citygml`
-# too, and the synthesised artefact is roughly 4x the CityJSONSeq it came
-# from. Budget for that at the large cardinalities: a 1,000,000-object
-# slice is a stream of a few GB and a .gml roughly four times larger, and
-# `citygml` is the slowest format in the matrix by an order of magnitude.
+# The slice carries no .gml of its own, but `readbench_prepare.sh`
+# SYNTHESISES one with citygml-tools, exactly as it does for the corpus's
+# .city.json entries. Budget for that: the 1,000,000-object slice is a
+# stream of a few GB and its .gml roughly four times larger, and `citygml`
+# is the slowest format in the matrix by an order of magnitude.
 #
 # Needs curl; network-dependent on the first run (~7.6 GB); kept
 # OUT of `just check`/CI.
-[doc("Fetch and slice the configuration-axis corpus (7.6 GB source)")]
-fetch-scaling-data DEST=(BENCH / "runs/data/scaling") SIZES='1000,5000,10000,50000':
+[doc("Fetch the 3DBAG source (7.6 GB) and cut the benchmark's 3DBAG slice")]
+fetch-3dbag DEST=(BENCH / "runs/data/3dbag") SIZES='1000000':
     #!/usr/bin/env bash
     set -euo pipefail
     url='https://flatcitybuf.open3d.city/data/3dbag_subset2_all_index.fcb'
@@ -226,11 +220,11 @@ fetch-scaling-data DEST=(BENCH / "runs/data/scaling") SIZES='1000,5000,10000,500
         curl -fL --retry 3 -C - -o "$src" "$url"
         actual=$(wc -c < "$src")
         if [[ "$actual" -ne "$expected" ]]; then
-            echo "fetch-scaling-data: $src is $actual bytes, expected $expected — delete it and re-run" >&2
+            echo "fetch-3dbag: $src is $actual bytes, expected $expected — delete it and re-run" >&2
             exit 1
         fi
     fi
-    cargo run --release {{READBENCH_CARGO}} --bin scaling-corpus -- \
+    cargo run --release {{READBENCH_CARGO}} --bin fcb-slice -- \
         --input "$src" --out-dir "{{DEST}}" --stem 3dbag --sizes "{{SIZES}}" \
         --drop-lod 1.2
 
@@ -446,8 +440,8 @@ variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEA
 # exist for — by `id` and by `feature_id`, each at the middle position and a
 # verified miss. Every variant at the default codec and row-group size.
 [private]
-[doc("Bloom axis over the scaling slices and corpus: cityparquet vs cityparquet+nobloom")]
-bloom-bench FOLDER OUT=(BENCH / "runs/formats/scaling_bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
+[doc("Bloom axis over every input under FOLDER: cityparquet vs cityparquet+nobloom")]
+bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
     just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"
 
 # The bloom axis over HTTP: reads (never builds) the two packages a local
@@ -456,7 +450,7 @@ bloom-bench FOLDER OUT=(BENCH / "runs/formats/scaling_bloom_results") PREPARED=(
 # real bucket, and its timings are a snapshot of one network path.
 [private]
 [doc("Bloom axis over HTTP, against uploaded bloom-bench packages")]
-bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/scaling_bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
+bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
     just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"
 
 # ---------------------------------------------------------------------------
@@ -464,10 +458,10 @@ bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/scaling_bloom_http_r
 #
 # Both are deliberately outside `cd lib/cityparquet-rs && just check` — the
 # Rust workspace's gate — because each needs a tool that gate does not require
-# of a machine: `plot-test` needs `uv`, `scripts-test` needs `jq` and a bash
-# new enough for its stubs. Run them alongside it when touching
-# `benchmark/plot/` or `lib/cityparquet-rs/scripts/`; `just check` at this
-# level runs all three.
+# of a machine: `plot-test` needs `uv`, `scripts-test` needs `jq`, `uv` and a
+# bash new enough for its stubs. Run them alongside it when touching
+# `benchmark/plot/` or `benchmark/scripts/`; `just check` at this level runs
+# all three.
 #
 # The one convention that MUST NOT drift silently — the input-extension rule
 # this justfile and those scripts each implement — is instead enforced from
@@ -493,12 +487,16 @@ plot-test:
 # corpus of `file://` URLs to the real fetcher, and lints its pinned table
 # against `benchmark/formats/corpus_urls.txt`; `bench_recipe_test.sh` extracts
 # the variant lists and positional arguments the bloom recipes pass out of
-# THIS file. Needs `jq`, `zip`/`unzip`.
-[doc("The benchmark shell scripts' own suites (needs jq)")]
+# THIS file. The Python unit tests cover `bench_suite.py`'s dataset and
+# profile selection against the real manifest, and `cityjson_merge.py` on a
+# real fixture (`just fixtures` in lib/cityparquet-rs). Needs `jq`,
+# `zip`/`unzip` and `uv`.
+[doc("The benchmark scripts' own suites (needs jq and uv)")]
 scripts-test:
     ./{{BENCH_SCRIPTS}}/tests/readbench_prepare_test.sh
     ./{{BENCH_SCRIPTS}}/tests/fetch_benchmark_test.sh
     ./{{BENCH_SCRIPTS}}/tests/bench_recipe_test.sh
+    uv run --no-project python -m unittest discover -s {{BENCH_SCRIPTS}}/tests -p 'test_*.py'
 
 # ---------------------------------------------------------------------------
 # Database benchmark (benchmark/databases) — its own uv project and justfile

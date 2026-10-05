@@ -65,12 +65,9 @@ def _cmd_prep(args: argparse.Namespace) -> None:
         payload["datasets"] = [d for d in payload.get("datasets", []) if d.get("id") in datasets]
         for field in ("read", "sizes"):
             payload[field] = [r for r in payload.get(field, []) if r.get("dataset") in datasets]
-        for axis in payload.get("scaling", {}).values():
-            if isinstance(axis, dict):
-                axis["records"] = [
-                    r for r in axis.get("records", []) if r.get("dataset") in datasets
-                ]
-                axis["sizes"] = [r for r in axis.get("sizes", []) if r.get("dataset") in datasets]
+        bloom = payload["bloom"]
+        for field in ("records", "sizes"):
+            bloom[field] = [r for r in bloom.get(field, []) if r.get("dataset") in datasets]
         if payload["databases"].get("dataset") not in datasets:
             _drop_databases(payload)
     if families:
@@ -79,7 +76,7 @@ def _cmd_prep(args: argparse.Namespace) -> None:
         if "sizes" not in families:
             payload["sizes"] = []
         if "bloom" not in families:
-            payload["scaling"]["bloom"] = {"records": [], "sizes": [], "gaps": [], "variants": []}
+            payload["bloom"] = {"records": [], "sizes": [], "gaps": [], "variants": []}
         if "databases" not in families:
             _drop_databases(payload)
     data.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -94,9 +91,9 @@ def _cmd_prep(args: argparse.Namespace) -> None:
                 "metrics": ["bytes"] if payload["sizes"] else [],
             },
             "bloom": {
-                "present": bool(payload["scaling"]["bloom"]["records"]),
+                "present": bool(payload["bloom"]["records"]),
                 "metrics": sorted(
-                    {r.get("measure") for r in payload["scaling"]["bloom"]["records"]}
+                    {r.get("measure") for r in payload["bloom"]["records"]}
                 ),
             },
             "databases": {

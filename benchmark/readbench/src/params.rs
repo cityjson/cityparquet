@@ -865,9 +865,10 @@ enum Pick {
 enum Key {
     /// The dataset IS this name.
     Dataset(&'static str),
-    /// Every dataset whose name starts with this prefix — the 3DBAG
-    /// scaling slices (`3dbag_n1000` … `3dbag_n1000000`), which are
-    /// prefixes of one source stream and so all carry the same attributes.
+    /// Every dataset whose name starts with this prefix — any 3DBAG slice
+    /// `fcb-slice` cuts (`3dbag_n1000000`, or a smaller `3dbag_n<SIZE>`),
+    /// all prefixes of one source stream and so all carrying the same
+    /// attributes.
     Family(&'static str),
 }
 

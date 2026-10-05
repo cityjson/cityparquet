@@ -12,4 +12,4 @@ pub mod format;
 pub mod lod;
 pub mod naming;
 pub mod params;
-pub mod scaling;
+pub mod slice;

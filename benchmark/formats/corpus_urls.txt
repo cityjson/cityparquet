@@ -8,7 +8,7 @@
 # project from published sources and hosted on its own mirror; their derivation
 # is recorded below so either can be rebuilt byte for byte. The format
 # comparison's eighth dataset, the 1,000,001-object 3DBAG slice, is cut by
-# `just fetch-scaling-data` from its own pinned source.
+# `just fetch-3dbag` from its own pinned source.
 #
 # Usage — the usable list is exactly:
 #   grep -v '^#' benchmark/formats/corpus_urls.txt
@@ -190,5 +190,5 @@ https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/
 # model of three boroughs above, a different and much larger dataset.
 #
 # The cityjson.org 3DBAG tile (9-284-556.city.json) is not pinned either: the
-# 3DBAG slices cut by `just fetch-scaling-data` stand in for it, at the
+# 3DBAG slice cut by `just fetch-3dbag` stands in for it, at the
 # scale that matters.

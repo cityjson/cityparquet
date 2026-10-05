@@ -2,7 +2,7 @@
 //! feature, on the real 3DBAG-derived `delft.city.jsonl` fixture (LoD 0, 1.2,
 //! 1.3 and 2.2 per building part).
 //!
-//! The 3DBAG scaling slices are cut without LoD 1.2 because CityGML 2.0 has
+//! The 3DBAG slice is cut without LoD 1.2 because CityGML 2.0 has
 //! integer LoDs only: `citygml-tools from-cityjson` keeps one LoD-1 solid
 //! (the 1.3 one) and drops the other, so a slice with both would give the
 //! CityGML artefact less geometry than the other four formats.
@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use cityparquet_readbench::lod::drop_lods;
-use cityparquet_readbench::scaling::write_scaling_slices;
+use cityparquet_readbench::slice::write_slices;
 use serde_json::Value;
 
 fn fixture(name: &str) -> PathBuf {
@@ -197,7 +197,7 @@ fn slicing_with_the_drop_keeps_the_object_counts() {
     let slice = |transform: bool| {
         let dir = tempfile::tempdir().unwrap();
         let mut iter = features.iter();
-        let summaries = write_scaling_slices(
+        let summaries = write_slices(
             &header,
             || {
                 Ok(iter.next().map(|line| {

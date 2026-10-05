@@ -1,6 +1,6 @@
-//! The FlatCityBuf adapter for [`cityparquet_readbench::scaling`]: stream
-//! one local `.fcb` file front to back and cut CityJSONSeq scaling slices
-//! out of it (`just fetch-scaling-data` owns the download + this call).
+//! The FlatCityBuf adapter for [`cityparquet_readbench::slice`]: stream
+//! one local `.fcb` file front to back and cut CityJSONSeq slices out of it
+//! (`just fetch-3dbag` owns the download + this call).
 //!
 //! The header line is `fcb_core`'s own CityJSON metadata reconstruction
 //! (`deserializer::to_cj_metadata`), i.e. exactly what `fcb deser` would
@@ -22,7 +22,7 @@ use fcb_core::FcbReader;
 use fcb_core::deserializer::to_cj_metadata;
 
 use cityparquet_readbench::lod::drop_lods;
-use cityparquet_readbench::scaling::write_scaling_slices;
+use cityparquet_readbench::slice::write_slices;
 
 /// Cut fixed-CityObject-count CityJSONSeq prefixes out of one FlatCityBuf
 /// file.
@@ -72,7 +72,7 @@ fn main() -> Result<()> {
     // own; the header's `features_count` bounds the walk, exactly as
     // `fcb deser` bounds its own (fcb_cli 0.7.6, `deserialize`).
     let mut seen = 0u64;
-    let summaries = write_scaling_slices(
+    let summaries = write_slices(
         &header_line,
         || {
             if seen >= features_total {
@@ -103,7 +103,7 @@ fn main() -> Result<()> {
         );
     }
     println!(
-        "scaling-corpus: {} slice(s) from {} ({} of {} features read; LoDs dropped: {})",
+        "fcb-slice: {} slice(s) from {} ({} of {} features read; LoDs dropped: {})",
         summaries.len(),
         args.input.display(),
         seen,
