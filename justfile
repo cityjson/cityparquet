@@ -24,7 +24,7 @@
 # ===========================================================================
 
 RS := "lib/cityparquet-rs"
-BENCH := "benchmark/formats"
+BENCH := "benchmark"
 PLOT := "benchmark/plot"
 BENCH_SCRIPTS := "benchmark/scripts"
 # Two workspaces, two manifests. The library's builds the converter; the
@@ -141,7 +141,7 @@ KNOWN_INPUT_FIND := "-name '*.json' -o -name '*.jsonl' -o -name '*.gml' -o -name
 # Fetch the CityParquet benchmark corpus — SIX REAL published city models
 # (CityJSON 2.0 `.city.json`, 2.7 MB .. 293 MB, 423 MB on the wire) from the
 # CityJSON project's own dataset page, into DEST (default
-# benchmark/formats/data/benchmark/, gitignored). Every entry's byte size is
+# benchmark/runs/data/benchmark/, gitignored). Every entry's byte size is
 # pinned and verified and an already-present file is skipped — see
 # benchmark/scripts/fetch_benchmark.sh for the table and
 # benchmark/formats/corpus_urls.txt for each URL's provenance. Needs curl;
@@ -183,7 +183,7 @@ fetch-tools:
 
 # Fetch the SCALING corpus source — one 7.6 GB FlatCityBuf export of a
 # 3DBAG subset (flatcitybuf.open3d.city, pinned byte size, resumable,
-# cached under benchmark/formats/data/ and skipped once complete) — and cut
+# cached under benchmark/runs/data/ and skipped once complete) — and cut
 # CityJSONSeq prefixes with a fixed number of CityObjects each: one
 # DEST/3dbag_n<SIZE>.city.jsonl per SIZE, every slice a strict prefix of
 # the next larger one, in source feature order. This is the input for the

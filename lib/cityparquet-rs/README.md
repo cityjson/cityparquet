@@ -202,15 +202,15 @@ export+compare check. See
 **From the repository root** — everything that reaches both this crate and the
 `benchmark/` tree:
 
-| Recipe                                 | What it does                                                                                                                                                                                                                        |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just convert-all FOLDER [OUT]`        | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`)                                                                                                                                |
-| `just fetch-data [DEST] [ONLY]`        | fetch the read benchmark's corpus (six real CityJSON datasets, 423 MB) into `DEST` (default `benchmark/formats/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, `all` |
-| `just fetch-tools`                     | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq)                                                                                                                             |
-| `just bench FOLDER [OUT] [FORMATS]`    | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `benchmark/formats/read_results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set      |
-| `just ordering-bench FOLDER [OUT]`     | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `benchmark/formats/ordering_results`)                                                                                       |
-| `just plot` / `just plot-pretty`       | render charts and the cross-dataset summary page from CSVs already measured                                                                                                                                                         |
-| `just plot-test` / `just scripts-test` | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, `benchmark/scripts/`'s bash suite) — outside `just check`, which is the Rust gate                                                                                |
+| Recipe                                 | What it does                                                                                                                                                                                                                     |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just convert-all FOLDER [OUT]`        | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`)                                                                                                                             |
+| `just fetch-data [DEST] [ONLY]`        | fetch the read benchmark's corpus (six real CityJSON datasets, 423 MB) into `DEST` (default `benchmark/runs/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, `all` |
+| `just fetch-tools`                     | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq)                                                                                                                          |
+| `just bench FOLDER [OUT] [FORMATS]`    | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `benchmark/runs/formats/results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set   |
+| `just ordering-bench FOLDER [OUT]`     | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `benchmark/formats/ordering_results`)                                                                                    |
+| `just plot` / `just plot-pretty`       | render charts and the cross-dataset summary page from CSVs already measured                                                                                                                                                      |
+| `just plot-test` / `just scripts-test` | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, `benchmark/scripts/`'s bash suite) — outside `just check`, which is the Rust gate                                                                             |
 
 Every recipe that walks a `FOLDER` discovers and names its inputs through the
 one input-extension convention at the top of the **root** `justfile`
@@ -218,14 +218,12 @@ one input-extension convention at the top of the **root** `justfile`
 of; `benchmark/readbench/tests/strip_extension.rs` holds it in
 lockstep with the Rust and shell implementations of the same rule.
 
-Downloaded benchmark data (`benchmark/formats/data/`) and generated packages
-(`out/`) are gitignored. The committed measurement artefacts are the
-configuration-axis CSVs (`benchmark/formats/scaling_*_results/`) and the two
-methodology documents beside them
-(`benchmark/formats/READ_BENCHMARK.md`, `benchmark/formats/README.md`); the
-read-side CSVs are not currently committed — see
-[benchmark/README.md](../../benchmark/README.md) for which evidence is in git
-and which is re-measured.
+Downloaded benchmark data (`benchmark/runs/data/`) and generated packages
+(`out/`) are gitignored. The committed measurement artefacts are under
+`benchmark/runs/` (`benchmark/runs/RESULTS.md` lists them), and their
+methodology is in `benchmark/formats/READ_BENCHMARK.md` and
+`benchmark/formats/README.md` — see
+[benchmark/README.md](../../benchmark/README.md).
 
 ## Development
 
