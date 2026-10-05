@@ -1527,7 +1527,30 @@ case_vocabulary_matches_the_rust_enum() {
   pass "$name"
 }
 
+# --------------------------------------------------------------------------
+# A tool whose reported version is not the pin in fetch_tools.sh is named on
+# stderr, on every run — the run still completes, and says so.
+# --------------------------------------------------------------------------
+case_an_unpinned_tool_version_is_warned_about() {
+  local name="a tool reporting another version than its pin is warned about"
+  local dir pin
+  dir="$(new_sandbox cargo fcb)"
+  cp "$BENCHMARK_DIR/scripts/fetch_tools.sh" "$dir/repo/benchmark/scripts/fetch_tools.sh"
+  pin="$(sed -n 's/^FCB_CLI_VERSION="\(.*\)"$/\1/p' "$dir/repo/benchmark/scripts/fetch_tools.sh")"
+  run_prepare "$dir" --formats flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ -z "$pin" ]] || ! log_mentions "warn: fcb reports version 'unknown', but the pinned version is $pin"; then
+    fail "$name" "the stub fcb's missing version was not reported (pin '$pin'); log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
 case_cityparquet_only
+case_an_unpinned_tool_version_is_warned_about
 case_flatcitybuf_without_fcb
 case_flatcitybuf_skips_the_cli_build
 case_unknown_format_rejected

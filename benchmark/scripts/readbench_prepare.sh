@@ -42,9 +42,13 @@
 #
 # Each artefact derives from the one before it, and FlatCityBuf and
 # CityParquet derive from the SAME CityJSONSeq — that is what makes their
-# comparison fair. NOTHING derives from CityParquet: `cityparquet export`
-# could emit the CityJSON artefacts and it would be tempting, but deriving a
-# competitor's input from the format under test would favour it.
+# comparison fair. Within this chain NOTHING derives from CityParquet:
+# `cityparquet export` could emit the CityJSON artefacts and it would be
+# tempting, but deriving a competitor's input from the format under test would
+# favour it. One corpus SOURCE is the exception, by the author's decision: the
+# Montréal CityJSON was exported from published CityParquet packages before it
+# reached this script (benchmark/formats/corpus_urls.txt; READ_BENCHMARK.md,
+# Caveat 14).
 #
 # WHY `cjseq` CUTS THE SEQ, and not citygml-tools. citygml-tools 2.5.0 *can*
 # write CityJSONSeq directly (`-l/--json-lines`), so this is a choice, not a
@@ -302,6 +306,21 @@ require_tool() {
   fi
 }
 
+# Warns, loudly and on every run, when TOOL reports a version other than the
+# pin PIN_NAME holds in benchmark/scripts/fetch_tools.sh — the one place the
+# cjseq and fcb pins live. A warning, not a refusal: the version actually used
+# is what the run records, and a run on a drifted tool must say so beside any
+# number quoted from it.
+warn_unless_pinned() {
+  local tool=$1 pin_name=$2 pin have
+  pin="$(sed -n "s/^${pin_name}=\"\(.*\)\"$/\1/p" "$BENCHMARK_DIR/scripts/fetch_tools.sh" 2>/dev/null)" || true
+  have="$("$tool" --version 2>/dev/null | awk 'NR == 1 {print $2}')" || true
+  if [[ -n "$pin" && "$have" != "$pin" ]]; then
+    echo "warn: $tool reports version '${have:-unknown}', but the pinned version is $pin" \
+      "(benchmark/scripts/fetch_tools.sh); the artefacts it writes are not the pinned chain's" >&2
+  fi
+}
+
 # --- preflight -------------------------------------------------------------
 # One pass over the request: reject what cannot be built, and require only
 # the tools the request actually needs. Everything below this point is
@@ -473,6 +492,7 @@ fi
 if [[ "$SEQ_FROM" == "cjseq-cat" ]] \
   || [[ "$NEED_CITYJSON" -eq 1 && "$INPUT_KIND" == "cityjsonseq" ]]; then
   require_tool cjseq "the CityJSON <-> CityJSONSeq conversion"
+  warn_unless_pinned cjseq CJSEQ_VERSION
 fi
 # jq reads the CityJSON artefact's object count back out; a converter that
 # writes a well-formed but object-less document is worse than one that fails.
@@ -547,6 +567,7 @@ if want cityparquet || want cityparquet-hilbert; then
 fi
 if want flatcitybuf; then
   require_tool fcb "the FlatCityBuf artefact"
+  warn_unless_pinned fcb FCB_CLI_VERSION
 fi
 if want cityjsonseq-gz; then
   require_tool gzip "the gzipped CityJSONSeq artefact"
@@ -617,21 +638,23 @@ same_file() {
 #      all, and fcb/cityparquet/gz were derived from INPUT itself.
 #   2  the CityJSONSeq artefact is always materialised, and everything
 #      downstream derives from IT.
-CHAIN_VERSION=3
+#   3  `cityparquet convert` writes bloom filters by default.
+#   4  the 3DBAG slices are cut without LoD 1.2, under unchanged names, and
+#      the corpus changed; every stage of every dataset is rebuilt.
+CHAIN_VERSION=4
 # The chain version at which each STAGE last changed what it writes. An
 # artefact is stale when its stage changed after the version that built it,
 # so a bump that touches one stage does not force the hours-long stages it
 # left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#   4  every stage: a re-cut slice has new content under its old name, so no
+#      artefact built from it before is current.
 #   3  `cityparquet convert` writes bloom filters by default (id, feature_id,
 #      high-cardinality string attributes). A package built before carries
 #      none, and every lookup row measured on it is a different artefact.
 #   2  the CityJSONSeq stage became a real artefact for every input kind
 #      (the gz baseline case above); FlatCityBuf and CityGML derive from it.
 stage_version() {
-  case "$1" in
-    "$PARQUET_OUT"|"$HILBERT_OUT") echo 3 ;;
-    *) echo 2 ;;
-  esac
+  echo 4
 }
 CHAIN_DIR="$OUTDIR/.readbench-chain"
 CHAIN_STAMP="$CHAIN_DIR/$BASE"
