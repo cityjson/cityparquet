@@ -1341,7 +1341,7 @@ pre-v1.5.0 storage-version database file; it does not affect the load.)
 
 A fresh read benchmark run landed since the last pass
 (`01b719d`, Linux/EPYC, 2026-08-17), and the `benchviz` summary-page pipeline
-arrived with it (`c87aaa9`, `benchmark/plot/benchviz`). §5.5 below now points at
+arrived with it (`c87aaa9`, `benchmark/plot/benchviz`). §5.4 below now points at
 that pipeline's repo-level recipe rather than invoking a report script
 directly.
 
@@ -1353,16 +1353,14 @@ results were regenerated, the compression CSVs of the superseded corpus were
 deleted. Two commands answer the question at the moment you ask it:
 
 ```sh
-ls benchmark/formats/data benchmark/formats/read_results benchmark/formats/scaling_codec_results benchmark/formats/scaling_rowgroup_results 2>&1
+ls benchmark/formats/data benchmark/formats/read_results 2>&1
 git log --oneline -3 -- benchmark/formats/read_results
 ```
 
 The two methodology documents beside them state what a committed run means, and
 are kept current: `benchmark/formats/READ_BENCHMARK.md` (the cross-format read benchmark and
 its fairness caveats — the CSVs it describes are committed) and
-`benchmark/formats/README.md` (the configuration benchmark —
-the codec and row-group axes under `scaling_codec_results/` and
-`scaling_rowgroup_results/` carry a `MACHINE.md` naming the host).
+`benchmark/formats/README.md` (the write and configuration benchmark).
 
 Two things worth knowing before a re-run, because neither is visible from a
 directory listing:
@@ -1425,26 +1423,7 @@ dangling material reference still aborts it under strict mode (Known issues,
 does not opt in). The `benchmark/formats/data/_run` hard-link staging directory remains
 useful for skipping it.
 
-### 5.3 Codec and row-group benchmarks
-
-```sh
-just codec-bench    benchmark/formats/data benchmark/formats/scaling_codec_results
-just rowgroup-bench benchmark/formats/data benchmark/formats/scaling_rowgroup_results
-```
-
-9 variants per dataset on the codec axis (`cityparquet`, `+zstd1`, `+zstd9`,
-`+zstd19`, `+lz4`, `+snappy`, `+gzip`, `+brotli`, `+uncompressed`) and 5 on the
-row-group axis (`cityparquet`, `+rg32768`, `+rg8192`, `+rg2048`, `+rg512`);
-each variant gets a timed write (peak RSS), then a full read and the bbox
-windows, on the read harness. `just plot-pretty` draws the `codec`/`rowgroup`
-sheets from the resulting CSVs.
-
-> **Do not read a "smallest codec" ranking off this table.** Zstd is swept at
-> levels 1, 3, 9 and 19; gzip and brotli run at the crate defaults — gzip@6,
-> brotli@**1** — as reference points, not ranked against zstd. "Zstd level N
-> versus level M" is citable; "smallest codec" across codecs is not.
-
-### 5.4 Read benchmark
+### 5.3 Read benchmark
 
 ```sh
 rm -rf benchmark/formats/data/readbench          # only if you want a clean prepare
@@ -1467,7 +1446,7 @@ SQL baseline.
 > only single-table packages, so `Railway` and `lod3_railway` produce no read
 > numbers, and one test is `#[ignore]`d for it.
 
-### 5.5 Aggregate results into one page
+### 5.4 Aggregate results into one page
 
 ```sh
 just plot-pretty

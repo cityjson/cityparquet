@@ -15,14 +15,14 @@ renders existing results. Rendering never starts a benchmark.
 On this machine the data and output root is
 `benchmark/runs/`. Its layout is:
 
-| Path                                                                  | Contents                                   |
-| --------------------------------------------------------------------- | ------------------------------------------ |
-| `data/benchmark/`, `data/scaling/`                                    | Source corpus and nested 3DBAG slices      |
-| `data/readbench/`                                                     | Prepared format artefacts                  |
-| `formats/results/`, `formats/scaling_{codec,rowgroup,bloom}_results/` | Full format and configuration measurements |
-| `formats/smoke/`                                                      | Isolated smoke measurements                |
-| `databases/{prepared,results,smoke}/`                                 | Database lifecycle inputs and measurements |
-| `summary/{full,smoke}/`                                               | Rendered figures and combined HTML         |
+| Path                                                 | Contents                                   |
+| ---------------------------------------------------- | ------------------------------------------ |
+| `data/benchmark/`, `data/scaling/`                   | Source corpus and nested 3DBAG slices      |
+| `data/readbench/`                                    | Prepared format artefacts                  |
+| `formats/results/`, `formats/scaling_bloom_results/` | Full format and configuration measurements |
+| `formats/smoke/`                                     | Isolated smoke measurements                |
+| `databases/{prepared,results,smoke}/`                | Database lifecycle inputs and measurements |
+| `summary/{full,smoke}/`                              | Rendered figures and combined HTML         |
 
 Benchmark inputs, derived artefacts, results and rendered summaries are generated
 beneath this ignored directory. The paper checkout may explicitly export figures
@@ -32,12 +32,15 @@ to `paper/assets/bench/`.
 
 ```sh
 just bench-prep --families formats
-just bench-run --families codec,rowgroup,bloom
+just bench-run --families bloom
 just bench-run --datasets 3dbag --smoke
 just bench-summary --data-root benchmark/runs
 ```
 
-The family names are `sizes`, `formats`, `codec`, `rowgroup`, `bloom` and
+The family names are `sizes`, `formats`, `bloom` and `databases`. With no
+selection, the suite includes all four. Use each command's `--help` for its
+selection and output options. Smoke runs validate the pipeline with small
+inputs and fewer repetitions; their results are not publication runs.
 
 Three run profiles decide which slice stands in for the large dataset, how
 many repetitions are measured and where results land, so a test run can
@@ -49,9 +52,6 @@ results under `<family>/short/`; for iterating on the harness in about an
 hour rather than a day) and `--profile smoke` (`--smoke`: the 1000-object
 slice and Rotterdam, one repetition, `<family>/smoke/`; a pipeline check,
 not a measurement). Every run manifest records its profile.
-`databases`. With no selection, the suite includes all six. Use each command's `--help`
-for its selection and output options. Smoke runs validate the pipeline with
-small inputs and fewer repetitions; their results are not publication runs.
 
 ## Full run
 
@@ -85,8 +85,6 @@ largest 3DBAG slice. The selector rejects data roots outside `benchmark/runs/`.
 | ----------- | ------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `sizes`     | Corpus with the largest 3DBAG scaling slice | Complete file or package size                                          | None                                                                                    |
 | `formats`   | Same corpus                                 | Write time and peak memory; read time and peak memory                  | All format queries                                                                      |
-| `codec`     | Nested 3DBAG scaling slices                 | Size and the four performance metrics                                  | Full read, bbox windows, middle-position ID                                             |
-| `rowgroup`  | Same slices                                 | Same metrics                                                           | Same queries                                                                            |
 | `bloom`     | Nested 3DBAG scaling slices and the corpus  | Size and write time/memory; lookup time, memory and row-group counters | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
 | `databases` | Largest 3DBAG slice                         | Storage including indexes; mean query time and peak memory             | Database query suite                                                                    |
 
@@ -99,23 +97,21 @@ because a feature is indivisible; the recorded counts determine plot positions.
 
 The format comparison displays the Hilbert-ordered configuration as
 **CityParquet**. Its internal configuration ID remains distinct from source
-order. Codec experiments hold ordering and row-group size fixed; row-group
-experiments hold ordering and codec fixed. Codec levels are not matched for
-compression effort across codec families.
+order. The bloom experiment holds ordering, codec and row-group size fixed.
 
 ## Figures
 
 `just bench-summary` produces individual SVG and PNG files and a self-contained
 `index.html` collecting the same figures and their conditions.
 
-| Figure                                               | Content                                                                                                                                                                    |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sizes`                                              | Vertical size bars, one subplot per dataset; actual sizes and ratios to CityJSONSeq                                                                                        |
-| `heatmap`                                            | One panel per dataset, with write time, write memory, read time and read memory heatmaps                                                                                   |
-| `codec`, `rowgroup`, `bloom`                         | Five metric panels for the largest measured scaling dataset                                                                                                                |
-| `codec-scaling`, `rowgroup-scaling`, `bloom-scaling` | Absolute metrics against actual CityObject counts                                                                                                                          |
-| `bloom-corpus`                                       | The bloom pair per corpus dataset, apart from the slice curves                                                                                                             |
-| `databases`                                          | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |
+| Figure          | Content                                                                                                                                                                    |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sizes`         | Vertical size bars, one subplot per dataset; actual sizes and ratios to CityJSONSeq                                                                                        |
+| `heatmap`       | One panel per dataset, with write time, write memory, read time and read memory heatmaps                                                                                   |
+| `bloom`         | Five metric panels for the largest measured scaling dataset                                                                                                                |
+| `bloom-scaling` | Absolute metrics against actual CityObject counts                                                                                                                          |
+| `bloom-corpus`  | The bloom pair per corpus dataset, apart from the slice curves                                                                                                             |
+| `databases`     | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |
 
 Heatmap colours encode measurement divided by baseline: **lower is better**,
 with 1× neutral. Cell labels show actual values and units. Format comparisons

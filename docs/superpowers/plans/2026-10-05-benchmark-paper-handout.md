@@ -30,7 +30,7 @@ The paper (`paper/chapters/05-evaluation.typ` in the parent repo) has been restr
 ## 5. Pending measurements
 
 - Network (§5.4): the format benchmark over HTTP against object storage, reporting time, bytes read and request count.
-- Configuration (§5.3): codec and row-group size with matched codec levels; file size with and without Bloom filters.
+- Configuration (§5.3): file size with and without Bloom filters.
 - Re-measure the 3DBAG CityGML write row (it is from an older run).
 
 ## 6. Repository

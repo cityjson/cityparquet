@@ -1090,9 +1090,9 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     So the database `id-lookup` and the `bloom` family's `id-lookup` are
     **different operations** — the whole object through a SQL engine,
     against the reader's own lookup — and must not be compared across
-    figures. A smaller row group would cut the cost of the hit, at the
-    price the `rowgroup` family's axis measures; the committed package
-    uses the writer's default.
+    figures. A smaller row group would cut the cost of the hit, at a
+    price elsewhere that the suite does not measure; the committed
+    package uses the writer's default.
 
 ## Running the benchmark
 

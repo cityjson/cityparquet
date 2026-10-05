@@ -1,16 +1,14 @@
 # CityParquet write and configuration benchmark methodology
 
 The **write** side of the benchmark suite: how long a CityParquet package takes
-to write, how many bytes it occupies, and how those two move with the writer's
-own knobs — codec, row-group size, bloom filters. Its read-side counterpart, and
+to write, how many bytes it occupies, and how those two move with bloom
+filters, the writer option the suite varies. Its read-side counterpart, and
 the cross-format comparison, is `benchmark/formats/READ_BENCHMARK.md`.
 
 **The committed write-side evidence is `benchmark/runs/formats/results/`** (the `read_results/` directory here is legacy, see its `LEGACY.md`), where the `formats`
 family writes its per-dataset read and `write` rows and its package `sizes.csv`,
-alongside the configuration axes under `scaling_codec_results/` and
-`scaling_rowgroup_results/` and the bloom family's `scaling_bloom_results/`,
-which carry a `MACHINE.md` describing the host they
-were measured on. The `read_results/` runs carry no such record, so whether they
+alongside the bloom family's `scaling_bloom_results/`; both carry a
+`MACHINE.md` describing the host they were measured on. The `read_results/` runs carry no such record, so whether they
 ran on the same host cannot be established from what is committed. Absolute
 times are therefore not comparable across a directory that has a machine record
 and one that does not; what the figures cite is the ratios within a single
@@ -23,12 +21,10 @@ Their byte counts were measured while `material_lod*` / `texture_lod*` were JSON
 text cells; those columns are typed Arrow/Parquet `MAP`s, which the writer
 leaves at parquet's own defaults for dictionary encoding and statistics, so the
 committed bytes do not describe the current writer until the family is re-run.
-The codec and row-group runs postdate that change: each directory's `MACHINE.md`
-names the commit, and the 3DBAG slices carry no appearance data, so those
-columns are empty in every package they measured.
 
-**The committed codec and row-group CSVs predate bloom filters, and so does
-every other committed CSV, `read_results/` included.** Both disclosures are
+**The committed `read_results/` CSVs also predate bloom filters; the current
+evidence under `benchmark/runs/formats/` was measured with them.** Both
+disclosures are
 [`READ_BENCHMARK.md`](READ_BENCHMARK.md)'s fairness caveats 30 and 31, which is
 where every family's caveats are kept: `benchviz` renders that one numbered
 list onto the summary page, so a caveat written only here would never reach a
@@ -39,22 +35,23 @@ reader of the figures.
 Use the root entry points:
 
 ```sh
-just bench-prep --families formats,codec,rowgroup,bloom
-just bench-run --families formats,codec,rowgroup,bloom
+just bench-prep --families formats,bloom
+just bench-run --families formats,bloom
 just bench-summary
 ```
 
 The `formats` family compares write and read performance across file formats.
-The `codec` and `rowgroup` families hold the format fixed and change one
-configuration dimension over nested 3DBAG slices. Their write and read rows
-share a dataset/configuration identity; write measurements are independent of
-the subsequent read queries. Read scenarios for configuration experiments are
-full read, the bbox windows and the middle-position ID lookup.
+The `bloom` family holds the format fixed and changes one configuration
+dimension over nested 3DBAG slices and the city datasets. Its write and read
+rows share a dataset/configuration identity; write measurements are
+independent of the subsequent read queries. Its read scenarios are the
+identifier lookups described under "The bloom family" below.
 
 The primary format configuration is Hilbert-ordered CityParquet, displayed as
-**CityParquet** in figures. Internal variant IDs retain the ordering and codec
-information needed to reproduce each configuration. The codec and row-group
-figures show the largest measured slice and a separate scaling line chart.
+**CityParquet** in figures. Internal variant IDs retain the ordering and
+configuration information needed to reproduce each configuration. The bloom
+figures show the largest measured slice, a separate scaling line chart and the
+corpus datasets apart from it.
 See [`../README.md`](../README.md) for the experimental matrix and figure list.
 
 ## Measurement discipline
@@ -142,19 +139,6 @@ copy-on-write pages. Committed CSVs showing a constant `peak_rss_bytes` of
 14 680 064 on every dataset are reporting the Python launcher's footprint, not
 a converter's.
 
-## The codec levels are NOT matched
-
-`just codec-bench` sweeps zstd at levels **1, 3, 9 and 19**. Gzip and brotli
-stay at the `parquet-rs` defaults carried by `crates/core/src/recipe.rs` —
-**gzip at level 6, brotli at level 1** — and are reference points, not swept
-axes. **"The smallest codec" remains a non-citable claim across codecs**: gzip,
-brotli and zstd are different implementations at different effort levels, so a
-byte or time difference between them says nothing about the codec family in
-general. **"Zstd level N versus level M" is a measured, citable claim**: it is
-the same codec swept deliberately, and `just codec-bench`'s CSVs are what back
-it. The summary page states this inline above its codec panels and cites this
-section.
-
 ## The retired `duckdb-copy` writer baseline
 
 The writer experiment that appended `duckdb-copy` / `duckdb-copy-zstd` rows is
@@ -200,8 +184,8 @@ onto the summary page beside the figures.
 ## Reproduce
 
 ```sh
-just bench-prep --families codec,rowgroup,bloom
-just bench-run --families codec,rowgroup,bloom
+just bench-prep --families bloom
+just bench-run --families bloom
 just bench-summary
 ```
 
