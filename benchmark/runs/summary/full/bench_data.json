@@ -110,7 +110,7 @@
     ],
     "excluded_formats": [],
     "conditions": {
-      "heatmap": [
+      "formats": [
         "3dbag_n1000000: attribute filter b3_dak_type = 'slanted' (338,875 matched, share 33.9 %, hand-picked); windows bbox-1pct achieved 1 %, bbox-5pct achieved 5 %, bbox-25pct achieved 25 %",
         "ingolstadt: attribute filter klumMaterialClass = 'Wood' (26 matched, share 6.86 %, hand-picked); windows bbox-1pct achieved 1.06 %, bbox-5pct achieved 5.01 %, bbox-25pct achieved 25.1 %",
         "nyc_da13_buildings: attribute filter BIN = '1000000' (173 matched, share 0.728 %, hand-picked); windows bbox-1pct achieved 1 %, bbox-5pct achieved 5 %, bbox-25pct achieved 25 %",
