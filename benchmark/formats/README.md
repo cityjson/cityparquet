@@ -31,11 +31,13 @@ reader of the figures.
 
 Six city datasets and one 3DBAG slice. Each CityJSON source is pinned
 by byte size and sha256 in `benchmark/scripts/fetch_benchmark.sh`, and
-`corpus_urls.txt` records its provenance; every one is also mirrored at
-`https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/<id>.city.json`,
-with the CityGML 2.0 the benchmark synthesises from it at `…/citygml20/<id>.gml`
-(a convenience copy: the benchmark synthesises its own with the pinned
-citygml-tools, identical once the tool's random `ID_<uuid>`s are masked).
+`corpus_urls.txt` records its provenance. The prepared corpus is hosted at
+`https://other-data.open3d.city/cityparquet-paper/benchmark/v<chain>/`
+([`../README.md`](../README.md), "The hosted corpus"), so `just bench-prep`
+downloads it rather than converting anything. Its provenance chain is the
+published source, then the normalised, compact CityJSON (`cityjson/`), then
+every other artefact; `cityjson20/` beside it holds the two derived sources,
+Tokyo and Montréal.
 
 | id                     | Dataset             | Source                                                                                                                    | `attr-filter`                                  | `attr-stats`                                   |
 | ---------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |

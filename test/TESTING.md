@@ -1368,7 +1368,14 @@ directory listing:
 - `benchmark/runs/data/readbench/` prepared artefacts carry the version of the conversion
   chain that built them; a stale stamp makes `readbench_prepare.sh` refuse the
   dataset and print the exact `rm -rf` that clears it. Delete the tree if in
-  doubt — nothing there is expensive to rebuild except the downloads.
+  doubt: `just bench-prep` downloads the prepared corpus again from the hosted
+  `v<chain>/` folder and verifies every file against its manifest
+  (`benchmark/README.md`, "The hosted corpus"), so nothing is converted. The
+  six city datasets are hosted; the 3DBAG slice is added once by
+  `just bench-prep --rebuild-sources --datasets 3dbag_n1000000` on a machine
+  with the R2 token and enough memory. `--no-cache` rebuilds every artefact
+  but the CityJSON and the CityGML with the current code and uploads only what
+  differs; `--local` builds everything here without bucket access.
 - A package built before the tri-state `city.crs` change has no `crs: null` for
   a CRS-less dataset. Regenerate packages rather than mixing generations.
 

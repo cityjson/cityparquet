@@ -56,7 +56,7 @@ The author reviewed the pipeline stage by stage; each finding became a change. W
 
 Nothing Linux-specific has run on Linux, and all committed evidence under `benchmark/runs/` predates the current harness. The first run on the host is a `quick` run and checks, in this order:
 
-1. Choose the preparation mode (benchmark/README.md, "The hosted corpus"). `just bench-prep` downloads the hosted `v7/` corpus, verified against its manifest; a dataset not yet hosted needs `--rebuild-sources` once, on a machine with the R2 token. The 3DBAG slice is one: its CityGML synthesis takes hours, and its log shows `0 geometries dropped` and no LoD 1.2.
+1. Choose the preparation mode (benchmark/README.md, "The hosted corpus"). `v8/` holds the six city datasets, so `just bench-prep` downloads them, verified against the manifest. The 3DBAG slice needs `just bench-prep --rebuild-sources --datasets 3dbag_n1000000` once, on a machine with the R2 token and enough memory: its CityGML synthesis takes hours, and its log shows `0 geometries dropped` and no LoD 1.2. Everything else downloads.
 2. `MACHINE.md` and the manifests record the isolation actually applied: NUMA pinning, the memory ceiling, the load gate. A step the host refuses is recorded as not applied.
 3. Warm runs stay warm under the 64 GB ceiling: the CityGML and CityJSON cells of the slice show no cold outliers.
 4. Every format run prints `cross-format consistency OK`; Montréal, New York and Zurich have not been run through the current check.

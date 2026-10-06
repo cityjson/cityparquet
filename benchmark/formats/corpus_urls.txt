@@ -16,16 +16,17 @@
 # as `benchmark/scripts/fetch_benchmark.sh`'s CORPUS table, which also pins each
 # file's byte size and sha256, so the two cannot drift.
 #
-# THE MIRROR. Every dataset's CityJSON is also served from
-#   https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/<id>.city.json
-# and the CityGML 2.0 the benchmark synthesises from it from
-#   https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/citygml20/<id>.gml
-# The mirror's CityJSON is byte-identical to the pinned file. Its CityGML is a
-# convenience copy: the benchmark keeps synthesising its own `.gml` with the
-# pinned citygml-tools, and the two are identical once the tool's per-run
-# random `ID_<uuid>` identifiers are masked — except for Vienna, whose
-# mirrored CityGML was synthesised from the published CityJSON and so
-# still holds the geometries the normalisation below removes.
+# WHERE THE CORPUS IS HOSTED. The prepared corpus is published at
+#   https://other-data.open3d.city/cityparquet-paper/benchmark/v<chain>/
+# (benchmark/README.md, "The hosted corpus"): per dataset the normalised,
+# compact CityJSON (`cityjson/`), the synthesised CityGML (`citygml/`), the
+# CityJSONSeq, the FlatCityBuf file and the CityParquet package, with a
+# `manifest.json` of every byte size and sha256. The provenance chain is
+# published source -> normalised compact CityJSON -> every other artefact.
+# Beside `v<chain>/`, `cityjson20/<id>.city.json` holds the two derived
+# sources this list points at (Tokyo and Montréal), byte-identical to what
+# `cityjson_merge.py` rebuilds; `citygml20/` is an earlier CityGML copy that
+# no current step reads.
 #
 # NORMALISED BEFORE USE. The pinned files are the published ones, but the
 # benchmark does not measure them as published: `readbench_prepare.sh` first

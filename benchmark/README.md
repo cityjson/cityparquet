@@ -35,7 +35,7 @@ it without converting anything, the network benchmark reads the very same
 files over HTTP, and a run's evidence names the exact bytes it measured. It
 is public at `https://other-data.open3d.city`, under
 `cityparquet-paper/benchmark/v<chain>/`, one folder per preparation-chain
-version (`CHAIN_VERSION` in `scripts/readbench_prepare.sh`):
+version (`CHAIN_VERSION` in `scripts/readbench_prepare.sh`, currently 8):
 
 ```
 v<chain>/manifest.json
@@ -44,7 +44,7 @@ v<chain>/cityjson/<id>.city.json          the normalised, compact source every a
 v<chain>/cityjsonseq/<id>.city.jsonl
 v<chain>/flatcitybuf/<id>.fcb
 v<chain>/cityparquet/<id>.parquet/...     every file of the package
-v<chain>/cityparquet-nobloom/<id>.parquet/...  reserved for the bloom axis (see below)
+v<chain>/cityparquet-nobloom/<id>.parquet/...  the bloom axis's package without Bloom filters (see below)
 ```
 
 `<id>` is the dataset's file stem (`rotterdam_delfshaven`). The folders exist
@@ -104,9 +104,30 @@ The configuration is read from the environment, with these defaults:
 `CITYPARQUET_CORPUS_BASE_URL=https://other-data.open3d.city`. Use the custom
 domain, not the rate-limited `r2.dev` URL.
 
-The no-bloom package of the bloom axis is not prepared: the bloom run builds
-both variants from the prepared CityJSONSeq itself, so its folder stays
-empty until the harness reads a prepared variant.
+The chain is deterministic apart from the CityGML. The CityJSONSeq follows
+the source document's object order (`seq-order` fixes it before `cjseq cat`
+writes the stream), and the STAC `datetime` of every benchmark package is
+the fixed `CORPUS_DATETIME` of `scripts/readbench_prepare.sh`, so two builds
+of the same chain from the same source agree byte for byte. The `.gml` does
+not: citygml-tools mints random surface identifiers, so it is not
+reproducible by hash, and the hosted file is the reference. `--no-cache`
+therefore downloads it and reuses it rather than synthesising a new one, and
+a `--no-cache` run that reproduces every hosted artefact uploads nothing, not
+even the manifest. The custom domain does not cache the objects at the edge
+(`cf-cache-status: DYNAMIC`), so a read over HTTP reaches the bucket.
+
+`cityparquet-nobloom/` holds the bloom axis's package without Bloom filters,
+for the datasets whose manifest entry lists it in `variant_artefacts` (the
+3DBAG slice). Preparation builds it through the code path a `--variants` run
+uses and keeps it locally as `<id>.cityparquet+nobloom.parquet/`; the bloom
+run reuses that prepared variant while its chain stamp is current, rather
+than converting it again.
+
+The bucket holds chain 8 for the six city datasets (Rotterdam, Vienna, New
+York, Zurich, Tokyo and Montréal). The 3DBAG slice is added by
+`just bench-prep --rebuild-sources --datasets 3dbag_n1000000`, once, on a
+machine with the R2 token and enough memory for its CityGML synthesis; every
+other machine then downloads it with the default mode.
 
 ## Selecting work
 
