@@ -112,14 +112,19 @@ impl Row {
     }
 }
 
-const CSV_COLUMNS: [&str; 16] = [
+const CSV_COLUMNS: [&str; 21] = [
     "dataset",
     "format",
     "scenario",
     "selectivity",
     "result_count",
-    "time_s",
+    "time_mean_s",
     "time_std_s",
+    "time_median_s",
+    "time_min_s",
+    "time_max_s",
+    "time_q1_s",
+    "time_q3_s",
     "peak_heap_bytes",
     "peak_rss_bytes",
     "repeat",
@@ -131,9 +136,10 @@ const CSV_COLUMNS: [&str; 16] = [
     "filter_bytes",
 ];
 
-const EXPECTED_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,\
-time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,\
-row_groups_total,bloom_pruned,filter_bytes";
+const EXPECTED_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_mean_s,\
+time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,\
+peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,\
+filter_bytes";
 
 #[test]
 fn run_produces_the_exact_csv_contract_with_means_and_selectivity_derived_from_real_data() {
@@ -212,17 +218,37 @@ fn run_produces_the_exact_csv_contract_with_means_and_selectivity_derived_from_r
             row_fields = row.fields
         );
 
-        let time_s: f64 = row
-            .field("time_s")
-            .parse()
-            .unwrap_or_else(|e| panic!("time_s '{}' must parse as f64: {e}", row.field("time_s")));
-        assert!(time_s >= 0.0, "time_s must be non-negative, got {time_s}");
-        let _time_std_s: f64 = row.field("time_std_s").parse().unwrap_or_else(|e| {
-            panic!(
-                "time_std_s '{}' must parse as f64: {e}",
-                row.field("time_std_s")
-            )
-        });
+        let timing: Vec<f64> = [
+            "time_mean_s",
+            "time_std_s",
+            "time_median_s",
+            "time_min_s",
+            "time_max_s",
+            "time_q1_s",
+            "time_q3_s",
+        ]
+        .iter()
+        .map(|name| {
+            row.field(name)
+                .parse()
+                .unwrap_or_else(|e| panic!("{name} '{}' must parse as f64: {e}", row.field(name)))
+        })
+        .collect();
+        let [mean, std, median, min, max, q1, q3] = timing[..] else {
+            unreachable!()
+        };
+        assert!(
+            mean >= 0.0 && std >= 0.0,
+            "mean/std must be non-negative: {timing:?}"
+        );
+        assert!(
+            min <= q1 && q1 <= median && median <= q3 && q3 <= max,
+            "min <= q1 <= median <= q3 <= max must hold: {timing:?}"
+        );
+        assert!(
+            min <= mean && mean <= max,
+            "the mean lies in [min, max]: {timing:?}"
+        );
         let _peak_heap_bytes: u64 = row.field("peak_heap_bytes").parse().unwrap_or_else(|e| {
             panic!(
                 "peak_heap_bytes '{}' must parse as u64: {e}",

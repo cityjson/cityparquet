@@ -32,7 +32,9 @@ def _rust_header() -> list[str]:
 
 def test_the_coordinator_header_is_the_documented_one():
     authority = _rust_header()
-    assert authority[0] == "dataset" and len(authority) == 16, authority
+    assert authority[0] == "dataset" and len(authority) == 21, authority
+    start = authority.index("time_mean_s")
+    assert authority[start : start + len(prep.TIMING_BLOCK)] == prep.TIMING_BLOCK, authority
 
 
 def test_the_renderer_reads_a_leading_prefix_of_that_header():

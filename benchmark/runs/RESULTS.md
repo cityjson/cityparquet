@@ -31,11 +31,19 @@ mix the two.
   write scenarios, the 0.1 % explained-deviation tolerance. The DuckDB
   system reads the Hilbert package.
 
-`time_s` in every CSV above is the arithmetic mean of the warm samples and
-`time_std_s` their population standard deviation. The run itself reported a
+`time_mean_s` in every CSV above is the arithmetic mean of the warm samples
+and `time_std_s` their population standard deviation. The run itself reported a
 median with `time_mad_s`; on 25 September both columns were recomputed from
 the committed raw samples (`*.csv.samples.json`, `raw_time_samples_s`)
 without re-measuring, every other column unchanged.
+
+The median, minimum, maximum and quartile columns (`time_median_s`,
+`time_min_s`, `time_max_s`, `time_q1_s`, `time_q3_s`) of the format and bloom
+CSVs (`formats/results/*.csv`, `formats/bloom_results/*.csv`; not
+`sizes.csv`) were computed from the same committed raw samples by
+`benchmark/scripts/migrate_timing_columns.py`, which also checked that every
+recomputed mean and standard deviation equals the committed value exactly. No
+existing value changed.
 
 The run also timed writes. The suite no longer measures them, so the
 `write` rows were removed from the format and bloom CSVs and the bloom

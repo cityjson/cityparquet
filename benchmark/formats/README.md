@@ -106,10 +106,12 @@ See [`../README.md`](../README.md) for the experimental matrix and figure list.
   package's is the sum of every file in its directory
   (`benchmark/scripts/measure_sizes.py` for the format comparison, the
   coordinator's `sizes.csv` for the bloom family).
-- **Arithmetic mean of `repeat` read samples** — default 7 — reported at
-  6-decimal precision. The dispersion column is the **population standard
-  deviation** (`time_std_s`): the warm repeats are the whole measured set, not
-  a draw used to infer a wider one. `time_s` is the same statistic
+- **Seven timing statistics over `repeat` read samples** — default 7 —
+  reported at 6-decimal precision: `time_mean_s`, the **population standard
+  deviation** `time_std_s` (the warm repeats are the whole measured set, not
+  a draw used to infer a wider one), `time_median_s`, `time_min_s`,
+  `time_max_s`, `time_q1_s` and `time_q3_s` (median and quartiles by linear
+  interpolation at `p * (n - 1)`). The block is the one
   `benchmark/databases` reports, and `READ_BENCHMARK.md` states the same
   contract.
 - **Sub-10 ms deltas are noise** at these repeat counts and are not findings on

@@ -9,9 +9,10 @@ use std::process::{Command, Output};
 
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 
-const HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_std_s,\
-peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
-bloom_pruned,filter_bytes";
+const HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_mean_s,\
+time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,\
+peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,\
+filter_bytes";
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -123,6 +124,12 @@ fn run(args: &[&str]) -> Output {
 
 fn field(row: &str, i: usize) -> &str {
     row.split(',').nth(i).unwrap()
+}
+
+/// A results-CSV row's field by its [`HEADER`] column name.
+fn column<'a>(row: &'a str, name: &str) -> &'a str {
+    let i = HEADER.split(',').position(|c| c == name).unwrap();
+    field(row, i)
 }
 
 fn row_groups_in(package: &std::path::Path) -> usize {
@@ -420,9 +427,12 @@ fn a_bloom_pair_records_lookup_counters() {
     // Per variant: id-50pct, id-miss, feature-50pct, feature-miss.
     assert_eq!(rows.len(), 8, "{text}");
     for row in &rows {
-        let (label, scenario, notes) = (field(row, 1), field(row, 2), field(row, 10));
-        let counters: Vec<&str> = (13..16).map(|i| field(row, i)).collect();
-        assert_eq!(row.split(',').count(), 16, "{row}");
+        let (label, scenario, notes) = (field(row, 1), field(row, 2), column(row, "notes"));
+        let counters: Vec<&str> = ["row_groups_total", "bloom_pruned", "filter_bytes"]
+            .iter()
+            .map(|name| column(row, name))
+            .collect();
+        assert_eq!(row.split(',').count(), HEADER.split(',').count(), "{row}");
         assert_ne!(scenario, "write", "{row}");
         assert_eq!(counters[0], "1", "delft is one row group: {row}");
         let is_miss = notes.starts_with("id-miss") || notes.starts_with("feature-miss");
@@ -506,14 +516,21 @@ async fn a_variants_run_over_http_reads_the_uploaded_packages_without_building()
     assert_eq!(rows.len(), 2, "one id-miss row per variant:\n{text}");
     for row in &rows {
         assert_eq!(field(row, 2), "id-lookup", "{row}");
-        assert!(!field(row, 11).is_empty(), "bytes_read: {row}");
-        assert!(!field(row, 12).is_empty(), "http_requests: {row}");
-        assert_eq!(field(row, 13), "1", "row_groups_total: {row}");
+        assert!(!column(row, "bytes_read").is_empty(), "bytes_read: {row}");
+        assert!(
+            !column(row, "http_requests").is_empty(),
+            "http_requests: {row}"
+        );
+        assert_eq!(
+            column(row, "row_groups_total"),
+            "1",
+            "row_groups_total: {row}"
+        );
         // The async path prunes exactly as the sync one does: delft's single
         // row group is ruled out for the verified-absent probe with filters
         // and cannot be without them.
         assert_eq!(
-            field(row, 14),
+            column(row, "bloom_pruned"),
             if field(row, 1) == "cityparquet+nobloom" {
                 "0"
             } else {

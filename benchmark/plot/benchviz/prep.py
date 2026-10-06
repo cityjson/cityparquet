@@ -111,14 +111,55 @@ QUERY_ORDER = (
 OBJECT_GRAIN_FORMATS = ("cityjson", "cityparquet")
 FEATURE_GRAIN_FORMATS = ("citygml", "cityjsonseq", "flatcitybuf")
 
+# The timing block both benchmark families write, in their column order.
+TIMING_BLOCK = [
+    "time_mean_s",
+    "time_std_s",
+    "time_median_s",
+    "time_min_s",
+    "time_max_s",
+    "time_q1_s",
+    "time_q3_s",
+]
+
+# Which statistic a figure plots, and the spread drawn around it: the median
+# with its interquartile range (q1-q3), or the mean with +-1 population std.
+# Both carry the min and max as well.
+STATISTICS = ("median", "mean")
+
+
+def timing(row: dict[str, str] | None, statistic: str = "median") -> dict[str, float | None]:
+    """The plotted value and spread of one CSV row's timing block.
+
+    Keys: `time_s` (the chosen statistic), `time_lo_s`/`time_hi_s` (q1/q3 for
+    the median, mean -+ std for the mean), `time_min_s`, `time_max_s`.
+    Every value is None when the row is absent or carries no time.
+    """
+    if statistic not in STATISTICS:
+        raise ValueError(f"statistic must be one of {STATISTICS}, got {statistic!r}")
+    get = (lambda c: _float(row.get(c))) if row is not None else (lambda c: None)
+    if statistic == "median":
+        value, lo, hi = get("time_median_s"), get("time_q1_s"), get("time_q3_s")
+    else:
+        value, std = get("time_mean_s"), get("time_std_s")
+        lo = value - std if value is not None and std is not None else None
+        hi = value + std if value is not None and std is not None else None
+    return {
+        "time_s": value,
+        "time_lo_s": lo,
+        "time_hi_s": hi,
+        "time_min_s": get("time_min_s"),
+        "time_max_s": get("time_max_s"),
+    }
+
+
 READ_COLUMNS = [
     "dataset",
     "format",
     "scenario",
     "selectivity",
     "result_count",
-    "time_s",
-    "time_std_s",
+    *TIMING_BLOCK,
     "peak_heap_bytes",
     "peak_rss_bytes",
     "repeat",
@@ -259,7 +300,7 @@ def unavailable_reason(row: dict[str, str] | None) -> str | None:
     for tag in (tag.strip() for tag in notes.split(";")):
         if tag.startswith(("error", "skipped")) or "mismatch" in tag:
             return tag
-    if _float(row.get("time_s")) is None:
+    if _float(row.get("time_mean_s")) is None:
         return "no time recorded"
     return None
 
@@ -393,8 +434,10 @@ def _scenario_key(row: dict[str, str]) -> str:
     return scenario
 
 
-def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], list[str]]:
-    """Return (read records, anomaly notes)."""
+def load_read(
+    inputs: Inputs, excluded: ExcludedFormats, statistic: str = "median"
+) -> tuple[list[dict], list[str]]:
+    """Return (read records, anomaly notes); `statistic` picks the plotted time (see `timing`)."""
     anomalies: list[str] = []
     cold_rows = 0
     retired: dict[str, int] = {}
@@ -441,7 +484,7 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
             # An unavailable baseline cell leaves every factor in this query
             # unavailable: it is never replaced by another format.
             base_unavailable = unavailable_reason(base)
-            base_time = _float(base["time_s"]) if base_unavailable is None else None
+            base_time = timing(base, statistic)["time_s"] if base_unavailable is None else None
             base_rss = _float(base["peak_rss_bytes"]) if base_unavailable is None else None
 
             for fmt in FORMATS:
@@ -450,7 +493,8 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
                     continue
                 unavailable = unavailable_reason(row)
                 available = unavailable is None
-                time_s = _float(row["time_s"]) if available else None
+                spread = timing(row if available else None, statistic)
+                time_s = spread["time_s"]
                 heap_b = _int(row["peak_heap_bytes"]) if available else None
                 rss_b = _int(row["peak_rss_bytes"]) if available else None
 
@@ -459,8 +503,7 @@ def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], li
                         "dataset": dataset,
                         "format": fmt,
                         "scenario_key": key,
-                        "time_s": time_s,
-                        "time_std_s": _float(row["time_std_s"]) if available else None,
+                        **spread,
                         "heap_b": heap_b,
                         "rss_b": rss_b,
                         "result_count": _int(row["result_count"]) if available else None,
@@ -529,7 +572,10 @@ def slice_dataset(path: Path = MANIFEST_PATH) -> str | None:
 
 
 def load_bloom_axis(
-    directory: Path, baseline: str = AXIS_BASELINE, measures: tuple[str, ...] = BLOOM_MEASURES
+    directory: Path,
+    baseline: str = AXIS_BASELINE,
+    measures: tuple[str, ...] = BLOOM_MEASURES,
+    statistic: str = "median",
 ) -> dict:
     """The bloom-filter configuration axis from a `--variants` run.
 
@@ -569,11 +615,11 @@ def load_bloom_axis(
             base = bucket.get(baseline)
             base_status = (base.get("status", "") if base else "missing").strip()
             base_valid = base is not None and base_status.lower() in {"", "ok"}
-            base_t = _float(base["time_s"]) if base_valid else None
             # The dispersion travels with the time it belongs to: a headline
             # that names one variant the fastest has to be able to check the
             # lead against the two runs' own spread, not against a fixed floor.
-            base_std = _float(base["time_std_s"]) if base_valid else None
+            base_spread = timing(base if base_valid else None, statistic)
+            base_t = base_spread["time_s"]
             base_rss = _int(base["peak_rss_bytes"]) if base_valid else None
             if base is not None and not base_valid:
                 gaps.append({"dataset": name, "issue": f"{baseline} {key} status={base_status}"})
@@ -589,8 +635,8 @@ def load_bloom_axis(
                     gaps.append({"dataset": name, "issue": f"{variant} {key} status={status}"})
                 # Failed, skipped and mismatched probes remain visible to the
                 # renderer as labelled empty cells; they never become ratios.
-                t = _float(row["time_s"]) if valid else None
-                std = _float(row["time_std_s"]) if valid else None
+                spread = timing(row if valid else None, statistic)
+                t = spread["time_s"]
                 rss = _int(row["peak_rss_bytes"]) if valid else None
                 records.append(
                     {
@@ -599,11 +645,11 @@ def load_bloom_axis(
                         "variant": variant,
                         "kind": "default" if variant == baseline else "variant",
                         "measure": key,
-                        "time_s": t,
-                        "time_std_s": std,
+                        **spread,
                         "rss_b": rss,
                         "base_time_s": base_t,
-                        "base_time_std_s": base_std,
+                        "base_time_lo_s": base_spread["time_lo_s"],
+                        "base_time_hi_s": base_spread["time_hi_s"],
                         "base_rss_b": base_rss,
                         "time_ratio": _ratio(t, base_t),
                         "rss_ratio": _ratio(
@@ -1105,19 +1151,19 @@ def apply_manifest_titles(inputs: Inputs, datasets: list[dict]) -> None:
         dataset.update(label)
 
 
-def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
+def build(inputs: Inputs | None = None, statistic: str = "median") -> tuple[dict, list[str]]:
     inputs = inputs or Inputs()
     excluded = ExcludedFormats()
     has_read = bool(_dataset_csvs(inputs.read_dir))
     has_sizes = inputs.sizes_csv.exists()
-    read_records, anomalies = load_read(inputs, excluded) if has_read else ([], [])
+    read_records, anomalies = load_read(inputs, excluded, statistic) if has_read else ([], [])
     size_records, raw_mb = load_sizes(inputs, excluded) if has_sizes else ([], {})
     for row in size_records:
         raw_mb.setdefault(row["dataset"], None)
     datasets = build_datasets(read_records, raw_mb)
     apply_manifest_titles(inputs, datasets)
     database_data = load_databases(inputs)
-    bloom = load_bloom_axis(inputs.bloom_dir)
+    bloom = load_bloom_axis(inputs.bloom_dir, statistic=statistic)
 
     order = {d["id"]: i for i, d in enumerate(datasets)}
     read_records.sort(
@@ -1130,6 +1176,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     size_records.sort(key=lambda r: (order.get(r["dataset"], len(order)), r["format"]))
 
     data = {
+        "statistic": statistic,
         "meta": {
             "baseline": BASELINE_FORMAT,
             "dataset_labels": manifest_labels(),

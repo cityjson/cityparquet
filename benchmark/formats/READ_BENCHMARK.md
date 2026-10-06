@@ -93,7 +93,7 @@ just how long it takes locally.
   repo spins up for a real run (only test-only in-process servers inside
   `cargo test`, never part of the measured path).
 - **Network variance is real and disclosed, not hidden.** Unlike the local,
-  same-machine `time_s`/`time_std_s`, an http-transport row's timing
+  same-machine timing block, an http-transport row's timing
   variance includes real network latency/jitter — the standard deviation
   (`time_std_s`) column now also captures that, not just OS/filesystem-cache
   noise. A committed http-transport run is a snapshot of one network path at
@@ -296,11 +296,13 @@ part of the comparison set and must not be read as one.
 [, selectivity target]):
 
 ```
-dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
+dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
 ```
 
-- `time_s` / `time_std_s` — **warm-cache** arithmetic mean and population
-  standard deviation of `repeat` samples (default 7; one further, discarded
+- `time_mean_s` / `time_std_s` / `time_median_s` / `time_min_s` /
+  `time_max_s` / `time_q1_s` / `time_q3_s` — **warm-cache** arithmetic mean,
+  population standard deviation, median, extremes and quartiles (linear
+  interpolation at `p * (n - 1)` on the sorted samples) of `repeat` samples (default 7; one further, discarded
   warmup precedes them), 6-decimal precision. The mean is the statistic
   `benchmark/databases` reports too, so a timing quoted from either CSV is the
   same statistic; the standard deviation is the population one because the
@@ -585,14 +587,14 @@ each cold number stands alone, one per format, one `full-read` only.
    and it is what actually separates a format carrying an id index from one
    that does not.
 
-10. **`time_s` is end-to-end read latency, not isolated query compute.** The
+10. **The timing columns are end-to-end read latency, not isolated query compute.** The
     timed window is the whole per-format `run()` call, which INCLUDES opening
     the file, reading Parquet/FlatCityBuf metadata or the CityJSONSeq header,
     and (for CityParquet full-read/id-lookup) a metadata open — not only the
     query kernel. This is deliberate and consistent across every format (each
     pays its own open+read), and it is what a caller issuing a one-shot query
     against a file actually experiences; but it means a sub-millisecond
-    `time_s` for a metadata-only scenario (`count`) is dominated by file-open,
+    the time for a metadata-only scenario (`count`) is dominated by file-open,
     not query work. Interpret the numbers as end-to-end single-query latency,
     not a pure in-memory kernel micro-benchmark.
 
@@ -1040,9 +1042,9 @@ each cold number stands alone, one per format, one `full-read` only.
     without them.
 
 31. **One generation of results, one statistic, one header.** Every
-    committed results CSV reports `time_s` as the arithmetic mean of the warm
-    samples and `time_std_s` as their population standard deviation, in the
-    coordinator's 16-column shape. Results from before 2026-09-24 (a median
+    committed results CSV reports the seven-column timing block
+    (`time_mean_s` .. `time_q3_s`) over the warm samples, in the
+    coordinator's 21-column shape. Results from before 2026-09-24 (a median
     with `time_mad_s`) and from before default-on bloom filters exist only in
     git history and must not be set beside these: a median and a mean are
     different statistics, and an `id-lookup` without filters is a different

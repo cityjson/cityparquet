@@ -330,14 +330,14 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
         assert phrase in caveats, phrase
 
 
-def test_a_median_shaped_csv_is_refused_loudly_in_both_loaders(tmp_path: Path):
-    """A CSV whose dispersion column is the older `time_mad_s`, not
-    `time_std_s`, is a different statistic: both the format and the bloom
+def test_a_single_statistic_csv_is_refused_loudly_in_both_loaders(tmp_path: Path):
+    """A CSV with one `time_s` column instead of the seven-column timing
+    block cannot say which statistic it holds: both the format and the bloom
     loaders refuse it rather than plotting it or skipping it quietly."""
     import pytest
 
     legacy = (
-        "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,"
+        "dataset,format,scenario,selectivity,result_count,time_s,time_std_s,"
         "peak_heap_bytes,peak_rss_bytes,repeat,notes\n"
         "delft.city.jsonl,cityparquet,full-read,,2231,0.1,0.01,1,2,7,\n"
     )

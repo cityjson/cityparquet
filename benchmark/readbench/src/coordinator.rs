@@ -76,6 +76,7 @@ use cityparquet::package::RowOrder;
 use cityparquet::variant::Variant;
 use cityparquet_readbench::format::Format;
 use cityparquet_readbench::naming::strip_known_extension;
+use cityparquet_readbench::stats::TimingStats;
 
 use crate::formats::{IoStats, LOOKUP_STATS_MARKER, LookupCounters, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
@@ -142,8 +143,13 @@ pub enum Transport {
 /// http-transport row from the wrapped `ObjectStore`/range-client tally each
 /// `FormatRunner`'s `Source::Http` arm reports (see `formats::IoStats`).
 /// The last three are a CityParquet lookup's [`LookupCounters`], empty on every other row.
-const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_std_s,\
-peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
+///
+/// The timing block (`time_mean_s` .. `time_q3_s`) is [`TimingStats`] over the
+/// warm samples, in that struct's field order; `benchmark/databases` writes
+/// the identical block.
+const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_mean_s,\
+time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,\
+peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
 bloom_pruned,filter_bytes";
 
 /// The resolved-parameters sidecar for a results CSV: the CSV's own path with
@@ -680,8 +686,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 scenario: Scenario::FullRead,
                 selectivity: None,
                 result_count: line.result_count,
-                time_s: line.time_s,
-                time_std_s: 0.0,
+                timing: TimingStats::of(&[line.time_s]),
                 peak_heap_bytes: line.peak_heap_bytes,
                 peak_rss_bytes: line.ru_maxrss_bytes,
                 repeat: 1,
@@ -1277,8 +1282,8 @@ fn total_count_for(format: Format, source: &Source) -> Result<u64> {
 }
 
 /// Runs one (format, scenario, params) measurement: `repeat + 1` fresh child
-/// processes (the first discarded as a warmup), then the MEAN `time_s` (+ the
-/// population standard deviation), the MAX `peak_heap_bytes`/`ru_maxrss_bytes`
+/// processes (the first discarded as a warmup), then every [`TimingStats`]
+/// statistic of the warm samples' times, the MAX `peak_heap_bytes`/`ru_maxrss_bytes`
 /// across the `repeat` warm
 /// samples, and `result_count` from the first warm sample (every warm sample
 /// measures the identical scenario against the identical unmodified input,
@@ -1346,8 +1351,7 @@ fn run_measurement(
     }
 
     let result_count = result_count.expect("repeat >= 1 guarantees at least one warm sample");
-    let time_s = mean(&times);
-    let time_std_s = std_dev(&times, time_s);
+    let timing = TimingStats::of(&times);
 
     let selectivity = match scenario {
         Scenario::Count | Scenario::FullRead => None,
@@ -1367,8 +1371,7 @@ fn run_measurement(
         scenario,
         selectivity,
         result_count,
-        time_s,
-        time_std_s,
+        timing,
         peak_heap_bytes: peak_heap_max,
         peak_rss_bytes: peak_rss_max,
         repeat,
@@ -1427,32 +1430,6 @@ fn build_variant(
     Ok(target)
 }
 
-/// The arithmetic mean of `values` (must be non-empty).
-///
-/// `time_s` is the mean in both this harness and `benchmark/databases`, so a
-/// timing quoted from either CSV is the same statistic.
-fn mean(values: &[f64]) -> f64 {
-    debug_assert!(!values.is_empty(), "mean needs at least one sample");
-    values.iter().sum::<f64>() / values.len() as f64
-}
-
-/// The population standard deviation of `values` about `centre` (must be
-/// non-empty). Population, not sample: the warm repeats are the whole
-/// measured set, not a draw used to infer a wider one. This is the
-/// dispersion column beside the mean `time_s`.
-fn std_dev(values: &[f64], centre: f64) -> f64 {
-    debug_assert!(!values.is_empty(), "std_dev needs at least one sample");
-    let variance = values
-        .iter()
-        .map(|v| {
-            let d = v - centre;
-            d * d
-        })
-        .sum::<f64>()
-        / values.len() as f64;
-    variance.sqrt()
-}
-
 /// One results-CSV row, held until the whole matrix has run.
 ///
 /// Everything but `notes` is fixed the moment its measurement finishes;
@@ -1469,8 +1446,8 @@ struct Row {
     scenario: Scenario,
     selectivity: Option<f64>,
     result_count: u64,
-    time_s: f64,
-    time_std_s: f64,
+    /// Every timing statistic over the warm samples (one sample on a cold row).
+    timing: TimingStats,
     peak_heap_bytes: u64,
     peak_rss_bytes: u64,
     repeat: usize,
@@ -1501,19 +1478,26 @@ impl Row {
             None => ",,".to_string(),
         };
         let notes = self.notes.join(";");
-        let (dataset, format, scenario, result_count, time_s, time_std_s) = (
+        let (dataset, format, scenario, result_count) = (
             &self.dataset,
             &self.label,
             self.scenario.as_str(),
             self.result_count,
-            self.time_s,
-            self.time_std_s,
         );
+        let TimingStats {
+            mean,
+            std,
+            median,
+            min,
+            max,
+            q1,
+            q3,
+        } = self.timing;
         let (peak_heap_bytes, peak_rss_bytes, repeat) =
             (self.peak_heap_bytes, self.peak_rss_bytes, self.repeat);
         format!(
-            "{dataset},{format},{scenario},{selectivity_field},{result_count},{time_s:.6},\
-             {time_std_s:.6},{peak_heap_bytes},{peak_rss_bytes},{repeat},{notes},\
+            "{dataset},{format},{scenario},{selectivity_field},{result_count},{mean:.6},{std:.6},\
+             {median:.6},{min:.6},{max:.6},{q1:.6},{q3:.6},{peak_heap_bytes},{peak_rss_bytes},{repeat},{notes},\
              {bytes_field},{requests_field},{lookup_fields}"
         )
     }
@@ -1610,8 +1594,7 @@ mod tests {
             scenario,
             selectivity: None,
             result_count: 1116,
-            time_s: 0.5,
-            time_std_s: 0.0,
+            timing: TimingStats::of(&[0.5]),
             peak_heap_bytes: 1,
             peak_rss_bytes: 2,
             repeat: 1,
@@ -1790,7 +1773,8 @@ mod tests {
     #[test]
     fn a_cold_rows_notes_field_is_exactly_cold() {
         let rendered = row(Scenario::FullRead, &["cold"]).render();
-        let notes = rendered.split(',').nth(10).unwrap();
+        let notes_index = CSV_HEADER.split(',').position(|c| c == "notes").unwrap();
+        let notes = rendered.split(',').nth(notes_index).unwrap();
         assert_eq!(notes, "cold");
     }
 

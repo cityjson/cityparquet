@@ -15,7 +15,8 @@ from benchviz import figures, html, prep, tables
 
 LIVE = Path(__file__).parents[2] / "formats"
 HEADER = (
-    "dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_bytes,"
+    "dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,"
+    "time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,"
     "peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,"
     "filter_bytes"
 )
@@ -23,7 +24,7 @@ FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet")
 
 
 def _row(dataset, fmt, scenario, count, time, rss, notes=""):
-    return f"{dataset},{fmt},{scenario},,{count},{time},0.001,,{rss},7,{notes},,,,,"
+    return f"{dataset},{fmt},{scenario},,{count},{time},0.001,{time},{time},{time},{time},{time},,{rss},7,{notes},,,,,"
 
 
 def _bench(tmp_path: Path) -> Path:
@@ -147,8 +148,12 @@ def test_the_query_table_orients_every_factor_against_citygml(tmp_path: Path):
         "query",
         "format",
         "format_id",
-        "time_s",
-        "time_std_s",
+        "statistic",
+        "time_value_s",
+        "time_lo_s",
+        "time_hi_s",
+        "time_min_s",
+        "time_max_s",
         "peak_rss_bytes",
         "citygml_time_s",
         "citygml_peak_rss_bytes",
@@ -162,11 +167,11 @@ def test_the_query_table_orients_every_factor_against_citygml(tmp_path: Path):
     assert parquet["time_factor_vs_citygml"] == 5.0
     assert parquet["note"] == ""
     no_base = by[("beta", "full-read", "cityparquet")]
-    assert no_base["time_s"] == 0.5 and no_base["time_factor_vs_citygml"] is None
+    assert no_base["time_value_s"] == 0.5 and no_base["time_factor_vs_citygml"] is None
     assert no_base["note"] == "CityGML unavailable: error: out of memory"
     assert by[("beta", "bbox-1pct", "cityjson")]["note"] == "CityGML unavailable: not measured"
     skipped = by[("beta", "bbox-1pct", "flatcitybuf")]
-    assert skipped["time_s"] is None and skipped["note"] == "skipped: 2D index"
+    assert skipped["time_value_s"] is None and skipped["note"] == "skipped: 2D index"
 
 
 def test_the_csv_files_print_unavailable_as_an_empty_cell_never_zero(tmp_path: Path):
@@ -184,7 +189,7 @@ def test_the_csv_files_print_unavailable_as_an_empty_cell_never_zero(tmp_path: P
         for r in rows
         if (r["dataset"], r["query"], r["format_id"]) == ("beta", "full-read", "cityjson")
     )
-    assert row["time_factor_vs_citygml"] == "" and row["time_s"] == "2.000000"
+    assert row["time_factor_vs_citygml"] == "" and row["time_value_s"] == "2.000000"
     assert (out / "formats" / "size_extremes.csv").is_file()
 
 
