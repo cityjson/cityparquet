@@ -1003,9 +1003,10 @@ Read these before citing a number.
    the `time_*` block.** The `time_*` block is the uninstrumented end-to-end figure for every
    system. The `server_time_*` block comes from a separate `EXPLAIN (ANALYZE,
 BUFFERS)` execution, whose per-node timing and buffer counters (and
-   `track_io_timing`) add overhead. In the committed 3DBAG CSV, 9 of the 24
-   PostgreSQL rows have a mean server time greater than the mean end-to-end time, which a
-   "subset of wall-clock" reading cannot explain. **Do not subtract the two
+   `track_io_timing`) add overhead. In the committed 3DBAG CSV, 13 of the 56
+   PostgreSQL rows that carry a server time have a mean server time greater
+   than the mean end-to-end time, which a "subset of wall-clock" reading
+   cannot explain. **Do not subtract the two
    to compute a client-server tax.** Read them side by side, qualitatively.
 
 5. **The two thread configurations are not one number.** Under `single`,
@@ -1014,10 +1015,9 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
    `parallel`, DuckDB gets 16 threads and PostgreSQL a per-gather worker
    budget of 8 — which the cluster-wide `max_worker_processes` may reduce
    further, so the manifest records both. **Never read a `threads=single`
-   row against a `threads=parallel` one.** The earlier harness effectively
-   published the cross of the two (DuckDB at 16, PostgreSQL at 0) as a
-   single result; the advantage that produced concentrated on the headline
-   rows rather than spreading evenly
+   row against a `threads=parallel` one**, and never pair DuckDB at 16
+   threads with PostgreSQL at 0 workers: that cross concentrates the
+   advantage on the whole-table scans rather than spreading it evenly
    (`notes/benchmark-fairness-review-2026-09-22.md` §4.3).
 
 6. **`peak_working_mem_bytes` is working memory, with a different process scope
@@ -1027,8 +1027,9 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
      `parallel`, its parallel workers (found from a second connection through
      `pg_stat_activity.leader_pid`). `RssAnon` is the backend's own heap,
      sort and hash memory; it leaves out `RssShmem`, where the 8 GB
-     `shared_buffers` land (the ~8.2–8.6 GiB earlier reported for 3DCityDB
-     as `peak_rss_bytes` was essentially that buffer pool), and also `RssFile`,
+     `shared_buffers` land (the ~8.2–8.6 GiB of process RSS the committed
+     evidence's `peak_rss_bytes` column reports for 3DCityDB is essentially
+     that buffer pool), and also `RssFile`,
      the OS page cache, other backends, background processes and the client
      process. The status files are read from the host `/proc` every 5 ms
      where containers share the host kernel (rootless podman on Linux), or by
@@ -1041,7 +1042,7 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
      a query shorter than the interval records the backend at its edges: a
      lower bound, not a zero.
    - `duckdb-cityparquet` read scenarios each run in a fresh spawned process,
-     so a light scenario no longer inherits a heavier one's peak. With procfs
+     so a light scenario never inherits a heavier one's peak. With procfs
      the value is that process's peak `RssAnon`, including the interpreter's
      and DuckDB's idle baseline; without procfs (macOS) the process's peak RSS
      from `getrusage` stands in. Write scenarios stay in the long-lived
