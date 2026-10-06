@@ -979,7 +979,7 @@ if want cityparquet; then
     # multi-family INPUT prepares fine here but the read-benchmark itself
     # rejects it later with a clear error.
     # `--no-lod0`: the package holds the source's geometries and no others.
-    # The writer's default synthesises an LoD 0 footprint for every object
+    # The CLI's default synthesises an LoD 0 footprint for every object
     # without a source LoD 0, which no other format's artefact holds, so the
     # package would be measured with more content than its competitors. A
     # SOURCE LoD 0 (Tokyo, 3DBAG) is kept either way.
