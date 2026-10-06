@@ -176,6 +176,13 @@ the same figures, tables and conditions. The format comparison lives in its own
 | `bloom-corpus`                                          | The bloom pair per corpus dataset                                                                                                                                          |
 | `databases`                                             | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |
 
+Every results CSV carries the same seven-column timing block,
+`time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s`
+(the database family adds a parallel `server_time_*` block). The summary plots
+the median with the interquartile range by default; `just bench-summary
+--statistic mean` plots the mean ± the population standard deviation instead,
+and each caption names the statistic.
+
 The format comparison's baseline is **CityGML**, and every relative value is a
 factor: CityGML's value divided by the format's, so **higher is better** ("CityParquet
 is 5× faster, or smaller, than CityGML"), with 1× neutral. The configuration and

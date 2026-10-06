@@ -216,7 +216,8 @@ from earlier scenarios (the `peak_rss_bytes` scope caveat in
 `benchmark/databases/README.md`). Quote each within its own family; a
 ratio between the two is a ratio of different scopes.</li><li>**Warm vs cold — never silently mixed.** The headline numbers everywhere
 in this document and in `benchmark/runs/formats/results/*.csv` are warm-cache
-means; the single `cold`-tagged row per format (see &quot;Warm vs cold&quot;
+statistics (the summaries&#x27; median by default, the mean under
+`--statistic mean`); the single `cold`-tagged row per format (see &quot;Warm vs cold&quot;
 above) is a distinct, separately-reported measurement, always
 `full-read` only, never averaged into or compared unlabelled against the
 warm rows.</li><li>**Sub-millisecond deltas are noise; single-threaded reads are pinned.**
@@ -224,7 +225,8 @@ As in `benchmark/formats/README.md`&#x27;s own methodology, deltas under roughly
 `repeat = 7` are within scheduler/filesystem-cache noise and are not
 cited as a finding by themselves. That threshold describes the committed
 evidence, which was taken at `repeat = 7`; the default is 25, and a run at
-25 samples is read against its own spread, not against this figure. Every format&#x27;s reads here run
+25 samples is read against its own spread (the interquartile range under
+the median default), not against this figure. Every format&#x27;s reads here run
 single-threaded (no Parquet multi-threaded row-group decode) — a
 deliberate, disclosed choice so timing differences reflect the
 format/mechanism, not thread-count parallelism a production deployment
@@ -677,18 +679,20 @@ object_store coalesced nearby ranges — not raw wire traffic, retries or
 connection reuse.</li><li>**The current evidence was measured on bloom-enabled packages.** The
 `formats`, `sizes` and `bloom` evidence under `benchmark/runs/formats/`
 was measured on 23–24 September 2026 on packages the bloom-enabled
-writer produced (chain version 3, `MACHINE.md` beside the results), in
-the 16-column shape with the three lookup counters. The writer puts
+writer produced (chain version 3, `MACHINE.md` beside the results), and is
+recorded in the coordinator&#x27;s 21-column shape with the three lookup counters (its
+timing block recomputed from the samples sidecars by
+`benchmark/scripts/migrate_timing_columns.py`). The writer puts
 filters on `id`, `feature_id` and high-cardinality string attributes by
 default, so its packages are larger and its lookups prune; the `bloom`
 family&#x27;s `cityparquet+nobloom` variant is the one package measured
-without them.</li><li>**One generation of results, one statistic, one header.** Every
+without them.</li><li>**One generation of results, one timing block, one header.** Every
 committed results CSV reports the seven-column timing block
 (`time_mean_s` .. `time_q3_s`) over the warm samples, in the
 coordinator&#x27;s 21-column shape. Results from before 2026-09-24 (a median
 with `time_mad_s`) and from before default-on bloom filters exist only in
-git history and must not be set beside these: a median and a mean are
-different statistics, and an `id-lookup` without filters is a different
+git history and must not be set beside these: a median absolute deviation
+and an interquartile range are different spreads, and an `id-lookup` without filters is a different
 operation. The shapes keep them apart mechanically: the coordinator&#x27;s
 `CSV_HEADER` (`benchmark/readbench/src/coordinator.rs`) is the only
 writer of a results header, `benchmark/plot/tests/test_csv_contract.py`

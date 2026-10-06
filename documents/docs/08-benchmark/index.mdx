@@ -121,14 +121,20 @@ that CityParquet replaces a transactional system.
   measurements. The database suite has its own execution settings, including
   a multithreaded DuckDB configuration. These are local native measurements,
   not HTTP delivery or browser WebAssembly timings.
-- **Aggregation:** the format timings and the database timings both report
+- **Aggregation:** the format timings and the database timings both record
   the same seven-column timing block over the measured runs (`time_mean_s`,
   `time_std_s` as the population standard deviation, `time_median_s`,
-  `time_min_s`, `time_max_s`, `time_q1_s`, `time_q3_s`); the format reads and
-  the database reads follow a discarded warm-up and take 25 timed samples by
-  default, run back to back per cell, and the database write tier has its own
-  protocol. The figures plot the median by default (the mean with
-  `--statistic mean`), and each figure's caption names the statistic.
+  `time_min_s`, `time_max_s`, `time_q1_s`, `time_q3_s`); the median and the
+  quartiles interpolate linearly at position p·(n−1) on the sorted samples.
+  Each read cell takes one discarded warm-up and 25 timed samples by default,
+  run back to back; the format reads can stop a cell earlier under an optional
+  time budget (`--cell-budget-s`, never below `--min-repeat` samples), and the
+  database write tier has its own protocol. The measured processes are pinned
+  to one NUMA node, optionally memory-capped and gated on host load, with each
+  measure recorded as applied or `not applied: <reason>`. The figures plot the
+  median with the interquartile range by default (the mean ± the standard
+  deviation with `--statistic mean`), and each figure's caption names the
+  statistic.
 - **Counting and geometry:** feature-level and CityObject-level operations are
   not interchangeable. Attribute filtering, aggregation, projection, and ID
   queries use CityObject granularity; full-read and spatial comparisons require

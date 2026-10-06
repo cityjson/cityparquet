@@ -365,7 +365,7 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
         "counts the requests the reader made after",
         # 30-31: the evidence carries default-on filters and one timing statistic.
         "The current evidence was measured on bloom-enabled packages.",
-        "One generation of results, one statistic, one header.",
+        "One generation of results, one timing block, one header.",
         "refuses to",
     ):
         assert phrase in caveats, phrase

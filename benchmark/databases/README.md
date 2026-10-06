@@ -655,6 +655,10 @@ not applied to the database family: every read cell takes exactly
   `time_q1_s` and `time_q3_s` (`report.py`, `stats.py`), all to six decimal
   places. The median and quartiles interpolate linearly at position
   p·(n−1) on the sorted samples. The raw samples are in `raw_time_samples_s`.
+  Every row carries both the mean and the median; the summaries
+  (`just bench-summary`) report the median by default, with the
+  interquartile range (`time_q1_s` to `time_q3_s`) as its spread, and the mean
+  ± the standard deviation under `--statistic mean`.
 - The PostgreSQL adapters time each sample from just before the query is sent
   to just after every row has been fetched. After each timed execution the
   same query runs again, untimed, under `EXPLAIN (ANALYZE, BUFFERS, FORMAT

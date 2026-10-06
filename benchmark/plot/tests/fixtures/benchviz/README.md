@@ -20,7 +20,7 @@ datasets kept here span the range the views have to handle —
 `bloom_results/` is the one exception to "nothing is edited by hand": its
 `delft.csv`, `delft.csv.params.json` (the `cp_object_total` the axis takes its
 object count from) and `sizes.csv` are renderer fixture values, NOT
-measurements, written in the coordinator's 16-column `--variants` shape
+measurements, written in the coordinator's 21-column `--variants` shape
 (`cityparquet` against `cityparquet+nobloom`, `id-lookup` and `feature-lookup`
 at their middle and miss probes, with the three lookup counters) so the bloom
 axis's keying and counter pass-through are exercised on rows of the right

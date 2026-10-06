@@ -303,9 +303,12 @@ dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_med
   `time_max_s` / `time_q1_s` / `time_q3_s` — **warm-cache** arithmetic mean,
   population standard deviation, median, extremes and quartiles (linear
   interpolation at `p * (n - 1)` on the sorted samples) of `repeat` samples (default 25; one further, discarded
-  warmup precedes them; see "Sampling" below), 6-decimal precision. The mean is the statistic
-  `benchmark/databases` reports too, so a timing quoted from either CSV is the
-  same statistic; the standard deviation is the population one because the
+  warmup precedes them; see "Sampling" below), 6-decimal precision. `benchmark/databases` records the same seven
+  statistics under the same names, so a timing quoted from either CSV under one
+  name is the same statistic. The summaries (`just bench-summary`) report the
+  median by default, with the interquartile range (`time_q1_s` to `time_q3_s`)
+  as its spread and the extremes recorded beside it; `--statistic mean` reports
+  the mean ± the standard deviation instead. The standard deviation is the population one because the
   warm repeats are the whole measured set, not a draw used to infer a wider
   one. A fresh child process is spawned per
   sample (see "Warm vs cold" below) — independent OS page-cache and
@@ -373,10 +376,11 @@ effective floor. The root recipes `bench`, `bloom-bench` and
 
 ## Warm vs cold protocol
 
-The **headline number is the warm-cache mean**: `repeat` fresh child
-processes (default 25), a further discarded warmup beforehand, OS page cache
-and (for the in-process formats) allocator state left however the previous
-sample left them — i.e. "warm" describes the OS/filesystem cache, not a
+The **headline numbers are warm-cache statistics**: the CSV records both the
+mean and the median of `repeat` fresh child processes (default 25), and the
+summaries report the median unless `--statistic mean` is given. A further discarded warmup precedes the samples, and the OS page
+cache and (for the in-process formats) allocator state are left however the
+previous sample left them — i.e. "warm" describes the OS/filesystem cache, not a
 long-lived process, since every sample is already a brand-new process (see
 `benchmark/readbench/src/coordinator.rs`'s own module doc on why:
 independent peak-RSS and independent cache state per sample, mirroring
@@ -551,7 +555,8 @@ each cold number stands alone, one per format, one `full-read` only.
 
 7. **Warm vs cold — never silently mixed.** The headline numbers everywhere
    in this document and in `benchmark/runs/formats/results/*.csv` are warm-cache
-   means; the single `cold`-tagged row per format (see "Warm vs cold"
+   statistics (the summaries' median by default, the mean under
+   `--statistic mean`); the single `cold`-tagged row per format (see "Warm vs cold"
    above) is a distinct, separately-reported measurement, always
    `full-read` only, never averaged into or compared unlabelled against the
    warm rows.
@@ -561,7 +566,8 @@ each cold number stands alone, one per format, one `full-read` only.
    `repeat = 7` are within scheduler/filesystem-cache noise and are not
    cited as a finding by themselves. That threshold describes the committed
    evidence, which was taken at `repeat = 7`; the default is 25, and a run at
-   25 samples is read against its own spread, not against this figure. Every format's reads here run
+   25 samples is read against its own spread (the interquartile range under
+   the median default), not against this figure. Every format's reads here run
    single-threaded (no Parquet multi-threaded row-group decode) — a
    deliberate, disclosed choice so timing differences reflect the
    format/mechanism, not thread-count parallelism a production deployment
@@ -1058,20 +1064,22 @@ each cold number stands alone, one per format, one `full-read` only.
 30. **The current evidence was measured on bloom-enabled packages.** The
     `formats`, `sizes` and `bloom` evidence under `benchmark/runs/formats/`
     was measured on 23–24 September 2026 on packages the bloom-enabled
-    writer produced (chain version 3, `MACHINE.md` beside the results), in
-    the 16-column shape with the three lookup counters. The writer puts
+    writer produced (chain version 3, `MACHINE.md` beside the results), and is
+    recorded in the coordinator's 21-column shape with the three lookup counters (its
+    timing block recomputed from the samples sidecars by
+    `benchmark/scripts/migrate_timing_columns.py`). The writer puts
     filters on `id`, `feature_id` and high-cardinality string attributes by
     default, so its packages are larger and its lookups prune; the `bloom`
     family's `cityparquet+nobloom` variant is the one package measured
     without them.
 
-31. **One generation of results, one statistic, one header.** Every
+31. **One generation of results, one timing block, one header.** Every
     committed results CSV reports the seven-column timing block
     (`time_mean_s` .. `time_q3_s`) over the warm samples, in the
     coordinator's 21-column shape. Results from before 2026-09-24 (a median
     with `time_mad_s`) and from before default-on bloom filters exist only in
-    git history and must not be set beside these: a median and a mean are
-    different statistics, and an `id-lookup` without filters is a different
+    git history and must not be set beside these: a median absolute deviation
+    and an interquartile range are different spreads, and an `id-lookup` without filters is a different
     operation. The shapes keep them apart mechanically: the coordinator's
     `CSV_HEADER` (`benchmark/readbench/src/coordinator.rs`) is the only
     writer of a results header, `benchmark/plot/tests/test_csv_contract.py`
