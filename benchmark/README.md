@@ -183,6 +183,12 @@ family's dataset. It is cut without LoD 1.2: CityGML 2.0 has integer LoDs only a
 cannot carry LoD 1.2 beside LoD 1.3, so removing it at the source gives all
 five formats the same geometry, LoD 0, 1.3 and 2.2
 ([`formats/READ_BENCHMARK.md`](formats/READ_BENCHMARK.md), Caveat 14).
+For the same reason, preparation first normalises every CityJSON and
+CityJSONSeq source so that each CityObject holds at most one geometry per LoD,
+keeping the first in source order. CityParquet stores one geometry column per
+LoD, so this is a property of the corpus, and all five artefacts derive from
+the normalised source. It changes Vienna and Ingolstadt only; the other
+datasets pass through byte for byte (Caveat 41).
 
 The format comparison measures five formats: `citygml`, `cityjson`,
 `cityjsonseq`, `flatcitybuf` and `cityparquet`. CityParquet is one package per
