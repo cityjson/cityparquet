@@ -192,6 +192,50 @@ _F = f"{SCHEMA}.feature"
 _P = f"{SCHEMA}.property"
 
 
+def _object_geometries(cityobject_class_ids: tuple[int, ...]) -> str:
+    """A subquery yielding `(lod, geometry)`, one row per LoD, for the
+    feature aliased `f`: "the object's geometry" in 3DCityDB v5.
+
+    The importer does not keep a CityObject's geometry on the CityObject
+    alone. A semantic surface becomes a boundary feature (`RoofSurface`,
+    `WallSurface`, ...) of its own, contained by the CityObject through a
+    `property` row whose `val_feature_id` points at it with
+    `val_relation_type = 1` (contains), and the surface's polygons are a
+    `geometry_data` row of THAT feature. On a CityJSON Building whose LoD 2
+    MultiSurface is semantically labelled, the Building owns no geometry
+    row at all. The object's geometry at an LoD is therefore gathered, as
+    `citydb-tool`'s export reassembles it, from the object and its
+    contained parts (followed recursively, stopping at CityObject classes
+    so a BuildingPart stays its own object):
+
+      - the rows of the shallowest level that has any at that LoD, so an
+        object's own root row (a Solid, say) is returned rather than the
+        surfaces it is built from;
+      - one row there is returned as stored; several are put in one
+        collection with `ST_Collect` (no union, no geometry processing).
+
+    `val_lod` holds the integer tier only (CITYDB_LOD_TIER), so LoD 1.2
+    and 1.3 rows of one object fall into one tier-1 collection.
+    """
+    stop = _static_predicate(cityobject_class_ids, "c").replace(" IN (", " NOT IN (", 1)
+    return (
+        "WITH RECURSIVE parts(id, depth) AS ("
+        "SELECT f.id, 0 UNION ALL "
+        f"SELECT c.id, pt.depth + 1 FROM parts pt "
+        f"JOIN {_P} r ON r.{CAPTURED_PROPERTY_FK} = pt.id AND r.val_relation_type = 1 "
+        f"JOIN {_F} c ON c.id = r.val_feature_id WHERE {stop}"
+        "), rows AS ("
+        "SELECT DISTINCT ON (gd.id) NULLIF(g.val_lod, '')::int AS lod, pt.depth, gd.id, gd.geometry "
+        f"FROM parts pt JOIN {_P} g ON g.{CAPTURED_PROPERTY_FK} = pt.id AND g.val_geometry_id IS NOT NULL "
+        f"JOIN {SCHEMA}.geometry_data gd ON gd.id = g.val_geometry_id "
+        "ORDER BY gd.id, pt.depth"
+        "), top AS (SELECT *, min(depth) OVER (PARTITION BY lod) AS top_depth FROM rows) "
+        "SELECT lod, CASE WHEN count(*) = 1 THEN (array_agg(geometry))[1] "
+        "ELSE ST_Collect(geometry ORDER BY id) END AS geometry "
+        "FROM top WHERE depth = top_depth GROUP BY lod"
+    )
+
+
 #: The CityGML class name `parts-per-building` and the write tier restrict
 #: to, resolved to an `objectclass_id` once per ingest by
 #: `resolve_class_id` rather than hard-coded: the catalogue's ids are a
@@ -271,28 +315,27 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         return f"SELECT count(*) FROM {_F} WHERE {_static_predicate(cityobject_class_ids)}", ()
 
     if scenario == "geometry-scan":
-        # Every object's id and all its `geometry_data` geometries, one row
-        # per object, in PostgreSQL's binary wire format.
+        # Every object's id and all its geometries (`_object_geometries`,
+        # one per LoD), one row per object, in PostgreSQL's binary wire
+        # format.
         return (
-            f"SELECT f.objectid, array_agg(gd.geometry) FILTER (WHERE gd.geometry IS NOT NULL) "
-            f"FROM {_F} f "
-            f"LEFT JOIN {SCHEMA}.geometry_data gd ON gd.feature_id = f.id "
-            f"WHERE {_static_predicate(cityobject_class_ids)} "
-            "GROUP BY f.id, f.objectid",
+            f"SELECT f.objectid, g.geometries FROM {_F} f "
+            "LEFT JOIN LATERAL (SELECT array_agg(og.geometry ORDER BY og.lod) AS geometries "
+            f"FROM ({_object_geometries(cityobject_class_ids)}) og) g ON true "
+            f"WHERE {_static_predicate(cityobject_class_ids)}",
             (),
         )
 
     if scenario == "bbox-query":
-        # Ids plus the `geometry_data` row of each matching object's highest
-        # LoD. `property.val_lod` holds the integer tier only ("2.2" is
-        # stored as "2"), so a tie inside one tier falls to the newest row.
+        # Ids plus each matching object's highest-LoD geometry
+        # (`_object_geometries`). `property.val_lod` holds the integer
+        # tier only ("2.2" is stored as "2").
         win = _window(window)
         return (
             f"SELECT f.objectid, g.geometry FROM {_F} f "
-            "LEFT JOIN LATERAL (SELECT gd.geometry "
-            f"FROM {SCHEMA}.property pr JOIN {SCHEMA}.geometry_data gd ON gd.id = pr.val_geometry_id "
-            "WHERE pr.feature_id = f.id AND pr.val_geometry_id IS NOT NULL "
-            "ORDER BY NULLIF(pr.val_lod, '')::int DESC NULLS LAST, gd.id DESC LIMIT 1) g ON true "
+            "LEFT JOIN LATERAL (SELECT og.geometry "
+            f"FROM ({_object_geometries(cityobject_class_ids)}) og "
+            "ORDER BY og.lod DESC NULLS LAST LIMIT 1) g ON true "
             f"WHERE {_static_predicate(cityobject_class_ids)} AND f.{CAPTURED_ENVELOPE_COLUMN} "
             "&& ST_MakeEnvelope(%s, %s, %s, %s, %s)",
             (win.minx, win.miny, win.maxx, win.maxy, srid),
@@ -393,7 +436,8 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         # The WHOLE object, as cjdb's and DuckDB's `SELECT *` return it: the
         # `feature` row, every `property` row of it (attributes and
         # geometry/association references, each `val_*` column as its own
-        # array) and every geometry it points at, PostGIS `geometry` fetched
+        # array) and its geometries, one per LoD, gathered from it and its
+        # boundary parts (`_object_geometries`), PostGIS `geometry` fetched
         # in binary. Aggregated in scalar subqueries so the lookup stays one
         # row (count_mode "rowcount": 0 or 1). No CityObject-granularity
         # predicate: `objectid` is unique and every probe id names a
@@ -407,7 +451,8 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         )
         return (
             f"SELECT f.*, {cols}, "
-            f"(SELECT array_agg(gd.geometry ORDER BY gd.id) {props.replace('WHERE', f'JOIN {SCHEMA}.geometry_data gd ON gd.id = pr.val_geometry_id WHERE')}) AS geometries "
+            f"(SELECT array_agg(og.geometry ORDER BY og.lod) "
+            f"FROM ({_object_geometries(cityobject_class_ids)}) og) AS geometries "
             f"FROM {_F} f WHERE f.{CAPTURED_ID_COLUMN} = %s",
             (_probe(probe).id,),
         )
@@ -419,17 +464,17 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         # column; the LoD is on the PROPERTY row pointing at the geometry,
         # as the integer tier only (CITYDB_LOD_TIER, README Caveat 17).
         #
-        # The CityObject-granularity predicate keeps each solid's boundary
-        # surfaces' own tier-2 geometry rows out; `DISTINCT ON (f.id)`
-        # keeps one row per CityObject without comparing geometries.
+        # The geometry is the object's tier-2 geometry as
+        # `_object_geometries` gathers it (its own row, or its boundary
+        # parts' rows collected), one row per CityObject; the
+        # CityObject-granularity predicate keeps the boundary features
+        # themselves out of the result.
         registry.require_lod_query_target(p)
         return (
-            f"SELECT DISTINCT ON (f.id) f.{CAPTURED_ID_COLUMN}, gd.geometry FROM {_F} f "
-            f"JOIN {_P} pr ON pr.{CAPTURED_PROPERTY_FK} = f.id "
-            f"JOIN {SCHEMA}.geometry_data gd ON gd.id = pr.val_geometry_id "
-            f"WHERE {_static_predicate(cityobject_class_ids)} "
-            f"AND pr.val_lod = %s AND pr.val_geometry_id IS NOT NULL "
-            f"ORDER BY f.id",
+            f"SELECT f.{CAPTURED_ID_COLUMN}, g.geometry FROM {_F} f "
+            "JOIN LATERAL (SELECT og.geometry "
+            f"FROM ({_object_geometries(cityobject_class_ids)}) og WHERE og.lod = %s) g ON true "
+            f"WHERE {_static_predicate(cityobject_class_ids)}",
             (CITYDB_LOD_TIER,),
         )
 

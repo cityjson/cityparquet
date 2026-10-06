@@ -52,5 +52,5 @@ def test_cjdb_returns_object_id_and_the_lod_2_2_element_only():
 def test_citydb_returns_objectid_and_the_tier_2_geometry_only():
     sql, args = sql_citydb.sql_for("lod-query", make_params(lods=("2.2",)),
                                    cityobject_class_ids=IDS)
-    assert "f.objectid, gd.geometry FROM" in sql and "f.*" not in sql
+    assert "f.objectid, g.geometry FROM" in sql and "f.*" not in sql
     assert args == (sql_citydb.CITYDB_LOD_TIER,) and sql_citydb.CITYDB_LOD_TIER == "2"

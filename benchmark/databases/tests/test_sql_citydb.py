@@ -252,10 +252,10 @@ def test_scenario_uses_a_static_resolved_id_list_not_a_correlated_subquery(
     # None of the OLD, correlated-subquery predicate's own vocabulary may
     # appear anywhere in a scenario query any more — that shape is what
     # made every one of these scenarios full-scan `feature` (C1, the final
-    # whole-branch review's critical finding).
+    # whole-branch review's critical finding). The geometry scenarios'
+    # own recursion walks an object's parts, not the class catalogue.
     assert "is_toplevel" not in sql
-    assert "WITH RECURSIVE" not in sql
-    assert "NOT IN" not in sql
+    assert "class_chain" not in sql and "superclass_id" not in sql
 
 
 def test_parts_per_building_uses_a_static_resolved_id_list_qualified_to_child():
@@ -273,6 +273,8 @@ def test_id_lookup_does_not_reference_the_granularity_predicate_at_all():
     # static or otherwise.
     sql, _ = sql_for("id-lookup", PARAMS, cityobject_class_ids=IDS,
                      probe=PARAMS.id_probes[0])
+    outer_where = sql.rsplit(" WHERE ", 1)[1]
+    assert outer_where == "f.objectid = %s"
     assert "objectclass_id IN" not in sql
     assert "is_toplevel" not in sql
 
@@ -376,8 +378,8 @@ def test_lod_query_stays_one_row_per_cityobject():
     is scoped to the key rather than to the whole row so PostgreSQL never
     compares WKB geometries for equality."""
     sql, _ = sql_for("lod-query", _params(), cityobject_class_ids=IDS)
-    assert sql.strip().startswith("SELECT DISTINCT ON (f.id)")
-    assert sql.rstrip().endswith("ORDER BY f.id")
+    assert sql.strip().startswith("SELECT f.objectid, g.geometry FROM")
+    assert "JOIN LATERAL" in sql and "WHERE og.lod = %s" in sql
 
 
 def test_the_append_reset_empties_the_tables_the_importer_writes_to():
@@ -491,20 +493,38 @@ def test_index_ddl_takes_no_arguments():
     assert all(isinstance(stmt, str) for stmt in ddl)
 
 
-def test_geometry_scan_returns_ids_and_binary_geometry_one_row_per_object():
+def test_geometry_scan_returns_each_objects_geometries_one_row_per_object():
     from citybench.scenarios.sql_citydb import sql_for
     sql, _ = sql_for("geometry-scan", make_params(), cityobject_class_ids=(1, 2))
-    assert sql.startswith("SELECT f.objectid, array_agg(gd.geometry)")
-    assert "GROUP BY f.id, f.objectid" in sql
+    assert sql.startswith("SELECT f.objectid, g.geometries FROM")
+    assert "array_agg(og.geometry ORDER BY og.lod)" in sql
     assert "::text" not in sql and "length(" not in sql
 
 
-def test_bbox_query_returns_ids_and_the_highest_lod_geometry_data_row():
+def test_bbox_query_returns_ids_and_the_highest_lod_geometry_of_the_object():
     from citybench.scenarios.sql_citydb import sql_for
     sql, _ = sql_for("bbox-query", make_params(), make_params().window("bbox-25pct"), cityobject_class_ids=(1, 2))
     assert sql.startswith("SELECT f.objectid, g.geometry FROM")
-    assert "ORDER BY NULLIF(pr.val_lod, '')::int DESC NULLS LAST" in sql
-    assert "LEFT JOIN LATERAL" in sql and "count(" not in sql
+    assert "ORDER BY og.lod DESC NULLS LAST LIMIT 1" in sql
+    assert "LEFT JOIN LATERAL" in sql
+
+
+@pytest.mark.parametrize("scenario", ["geometry-scan", "bbox-query", "id-lookup", "lod-query"])
+def test_every_geometry_scenario_reaches_geometry_through_the_objects_parts(scenario):
+    """3DCityDB v5 keeps a semantic surface's polygons on the boundary
+    feature, not on the Building: every scenario that returns geometry
+    gathers it from the object and its contained non-CityObject parts
+    (followed through `val_relation_type = 1`, stopping at CityObject
+    classes), one collected geometry per LoD."""
+    from citybench.scenarios.sql_citydb import sql_for
+    window = make_params().window("bbox-25pct") if scenario == "bbox-query" else None
+    probe = make_probes()[0] if scenario == "id-lookup" else None
+    sql, _ = sql_for(scenario, _params(), window, cityobject_class_ids=IDS, probe=probe)
+    assert "WITH RECURSIVE parts(id, depth)" in sql
+    assert "r.val_relation_type = 1" in sql
+    assert "c.objectclass_id NOT IN (100, 901, 902)" in sql
+    assert "ST_Collect(" in sql
+    assert "gd.feature_id = f.id" not in sql
 
 
 def test_attr_stats_returns_min_max_sum_count_in_that_order():
@@ -521,5 +541,6 @@ def test_id_lookup_returns_the_whole_object_in_one_row():
                         probe=make_probes()[0])
     assert sql.startswith("SELECT f.*,")
     assert "array_agg(pr.name" in sql and "pr.val_string" in sql and "pr.val_double" in sql
-    assert "array_agg(gd.geometry" in sql and "geometry_data gd" in sql
+    assert "array_agg(og.geometry ORDER BY og.lod)" in sql and "geometry_data gd" in sql
+    assert ") AS geometries " in sql
     assert args == (make_probes()[0].id,)
