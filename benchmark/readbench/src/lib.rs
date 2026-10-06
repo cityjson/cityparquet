@@ -8,6 +8,7 @@
 //! input-extension convention every artefact path is derived through, and
 //! [`params`], the query parameters every measurement is driven with.
 
+pub mod bloom_columns;
 pub mod format;
 pub mod isolation;
 pub mod lod;

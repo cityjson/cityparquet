@@ -113,6 +113,13 @@ enum Command {
     /// Drive a whole (format x scenario) benchmark matrix and write the
     /// results CSV (see [`coordinator::run`]).
     Run(Box<RunArgs>),
+    /// List which columns of a CityParquet package carry a Bloom filter,
+    /// with exact non-null and distinct counts, and the text columns that
+    /// do not (see `cityparquet_readbench::bloom_columns`).
+    BloomColumns {
+        /// A single-table package directory, or its Parquet file.
+        package: PathBuf,
+    },
 }
 
 /// `cityparquet-readbench run`'s own flags — the CLI-facing mirror of
@@ -235,6 +242,12 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    if let Some(Command::BloomColumns { package }) = &cli.command {
+        use cityparquet_readbench::bloom_columns;
+        let table = bloom_columns::main_table(package)?;
+        print!("{}", bloom_columns::render(&bloom_columns::survey(&table)?));
+        return Ok(());
+    }
     if let Some(Command::Run(run_args)) = cli.command {
         let run_args = *run_args;
         let transport = match run_args.transport.as_str() {

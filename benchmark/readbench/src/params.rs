@@ -757,7 +757,7 @@ pub fn stats_resistant_miss(
 /// Utf8>` array, because a string ATTRIBUTE column may be written as
 /// either, mirroring `cityparquet::query::evaluate_attr_predicate`'s own
 /// `Utf8`/`Dictionary` dispatch.
-fn utf8_values(array: &dyn Array) -> Result<Vec<Option<String>>> {
+pub fn utf8_values(array: &dyn Array) -> Result<Vec<Option<String>>> {
     match array.data_type() {
         DataType::Utf8 => {
             let values = array
@@ -813,7 +813,7 @@ fn f64_values(array: &dyn Array) -> Result<Vec<Option<f64>>> {
 }
 
 /// Opens `table` projected down to `columns`, in the order given.
-fn projected_reader(
+pub fn projected_reader(
     table: &Path,
     columns: &[&str],
 ) -> Result<parquet::arrow::arrow_reader::ParquetRecordBatchReader> {

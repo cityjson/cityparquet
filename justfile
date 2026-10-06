@@ -476,6 +476,14 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_
     BENCH_NUMA_NODE="{{NUMA_NODE}}" MEMORY_MAX="{{MEMORY_MAX}}" ./{{BENCH_SCRIPTS}}/machine_record.sh > "{{OUT}}/MACHINE.md"
     echo "variant-bench: ${found} file(s) benchmarked into {{OUT}}"
 
+# Which columns of a CityParquet package carry a Bloom filter: Parquet type,
+# exact non-null and distinct counts, ratio, filter bytes and row groups, plus
+# the text columns without one. Run it on the `cityparquet` package of a
+# bloom-bench run to choose `bloom_attributes` in benchmark/manifest.toml.
+[doc("List the columns of a CityParquet package that carry a Bloom filter")]
+bloom-columns PACKAGE:
+    cargo run --release --quiet {{READBENCH_CARGO}} -- bloom-columns "{{PACKAGE}}"
+
 # The BLOOM axis: the default package, which carries bloom filters, against
 # the same package without them. Identifier lookups only — what the filters
 # exist for — by `id` and by `feature_id`, each at the middle position and a
