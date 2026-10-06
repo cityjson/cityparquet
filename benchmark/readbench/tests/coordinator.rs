@@ -112,7 +112,7 @@ impl Row {
     }
 }
 
-const CSV_COLUMNS: [&str; 21] = [
+const CSV_COLUMNS: [&str; 22] = [
     "dataset",
     "format",
     "scenario",
@@ -133,13 +133,14 @@ const CSV_COLUMNS: [&str; 21] = [
     "http_requests",
     "row_groups_total",
     "bloom_pruned",
+    "stats_pruned",
     "filter_bytes",
 ];
 
 const EXPECTED_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_mean_s,\
 time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,\
 peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,\
-filter_bytes";
+stats_pruned,filter_bytes";
 
 #[test]
 fn run_produces_the_exact_csv_contract_with_means_and_selectivity_derived_from_real_data() {

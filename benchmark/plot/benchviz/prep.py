@@ -210,8 +210,10 @@ AXIS_BASELINE = "cityparquet"
 # untouched by the filters.
 BLOOM_MEASURES = ("id-50pct", "id-miss", "feature-50pct", "feature-miss")
 # The lookup counters a CityParquet lookup row carries, appended to the read
-# CSV after `http_requests`.
-LOOKUP_COLUMNS = ("row_groups_total", "bloom_pruned", "filter_bytes")
+# CSV after `http_requests`: row groups in the table, those the bloom filters
+# ruled out, those the min/max statistics then ruled out, and the filter bytes
+# read. A CSV from before `stats_pruned` existed loads with it as None.
+LOOKUP_COLUMNS = ("row_groups_total", "bloom_pruned", "stats_pruned", "filter_bytes")
 MACHINE_MD_NAME = "MACHINE.md"
 
 

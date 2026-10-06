@@ -225,6 +225,8 @@ def test_bloom_axis_keys_the_lookup_probes_and_carries_the_counters(tmp_path: Pa
     assert on["filter_bytes"] == 8192
     off = record("cityparquet+nobloom", "id-miss")
     assert (off["bloom_pruned"], off["filter_bytes"]) == (0, 0)
+    # The statistics count rides next to the bloom count on both variants.
+    assert (on["stats_pruned"], off["stats_pruned"]) == (0, 0)
     assert off["time_ratio"] == 0.0049 / 0.0021
 
 

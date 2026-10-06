@@ -301,7 +301,9 @@ pub enum Transport {
 /// own `io: None` handling) and populated for an
 /// http-transport row from the wrapped `ObjectStore`/range-client tally each
 /// `FormatRunner`'s `Source::Http` arm reports (see `formats::IoStats`).
-/// The last three are a CityParquet lookup's [`LookupCounters`], empty on every other row.
+/// The last four are a CityParquet lookup's [`LookupCounters`] — row groups in
+/// the table, those the bloom filters ruled out, those the min/max statistics
+/// then ruled out, and the filter bytes read — empty on every other row.
 ///
 /// The timing block (`time_mean_s` .. `time_q3_s`) is [`TimingStats`] over the
 /// warm samples, in that struct's field order; `benchmark/databases` writes
@@ -309,7 +311,7 @@ pub enum Transport {
 const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_mean_s,\
 time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,\
 peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
-bloom_pruned,filter_bytes";
+bloom_pruned,stats_pruned,filter_bytes";
 
 /// The resolved-parameters sidecar for a results CSV: the CSV's own path with
 /// `.params.json` appended, so the two travel together and a run cannot leave
@@ -1861,10 +1863,10 @@ impl Row {
         };
         let lookup_fields = match self.lookup {
             Some(l) => format!(
-                "{},{},{}",
-                l.row_groups_total, l.bloom_pruned, l.filter_bytes
+                "{},{},{},{}",
+                l.row_groups_total, l.bloom_pruned, l.stats_pruned, l.filter_bytes
             ),
-            None => ",,".to_string(),
+            None => ",,,".to_string(),
         };
         let notes = self.notes.join(";");
         let (dataset, format, scenario, result_count) = (
@@ -2308,10 +2310,10 @@ mod tests {
     }
 
     #[test]
-    fn lookup_counters_fill_the_three_trailing_columns_and_are_empty_otherwise() {
+    fn lookup_counters_fill_the_four_trailing_columns_and_are_empty_otherwise() {
         let plain = row(Scenario::IdLookup, &["id-miss"]);
         let rendered = plain.render();
-        assert!(rendered.ends_with("id-miss,,,,,"), "{rendered}");
+        assert!(rendered.ends_with("id-miss,,,,,,"), "{rendered}");
         assert_eq!(rendered.split(',').count(), CSV_HEADER.split(',').count());
 
         let mut counted = row(Scenario::IdLookup, &["id-miss"]);
@@ -2319,10 +2321,10 @@ mod tests {
             row_groups_total: 16,
             bloom_pruned: 15,
             filter_bytes: 4096,
-            stats_pruned: 0,
+            stats_pruned: 3,
         });
         let rendered = counted.render();
-        assert!(rendered.ends_with("id-miss,,,16,15,4096"), "{rendered}");
+        assert!(rendered.ends_with("id-miss,,,16,15,3,4096"), "{rendered}");
         assert_eq!(rendered.split(',').count(), CSV_HEADER.split(',').count());
     }
 

@@ -12,7 +12,7 @@ use cityparquet::package::{ConvertOptions, RowOrder, convert};
 const HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_mean_s,\
 time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,\
 peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,\
-filter_bytes";
+stats_pruned,filter_bytes";
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -490,13 +490,21 @@ fn a_bloom_pair_records_lookup_counters() {
     assert_eq!(rows.len(), 8, "{text}");
     for row in &rows {
         let (label, scenario, notes) = (field(row, 1), field(row, 2), column(row, "notes"));
-        let counters: Vec<&str> = ["row_groups_total", "bloom_pruned", "filter_bytes"]
-            .iter()
-            .map(|name| column(row, name))
-            .collect();
+        let counters: Vec<&str> = [
+            "row_groups_total",
+            "bloom_pruned",
+            "filter_bytes",
+            "stats_pruned",
+        ]
+        .iter()
+        .map(|name| column(row, name))
+        .collect();
         assert_eq!(row.split(',').count(), HEADER.split(',').count(), "{row}");
         assert_ne!(scenario, "write", "{row}");
         assert_eq!(counters[0], "1", "delft is one row group: {row}");
+        // The miss probes sit inside the group's identifier range, so the
+        // statistics never reject them, with or without filters.
+        assert_eq!(counters[3], "0", "stats_pruned: {row}");
         let is_miss = notes.starts_with("id-miss") || notes.starts_with("feature-miss");
         if label == "cityparquet+nobloom" {
             assert_eq!(counters[1], "0", "{row}");
