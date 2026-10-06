@@ -66,7 +66,7 @@ class ProvenanceTests(unittest.TestCase):
             bench_suite.write_run_manifest(source, result, family="formats", repeat=1, smoke=True, fixed_configuration="test")
             manifest = json.loads(result.with_suffix(".run.json").read_text())
             self.assertEqual(set(manifest["result"]["files_sha256"]), {"slice.csv", "slice.csv.samples.json", "slice.csv.params.json"})
-            self.assertEqual(manifest["measurement"], {"read_repeat": 1, "fixed_configuration": "test"})
+            self.assertEqual(manifest["measurement"], {"read_repeat": 1, "cell_budget_s": None, "min_repeat": 7, "fixed_configuration": "test"})
 
 
 if __name__ == "__main__":

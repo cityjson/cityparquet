@@ -124,13 +124,15 @@ case_positional_arguments_line_up() {
   local name="bloom-bench and bloom-bench-http pass each argument in its own parameter's position"
   local params
   params="$(variant_bench_params | tr '\n' ' ')"
-  if [[ "$params" != "FOLDER OUT VARIANTS PREPARED REPEAT SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL " ]]; then
+  if [[ "$params" != "FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL " ]]; then
     fail "$name" "variant-bench's parameters changed: $params"
     return
   fi
   local recipe
   for recipe in bloom-bench bloom-bench-http; do
     if [[ "$(argument_for "$recipe" REPEAT)" != "{{REPEAT}}" \
+      || "$(argument_for "$recipe" CELL_BUDGET_S)" != "{{CELL_BUDGET_S}}" \
+      || "$(argument_for "$recipe" MIN_REPEAT)" != "{{MIN_REPEAT}}" \
       || "$(argument_for "$recipe" SCENARIOS)" != "id-lookup,feature-lookup" \
       || "$(argument_for "$recipe" ID_PROBES)" != "id-50pct,id-miss" \
       || "$(argument_for "$recipe" FEATURE_PROBES)" != "feature-50pct,feature-miss" ]]; then

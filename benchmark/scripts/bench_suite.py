@@ -177,7 +177,7 @@ def code_identity() -> dict[str, object]:
     }
 
 
-def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repeat: int, smoke: bool, fixed_configuration: str, profile: str = "full") -> None:
+def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repeat: int, smoke: bool, fixed_configuration: str, profile: str = "full", cell_budget_s: float | None = None, min_repeat: int = 7) -> None:
     """Persist enough local evidence to identify one benchmark result exactly."""
     artefacts = [
         result_csv,
@@ -193,7 +193,7 @@ def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repe
         "profile": profile,
         "source": {"path": str(source_path.resolve()), "sha256": sha256(source_path)},
         "result": {"csv": str(result_csv.resolve()), "files_sha256": files, "params_sha256": sha256(params) if params.is_file() else None},
-        "measurement": {"read_repeat": repeat, "fixed_configuration": fixed_configuration},
+        "measurement": {"read_repeat": repeat, "cell_budget_s": cell_budget_s, "min_repeat": min_repeat, "fixed_configuration": fixed_configuration},
         "code": code_identity(),
         "machine": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "processor": platform.processor(), "python": sys.version.split()[0]},
         "tools": {"rust": version("rustc", "--version"), "fcb": version("fcb", "--version"), "cjseq": version("cjseq", "--version"), "cityparquet": version("lib/cityparquet-rs/target/release/cityparquet", "--version")},
@@ -271,9 +271,11 @@ def read_repeat(profile: str) -> int:
     return 1 if profile == "smoke" else 25
 
 
-def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "") -> None:
+def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7) -> None:
     smoke = profile == "smoke"
     repeat = read_repeat(profile)
+    budget = "" if cell_budget_s is None else str(cell_budget_s)
+    sampling = {"cell_budget_s": cell_budget_s, "min_repeat": min_repeat}
     selected = {key: manifest["datasets"][key] for key in datasets}
     inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in INPUT_ROLES]
     require_prepared(inputs, locations)
@@ -283,23 +285,23 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         # `bench` is the low-level format runner. It must be passed explicit
         # external output paths.
         output = result_dir(locations, "formats", profile)
-        just("bench", str(stage(locations, "formats", inputs)), str(output), read_formats, str(locations["prepared"]), str(repeat))
+        just("bench", str(stage(locations, "formats", inputs)), str(output), read_formats, str(locations["prepared"]), str(repeat), budget, str(min_repeat))
         for input_path in inputs:
             # A read subset is part of the run's identity: a CSV whose
             # read rows were measured for four formats must say so.
             configuration = "CityParquet=Hilbert"
             if read_formats:
                 configuration += f"; read-formats={read_formats}"
-            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=repeat, smoke=smoke, fixed_configuration=configuration, profile=profile)
+            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=repeat, smoke=smoke, fixed_configuration=configuration, profile=profile, **sampling)
     if "sizes" in families:
         output = result_dir(locations, "sizes", profile) / "sizes.csv"
         for input_path in inputs:
             command(sys.executable, "benchmark/scripts/measure_sizes.py", "--input", str(input_path), "--prepared", str(locations["prepared"]), "--out", str(output))
     if "bloom" in families:
         output = result_dir(locations, "bloom", profile)
-        just("bloom-bench", str(stage(locations, "bloom", inputs)), str(output), str(locations["prepared"]), str(repeat))
+        just("bloom-bench", str(stage(locations, "bloom", inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat))
         for input_path in inputs:
-            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile)
+            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile, **sampling)
     if "databases" in families:
         database_key = database_dataset(manifest, profile)
         if database_key not in selected:
@@ -332,6 +334,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 25 read repetitions, the families' own result directories (the paper's evidence); short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Rotterdam alone, 1 repetition, under <family>/smoke/. Under short and smoke the database family measures Rotterdam")
     result.add_argument("--smoke", action="store_true", help="the same as --profile smoke")
     result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")
+    result.add_argument("--cell-budget-s", type=float, default=None, help="run only: optional per-cell time budget in seconds for the formats and bloom families (default: off); a cell stops sampling once its runs, warm-up included, took this long and at least --min-repeat samples exist")
+    result.add_argument("--min-repeat", type=int, default=7, help="run only: the fewest timed samples a budgeted cell takes (default 7, clamped to the repetitions)")
     result.add_argument("--data-root", type=Path, default=Path(os.environ.get("CITYPARQUET_BENCH_ROOT", DEFAULT_DATA_ROOT)))
     result.add_argument("--out", type=Path)
     result.add_argument("--figures", type=Path)
@@ -355,7 +359,7 @@ def main() -> None:
     if args.command == "prep":
         prepare(data, locations, families, datasets, profile)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, profile, args.read_formats)
+        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat)
     else:
         output = (args.out or locations["summary"] / profile).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None

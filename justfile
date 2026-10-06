@@ -315,9 +315,15 @@ readbench-prepare INPUT OUTDIR=(BENCH / "runs/data/readbench") FORMATS='':
 # than inserted before OUT because `just` parameters are
 # positional-with-defaults — inserting it would silently reinterpret every
 # existing `just bench FOLDER OUT` call's second argument.
+#
+# REPEAT is the number of timed samples per cell, each cell's samples run
+# back to back after one discarded warm-up. CELL_BUDGET_S (empty: off) stops
+# a cell's sampling once its runs, warm-up included, have taken that many
+# seconds and at least MIN_REPEAT samples exist; such a row carries the
+# `budget` tag in `notes`.
 [private]
 [doc("Cross-format READ benchmark over every input under FOLDER")]
-bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "runs/data/readbench") REPEAT='25':
+bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -327,6 +333,9 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
     run_args=()
     if [[ -n "{{FORMATS}}" ]]; then
         run_args=(--formats "{{FORMATS}}")
+    fi
+    if [[ -n "{{CELL_BUDGET_S}}" ]]; then
+        run_args+=(--cell-budget-s "{{CELL_BUDGET_S}}")
     fi
     found=0
     while IFS= read -r -d '' f; do
@@ -350,6 +359,7 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
             --prepared-dir "{{PREPARED}}" \
             --out "$out" \
             --repeat {{REPEAT}} \
+            --min-repeat {{MIN_REPEAT}} \
             ${run_args[@]+"${run_args[@]}"}
 
         found=$((found + 1))
@@ -387,7 +397,7 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
 # reads those lists back out of this file.
 [private]
 [doc("Configuration-axis run: reads and package size per variant, over every input under FOLDER")]
-variant-bench FOLDER OUT VARIANTS PREPARED REPEAT SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL='':
+variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL='':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -411,6 +421,10 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT SCENARIOS ID_PROBES FEATURE_PR
         if [[ -n "{{FEATURE_PROBES}}" ]]; then
             feature_args=(--feature-probes "{{FEATURE_PROBES}}")
         fi
+        budget_args=()
+        if [[ -n "{{CELL_BUDGET_S}}" ]]; then
+            budget_args=(--cell-budget-s "{{CELL_BUDGET_S}}")
+        fi
         transport_args=()
         if [[ -n "{{BASE_URL}}" ]]; then
             transport_args=(--transport http --base-url "{{BASE_URL}}")
@@ -420,6 +434,8 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT SCENARIOS ID_PROBES FEATURE_PR
             --prepared-dir "{{PREPARED}}" \
             --out "$out" \
             --repeat {{REPEAT}} \
+            --min-repeat {{MIN_REPEAT}} \
+            ${budget_args[@]+"${budget_args[@]}"} \
             --scenarios "{{SCENARIOS}}" \
             --id-probes "{{ID_PROBES}}" \
             ${feature_args[@]+"${feature_args[@]}"} \
@@ -443,8 +459,8 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT SCENARIOS ID_PROBES FEATURE_PR
 # verified miss. Every variant at the default codec and row-group size.
 [private]
 [doc("Bloom axis over every input under FOLDER: cityparquet vs cityparquet+nobloom")]
-bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25':
-    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"
+bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"
 
 # The bloom axis over HTTP: reads (never builds) the two packages a local
 # `bloom-bench` run left in PREPARED, after PREPARED was uploaded to BASE_URL
@@ -452,8 +468,8 @@ bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / 
 # real bucket, and its timings are a snapshot of one network path.
 [private]
 [doc("Bloom axis over HTTP, against uploaded bloom-bench packages")]
-bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25':
-    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"
+bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"
 
 # ---------------------------------------------------------------------------
 # The harness's own test suites
