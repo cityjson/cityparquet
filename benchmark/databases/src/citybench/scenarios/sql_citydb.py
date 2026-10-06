@@ -390,15 +390,25 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         )
 
     if scenario == "id-lookup":
-        # No CityObject-granularity predicate: `objectid` is a unique
-        # identifier and every probe id names a genuine CityObject (they
-        # come from the CityJSON source's own feature stream —
-        # 3DCityDB's boundary-surface features get their own internal
-        # `objectid`s, never one of these), so the row this finds is
-        # already CityObject-granular by construction. count_mode is
-        # "rowcount" (0 or 1), not first-column.
+        # The WHOLE object, as cjdb's and DuckDB's `SELECT *` return it: the
+        # `feature` row, every `property` row of it (attributes and
+        # geometry/association references, each `val_*` column as its own
+        # array) and every geometry it points at, PostGIS `geometry` fetched
+        # in binary. Aggregated in scalar subqueries so the lookup stays one
+        # row (count_mode "rowcount": 0 or 1). No CityObject-granularity
+        # predicate: `objectid` is unique and every probe id names a
+        # CityObject of the CityJSON source.
+        props = f"FROM {_P} pr WHERE pr.{CAPTURED_PROPERTY_FK} = f.id"
+        cols = ", ".join(
+            f"(SELECT array_agg(pr.{c} ORDER BY pr.id) {props}) AS {c}s"
+            for c in ("name", "val_int", "val_double", "val_string",
+                      "val_timestamp", "val_uri", "val_lod", "val_geometry_id",
+                      "val_feature_id")
+        )
         return (
-            f"SELECT * FROM {_F} WHERE {CAPTURED_ID_COLUMN} = %s",
+            f"SELECT f.*, {cols}, "
+            f"(SELECT array_agg(gd.geometry ORDER BY gd.id) {props.replace('WHERE', f'JOIN {SCHEMA}.geometry_data gd ON gd.id = pr.val_geometry_id WHERE')}) AS geometries "
+            f"FROM {_F} f WHERE f.{CAPTURED_ID_COLUMN} = %s",
             (_probe(probe).id,),
         )
 

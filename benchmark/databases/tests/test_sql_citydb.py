@@ -512,3 +512,14 @@ def test_attr_stats_returns_min_max_sum_count_in_that_order():
     select = sql.split(" FROM ")[0]
     positions = [select.index(f"{agg}(") for agg in ("min", "max", "sum", "count")]
     assert positions == sorted(positions), select
+
+
+def test_id_lookup_returns_the_whole_object_in_one_row():
+    """The feature row plus every property and every geometry of the
+    object, aggregated so the lookup stays one row (rowcount mode)."""
+    sql, args = sql_for("id-lookup", _params(), cityobject_class_ids=IDS,
+                        probe=make_probes()[0])
+    assert sql.startswith("SELECT f.*,")
+    assert "array_agg(pr.name" in sql and "pr.val_string" in sql and "pr.val_double" in sql
+    assert "array_agg(gd.geometry" in sql and "geometry_data gd" in sql
+    assert args == (make_probes()[0].id,)
