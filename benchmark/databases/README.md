@@ -249,14 +249,14 @@ the timed window on every system.
 
 | scenario                  | returns                  | common target                                                      | `duckdb-cityparquet`                                                                                                                                  | `cjdb`                                                                                                                                                                                                   | `3dcitydb`                                                                                                                                                                                                                                        |
 | ------------------------- | ------------------------ | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `geometry-scan` | ids + native binary geometry | every object's id and every geometry it carries | `SELECT id, <every geometry_lod* column>` fetched to Arrow as WKB | `SELECT object_id, geometry` (the geometry JSONB), binary wire format | `objectid` + `array_agg(geometry_data.geometry)` per feature, binary wire format |
+| `geometry-scan` | ids + native binary geometry | every object's id and every geometry it carries | `SELECT id, <every geometry_lod* column>` fetched to Arrow as WKB | `SELECT object_id, geometry` (the geometry JSONB), binary wire format | `objectid` + an array of the object's geometries, one per LoD, gathered from it and its boundary parts (Caveat 17), binary wire format |
 | `count`                   | count                    | total CityObject count                                             | `SELECT count(*)` — answered from file metadata; caption it as such                                                                                   | `SELECT count(*) FROM cjdb.city_object`                                                                                                                                                                  | `count(*)` over `feature` with the CityObject predicate (Caveat 1)                                                                                                                                                                                |
-| `bbox-query` (1/5/25 %) | ids + highest-LoD geometry | objects whose bbox intersects the window, each with its most detailed geometry | `bbox` STRUCT comparisons — **x/y only**; `coalesce` over the per-LoD WKB columns, most detailed first | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3); the highest-LoD element of the geometry JSONB | envelope `&& ST_MakeEnvelope(...)`; the `geometry_data` row of the highest `property.val_lod` (integer tier) via `LEFT JOIN LATERAL` |
+| `bbox-query` (1/5/25 %) | ids + highest-LoD geometry | objects whose bbox intersects the window, each with its most detailed geometry | `bbox` STRUCT comparisons — **x/y only**; `coalesce` over the per-LoD WKB columns, most detailed first | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3); the highest-LoD element of the geometry JSONB | envelope `&& ST_MakeEnvelope(...)`; the object's geometry at the highest `property.val_lod` (integer tier), gathered from it and its boundary parts (Caveat 17), via `LEFT JOIN LATERAL` |
 | `attr-filter`             | ids                      | objects matching the per-dataset attribute predicate               | `WHERE "<col>" = ?` — a typed, flattened top-level column                                                                                             | `WHERE attributes ->> '<col>' = %s` — **no index on `attributes`** (see "Index sets")                                                                                                                    | `property` join on `pr.name = %s AND pr.val_string = %s` (Caveat 13)                                                                                                                                                                              |
 | `attr-range`              | ids                      | objects whose numeric attribute exceeds the threshold              | `WHERE "<col>" > ?` — DOUBLE column with row-group statistics                                                                                         | `WHERE (attributes ->> '<col>')::float > %s`                                                                                                                                                             | `property` join with `coalesce(val_double, val_int) > %s`                                                                                                                                                                                         |
 | `attr-stats`              | `(min, max, sum, count)` | aggregate of `numeric_column`                                      | aggregates over the flattened top-level column                                                                                                        | aggregates over `(attributes ->> '<col>')::float8` — every row's JSONB unpacked and cast                                                                                                                  | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` (Caveat 13)                                                                                                                                            |
-| `id-lookup` (×4 probes)   | the object               | the row for one probe id, materialised                             | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index; bloom filters prune, the cost is the row-group decode (Caveats 21, 22)   | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB                                                                                                                      | one row: `f.*` of the `feature` row `WHERE objectid = %s` (btree), plus one array per `property` column (`name`, every `val_*`) and an array of every geometry it points at, aggregated in scalar subqueries (Caveat 17)                         |
-| `lod-query`               | ids + LoD 2.2 geometry   | objects carrying an LoD 2.2 geometry, each with that geometry (Caveat 9) | `SELECT id, geometry_lod2_2 WHERE geometry_lod2_2 IS NOT NULL`, fetched to Arrow inside the timed window; skipped on a dataset without LoD 2.2 (Caveat 15) | `SELECT object_id, jsonb_path_query_first(geometry, '$[*] ? (@.lod == "2.2")')` with `WHERE geometry @? '$[*] ? (@.lod == "2.2")'` — the `@?` operator, which uses cjdb's GIN(`geometry`) index; the `jsonb_path_exists` function form does not | `SELECT DISTINCT ON (f.id) f.objectid, gd.geometry` through the `property` row with `val_lod = '2' AND val_geometry_id IS NOT NULL`, joined to `geometry_data` — the importer stores only the integer LoD tier (`docs/3dcitydb-v5-schema.md`, "LoD value format"; Caveat 17) |
+| `id-lookup` (×4 probes)   | the object               | the row for one probe id, materialised                             | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index; bloom filters prune, the cost is the row-group decode (Caveats 21, 22)   | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB                                                                                                                      | one row: `f.*` of the `feature` row `WHERE objectid = %s` (btree), plus one array per `property` column (`name`, every `val_*`) and an array of its geometries, one per LoD, gathered from it and its boundary parts, aggregated in scalar subqueries (Caveat 17)                         |
+| `lod-query`               | ids + LoD 2.2 geometry   | objects carrying an LoD 2.2 geometry, each with that geometry (Caveat 9) | `SELECT id, geometry_lod2_2 WHERE geometry_lod2_2 IS NOT NULL`, fetched to Arrow inside the timed window; skipped on a dataset without LoD 2.2 (Caveat 15) | `SELECT object_id, jsonb_path_query_first(geometry, '$[*] ? (@.lod == "2.2")')` with `WHERE geometry @? '$[*] ? (@.lod == "2.2")'` — the `@?` operator, which uses cjdb's GIN(`geometry`) index; the `jsonb_path_exists` function form does not | `f.objectid` and the object's tier-2 geometry, gathered from it and its boundary parts through the `property` rows with `val_lod = '2'` and joined to `geometry_data` — the importer stores only the integer LoD tier (`docs/3dcitydb-v5-schema.md`, "LoD value format"; Caveat 17) |
 | `parts-per-building`      | one row per Building     | how many parts each Building has, **childless Buildings included** | `SELECT id, coalesce(len(children), 0) WHERE object_type = 'Building'` — a stored array, no join                                                      | `LEFT JOIN city_object_relationships cor ON cor.parent_id = co.id`, `count(cor.child_id)`, `GROUP BY co.object_id`                                                                                       | `feature parent LEFT JOIN property LEFT JOIN feature child`, the CityObject predicate on the child, `count(child.id)`                                                                                                                             |
 | `parts-per-building-join` | one row per Building     | the same question in the shape a normalised store must use         | `LEFT JOIN (SELECT unnest(parents) AS parent, id … WHERE object_type = 'BuildingPart') p ON p.parent = b.id … GROUP BY b.id`                          | —                                                                                                                                                                                                        | —                                                                                                                                                                                                                                                 |
 
@@ -273,10 +273,9 @@ an append file from) is recorded as `skipped: ...`, not as an error.
 is what makes the three times comparable: each row is the object's
 identifier and its LoD 2.2 geometry — DuckDB's `geometry_lod2_2` WKB,
 cjdb's LoD 2.2 element of the `geometry` JSONB array, 3DCityDB's
-`geometry_data` row for the tier-2 geometry. 3DCityDB's `DISTINCT ON (f.id)`
-adds a bigint sort the others do not pay, in exchange for a row count that
-is one per CityObject even when several `property` rows of that feature
-match. On 3DBAG the objects carrying an LoD 2.2 geometry are the
+tier-2 geometry, gathered from the object and its boundary parts and
+collected into one geometry per object (Caveat 17), so its row count is
+one per CityObject even when several `property` rows match. On 3DBAG the objects carrying an LoD 2.2 geometry are the
 `BuildingPart`s, not their parent `Building`s; all three systems answer at
 CityObject grain, so they agree on which objects those are.
 
@@ -1167,17 +1166,37 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     column included), `cjdb` the `city_object` row (`SELECT *`, the
     `geometry` JSONB included), and 3DCityDB the `feature` row plus one
     array per `property` column (`name` and every `val_*`) and an array of
-    every geometry the object points at in `geometry_data`, aggregated in
-    scalar subqueries so the lookup stays one row. 3DCityDB therefore reads
-    three tables where the others read one, and its row is shaped
-    differently: the attributes come back as parallel arrays rather than as
-    named columns or a JSON object. The scenario is one CityParquet loses
-    heavily in any case, for a reason Caveat 22 isolates (a row-group
-    decode, not a missing index). `lod-query` on 3DCityDB targets the
-    integer LoD tier 2 (`CITYDB_LOD_TIER`), because the importer stores
-    only the integer tier on the `property` row; tier 2 equals LoD 2.2 only
-    where 2.2 is the dataset's only LoD 2.x. The benchmark's 3DBAG slice
-    carries LoD 0, 1.3 and 2.2, so there the two coincide (Caveat 9).
+    the object's geometries, one per LoD, aggregated in scalar subqueries
+    so the lookup stays one row. 3DCityDB therefore reads three tables
+    where the others read one, and its row is shaped differently: the
+    attributes come back as parallel arrays rather than as named columns
+    or a JSON object.
+
+    "The object's geometry" is not a single row in 3DCityDB's model.
+    citydb-tool turns each semantic surface of a CityJSON geometry into a
+    boundary feature (`RoofSurface`, `WallSurface`, ...) that the object
+    contains (a `property` row with `val_feature_id` and
+    `val_relation_type = 1`), and the surface's polygons become a
+    `geometry_data` row of that boundary feature. A Building whose LoD 2
+    MultiSurface carries semantics owns no `geometry_data` row at all. So
+    every 3DCityDB scenario that returns geometry (`geometry-scan`,
+    `bbox-query`, `id-lookup`, `lod-query`) gathers it the way citydb-tool's
+    export reassembles an object: from the object and its contained parts,
+    followed recursively and stopping at CityObject classes (a BuildingPart
+    stays its own object); per LoD, the rows of the shallowest level that
+    has any, so an object's own root row (a Solid, say) is returned as
+    stored rather than the surfaces it is built from; and, where that level
+    has several rows, one `ST_Collect` collection of them, with no union or
+    other geometry processing. That walk and collection is work the other
+    two systems do not do, and it is inside the timed query.
+
+    The scenario is one CityParquet loses heavily in any case, for a
+    reason Caveat 22 isolates (a row-group decode, not a missing index).
+    `lod-query` on 3DCityDB targets the integer LoD tier 2
+    (`CITYDB_LOD_TIER`), because the importer stores only the integer tier
+    on the `property` row; tier 2 equals LoD 2.2 only where 2.2 is the
+    dataset's only LoD 2.x. The benchmark's 3DBAG slice carries LoD 0, 1.3
+    and 2.2, so there the two coincide (Caveat 9).
 
 18. **`geometry-scan` and `bbox-query` return geometry in each system's
     native binary form, which is not one form.** DuckDB hands back the
@@ -1187,10 +1206,13 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     form is still JSON text with a version byte. 3DCityDB returns PostGIS's
     binary geometry. No system converts geometry to text and no byte sizes
     are summed, but the amount transferred per object differs with each
-    system's storage, and that difference is part of what is measured. On
-    3DCityDB, `property.val_lod` holds only the integer LoD tier, so the
-    highest-LoD pick inside one tier (1.2 against 1.3) falls to the newest
-    `geometry_data` row.
+    system's storage, and that difference is part of what is measured.
+    3DCityDB's geometry is the object's geometry as Caveat 17 defines it,
+    one per LoD, so a semantically split surface comes back as an
+    `ST_Collect` collection of its boundary features' rows. Its
+    `property.val_lod` holds only the integer LoD tier, so the rows of two
+    LoDs inside one tier (1.2 and 1.3) fall into one collection, and the
+    highest-LoD pick is by tier.
 
 19. **The write tier is different operations, not one scale.** cjdb rewrites
     roughly half a million JSONB tuples under MVCC; 3DCityDB inserts,
