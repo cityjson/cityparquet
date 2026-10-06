@@ -77,12 +77,6 @@ test-all:
 capture-schema DATASET:
     ./scripts/capture_schema.sh {{DATASET}}
 
-# PREPARED is the directory holding <dataset>.parquet: the query windows
-# and the attribute picks are derived from the CityParquet package, as the
-# format harness derives its own, so the package must already exist.
-derive-params DATASET PREPARED='../runs/data/readbench':
-    uv run python -m citybench.cli derive-params --dataset {{DATASET}} --prepared-dir {{PREPARED}}
-
 # Isolation (see README "Host isolation"): NUMA_NODE is a node id, `auto`
 # (most MemFree at run start; env BENCH_NUMA_NODE overrides the default) or
 # `off`; MAX_LOAD is a load threshold, `auto` (half the node's cores) or `off`.

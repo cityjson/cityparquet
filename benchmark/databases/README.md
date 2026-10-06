@@ -136,9 +136,7 @@ are taken from the source's CityJSONSeq stream order.
 
 `citybench run` derives the parameters afresh on every run and writes them
 beside the CSV as `<dataset>.params.json`; it never reads a name-keyed
-file. `just derive-params --dataset <src> --prepared-dir <dir>` writes the
-same payload to `params/<dataset>.json` (see "Heterogeneity corpus
-parameter files").
+file.
 
 ### The query windows
 
@@ -1475,80 +1473,6 @@ database duplicates every object. Before a new import, or before changing
 cd benchmark/databases
 just test       # uv run pytest -m "not integration"
 just test-all   # includes integration tests, which need running databases
-```
-
-## Heterogeneity corpus parameter files
-
-`params/` holds parameter files written by `just derive-params` for five
-further datasets: `delft.json`, `Montreal.json`, `Vienna.json`, `Zurich.json`
-and `lod3_railway.json`. No results for them are committed, and
-`citybench run` does not read these files; they are reference outputs of
-`citybench.params.derive` for those sources.
-
-**These files predate both the package-derived parameters and the current
-sidecar schema**, and no longer match what `derive` produces: it needs the
-dataset's CityParquet package as well as its source, and it now writes
-`id_probes` and `append` where these files still carry `target_id`.
-`params.from_json` will not read them. Regenerating one takes
-`just derive-params --dataset <src> --prepared-dir <dir>` with the package
-already prepared; that also writes the `<dataset>.append.city.jsonl` the
-`append-object` scenario imports, beside the sidecar.
-
-Montreal, Vienna, Zurich and lod3_railway are fetched and checksum-pinned,
-not committed:
-
-```sh
-./scripts/fetch_corpus.sh [DEST]   # default DEST: data/; verifies against scripts/corpus.sha256
-```
-
-`scripts/corpus.sha256` pins the pristine downloads. None of the four
-declares `metadata.referenceSystem`, and `cityparquet convert` refuses a
-source with coordinates but no CRS, so each is stamped with its EPSG code
-before use:
-
-```sh
-python3 scripts/stamp_crs.py data/Montreal.city.jsonl      2950
-python3 scripts/stamp_crs.py data/Vienna.city.jsonl        31256
-python3 scripts/stamp_crs.py data/Zurich.city.jsonl        2056
-python3 scripts/stamp_crs.py data/lod3_railway.city.json   7415
-```
-
-Stamping rewrites the file in place, so `sha256sum -c scripts/corpus.sha256`
-fails against the stamped copies; re-running `fetch_corpus.sh` restores the
-pristine bytes, after which stamping must be repeated. The step is idempotent
-and, for CityJSONSeq, rewrites only the header line.
-
-| dataset        | EPSG                             | `bbox_full` lower-left corner in WGS 84 | location                                                                                           |
-| -------------- | -------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `Montreal`     | 2950 (NAD83(CSRS) / MTM zone 8)  | 45.506° N, 73.561° W                    | Montreal                                                                                           |
-| `Vienna`       | 31256 (MGI / Austria GK East)    | 48.202° N, 16.345° E                    | Vienna                                                                                             |
-| `Zurich`       | 2056 (CH1903+ / LV95)            | 47.323° N, 8.459° E                     | Zurich                                                                                             |
-| `lod3_railway` | 7415 (Amersfoort / RD New + NAP) | —                                       | a synthetic scene of about 12 × 7 × 1.5 m near the origin; 7415 only satisfies the CRS requirement |
-
-The corners can be reproduced from `params/<dataset>.json` with `cs2cs
-EPSG:<code> EPSG:4326`. `EPSG:31256` uses (northing, easting) axis order, so
-Vienna's corner must be given as `miny minx`.
-
-`lod3_railway.city.json` is single-document CityJSON. cjdb accepts only files
-ending `.jsonl` and reads line 1 as a CityJSONSeq header, so convert it with
-the `cjio` that the patched cjdb depends on:
-
-```sh
-uv run --with .cjdb-patched/cjdb-2.2.0+<patch-hash> cjio data/lod3_railway.city.json export jsonl data/lod3_railway.city.jsonl
-```
-
-and use the `.jsonl` file for every system. lod3_railway is multi-family and
-has no numeric attribute, so the native reader cannot read it (Caveat 14)
-and `attr-stats` is `skipped:` on every system. `lod3_railway.city.json` is
-also the case `append-object` cannot serve from a single document: derive
-its parameters from the exported `.jsonl`, or the row is `skipped:`.
-
-To run one of these datasets, prepare its CityParquet package into the
-prepared directory and pass the dataset's EPSG code as `--srid`, for example:
-
-```sh
-uv run python -m citybench.cli run --data-root ../runs \
-  --prepared-dir ../runs/data/readbench --dataset data/Zurich.city.jsonl --srid 2056
 ```
 
 ## Environment

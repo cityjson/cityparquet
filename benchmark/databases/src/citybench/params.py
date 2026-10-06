@@ -691,7 +691,7 @@ def dataset_name_of(package: Path) -> str:
 
 
 def to_json(p: Params) -> str:
-    """Serialise for committing to params/<dataset>.json."""
+    """Serialise to the `<dataset>.params.json` sidecar beside the results CSV."""
     payload = {
         "attr_filter": dataclasses.asdict(p.attr_filter) if p.attr_filter else None,
         "attr_range": dataclasses.asdict(p.attr_range) if p.attr_range else None,

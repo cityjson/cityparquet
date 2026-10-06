@@ -252,26 +252,6 @@ def cmd_prep(args) -> int:
     return 0
 
 
-def cmd_derive_params(args) -> int:
-    source = Path(args.dataset)
-    dataset = _dataset(
-        source, Path(args.prepared_dir) if getattr(args, "prepared_dir", None) else None
-    )
-    name = Dataset.name_from_path(source)
-    out = ROOT / "params" / f"{name}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    # The one-feature `append-object` file is written BESIDE the sidecar
-    # that describes it, so the two are committed and read together.
-    p = params_mod.derive(
-        dataset.source, dataset.cityparquet_dir, append_dir=out.parent, dataset=name
-    )
-    out.write_text(params_mod.to_json(p))
-    print(f"wrote {out}")
-    if p.append:
-        print(f"wrote {p.append.path}")
-    return 0
-
-
 def _isolation(args) -> tuple[dict, isolation_mod.LoadGate]:
     """Plan and apply host isolation once per run, before any container
     starts, so the PostgreSQL containers can be given the same node."""
@@ -692,15 +672,6 @@ def main(argv: list[str] | None = None) -> int:
     p_prep.add_argument("--prepared-dir", default=None)
     p_prep.add_argument("--srid", type=int, default=None)
     p_prep.set_defaults(func=cmd_prep)
-
-    p_derive = sub.add_parser("derive-params")
-    p_derive.add_argument("--dataset", required=True)
-    p_derive.add_argument("--prepared-dir", default=None,
-                          help="directory holding <dataset>.parquet; the "
-                               "windows and attribute picks are derived from "
-                               "that package, as the format harness derives "
-                               "its own")
-    p_derive.set_defaults(func=cmd_derive_params)
 
     p_bench = sub.add_parser("run")
     p_bench.add_argument("--dataset", required=True)

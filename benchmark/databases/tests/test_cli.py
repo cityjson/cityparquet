@@ -648,9 +648,8 @@ def test_extension_flag_is_carried_to_the_systems_through_the_environment(
     build = tmp_path / "cityjson.duckdb_extension"
     build.write_bytes(b"abc")
     monkeypatch.delenv(extension.ENV_VAR, raising=False)
-    monkeypatch.setattr(cli, "cmd_derive_params", lambda args: 0)
-    cli.main(["--duckdb-cityjson-extension", str(build),
-              "derive-params", "--dataset", "x.city.json"])
+    monkeypatch.setattr(cli, "cmd_prep", lambda args: 0)
+    cli.main(["--duckdb-cityjson-extension", str(build), "prep"])
     assert os.environ[extension.ENV_VAR] == str(build)
 
 
