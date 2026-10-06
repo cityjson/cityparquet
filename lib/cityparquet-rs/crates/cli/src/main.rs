@@ -138,6 +138,12 @@ enum Commands {
         /// never silent.
         #[arg(long, default_value_t = false)]
         tolerate_invalid_appearance: bool,
+        /// The STAC `datetime` written to `metadata.json` (RFC 3339, e.g.
+        /// `2026-10-05T00:00:00Z`). Without it the source's `referenceDate`
+        /// is used, else the conversion time; pass it for a package that must
+        /// be reproducible byte for byte.
+        #[arg(long)]
+        datetime: Option<String>,
     },
 
     /// Export CityParquet package back to CityJSON, CityJSONSeq, or CityGML
@@ -411,6 +417,7 @@ fn main() -> std::process::ExitCode {
             no_lod0,
             crs,
             tolerate_invalid_appearance,
+            datetime,
         } => {
             // `--compression` deliberately keeps its hand-rolled parse: its
             // "error: invalid compression '<v>' (expected one of: …)" text and
@@ -462,6 +469,7 @@ fn main() -> std::process::ExitCode {
                 lod0: cityparquet::lod0::Lod0Options::default(),
                 crs_override: None,
                 tolerate_invalid_appearance,
+                datetime,
             };
 
             // A sizing flag only makes sense with --partition.

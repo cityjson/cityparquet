@@ -722,3 +722,28 @@ fn json_attributes_are_reported_as_object_not_string() {
         "not every attribute is JSON-typed; a blanket Object would be wrong"
     );
 }
+
+/// An explicit `ConvertOptions::datetime` is the STAC `datetime` the writer
+/// records, so two conversions of the same source write the same
+/// `metadata.json` byte for byte — without it a source with no
+/// `referenceDate` gets the conversion time, which differs on every run.
+#[test]
+fn explicit_datetime_makes_metadata_reproducible() {
+    let write = |dir: &tempfile::TempDir| {
+        let out = dir.path().join("delft.parquet");
+        let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.clone());
+        opts.datetime = Some("2026-10-05T00:00:00Z".to_string());
+        convert(&opts).expect("convert delft");
+        fs::read_to_string(out.join("metadata.json")).expect("read metadata.json")
+    };
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let first = write(&a);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let second = write(&b);
+    let item: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(item["properties"]["datetime"], "2026-10-05T00:00:00Z");
+    assert_eq!(
+        first, second,
+        "metadata.json differs between two conversions"
+    );
+}

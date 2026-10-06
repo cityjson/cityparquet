@@ -139,6 +139,11 @@ pub struct ConvertOptions {
     /// [`ConvertReport::invalid_appearance_refs_dropped`], never silent —
     /// see [`crate::appearance::AppearanceInterner::set_tolerate_invalid_refs`].
     pub tolerate_invalid_appearance: bool,
+    /// The STAC `datetime` recorded in `metadata.json` (RFC 3339). `None`
+    /// keeps the resolution order — the source's `referenceDate`, else the
+    /// conversion time; an explicit value makes the package reproducible
+    /// byte for byte when the source has no `referenceDate`.
+    pub datetime: Option<String>,
 }
 
 impl ConvertOptions {
@@ -162,6 +167,7 @@ impl ConvertOptions {
             lod0: Lod0Options::default(),
             crs_override: None,
             tolerate_invalid_appearance: false,
+            datetime: None,
         }
     }
 }
@@ -1186,9 +1192,9 @@ fn write_package(
     // here needs to re-derive `tables`/`sidecar_files` from them). `id`
     // comes from `opts.output_dir`'s name, not `tmp_dir`'s — `tmp_dir` is the
     // hidden crash-safe scratch directory (see `TMP_DIR_NAME`), never the
-    // package's real name. `datetime` is left `None` so `build_item`'s
+    // package's real name. `build_item`'s
     // resolution order (explicit -> source `referenceDate` -> conversion
-    // timestamp) decides it; this writer has no explicit value to offer.
+    // timestamp) decides it, with `opts.datetime` as the explicit value.
     let item_id = opts
         .output_dir
         .file_name()
@@ -1199,7 +1205,7 @@ fn write_package(
         &item_tables,
         &ItemOptions {
             id: Some(item_id),
-            datetime: None,
+            datetime: opts.datetime.clone(),
         },
     )?;
     let metadata_path = tmp_dir.join("metadata.json");
