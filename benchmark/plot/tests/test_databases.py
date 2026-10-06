@@ -82,6 +82,71 @@ def test_database_conditions_carry_the_windows_and_predicates(tmp_path: Path):
     assert any("feature-rows-added 9" in line for line in lines)
 
 
+def _old_schema(bench: Path) -> Path:
+    """Turn the fixture into committed old evidence: the `peak_rss_bytes` column,
+    and a manifest without the index breakdown that declares that metric.
+    """
+    results = bench.parent / "databases" / "results"
+    csv_path = results / "3dbag_n10000.csv"
+    text = csv_path.read_text(encoding="utf-8")
+    old = text.replace("peak_working_mem_bytes", "peak_rss_bytes", 1)
+    csv_path.write_text(old, encoding="utf-8")
+    manifest_path = results / "3dbag_n10000.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["memory_measurement"] = {"metric": "peak_rss_bytes", "scope": "execution process only"}
+    manifest.pop("size_definitions")
+    for block in manifest["sizes"].values():
+        for field in ("index_bytes", "bloom_filter_bytes", "page_index_bytes", "footer_bytes"):
+            block.pop(field, None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return bench
+
+
+def test_the_current_schema_reads_working_memory_and_the_index_split(tmp_path: Path):
+    db = prep.load_databases(prep.Inputs(_bench(tmp_path, databases=True)))
+    assert db["memory_metric"] == "peak_working_mem_bytes"
+    assert all("peak_rss_bytes" not in r for r in db["records"])
+    geometry = _records(db, format="cjdb", scenario="geometry-scan", threads="single")[0]
+    assert geometry["peak_memory_bytes"] is not None
+    sizes = {s["format"]: s for s in db["sizes"]}
+    assert sizes["cjdb"]["index_bytes"] == 16744448
+    assert sizes["duckdb-cityparquet"]["bloom_filter_bytes"] == 20000
+    mismatched = _records(db, format="cjdb", scenario="id-50pct", threads="single")[0]
+    assert mismatched["status"] == "id-mismatch"
+
+
+def test_old_evidence_is_labelled_process_rss_not_working_memory(tmp_path: Path):
+    bench = _old_schema(_bench(tmp_path, databases=True))
+    data, _ = prep.build(prep.Inputs(bench))
+    db = data["databases"]
+    assert db["memory_metric"] == "peak_rss_bytes"
+    assert any(r["peak_memory_bytes"] is not None for r in db["records"])
+    assert any(
+        line.startswith("Memory (old evidence)") for line in data["meta"]["conditions"]["databases"]
+    )
+    out = tmp_path / "figures"
+    with plt.rc_context({"svg.fonttype": "none"}):
+        figures.databases(data, out)
+    svg = (out / "databases.svg").read_text(encoding="utf-8")
+    assert "Peak process RSS (old evidence, not working memory)" in svg
+    assert "Peak working memory" not in svg
+    assert "Storage including indexes" in svg and "Storage with and without" not in svg
+
+
+def test_a_header_the_manifest_contradicts_is_refused(tmp_path: Path):
+    bench = _bench(tmp_path, databases=True)
+    manifest_path = bench.parent / "databases" / "results" / "3dbag_n10000.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["memory_measurement"]["metric"] = "peak_rss_bytes"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    try:
+        prep.load_databases(prep.Inputs(bench))
+    except prep.PrepError as error:
+        assert "memory metric" in str(error)
+    else:
+        raise AssertionError("a contradicted header must not load")
+
+
 def _row(layout: dict, scenario: str) -> int:
     return layout["rows"].index(scenario)
 
@@ -97,7 +162,7 @@ def test_the_write_tier_is_rows_of_the_single_panel_and_n_a_in_parallel(tmp_path
     # The write-back tag is stacked inside the CityParquet (DuckDB) cell, not a column.
     assert "duckdb-cityparquet-writeback" not in systems
     duck, base = systems.index("duckdb-cityparquet"), systems.index("3dcitydb")
-    for field in ("time_s", "peak_rss_bytes"):
+    for field in ("time_s", "peak_memory_bytes"):
         single = layout["blocks"][(field, "single")]
         parallel = layout["blocks"][(field, "parallel")]
         for scenario in prep.DB_WRITE_SCENARIOS:
@@ -110,7 +175,7 @@ def test_the_write_tier_is_rows_of_the_single_panel_and_n_a_in_parallel(tmp_path
         assert single[_row(layout, "attr-add")][base][0] == 1.0
     time = layout["blocks"][("time_s", "single")]
     assert time[_row(layout, "append-object")][duck][1] == "error\n+wb error"
-    rss = layout["blocks"][("peak_rss_bytes", "single")]
+    rss = layout["blocks"][("peak_memory_bytes", "single")]
     assert rss[_row(layout, "append-object")][base][1] == "not sampled"
 
 
@@ -132,7 +197,13 @@ def test_one_database_figure_carries_reads_writes_and_the_write_footnote(tmp_pat
         "*1",
         "ok-deviation, Spatial 25 %, threads=single",
         ">mismatch<",
-        ">skipped<",
+        "skipped †1",
+        "†1 skipped, Attribute range: fixture skip",
+        ">id-mismatch<",
+        "Peak working memory",
+        "Storage with and without indexes",
+        "no index 7.6 MB",
+        "indexes 30 kB",
         ">n/a<",
         "write tier",
         "Add attribute",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -822,6 +823,7 @@ def database_blocks(data: dict[str, Any]) -> dict[str, Any]:
         configs.append(None)
     index = {(r.get("format"), r.get("scenario"), r.get("threads")): r for r in records}
     footnotes: dict[tuple[str, str | None, str], int] = {}
+    skips: dict[tuple[str, str], int] = {}
 
     def value(system: str, query: str, config: str | None, field: str, formatter, sep: str):
         """(ratio, text) for one system's value; `sep` joins value and ratio."""
@@ -830,9 +832,16 @@ def database_blocks(data: dict[str, Any]) -> dict[str, Any]:
         citable = record is not None and record.get("status") in prep.DB_CITABLE
         metric = record.get(field) if citable else None
         if metric is None:
-            if citable and query in write_rows and field == "peak_rss_bytes":
+            if citable and query in write_rows and field == "peak_memory_bytes":
                 return (None, "not sampled")
-            return (None, "—" if citable else _db_status_text(record))
+            if citable:
+                return (None, "—")
+            text = _db_status_text(record)
+            if record is not None and record.get("status") == "skipped":
+                reason = _db_skip_reason(record.get("notes", ""))
+                number = skips.setdefault((query, reason), len(skips) + 1)
+                text += f" †{number}"
+            return (None, text)
         base_metric = (
             base.get(field) if base is not None and base.get("status") in prep.DB_CITABLE else None
         )
@@ -870,13 +879,108 @@ def database_blocks(data: dict[str, Any]) -> dict[str, Any]:
         "configs": configs,
         "blocks": blocks,
         "footnotes": footnotes,
+        "skips": skips,
     }
 
 
 DB_HEAT_SPECS = (
     ("time_s", "{statistic} query time", _seconds),
-    ("peak_rss_bytes", "Peak execution-process RSS", units.format_bytes),
+    ("peak_memory_bytes", "{memory}", units.format_bytes),
 )
+
+
+def _db_skip_reason(notes: str) -> str:
+    """The `skipped: <reason>` text of a row's notes, without the thread tag."""
+    for tag in notes.split(";"):
+        if (at := tag.find("skipped:")) >= 0:
+            return DB_THREADS_TAG_RE.sub("", tag[at + len("skipped:") :]).strip()
+    return "no reason recorded"
+
+
+DB_THREADS_TAG_RE = re.compile(r"\s*\bthreads=\w+")
+
+
+def _db_memory_title(db: dict) -> str:
+    """The memory panel's title, named by the metric the run actually wrote."""
+    metric = db.get("memory_metric") or "peak_rss_bytes"
+    return prep.DB_MEMORY_LABELS.get(metric, metric)
+
+
+def _db_bytes(count: float | None) -> str:
+    """A storage size; kB below a megabyte, so a small index never reads as 0.0 MB."""
+    if count is not None and 0 < count < units.MB:
+        return f"{count / 1_000:.0f} kB" if count >= 1_000 else f"{count:.0f} B"
+    return units.format_bytes(count)
+
+
+def _db_storage(ax: Axes, sizes: list[dict], systems: list[str], baseline: str) -> None:
+    """Storage per system: with and without indexes when the manifest splits them.
+
+    With an `index_bytes` breakdown each bar stacks the data without indexes
+    (solid) under the indexes (hatched), annotated with both; without one the
+    bar is the total including indexes, as the CSV's `size_bytes` states.
+    """
+    by_format = {r.get("format"): r for r in sizes}
+    size_systems = [s for s in systems if s in by_format] or systems
+    split = any(r.get("index_bytes") is not None for r in sizes)
+    totals = [(by_format.get(s) or {}).get("size_bytes") for s in size_systems]
+    base_total = (by_format.get(baseline) or {}).get("size_bytes")
+    fills = [DATABASE_FILL.get(s, MUTED) for s in size_systems]
+    xs = range(len(size_systems))
+    if split:
+        data_part = [(by_format.get(s) or {}).get("no_index_bytes") for s in size_systems]
+        index_part = [(by_format.get(s) or {}).get("index_bytes") for s in size_systems]
+        base_data = (by_format.get(baseline) or {}).get("no_index_bytes")
+        mb = [float(v) / units.MB if v is not None else math.nan for v in data_part]
+        ax.bar(xs, mb, color=fills, label="without indexes")
+        ax.bar(
+            xs,
+            [float(v) / units.MB if v is not None else math.nan for v in index_part],
+            bottom=[0.0 if math.isnan(v) else v for v in mb],
+            color=fills,
+            alpha=0.45,
+            hatch="////",
+            edgecolor=INK,
+            linewidth=0,
+            label="indexes",
+        )
+        ax.set_title(
+            "Storage with and without indexes (solid: data without indexes; hatched: indexes)",
+            loc="left",
+            fontsize=9,
+        )
+        for x, (total, no_index, index) in enumerate(
+            zip(totals, data_part, index_part, strict=True)
+        ):
+            if total is None:
+                ax.text(x, 0, "missing", ha="center", va="bottom", fontsize=6)
+                continue
+            ratio = _ratio(total, base_total)
+            no_ratio = _ratio(no_index, base_data) if no_index is not None else None
+            lines = [
+                "total " + _db_bytes(total) + (f" · {ratio:.2g}×" if ratio else ""),
+                "no index "
+                + (_db_bytes(no_index) if no_index is not None else "n/a")
+                + (f" · {no_ratio:.2g}×" if no_ratio else ""),
+                "indexes " + (_db_bytes(index) if index is not None else "n/a"),
+            ]
+            ax.text(x, total / units.MB, "\n".join(lines), ha="center", va="bottom", fontsize=5.5)
+        ax.margins(y=0.45)
+    else:
+        bars = ax.bar(
+            xs, [float(v) / units.MB if v is not None else math.nan for v in totals], color=fills
+        )
+        ax.set_title("Storage including indexes", loc="left", fontsize=9)
+        for x, (bar, value) in enumerate(zip(bars, totals, strict=False)):
+            if value is None:
+                ax.text(x, 0, "missing", ha="center", va="bottom", fontsize=6)
+            else:
+                ratio = _ratio(value, base_total)
+                detail = _db_bytes(value) + (f" · {ratio:.2g}×" if ratio else "")
+                ax.text(x, bar.get_height(), detail, ha="center", va="bottom", fontsize=6)
+    ax.set_ylabel("MB", fontsize=7)
+    ax.set_xticks(xs, [_db_label(s).replace("\n", " ") for s in size_systems], fontsize=6.5)
+    ax.tick_params(axis="y", labelsize=6)
 
 
 def databases(data: dict[str, Any], out: Path) -> list[Path]:
@@ -912,10 +1016,16 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
         "Ratios to 3DCityDB within one thread configuration only; never read a "
         "threads=single cell against a threads=parallel one.",
         "Uncoloured: no citable baseline or no citable value. n/a: the system does not "
-        "run this scenario. error / skipped / mismatch: the row's status; not citable.",
+        "run this scenario. error / skipped / mismatch / id-mismatch: the row's status, "
+        "printed in the cell; not citable, never zero. *n ok-deviation: citable, see the "
+        "note; †n skipped: the reason below.",
     ]
     conditions = data.get("meta", {}).get("conditions", {}).get("databases", [])
-    notes += [line for line in conditions if line.startswith("Spatial windows")]
+    notes += [
+        line
+        for line in conditions
+        if line.startswith(("Spatial windows", "Memory (old evidence)", "Storage no_index_bytes"))
+    ]
     if layout["write_rows"]:
         notes.append(
             "CityParquet (DuckDB) write cells are stacked: the upper line and upper half "
@@ -927,6 +1037,8 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
         notes += [line for line in conditions if line.startswith(prep.DB_WRITE_NOTE_PREFIXES)]
     for (query, config, deviation), number in sorted(footnotes.items(), key=lambda kv: kv[1]):
         notes.append(f"*{number} ok-deviation, {_label(query)}, threads={config}: {deviation}")
+    for (query, reason), number in sorted(layout["skips"].items(), key=lambda kv: kv[1]):
+        notes.append(f"†{number} skipped, {_label(query)}: {reason}")
 
     n_cols = len(configs)
     width = max(8.5, 1.1 * len(systems) * n_cols + 3.0)
@@ -939,32 +1051,10 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
         4, n_cols, height_ratios=(1.9, row_height, row_height, notes_height), wspace=0.05
     )
     storage = fig.add_subplot(grid[0, :])
-    by_size = {r.get("format"): r.get("size_bytes") for r in sizes}
-    base_size = by_size.get(baseline)
-    size_systems = [s for s in systems if s in by_size] or systems
-    values = [by_size.get(system) for system in size_systems]
-    bars = storage.bar(
-        range(len(size_systems)),
-        [float(v) / units.MB if v is not None else math.nan for v in values],
-        color=[DATABASE_FILL.get(s, MUTED) for s in size_systems],
-    )
-    storage.set_title("Storage including indexes", loc="left", fontsize=9)
-    storage.set_ylabel("MB", fontsize=7)
-    storage.set_xticks(
-        range(len(size_systems)),
-        [_db_label(s).replace("\n", " ") for s in size_systems],
-        fontsize=6.5,
-    )
-    storage.tick_params(axis="y", labelsize=6)
-    for x, (bar, value) in enumerate(zip(bars, values, strict=False)):
-        if value is None:
-            storage.text(x, 0, "missing", ha="center", va="bottom", fontsize=6)
-        else:
-            ratio = _ratio(value, base_size)
-            detail = units.format_bytes(value) + (f" · {ratio:.2g}×" if ratio else "")
-            storage.text(x, bar.get_height(), detail, ha="center", va="bottom", fontsize=6)
+    _db_storage(storage, sizes, systems, baseline)
 
     separator = rows.index(DB_WRITE_SEPARATOR) if DB_WRITE_SEPARATOR in rows else None
+    statistic, memory_title = _statistic(data).capitalize(), _db_memory_title(db)
     for mi, (field, title, _formatter) in enumerate(DB_HEAT_SPECS):
         axes = []
         cmap, norm = _heat_colors("diverging", bounds[field])
@@ -977,7 +1067,7 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
                 [[(c[0], c[1]) for c in row] for row in block],
                 rows,
                 systems,
-                f"{title.format(statistic=_statistic(data).capitalize())} — "
+                f"{title.format(statistic=statistic, memory=memory_title)} — "
                 f"{THREAD_TITLES.get(config, config)}",
                 vmax=bounds[field],
                 scale="diverging",

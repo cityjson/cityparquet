@@ -853,6 +853,25 @@ DB_THREADS = ("single", "parallel")
 # Statuses whose numbers are citable. `ok-deviation` is a count spread below
 # the harness's tolerance: citable, but marked and footnoted.
 DB_CITABLE = frozenset({"ok", "ok-deviation"})
+# The memory column, current name first. `peak_working_mem_bytes` is the
+# working-memory metric (PostgreSQL backend RssAnon, a fresh DuckDB process);
+# `peak_rss_bytes` is the earlier process-RSS metric, which committed evidence
+# still carries. The two are different measurements, so the loader keeps the
+# name it read (`memory_metric`) and the figure labels the panel by it.
+DB_MEMORY_COLUMNS = ("peak_working_mem_bytes", "peak_rss_bytes")
+DB_MEMORY_LABELS = {
+    "peak_working_mem_bytes": "Peak working memory",
+    "peak_rss_bytes": "Peak process RSS (old evidence, not working memory)",
+}
+# Storage fields a manifest's `sizes.<tag>` block may carry.
+DB_SIZE_FIELDS = (
+    "total_bytes",
+    "no_index_bytes",
+    "index_bytes",
+    "bloom_filter_bytes",
+    "page_index_bytes",
+    "footer_bytes",
+)
 
 DB_THREADS_RE = re.compile(r"\bthreads=(\w+)")
 DB_BBOX_RE = re.compile(r"\b(bbox-\d+pct)(-approx)?\b")
@@ -873,6 +892,26 @@ DB_WRITE_NOTE_PREFIXES = (
 
 def _db_empty() -> dict:
     return {"baseline": DB_BASELINE, "records": [], "sizes": []}
+
+
+def _db_memory_metric(path: Path, header: list[str], manifest: dict) -> str:
+    """The memory metric a result set carries: the manifest's word, else the header's.
+
+    The manifest's `memory_measurement.metric` names the column the run wrote;
+    a CSV whose header disagrees with it is not the run the manifest describes.
+    """
+    present = [name for name in DB_MEMORY_COLUMNS if name in header]
+    declared = (manifest.get("memory_measurement") or {}).get("metric")
+    if declared is not None and declared not in DB_MEMORY_COLUMNS:
+        raise PrepError(f"{path}: unknown memory metric {declared!r} in the manifest")
+    if declared is not None and present and declared != present[0]:
+        raise PrepError(
+            f"{path}: the manifest declares memory metric {declared!r} but the "
+            f"header carries {present[0]!r}"
+        )
+    if not present:
+        raise PrepError(f"{path}: no memory column (expected one of {DB_MEMORY_COLUMNS})")
+    return present[0]
 
 
 def load_databases(inputs: Inputs, statistic: str = "median") -> dict:
@@ -916,16 +955,21 @@ def load_databases(inputs: Inputs, statistic: str = "median") -> dict:
     candidates = sorted(
         p for p in directory.glob("*.csv") if not p.name.endswith((".sizes.csv", ".samples.csv"))
     )
-    groups: list[tuple[int, Path, list[dict[str, str]], dict]] = []
+    groups: list[tuple[int, Path, list[dict[str, str]], list[str], dict]] = []
     for path in candidates:
         with path.open(encoding="utf-8", newline="") as handle:
-            rows = list(csv.DictReader(handle))
+            reader = csv.DictReader(handle)
+            rows = list(reader)
+            header = list(reader.fieldnames or [])
         params_path = path.with_suffix(".params.json")
         params = json.loads(params_path.read_text()) if params_path.exists() else {}
-        groups.append((int(params.get("total_city_objects", 0) or 0), path, rows, params))
+        groups.append((int(params.get("total_city_objects", 0) or 0), path, rows, header, params))
     if not groups:
         return _db_empty()
-    objects, path, rows, params = max(groups, key=lambda item: (item[0], item[1].name))
+    objects, path, rows, header, params = max(groups, key=lambda item: (item[0], item[1].name))
+    manifest_path = path.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    memory_metric = _db_memory_metric(path, header, manifest)
     records: list[dict] = []
     seen: set[tuple[str, str, str | None]] = set()
     for row in rows:
@@ -960,7 +1004,7 @@ def load_databases(inputs: Inputs, statistic: str = "median") -> dict:
                 "approx": approx,
                 "result_count": safe_int(row.get("result_count")),
                 **spread(row, ""),
-                "peak_rss_bytes": safe_int(row.get("peak_rss_bytes")),
+                "peak_memory_bytes": safe_int(row.get(memory_metric)),
                 "repeat": safe_int(row.get("repeat")),
                 **spread(row, "server_"),
                 "size_bytes": safe_int(row.get("size_bytes")),
@@ -972,19 +1016,22 @@ def load_databases(inputs: Inputs, statistic: str = "median") -> dict:
         )
     # Storage describes the system, not the scenario. The write-back tag is the
     # same package as `duckdb-cityparquet`, so only read rows supply a size.
+    # The manifest's `sizes.<tag>` block adds the index breakdown when present.
+    manifest_sizes = manifest.get("sizes") or {}
     sizes: list[dict] = []
     for row in records:
         if row["tier"] != "read" or row["size_bytes"] is None:
             continue
         if any(s["format"] == row["format"] for s in sizes):
             continue
-        sizes.append(
-            {
-                "format": row["format"],
-                "size_bytes": row["size_bytes"],
-                "size_bytes_no_index": row["size_bytes_no_index"],
-            }
-        )
+        block = manifest_sizes.get(row["format"]) or {}
+        entry = {
+            "format": row["format"],
+            "size_bytes": row["size_bytes"],
+            "size_bytes_no_index": row["size_bytes_no_index"],
+        }
+        entry.update({f: block[f] for f in DB_SIZE_FIELDS if block.get(f) is not None})
+        sizes.append(entry)
     return {
         "baseline": DB_BASELINE,
         "records": records,
@@ -992,6 +1039,9 @@ def load_databases(inputs: Inputs, statistic: str = "median") -> dict:
         "dataset": path.stem,
         "objects": objects,
         "params": params,
+        "memory_metric": memory_metric,
+        "memory_measurement": manifest.get("memory_measurement") or {},
+        "size_definitions": manifest.get("size_definitions") or {},
     }
 
 
@@ -1121,6 +1171,7 @@ def database_conditions(db: dict) -> dict[str, list[str]]:
         read_lines.append(
             "Id lookups: " + ", ".join(f"{p.get('tag')} {p.get('id')}" for p in probes) + "."
         )
+    read_lines += _db_measurement_lines(db)
     writes = [r for r in records if r["tier"] == "write"]
     if not writes:
         return {"databases": read_lines}
@@ -1145,6 +1196,33 @@ def database_conditions(db: dict) -> dict[str, list[str]]:
                 f"{r['scenario']} on {_system_name(r['format'])}: {m.group(1)} {m.group(2)}."
             )
     return {"databases": read_lines + write_lines}
+
+
+def _db_measurement_lines(db: dict) -> list[str]:
+    """What the memory and storage numbers measure, from the run's own manifest.
+
+    Old evidence (the `peak_rss_bytes` column) says so in its first line: it is
+    process RSS, not the working-memory metric a current run reports.
+    """
+    metric = db.get("memory_metric")
+    lines: list[str] = []
+    if metric == "peak_rss_bytes":
+        lines.append(
+            "Memory (old evidence): peak_rss_bytes is process RSS, including mapped "
+            "shared pages and idle baselines — not working memory; re-run for "
+            "peak_working_mem_bytes."
+        )
+    measurement = db.get("memory_measurement") or {}
+    for system in ("postgresql", "duckdb", "cityparquet"):
+        if measurement.get(system):
+            lines.append(f"Memory, {system}: {measurement[system]}.")
+    definitions = db.get("size_definitions") or {}
+    if definitions.get("policy"):
+        lines.append(f"Storage: {definitions['policy']}")
+    for field in ("total_bytes", "no_index_bytes"):
+        for system, text in (definitions.get(field) or {}).items():
+            lines.append(f"Storage {field}, {system}: {text}.")
+    return lines
 
 
 def _system_name(system: str) -> str:
