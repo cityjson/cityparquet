@@ -149,9 +149,31 @@ case_positional_arguments_line_up() {
   pass "$name"
 }
 
+# --------------------------------------------------------------------------
+# Case 4: `variant-bench` declares no default for what its callers decide.
+#
+# `variant-bench` is private, reached only through `bloom-bench` and
+# `bloom-bench-http`, and those pass every scenario, probe, prepared
+# directory and repeat count themselves. A default on one of them would only
+# ever be read by a caller that forgot to pass it, and would then run a
+# benchmark nobody chose. Only BASE_URL defaults (to empty: a local run).
+# --------------------------------------------------------------------------
+case_variant_bench_has_no_caller_defaults() {
+  local name="variant-bench declares a default for BASE_URL alone"
+  local signature defaulted
+  signature="$(grep -E '^variant-bench ' "$JUSTFILE")"
+  defaulted="$(printf '%s' "$signature" | grep -oE '[A-Z_]+=' | tr -d '=' | tr '\n' ' ')"
+  if [[ "$defaulted" != "BASE_URL " ]]; then
+    fail "$name" "variant-bench defaults: ${defaulted:-none}"
+    return
+  fi
+  pass "$name"
+}
+
 case_bloom_bench_list
 case_bloom_http_matches_the_local_pair
 case_positional_arguments_line_up
+case_variant_bench_has_no_caller_defaults
 
 echo "bench_recipe_test: $PASSED passed, $FAILED failed"
 [[ "$FAILED" -eq 0 ]]

@@ -368,9 +368,11 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
 # `cityparquet` artefact the query parameters derive from (and the
 # CityJSONSeq the variants are converted from), then run the coordinator's
 # `--variants` path: per variant an untimed conversion, the package kept as
-# `PREPARED/<name>.<variant>.parquet`, then `full-read` and the three bbox
-# windows against it (the default SCENARIOS/ID_PROBES; the bloom axis passes
-# the lookups instead). One OUT/<name>.csv per input in the read run's exact
+# `PREPARED/<name>.<variant>.parquet`, then the read SCENARIOS, with their
+# ID_PROBES and FEATURE_PROBES, against it. The callers pass every one of
+# these: no default stands in for a benchmark nobody chose, and
+# benchmark/scripts/tests/bench_recipe_test.sh holds the recipe to that.
+# One OUT/<name>.csv per input in the read run's exact
 # CSV shape (the variant id in the `format` column), package bytes in
 # OUT/sizes.csv, and the host in OUT/MACHINE.md.
 # Each OUT/<name>.csv is removed first; OUT/sizes.csv is removed once at the
@@ -385,7 +387,7 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
 # reads those lists back out of this file.
 [private]
 [doc("Configuration-axis run: reads and package size per variant, over every input under FOLDER")]
-variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' SCENARIOS='full-read,bbox-query,id-lookup' ID_PROBES='id-50pct' FEATURE_PROBES='' BASE_URL='':
+variant-bench FOLDER OUT VARIANTS PREPARED REPEAT SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL='':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
