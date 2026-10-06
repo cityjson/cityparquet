@@ -108,9 +108,10 @@ impl Default for VisitTotals {
 impl WkbVisitor for VisitTotals {
     fn coord(&mut self, c: [f64; 3]) {
         self.coordinates += 1;
-        for k in 0..3 {
-            self.extent[k] = self.extent[k].min(c[k]);
-            self.extent[k + 3] = self.extent[k + 3].max(c[k]);
+        let (lo, hi) = self.extent.split_at_mut(3);
+        for ((l, h), v) in lo.iter_mut().zip(hi).zip(c) {
+            *l = l.min(v);
+            *h = h.max(v);
         }
     }
     fn ring_end(&mut self, _n_points: usize) {
