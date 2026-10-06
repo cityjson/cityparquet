@@ -354,7 +354,7 @@ def cmd_bench(args) -> int:
                 pg_settings=pg_settings,
                 patches=_patches(systems),
                 srid=_srids(systems),
-                execution=_execution(resolved),
+                execution=_execution(resolved, args.repeat),
                 isolation=isolation_record,
                 count_check={
                     "relative_spread_tolerance": tolerance,
@@ -451,7 +451,7 @@ def cmd_smoke(args) -> int:
     return 0
 
 
-def _execution(resolved: dict[str, dict]) -> dict:
+def _execution(resolved: dict[str, dict], repeat: int) -> dict:
     """The two thread configurations, and what each session resolved to.
 
     The PostgreSQL block is read back from the benchmark session itself
@@ -461,6 +461,8 @@ def _execution(resolved: dict[str, dict]) -> dict:
     recorded rather than assumed.
     """
     return {
+        "repeat": repeat,
+        "repeat_note": "timed samples per cell after one discarded warm-up (--repeat); the CSV's repeat column holds the samples each row took",
         "configurations": [
             {"name": name, "duckdb_threads": threads,
              "postgresql_max_parallel_workers_per_gather": workers,

@@ -16,6 +16,7 @@ from citybench.cli import (
     ROOT,
     _build_systems,
     _dataset,
+    _execution,
     _format_ddl,
     _indexes_sql,
     _patches,
@@ -532,3 +533,8 @@ def test_cmd_bench_plans_isolation_once_and_hands_the_cpuset_to_the_containers(m
     assert len(setups) == 1
     assert seen["container_args"] == ["--cpuset-cpus=4-7", "--cpuset-mems=1"]
     assert record["containers"]["started_by_run"] is True
+
+
+def test_the_execution_block_records_the_timed_repetitions():
+    # A quick (7-repetition) run must not read as the 25-repetition one.
+    assert _execution({}, repeat=7)["repeat"] == 7
