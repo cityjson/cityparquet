@@ -54,12 +54,24 @@ carried as `meta.slice_dataset`) and is a labelled placeholder when the run did
 not measure it; `bloom-corpus` shows every other measured dataset, and is not
 written when there is none. The page reports a manifest `corpus` or `slice`
 dataset without format results as a missing section.
-Database panels use 3DCityDB as baseline; storage includes indexes and memory
-means peak execution-process RSS, not total database-server memory. Every read
+Database panels use 3DCityDB as baseline. The loader reads the run's
+`.manifest.json` beside the CSV. When its `sizes.<tag>` blocks carry
+`index_bytes`, the storage panel stacks the data without indexes under the
+indexes and annotates the total, the size without indexes and the index bytes,
+quoting the manifest's `size_definitions` in the notes. Without that split, the
+panel shows the total including indexes. The memory panel is titled by the
+metric the run wrote, which the manifest's `memory_measurement.metric` names
+(else the CSV header): `peak_working_mem_bytes` is "Peak working memory", and
+the earlier `peak_rss_bytes` is "Peak process RSS (old evidence)", whose notes
+line says it is not working memory. A header that contradicts the manifest is
+refused. Every read
 cell is keyed by system, scenario and thread configuration: `threads=single`
 is the primary column, `threads=parallel` a separately labelled second column,
 and no ratio crosses the two. `ok-deviation` cells are citable and carry a
-`*n` marker whose footnote quotes the count decomposition. The write tier
+`*n` marker whose footnote quotes the count decomposition. A non-citable cell
+prints its status (`error`, `mismatch`, `id-mismatch`, `skipped`) and is
+uncoloured, never zero; a `skipped` cell carries a `†n` marker whose footnote
+gives the skip reason. The write tier
 shares the `databases` figure: its four rows sit below the reads, under a rule
 and a "write tier" label, in the `threads=single` panels only (it runs once;
 the `threads=parallel` cells say `n/a`), coloured by ratio to 3DCityDB like
