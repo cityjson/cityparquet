@@ -311,8 +311,16 @@ fn a_variants_run_builds_reads_keeps_the_packages_and_records_sizes() {
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.starts_with('.'))
+        // `.readbench-chain` holds the chain stamps, one per built package.
+        .filter(|n| n.starts_with('.') && n != ".readbench-chain")
         .collect();
+    assert!(
+        prepared
+            .path()
+            .join(".readbench-chain/delft.cityparquet")
+            .is_file(),
+        "a built variant package is stamped with the chain version"
+    );
     assert!(
         leftovers.is_empty(),
         "scratch directories were not cleaned up: {leftovers:?}"

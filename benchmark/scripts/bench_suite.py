@@ -331,6 +331,26 @@ def corpus_origin(prepared: Path) -> dict:
     return json.loads(path.read_text()) if path.is_file() else {"origin": "unrecorded"}
 
 
+def variant_artefacts(entry: dict) -> list[str]:
+    """The configuration-axis packages a dataset carries beside its main one
+    (`variant_artefacts` in the manifest; the bloom axis's no-bloom package)."""
+    return list(entry.get("variant_artefacts", []))
+
+
+def variant_id(artefact: str) -> str:
+    """The `--variants` id of a variant artefact: `cityparquet-nobloom` ->
+    `cityparquet+nobloom`, the infix of its local `<id>.<variant>.parquet`."""
+    return corpus_bucket.ARTEFACTS[artefact][2].removeprefix(".").removesuffix(".parquet")
+
+
+def build_variants(prepared: Path, dataset_id: str, entry: dict) -> None:
+    """Build the dataset's variant packages from its prepared CityJSONSeq with
+    `variant-package` (a current one is kept)."""
+    ids = [variant_id(a) for a in variant_artefacts(entry)]
+    if ids:
+        subprocess.run(["cargo", "run", "--release", "-q", "--manifest-path", str(REPO / "benchmark" / "readbench" / "Cargo.toml"), "--bin", "variant-package", "--", str(prepared), dataset_id, *ids], check=True)
+
+
 def prepare(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, mode: str = "local", force_upload: bool = False) -> None:
     """Fill the prepared directory with the flat layout `bench-run` reads.
 
@@ -344,6 +364,13 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
     full_formats = any(family in {"sizes", "formats"} for family in families)
     artefacts = list(FULL_ARTEFACTS if full_formats or mode in {"no-cache", "rebuild-sources"} else STREAM_ARTEFACTS)
     cfg, chain = corpus_bucket.config(), chain_version()
+    # Variant packages are built, uploaded and fetched for the bloom family,
+    # and always when the hosted corpus is (re)built.
+    with_variants = "bloom" in families or mode in {"no-cache", "rebuild-sources"}
+
+    def variants_of(entry: dict) -> list[str]:
+        return variant_artefacts(entry) if with_variants else []
+
     prepared.mkdir(parents=True, exist_ok=True)
     hosted = None
     if mode in {"download", "no-cache"}:
@@ -351,10 +378,14 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
             hosted, url, digest = corpus_bucket.fetch_manifest(cfg, chain)
             for key in datasets:
                 dataset_id = dataset_stem(source(manifest["datasets"][key], locations))
-                corpus_bucket.download_dataset(cfg, chain, hosted, dataset_id, artefacts if mode == "download" else list(SOURCE_ARTEFACTS), prepared)
+                variants = variants_of(manifest["datasets"][key]) if mode == "download" else []
+                corpus_bucket.download_dataset(cfg, chain, hosted, dataset_id, artefacts + variants if mode == "download" else list(SOURCE_ARTEFACTS), prepared)
                 stamp = prepared / ".readbench-chain" / dataset_id
                 stamp.parent.mkdir(parents=True, exist_ok=True)
                 stamp.write_text(f"{chain}\n")
+                # A downloaded variant package is current: a `--variants` run reuses it.
+                for artefact in variants:
+                    (stamp.parent / f"{dataset_id}.{variant_id(artefact)}").write_text(f"{chain}\n")
         except corpus_bucket.CorpusError as error:
             raise SystemExit(f"bench-prep: {error}") from error
         if mode == "download":
@@ -377,10 +408,12 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
                 input_path = work / f"{dataset_stem(input_path)}.city.json"
                 shutil.copyfile(prepared / input_path.name, input_path)
                 just("readbench-prepare", str(input_path), str(prepared), "cityjsonseq,flatcitybuf,cityparquet")
+                build_variants(prepared, dataset_stem(input_path), {"variant_artefacts": variants_of(entry)})
                 continue
             if not input_path.is_file():
                 raise SystemExit(f"prepared source missing after fetch: {input_path}")
             just("readbench-prepare", str(input_path), str(prepared), "" if full_formats or mode != "local" else "cityparquet,cityjsonseq")
+            build_variants(prepared, dataset_stem(input_path), {"variant_artefacts": variants_of(entry)})
     if mode in {"no-cache", "rebuild-sources"}:
         try:
             existing = corpus_bucket.remote_manifest(cfg, chain)
@@ -392,7 +425,7 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
                     origin = (hosted or {}).get("datasets", {}).get(dataset_id, {}).get("source", {})
                 else:
                     origin = fetched_source(entry, source(entry, locations))
-                record = corpus_bucket.dataset_entry(prepared, dataset_id, artefacts, origin, built)
+                record = corpus_bucket.dataset_entry(prepared, dataset_id, artefacts + variants_of(entry), origin, built)
                 done = corpus_bucket.upload_dataset(cfg, chain, prepared, record, dataset_id, existing, force=force_upload)
                 print(f"{dataset_id}: {len(done['uploaded'])} uploaded, {len(done['skipped'])} identical and skipped")
                 entries[dataset_id] = record

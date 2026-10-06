@@ -142,6 +142,15 @@ fi
 echo "dropped=$dropped geometries=9->$((9 - dropped)) vertices=4->4"
 NORMALISE_STUB
   chmod +x "$dir/bin/lod-normalise"
+  # The CityJSONSeq feature order, stubbed: the stream keeps its order and
+  # is only counted, so a case sees that the stage ran on the cut stream.
+  cat >"$dir/bin/seq-order" <<'SEQ_ORDER_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ -f "$1" && -f "$2" ]] || { echo "stub seq-order: missing $1 or $2" >&2; exit 1; }
+echo "features=$(($(wc -l <"$2") - 1))"
+SEQ_ORDER_STUB
+  chmod +x "$dir/bin/seq-order"
   cp "$PREPARE" "$dir/repo/benchmark/scripts/readbench_prepare.sh"
   cp "$(dirname "$PREPARE")/compact_json.py" "$dir/repo/benchmark/scripts/compact_json.py"
   # One CityJSONFeature line — enough for the script's feature count to be 1.
@@ -243,7 +252,7 @@ while [[ $# -gt 0 ]]; do
     -o|--output) out=$2; shift 2 ;;
     # Value-taking too: without this its value ("hilbert") would be mistaken
     # for the input path.
-    --ordering) shift 2 ;;
+    --ordering|--datetime) shift 2 ;;
     -*) shift ;;
     *) src=$1; shift ;;
   esac
@@ -457,6 +466,7 @@ run_prepare() {
   # script build it with cargo instead.
   PATH="$dir/bin:${RUN_PREPARE_PATH:-$BASE_PATH}" CITYGML_TOOLS="" \
     LOD_NORMALISE="${RUN_PREPARE_LOD_NORMALISE-$dir/bin/lod-normalise}" \
+    SEQ_ORDER="$dir/bin/seq-order" \
     "$dir/repo/benchmark/scripts/readbench_prepare.sh" "$@" \
     >"$LAST_LOG" 2>&1
   LAST_RC=$?
@@ -1196,6 +1206,11 @@ case_cityjson_input_builds_a_real_seq_artefact() {
   fi
   if [[ ! -s "$dir/out/tiny.city.jsonl" ]]; then
     fail "$name" "no CityJSONSeq artefact was built; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  # The stream `cjseq cat` cut is put in the source document's order.
+  if ! log_mentions "-- seq-order $dir/out/tiny.city.jsonl (source document order)"; then
+    fail "$name" "the cut stream was not put in source order; log: $(cat "$LAST_LOG")"
     return
   fi
   # Cut from the CityJSON artefact, asserted from what the stub RECORDED —

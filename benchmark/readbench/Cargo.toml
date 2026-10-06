@@ -30,7 +30,7 @@ description = "Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParq
 # library mean "the three crates people actually consume" — and living outside
 # that workspace entirely, as it now does, says the same thing structurally.
 publish = false
-# Two [[bin]]s live here (the coordinator and `fcb-slice`); a bare
+# Several [[bin]]s live here (the coordinator and the chain's small tools); a bare
 # `cargo run -p cityparquet-readbench` — the `bench` recipe's own
 # invocation — must keep meaning the coordinator.
 default-run = "cityparquet-readbench"
@@ -52,6 +52,14 @@ doc = false
 [[bin]]
 name = "lod-normalise"
 path = "src/bin/lod_normalise.rs"
+
+[[bin]]
+name = "seq-order"
+path = "src/bin/seq_order.rs"
+
+[[bin]]
+name = "variant-package"
+path = "src/bin/variant_package.rs"
 doc = false
 
 # Versions are written out rather than inherited: a one-package workspace has

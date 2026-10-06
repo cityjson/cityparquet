@@ -501,6 +501,12 @@ if [[ "$SEQ_FROM" == "cjseq-cat" ]] \
   || [[ "$NEED_CITYJSON" -eq 1 && "$INPUT_KIND" == "cityjsonseq" ]]; then
   require_tool cjseq "the CityJSON <-> CityJSONSeq conversion"
   warn_unless_pinned cjseq CJSEQ_VERSION
+  # `SEQ_ORDER` names a prebuilt `seq-order`; otherwise it is built here.
+  if [[ "$SEQ_FROM" == "cjseq-cat" && -z "${SEQ_ORDER:-}" ]]; then
+    require_tool cargo "building seq-order (the CityJSONSeq feature order)"
+    ( cd "$BENCHMARK_DIR/readbench" && cargo build --release --bin seq-order )
+    SEQ_ORDER="$BENCHMARK_DIR/readbench/target/release/seq-order"
+  fi
 fi
 # jq reads the CityJSON artefact's object count back out; a converter that
 # writes a well-formed but object-less document is worse than one that fails.
@@ -696,11 +702,24 @@ fi
 #      package without LoD 0 synthesis (`--no-lod0`).
 #   7  the source is normalised to one geometry per LoD and object before
 #      any artefact is built.
-CHAIN_VERSION=7
+#   8  the artefacts are reproducible byte for byte: the CityJSONSeq cut by
+#      `cjseq cat` lists its features in the source document's order (see
+#      `seq-order`), and the package's STAC `datetime` is CORPUS_DATETIME.
+CHAIN_VERSION=8
+# The STAC `datetime` of every benchmark package: the day the benchmark
+# corpus was fixed. A fixed value, because the library otherwise falls back
+# to the conversion time for a source without `referenceDate` and no two
+# builds would agree; the same constant is `CORPUS_DATETIME` in the readbench
+# crate, which builds the variant packages in-process.
+CORPUS_DATETIME="2026-10-05T00:00:00Z"
 # The chain version at which each STAGE last changed what it writes. An
 # artefact is stale when its stage changed after the version that built it,
 # so a bump that touches one stage does not force the hours-long stages it
 # left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#   8  the CityParquet stage (its `metadata.json` carried the conversion
+#      time), and the CityJSONSeq and FlatCityBuf stages when the stream is
+#      cut by `cjseq cat` (its feature order was not fixed); a CityJSONSeq
+#      INPUT is copied, so its stream and FlatCityBuf file are unchanged.
 #   7  every stage, for a dataset the normalisation changed (Vienna in the
 #      corpus); no stage for one it left byte-identical.
 #   6  the CityJSON and CityParquet stages: a CityJSON built before may carry
@@ -719,12 +738,17 @@ CHAIN_VERSION=7
 #   2  the CityJSONSeq stage became a real artefact for every input kind
 #      (the gzip case above); FlatCityBuf and CityGML derive from it.
 stage_version() {
+  case "$1" in
+    "$PARQUET_OUT") echo 8; return ;;
+    "$SEQ_OUT" | "$FCB_OUT")
+      if [[ "$SEQ_FROM" == "cjseq-cat" ]]; then echo 8; return; fi ;;
+  esac
   if [[ "$NORMALISED" -eq 1 ]]; then
     echo 7
     return
   fi
   case "$1" in
-    "$PARQUET_OUT" | "$CITYJSON_OUT") echo 6 ;;
+    "$CITYJSON_OUT") echo 6 ;;
     *) echo 4 ;;
   esac
 }
@@ -1024,6 +1048,12 @@ if [[ "$NEED_SEQ" -eq 1 ]]; then
     echo "-- cjseq cat $CITYJSON_OUT -> $SEQ_OUT"
     trap 'rm -f "$SEQ_OUT.tmp"' EXIT
     cjseq cat -f "$CITYJSON_OUT" >"$SEQ_OUT.tmp"
+    # `cjseq cat` lists the features in an order that changes between runs;
+    # `seq-order` puts them in the CityJSON document's order, every line
+    # unchanged, so the stream (and the FlatCityBuf file cut from it) is the
+    # same bytes on every machine.
+    ORDER_REPORT="$("$SEQ_ORDER" "$CITYJSON_OUT" "$SEQ_OUT.tmp")"
+    echo "-- seq-order $SEQ_OUT (source document order): $ORDER_REPORT"
     mv "$SEQ_OUT.tmp" "$SEQ_OUT"
     trap - EXIT
   fi
@@ -1060,7 +1090,7 @@ if want cityparquet; then
     # The writer's report line: object_count files skipped_same_lod_geometries
     # ... After the normalisation it must have skipped nothing; a non-zero
     # count means the package holds fewer geometries than the other formats.
-    CONVERT_LOG="$("$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --ordering hilbert --no-lod0 --overwrite)"
+    CONVERT_LOG="$("$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --ordering hilbert --no-lod0 --datetime "$CORPUS_DATETIME" --overwrite)"
     printf '%s\n' "$CONVERT_LOG"
     SKIPPED_SAME_LOD="$(awk 'NF == 10 && $3 ~ /^[0-9]+$/ { s = $3 } END { print s }' <<<"$CONVERT_LOG")"
     if [[ -z "$SKIPPED_SAME_LOD" ]]; then

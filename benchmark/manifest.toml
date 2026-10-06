@@ -52,6 +52,10 @@ source = "3dbag_n1000000.city.jsonl"
 # carry a Bloom filter in the `cityparquet` package (`just bloom-columns`
 # lists them). `identificatie` is near-unique; `documentnummer` repeats.
 bloom_attributes = ["identificatie", "documentnummer"]
+# Configuration-axis packages preparation builds beside the main package
+# (by the code path a `--variants` run uses) and the hosted corpus carries:
+# the bloom axis's package without Bloom filters.
+variant_artefacts = ["cityparquet-nobloom"]
 title = "3DBAG (Netherlands)"
 # The feature-boundary cutter records the observed total in each result
 # sidecar; this nominal identifier remains stable for paths and commands.

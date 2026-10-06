@@ -82,6 +82,7 @@ use cityparquet_readbench::isolation::{self, LoadDecision, MaxLoadRequest, NumaR
 use cityparquet_readbench::naming::strip_known_extension;
 use cityparquet_readbench::sampling::SamplingPlan;
 use cityparquet_readbench::stats::TimingStats;
+use cityparquet_readbench::variant_package;
 
 use crate::formats::returned::{Returned, extents_agree};
 use crate::formats::{IoStats, LOOKUP_STATS_MARKER, LookupCounters, Source};
@@ -645,7 +646,19 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                     let seq = variant_seq
                         .as_deref()
                         .expect("set for every local `variants` run");
-                    let package = build_variant(base, id, variant, &opts.prepared_dir, seq)?;
+                    // A package preparation built (or downloaded) under the
+                    // current chain is read as it is; only an absent or stale
+                    // one is built here, by the same code path.
+                    let (package, reused) = variant_package::reuse_or_build(
+                        base,
+                        id,
+                        variant,
+                        &opts.prepared_dir,
+                        seq,
+                    )?;
+                    if reused {
+                        eprintln!("reusing the prepared {}", package.display());
+                    }
                     sizes.push(SizeRow {
                         dataset: base.to_string(),
                         label: id.clone(),
@@ -1045,7 +1058,7 @@ fn retain_requested_probes(
 /// carry the bare `cityparquet` baseline every ratio is taken against.
 ///
 /// A `+source` suffix is refused: every package this benchmark builds is
-/// written in Hilbert order ([`build_variant`]), as is the `<base>.parquet`
+/// written in Hilbert order ([`variant_package::build`]), as is the `<base>.parquet`
 /// the query parameters derive from, so a variant differs from the baseline
 /// in its recipe alone. A source-order variant would differ in its row order
 /// too.
@@ -1920,35 +1933,6 @@ fn attr_probes_json(probes: &[(String, params::IdProbe)]) -> serde_json::Value {
             })
         })
         .collect()
-}
-
-fn build_variant(
-    base: &str,
-    id: &str,
-    variant: &Variant,
-    prepared_dir: &Path,
-    seq: &Path,
-) -> Result<PathBuf> {
-    let scratch = tempfile::Builder::new()
-        .prefix(&format!(".{base}.{id}.build."))
-        .tempdir_in(prepared_dir)
-        .with_context(|| format!("creating a scratch directory in {}", prepared_dir.display()))?;
-    let built = scratch.path().join("pkg");
-    let mut opts = cityparquet::package::ConvertOptions::new(seq.to_path_buf(), built.clone());
-    opts.recipe = variant.recipe();
-    opts.ordering = RowOrder::Hilbert;
-    opts.generate_lod0 = false;
-    cityparquet::package::convert(&opts)
-        .with_context(|| format!("converting with variant '{id}'"))?;
-
-    let target = prepared_dir.join(format!("{base}.{id}.parquet"));
-    if target.exists() {
-        fs::remove_dir_all(&target)
-            .with_context(|| format!("removing the previous {}", target.display()))?;
-    }
-    fs::rename(&built, &target)
-        .with_context(|| format!("moving the built package to {}", target.display()))?;
-    Ok(target)
 }
 
 /// One results-CSV row, held until the whole matrix has run.

@@ -80,6 +80,23 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(bench_suite.result_dir(locations, "formats", "quick"), locations["formats"] / "quick" / "results")
         self.assertEqual(bench_suite.result_dir(locations, "bloom", "quick"), locations["formats"] / "quick" / "bloom_results")
 
+class VariantArtefactTests(unittest.TestCase):
+    def test_the_bloom_axis_dataset_carries_the_nobloom_package(self):
+        manifest = tomllib_load()
+        entry = manifest["datasets"][manifest["suite"]["slice_dataset"]]
+        self.assertEqual(bench_suite.variant_artefacts(entry), ["cityparquet-nobloom"])
+        self.assertEqual(bench_suite.variant_artefacts(manifest["datasets"]["rotterdam"]), [])
+
+    def test_variant_id_is_the_local_infix(self):
+        self.assertEqual(bench_suite.variant_id("cityparquet-nobloom"), "cityparquet+nobloom")
+
+
+def tomllib_load():
+    import tomllib
+    with open(bench_suite.MANIFEST, "rb") as handle:
+        return tomllib.load(handle)
+
+
 class MemoryCeilingTests(unittest.TestCase):
     def test_the_default_ceiling_is_64_decimal_gigabytes_except_under_smoke(self):
         for profile in ("full", "quick", "short"):
