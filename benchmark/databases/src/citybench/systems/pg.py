@@ -255,6 +255,18 @@ def parallel_settings(conn: psycopg.Connection) -> dict[str, str]:
         return dict(cur.fetchall())
 
 
+def fetch_rows(conn: psycopg.Connection, sql: str, args: tuple = ()
+               ) -> tuple[list[str], list[tuple]]:
+    """``(column names, rows)`` of one UNTIMED execution.
+
+    The identifier-set cross-check's verification pass
+    (`citybench.identity`); never called inside a timed window.
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, args)
+        return [d.name for d in cur.description], cur.fetchall()
+
+
 def extract_count(rows: list, mode: str) -> int:
     """A scenario's result count, per the registry's declared mode.
 

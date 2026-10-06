@@ -16,8 +16,10 @@ table does not conflate "nothing to ask" with "the system crashed".
 
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 
+from citybench import identity
 from citybench.config import BboxWindow, IdProbe, Measurement, Params
 from citybench.report import row_from_measurement
 from citybench.scenarios.registry import (
@@ -125,6 +127,33 @@ def _variant_note(window: BboxWindow | None, probe: IdProbe | None) -> str:
     return ""
 
 
+def _verify_identities(scenario: str, params: Params, window, probe,
+                       systems: list, answered: dict[str, Measurement],
+                       status: str, tolerance: float) -> str | None:
+    """The identifier-set cross-check for one row (`citybench.identity`).
+
+    Runs AFTER the timed samples: each answering system that implements
+    `verify_rows` executes the scenario's SQL once more, untimed, and the
+    identifier sets and non-null geometry counts are compared. The count
+    tolerance applies only where the count cross-check already accepted a
+    deviation.
+    """
+    if scenario not in identity.IDENTITY_SCENARIOS:
+        return None
+    summaries: dict[str, identity.Identity] = {}
+    for system in systems:
+        if system.tag not in answered or not hasattr(system, "verify_rows"):
+            continue
+        columns, rows = system.verify_rows(scenario, params, window=window, probe=probe)
+        summaries[system.tag] = identity.summarise(scenario, columns, rows)
+    note = identity.compare(
+        summaries, tolerance if status == "ok-deviation" else 0.0
+    )
+    if note:
+        print(f"ID MISMATCH {scenario}: {note}", file=sys.stderr, flush=True)
+    return note
+
+
 def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
                scenarios: tuple[str, ...] = ALL,
                sizes: dict[str, tuple[int, int]] | None = None,
@@ -200,6 +229,8 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
                     # to ask" apart from "the system crashed".
                     measurements[system.tag] = _failed(f"skipped: {exc}")
                 except Exception as exc:  # a system that cannot answer is a result
+                    print(f"ERROR {scenario} {system.tag}: {type(exc).__name__}: {exc}",
+                          file=sys.stderr, flush=True)
                     measurements[system.tag] = _failed(f"error: {type(exc).__name__}")
                 finally:
                     if gate is not None:
@@ -215,9 +246,15 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
                 {tag: m.result_count for tag, m in answered.items()}, tolerance
             )
 
+            id_note = _verify_identities(
+                scenario, params, window, probe, wanted, answered, status, tolerance
+            )
+            if id_note:
+                status = "id-mismatch"
+
             for tag, m in measurements.items():
                 note = " ".join(
-                    n for n in (run_note, variant_note, deviation,
+                    n for n in (run_note, variant_note, deviation, id_note or "",
                                 "busy" if tag in busy else "") if n
                 )
                 total, no_index = sizes.get(tag, (None, None))

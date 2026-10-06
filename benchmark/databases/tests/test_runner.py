@@ -437,3 +437,47 @@ def test_run_matrix_tags_a_cell_busy_when_the_gate_gave_up_waiting():
     rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("count",),
                       run_note="threads=single", gate=FakeGate(busy=True))
     assert "busy" in rows[0]["notes"].split()
+
+
+# --- the identifier-set cross-check -----------------------------------------
+
+
+class VerifyingSystem(FakeSystem):
+    """A system that also answers the untimed verification pass."""
+
+    def __init__(self, tag, ids, geometry=None):
+        super().__init__(tag, len(ids))
+        self._ids = ids
+        self._geometry = geometry
+        self.verified = 0
+
+    def verify_rows(self, scenario, params, window=None, probe=None):
+        self.verified += 1
+        if self._geometry is None:
+            return ["id"], [(i,) for i in self._ids]
+        return ["id", "geometry"], [(i, self._geometry) for i in self._ids]
+
+
+def test_same_counts_but_different_ids_fail_the_row_as_id_mismatch():
+    systems = [VerifyingSystem("duckdb-cityparquet", ["a", "b"]),
+               VerifyingSystem("cjdb", ["a", "c"])]
+    rows = run_matrix(systems, make_params(), "d", repeat=1,
+                      scenarios=["attr-filter"])
+    assert {r["status"] for r in rows} == {"id-mismatch"}
+    assert all("only in cjdb ['c']" in r["notes"] for r in rows)
+
+
+def test_agreeing_ids_keep_the_count_status_and_verify_once_per_system():
+    systems = [VerifyingSystem("duckdb-cityparquet", ["a", "b"]),
+               VerifyingSystem("cjdb", ["b", "a"])]
+    rows = run_matrix(systems, make_params(), "d", repeat=3,
+                      scenarios=["attr-filter"])
+    assert {r["status"] for r in rows} == {"ok"}
+    assert [s.verified for s in systems] == [1, 1]
+
+
+def test_non_object_scenarios_are_not_verified():
+    systems = [VerifyingSystem("duckdb-cityparquet", ["a"]),
+               VerifyingSystem("cjdb", ["a"])]
+    run_matrix(systems, make_params(), "d", repeat=1, scenarios=["count"])
+    assert [s.verified for s in systems] == [0, 0]

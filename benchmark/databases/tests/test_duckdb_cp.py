@@ -342,3 +342,33 @@ def test_write_tier_loads_the_chosen_extension_build_by_path(tmp_path, monkeypat
     system._ensure_package()
     assert executed[0] == f"LOAD '{build}'"
     assert "LOAD cityjson" not in executed
+
+
+def test_verify_rows_returns_the_id_lookup_row_with_its_column_names(tmp_path):
+    """The untimed verification pass of the identifier-set cross-check."""
+    import duckdb as duckdb_module
+
+    from citybench.config import IdProbe
+    from citybench.identity import Identity, summarise
+    from conftest import make_params
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    duckdb_module.connect().execute(
+        "COPY (SELECT * FROM (VALUES ('a', 'x'::BLOB, NULL::BLOB), "
+        "('b', 'y'::BLOB, 'z'::BLOB)) t(id, geometry_lod1_3, geometry_lod2_2)) "
+        f"TO '{package / 'building.parquet'}' (FORMAT PARQUET)"
+    )
+    _write_manifest(package, {
+        "building.parquet": {"href": "./building.parquet", "roles": ["cityparquet-objects"]},
+    })
+    system = DuckDBCityParquet()
+    system.prepare()
+    system._package = package
+    try:
+        probe = IdProbe(tag="first", id="b", present=True)
+        columns, rows = system.verify_rows("id-lookup", make_params(), probe=probe)
+    finally:
+        system.teardown()
+    assert columns == ["id", "geometry_lod1_3", "geometry_lod2_2"]
+    assert summarise("id-lookup", columns, rows) == Identity(frozenset({"b"}), 2)

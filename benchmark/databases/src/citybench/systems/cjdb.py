@@ -227,6 +227,13 @@ class CjdbSystem:
             notes="memory-scope: postgresql-backend-rss fetch: binary",
         )
 
+    def verify_rows(self, scenario: str, params: Params, window=None,
+                    probe=None) -> tuple[list[str], list[tuple]]:
+        """The scenario's SQL once more, untimed (`citybench.identity`)."""
+        assert self._conn is not None
+        sql, args = sql_cjdb.sql_for(scenario, params, window, self._srid, probe=probe)
+        return pg.fetch_rows(self._conn, sql, args)
+
     def _run_write(self, scenario: str, repeat: int) -> Measurement:
         """One write-tier scenario: CJDB's own Q6/Q7/Q8.
 

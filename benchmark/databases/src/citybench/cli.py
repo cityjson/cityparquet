@@ -380,6 +380,13 @@ def cmd_bench(args) -> int:
                             "the spread exceeds the tolerance; the run exits "
                             "non-zero and the row is not citable"
                         ),
+                        "id-mismatch": (
+                            "the counts agree but the systems returned "
+                            "different object identifiers or non-null "
+                            "geometry counts (untimed verification pass, "
+                            "`citybench.identity`); the run exits non-zero "
+                            "and the row is not citable"
+                        ),
                     },
                 },
             ),
@@ -403,6 +410,13 @@ def cmd_bench(args) -> int:
             f"deviation within the {tolerance:.4%} tolerance; see `notes`",
             file=sys.stderr,
         )
+    id_mismatches = [r for r in rows if r["status"] == "id-mismatch"]
+    if id_mismatches:
+        print(
+            f"ERROR: {len(id_mismatches)} row(s) returned different object "
+            "identifiers or geometry counts across systems; see `notes`",
+            file=sys.stderr,
+        )
     mismatches = [r for r in rows if r["status"] == "mismatch"]
     if mismatches:
         print(
@@ -411,7 +425,7 @@ def cmd_bench(args) -> int:
             file=sys.stderr,
         )
     print(f"wrote {results_dir / f'{dataset.name}.csv'} ({len(rows)} rows)")
-    if any(row["status"] in {"error", "mismatch"} for row in rows):
+    if any(row["status"] in {"error", "mismatch", "id-mismatch"} for row in rows):
         return 1
     return 0
 

@@ -155,6 +155,17 @@ class CityDbSystem:
         self._datatype_id = sql_citydb.resolve_datatype_id(self._conn)
         return IngestResult(wall_clock_s=elapsed)
 
+    def verify_rows(self, scenario: str, params: Params, window=None,
+                    probe=None) -> tuple[list[str], list[tuple]]:
+        """The scenario's SQL once more, untimed (`citybench.identity`)."""
+        assert self._conn is not None
+        sql, args = sql_citydb.sql_for(
+            scenario, params, window, self._srid, probe=probe,
+            cityobject_class_ids=self._cityobject_class_ids,
+            building_class_id=self._building_class_id,
+        )
+        return pg.fetch_rows(self._conn, sql, args)
+
     def run(self, scenario: str, params: Params, repeat: int,
             window=None, probe=None) -> Measurement:
         assert self._conn is not None

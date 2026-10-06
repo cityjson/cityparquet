@@ -195,6 +195,19 @@ class DuckDBCityParquet:
             notes="memory-scope: duckdb-process-rss fetch: arrow",
         )
 
+    def verify_rows(self, scenario: str, params: Params, window=None,
+                    probe=None) -> tuple[list[str], list[tuple]]:
+        """The scenario's SQL once more, untimed (`citybench.identity`)."""
+        assert self._conn is not None
+        sql, args = sql_duckdb.sql_for(
+            scenario, params, self._table(), window, probe=probe,
+            columns=self._column_types(),
+        )
+        table = _arrow(self._conn.execute(sql, list(args)))
+        columns = table.column_names
+        values = [table.column(name).to_pylist() for name in columns]
+        return columns, list(zip(*values))
+
     # --- the write tier ------------------------------------------------
     #
     # CityParquet has no in-place update path: a Parquet file's smallest
