@@ -152,8 +152,8 @@ fn bbox_query_quarter_window_is_a_proper_nonempty_subset() {
     let whole = ["--bbox", "0.56,0.64,-1000,12.64,7.68,1000"];
     let all = run_child("flatcitybuf", "bbox-query", &input, &whole);
     assert_eq!(
-        all, 38,
-        "a query window covering the whole dataset extent must match every feature"
+        all, 121,
+        "a query window covering the whole dataset extent must match every CityObject"
     );
 
     // A window far outside the dataset extent must match none.

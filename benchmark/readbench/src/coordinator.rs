@@ -667,9 +667,6 @@ pub fn run(opts: &RunOptions) -> Result<()> {
 
     for (format, source, label) in &resolved_formats {
         let format = *format;
-        let total = total_count_for(format, source)
-            .with_context(|| format!("deriving total count for format '{format}'"))?;
-
         for scenario in &scenarios {
             match scenario {
                 Scenario::Count | Scenario::FullRead => {
@@ -718,13 +715,8 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             *scenario,
                             &params,
                             &opts.sampling,
-                            // The window's selectivity is over the format's
-                            // own counting level for it.
-                            Some(if format.bbox_counts_features() {
-                                total
-                            } else {
-                                resolved.cp_object_total
-                            }),
+                            // Every format's window returns CityObjects.
+                            Some(resolved.cp_object_total),
                             &notes,
                         )?;
                     }
@@ -1051,8 +1043,8 @@ const COUNT_MISMATCH: &str = "count-mismatch";
 ///
 /// Formats count at two levels (READ_BENCHMARK.md, Caveat 1):
 /// [`Format::counts_features`] formats count features for `count` and
-/// `full-read`, and [`Format::bbox_counts_features`] formats for the
-/// windows; the others count CityObjects. Where the parameters carry a reference for both levels the
+/// `full-read`; the others count CityObjects. Every format's window counts
+/// CityObjects. Where the parameters carry a reference for both levels the
 /// row is checked against its own level's reference:
 ///
 /// - `count` / `full-read`: [`params::ResolvedParams::cp_object_total`] or
@@ -1089,11 +1081,7 @@ fn check_consistency(
             continue;
         };
         let features = format.counts_features();
-        let level_features = if row.scenario == Scenario::BBoxQuery {
-            format.bbox_counts_features()
-        } else {
-            features
-        };
+        let level_features = features && row.scenario != Scenario::BBoxQuery;
         let level = if level_features {
             "features"
         } else {
@@ -1105,19 +1093,11 @@ fn check_consistency(
             } else {
                 resolved.cp_object_total
             }),
-            Scenario::BBoxQuery => {
-                resolved
-                    .windows
-                    .iter()
-                    .find(|w| w.tag == primary(row))
-                    .map(|w| {
-                        if format.bbox_counts_features() {
-                            w.features
-                        } else {
-                            w.objects
-                        }
-                    })
-            }
+            Scenario::BBoxQuery => resolved
+                .windows
+                .iter()
+                .find(|w| w.tag == primary(row))
+                .map(|w| w.objects),
             Scenario::AttrFilter => resolved.attr_filter.as_ref().map(|spec| spec.matched),
             _ => None,
         };
@@ -1644,24 +1624,6 @@ fn spawn_child(
         lookup,
         returned,
     })
-}
-
-/// A single `Count`-scenario child call (untimed — its own `time_s` is
-/// discarded), used to establish `format`'s own total object/feature count.
-/// Each format counts at its own natural grain (see
-/// `formats::cityparquet`/`formats::cityjsonseq`/`formats::flatcitybuf`'s own
-/// module docs on CityObject-vs-feature granularity), so this per-format
-/// total is the SELECTIVITY denominator of [`Scenario::BBoxQuery`] for a
-/// format whose window counts features ([`Format::bbox_counts_features`]);
-/// the others use the dataset-global CityObject total. For the CityObject-level scenarios (`AttrFilter`/`AttrStats`/
-/// `IdLookup`), [`run`] instead uses the dataset-global CityObject
-/// total — this same function called once against the `cityparquet` package
-/// — as a SHARED denominator across every format, so those scenarios'
-/// selectivity is directly comparable and always in `(0, 1]` (see this
-/// module's own doc comment).
-fn total_count_for(format: Format, source: &Source) -> Result<u64> {
-    let line = spawn_child(format, Scenario::Count, source, &QueryParams::default())?;
-    Ok(line.result_count)
 }
 
 /// Runs one (format, scenario, params) measurement: up to `repeat + 1` fresh

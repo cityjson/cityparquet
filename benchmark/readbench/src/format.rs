@@ -58,19 +58,12 @@ impl Format {
     /// The format's runner counts FEATURES (a top-level object with its
     /// descendants) for `count` and `full-read`; the others count
     /// CityObjects (READ_BENCHMARK.md, Caveat 1). The spatial window is
-    /// counted per [`Format::bbox_counts_features`].
+    /// counted in CityObjects by every format.
     pub fn counts_features(self) -> bool {
         matches!(
             self,
             Format::CityGml | Format::CityJsonSeq | Format::FlatCityBuf
         )
-    }
-
-    /// The format's runner counts FEATURES for `bbox-query`. Every text
-    /// format and CityParquet return the CityObjects whose `children`
-    /// subtree box meets the window.
-    pub fn bbox_counts_features(self) -> bool {
-        matches!(self, Format::FlatCityBuf)
     }
 
     /// The artefact stores coordinates as GeoParquet does — `x` longitude,

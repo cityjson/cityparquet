@@ -1,14 +1,15 @@
-//! The text formats and CityParquet return the same thing under the return
+//! The text formats, FlatCityBuf and CityParquet return the same thing under the return
 //! rule (READ_BENCHMARK.md, "The six scenarios"): the same identifier set
 //! for the spatial windows and the attribute filter, the same comparable
 //! totals for read all and the identifier lookups, and the same
 //! highest-LoD geometry for the windows.
 //!
-//! Runs the real coordinator over `cityjson`, `cityjsonseq` and
-//! `cityparquet` on real data: `delft.city.jsonl` and the 40-feature Tokyo
+//! Runs the real coordinator over `cityjson`, `cityjsonseq`, `flatcitybuf`
+//! (built with `fcb ser -A`, which must be on PATH) and `cityparquet` on
+//! real data: `delft.city.jsonl` and the 40-feature Tokyo
 //! cut (latitude-first, so the extents cross the axis swap). The
 //! coordinator's consistency check exits non-zero on any disagreement, and
-//! every part must be reported by all three formats, never skipped.
+//! every part must be reported by all four formats, never skipped.
 //! CityGML is not covered here: its artefact is synthesised by
 //! citygml-tools, which the test suite does not run.
 
@@ -53,6 +54,19 @@ fn prepare(input: &Path, base: &str, prepared: &Path) {
     );
     assert!(!opts.generate_lod0);
     convert(&opts).unwrap();
+    // FlatCityBuf exactly as `readbench_prepare.sh` builds it: `fcb ser -A`.
+    let fcb = Command::new("fcb")
+        .arg("ser")
+        .arg(input)
+        .arg(prepared.join(format!("{base}.fcb")))
+        .arg("-A")
+        .output()
+        .expect("the `fcb` CLI must be on PATH for the agreement test");
+    assert!(
+        fcb.status.success(),
+        "fcb ser failed for {base}:\n{}",
+        String::from_utf8_lossy(&fcb.stderr)
+    );
 }
 
 fn assert_agreement(input: &Path, base: &str) {
@@ -73,7 +87,7 @@ fn assert_agreement(input: &Path, base: &str) {
             "--scenarios",
             "full-read,bbox,attr-filter,id-lookup",
             "--formats",
-            "cityjson,cityjsonseq,cityparquet",
+            "cityjson,cityjsonseq,flatcitybuf,cityparquet",
         ])
         .output()
         .unwrap();
@@ -89,12 +103,12 @@ fn assert_agreement(input: &Path, base: &str) {
 }
 
 #[test]
-fn delft_returns_the_same_ids_totals_and_geometry_in_every_text_format_and_cityparquet() {
+fn delft_returns_the_same_ids_totals_and_geometry_in_every_format() {
     assert_agreement(&lib_fixture("delft.city.jsonl"), "delft");
 }
 
 #[test]
-fn tokyo_returns_the_same_ids_totals_and_geometry_in_every_text_format_and_cityparquet() {
+fn tokyo_returns_the_same_ids_totals_and_geometry_in_every_format() {
     assert_agreement(
         &local_fixture("tokyo_chiyoda_40.city.jsonl"),
         "tokyo_chiyoda_40",

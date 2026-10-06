@@ -1,119 +1,59 @@
 //! The FlatCityBuf (FCB) [`FormatRunner`]: maps each [`Scenario`] onto
-//! `fcb_core` 0.7's own native mechanisms — the R-tree spatial index, the
-//! B+-tree attribute index (built by `fcb ser -A`, the read-benchmark's
-//! prep step), and a full [`fcb_core::FcbReader::select_all`] scan where FCB
-//! has no better mechanism at all.
+//! `fcb_core` 0.7's own native mechanisms — the packed R-tree spatial index,
+//! the B+-tree attribute index (built by `fcb ser -A`, the read benchmark's
+//! prep step), and a full [`fcb_core::FcbReader::select_all`] walk where FCB
+//! has no better mechanism.
 //!
-//! **Cross-format counting caveat — deliberately NOT papered over here (see
-//! [`super::cityparquet`] and [`super::cityjsonseq`]'s own equivalent
-//! notes).**
+//! **Storage and index granularity.** FCB stores one `CityFeature` per
+//! top-level CityObject, bundling it with all of its children (the
+//! CityJSONSeq convention; `lod3_railway.city.json`, 121 CityObjects,
+//! becomes 38 features). Its two indexes are coarser than the CityObject:
 //!
-//! FCB is FEATURE-oriented for *storage*: one `CityFeature` per record, each
-//! bundling a top-level CityObject together with all of its children
-//! (mirroring CityJSONSeq's own feature convention) — `fcb ser` builds
-//! exactly one feature per top-level CityObject regardless of whether the
-//! *source* was CityJSONSeq or a single-document CityJSON file (the
-//! `lod3_railway.city.json` fixture, a single CityJSON document with 121
-//! CityObjects, becomes an FCB file with 38 features — one per top-level
-//! object, confirmed via `fcb info`). But that storage granularity does NOT
-//! mean every scenario counts at feature level — each mechanism's own
-//! result cardinality decides that, empirically confirmed against this
-//! runner's own tests rather than assumed from the storage layout:
+//! - the R-tree has one 2D entry per FEATURE (the feature's whole extent);
+//!   the query window's z-components are dropped by the index;
+//! - the B+-tree holds one entry per matching CityObject's own attribute
+//!   value, each carrying its enclosing FEATURE's offset, sorted but never
+//!   deduplicated (`select_attr_query`), so a feature with two matching
+//!   objects is named twice. It indexes only the CityJSON `attributes` map:
+//!   the reserved `object_type` and a CityObject's id are never in its
+//!   schema, so a query on either takes a full walk (checked per call from
+//!   the header's schema, and disclosed with a [`FALLBACK_MARKERS`] tag).
 //!
-//! - [`Scenario::Count`]/[`Scenario::FullRead`] are feature-level: FCB's
-//!   header `features_count` and a full scan both operate on, and count,
-//!   features.
-//! - [`Scenario::BBoxQuery`]'s R-tree is built with one node per FEATURE
-//!   (its overall, all-CityObjects-unioned extent), so a spatial query's
-//!   match count is feature-level too.
-//! - [`Scenario::AttrFilter`]/[`Scenario::IdLookup`]'s B+-tree attribute
-//!   index is built from one entry per matching CityObject's OWN attribute
-//!   occurrence (see [`fcb_core::reader::attr_query`]'s
-//!   `build_attribute_index_for_attr`, called once per CityObject via
-//!   `attribute_entries.values()`/`feature.index_entries`), each entry
-//!   carrying its enclosing feature's offset — but those per-CityObject
-//!   entries are never deduplicated by feature offset before being counted
-//!   (`select_attr_query` sorts, never dedups, its result `Vec<u64>`).
-//!   Its match count is therefore CityOBJECT-level in practice: querying
-//!   `lod3_railway.city.json`'s FCB for `function == "1070"` returns 65 —
-//!   exactly the fixture's 65 matching CityObjects, not a feature count
-//!   (the fixture only has 38 features total; empirically confirmed in
-//!   this module's own tests, not merely asserted). A feature with two
-//!   matching CityObjects contributes its offset TWICE to the result.
-//! - [`Scenario::AttrStats`] has no B+-tree fallback
-//!   in FCB at all regardless of indexing (see below) — this runner's own
-//!   `select_all` walk deliberately flattens to CityObject level too (every
-//!   CityObject's numeric value is folded into `(min, max, sum, count)`, not
-//!   one value per feature),
-//!   matching [`Scenario::AttrFilter`]'s own now-established granularity
-//!   and [`super::cityjsonseq`]'s convention for these same three
-//!   scenarios.
+//! **What each scenario reads, visits and returns.** Every walk reads the
+//! raw FlatBuffers `CityFeature`, never `cur_cj_feature` (whose
+//! `to_cj_feature` conversion into `serde_json` would measure the
+//! conversion, not the format). Coordinates are dequantised from FCB's
+//! `i32` vertices with the header transform and visited in place.
 //!
-//! Net effect: [`Scenario::Count`]/[`Scenario::FullRead`]/
-//! [`Scenario::BBoxQuery`] are feature-level (their own genuinely-native
-//! FCB mechanism); [`Scenario::AttrFilter`]/[`Scenario::AttrStats`]/
-//! [`Scenario::IdLookup`] are CityObject-level (either
-//! because that's what FCB's own B+-tree naturally returns, or — for the
-//! scenario with no index at all — this runner's own deliberate
-//! choice to match that same granularity). This still does NOT reproduce
-//! CityParquet's own CityObject-row counts (2231 on delft, vs. FCB's own
-//! 1115 features) — the milestone's methodology doc is responsible for
-//! disclosing the feature-vs-object split alongside the numbers, not this
-//! runner papering over it.
-//!
-//! **What the full walks actually materialise.** Every walk below reads
-//! the RAW FlatBuffers `CityFeature` (`FeatureIter::cur_feature`), never
-//! `cur_cj_feature`: FCB is a zero-copy format, and a comparison baseline
-//! is owed its own best natural implementation. `cur_cj_feature` runs
-//! `fcb_core`'s `to_cj_feature`, which decodes every geometry into nested
-//! `serde_json` boundary arrays, converts every vertex, decodes every
-//! attribute into a `serde_json::Map` and allocates a `String` id per
-//! CityObject — to answer questions that need one enum comparison, one
-//! borrowed `&str` comparison or one column. Measured on `3dbag_n10000`, a
-//! type walk cost 0.389 s that way against 0.033 s through the raw
-//! accessors, which made FCB's `attr-filter`/`attr-stats`/
-//! `id-lookup` rows cost the same as its `full-read` row and measured the
-//! conversion, not the format. So:
-//!
-//! - [`Scenario::FullRead`] reads every feature's geometry: for every
-//!   CityObject, every standard geometry's five flattened index arrays
-//!   (`solids`/`shells`/`surfaces`/`strings`/`boundaries`) plus its
-//!   per-surface `semantics` indices, every template instance's own
-//!   boundary array, and every one of the feature's quantised vertices.
-//!   Those arrays ARE the nesting a CityJSON `boundaries` tree encodes, so
-//!   this is the same read work `fcb_core`'s own `decode` does without the
-//!   nested `Vec` it allocates on top. NOT read: `semantics_objects`,
-//!   `material`, `texture` and the feature `appearance` — semantic-surface
-//!   attribute tables and appearance mappings, not geometry.
-//! - [`Scenario::AttrFilter`]'s fallback tests the reserved `object_type`
-//!   column against `co.type_()` (a flatbuffer enum, mapped to its
-//!   CityJSON type string exactly as `to_cj_feature`'s own `to_cj_co_type`
-//!   does), and any other column by decoding ONLY that column's value out
-//!   of the CityObject's packed attribute blob.
-//! - [`Scenario::IdLookup`]'s fallback compares `co.id()`, a borrowed
-//!   `&str`, and exits at the first hit.
-//! - [`Scenario::AttrStats`] decodes that one attribute column and nothing
-//!   else — no geometry at all — and aggregates it (`super::AttrAggregates`).
-//!
-//! The RESULT of every one of those is unchanged — same counting unit,
-//! same predicate semantics, same numbers — only the work behind it is.
-//!
-//! **Attribute B+-tree vs. full scan.** FCB's B+-tree only indexes the
-//! CityJSON `attributes` map (built by `fcb ser -A`); reserved/structural
-//! fields like `object_type` ("type") and a CityObject's own id are never
-//! part of that schema, so a query against either always falls back to a
-//! full [`fcb_core::FcbReader::select_all`] walk here (checked once per
-//! call via the header's own column schema, not assumed) — this is
-//! expected given `-A`, not a bug. [`Scenario::AttrStats`]
-//! always uses that same full walk regardless of
-//! whether the column is indexed: FCB's B+-tree only supports point/range
-//! *filtering*, not columnar aggregation, so there is no faster native
-//! mechanism to measure — the full scan IS the honest cost.
-//!
-//! **Spatial index dimensionality.** FCB's packed R-tree
-//! ([`fcb_core::SpatialQuery::BBox`]) is 2D; [`Scenario::BBoxQuery`]'s
-//! query window's z-components are dropped rather than approximated.
+//! - [`Scenario::Count`]: the header's `features_count`; a feature count.
+//! - [`Scenario::FullRead`]: every feature, every field of every
+//!   CityObject — every boundary vertex dequantised, the five flattened
+//!   index arrays, every per-face semantic reference and every
+//!   semantic-surface object, every attribute value (the packed blob read
+//!   byte by byte), template instances by anchor, transformation and
+//!   template index only. Appearance (`material`, `texture`, the feature
+//!   `appearance`) is not read. `result_count` is the feature count; the
+//!   comparable totals are object-level.
+//! - [`Scenario::BBoxQuery`]: the R-tree selects the features whose 2D
+//!   extent meets the window; each is read once (deduplicated by feature
+//!   id) and every CityObject in it is tested with the one shared
+//!   definition (its box is the min/max over every vertex of its `children`
+//!   subtree; edges intersect). Walking the non-matching objects of a hit
+//!   feature is FCB's honest cost. Returns the matching objects' ids and
+//!   walks each one's highest-LoD geometry in place.
+//! - [`Scenario::AttrFilter`]: the B+-tree selects the features holding a
+//!   match; each is read once WITHOUT decoding geometry, and every
+//!   CityObject in it is re-tested (one targeted blob scan, or the
+//!   flatbuffer type enum for `object_type`) so only the matching objects'
+//!   ids return. Without an index, a full walk tests every object.
+//! - [`Scenario::AttrStats`]: always a full walk decoding that one column
+//!   (FCB's B+-tree filters, it does not aggregate), folded per CityObject
+//!   into `(min, max, sum, count)`.
+//! - [`Scenario::IdLookup`]: the `id` B+-tree when present (with `-A` it
+//!   is not, so a full walk), stopping at the feature holding the object;
+//!   every field of that object is read as in read all.
 
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -128,12 +68,14 @@ use bytes::Bytes;
 // builds — every walk below reads the flatbuffer directly (see this
 // module's own doc comment on what each scenario materialises).
 use fcb_core::{
-    AttrQuery, CityObject, CityObjectType, ColumnType, FcbReader, FixedStringKey, Float, Geometry,
-    GeometryInstance, Header, HttpFcbReader, KeyType, Operator, SpatialQuery,
+    AttrQuery, CityFeature, CityObject, CityObjectType, ColumnType, FcbReader, FixedStringKey,
+    Float, Geometry, GeometryInstance, Header, HttpFcbReader, KeyType, Operator, SpatialQuery,
 };
 use http_range_client::{AsyncBufferedHttpRangeClient, AsyncHttpRangeClient};
 
-use super::{AttrAggregates, FormatRunner, IoStats, RunOutcome, Source};
+use super::cjvisit::MaybeBox;
+use super::returned::{ComparableTotals, EMPTY_EXTENT, IdDigest, ReturnedGeometry};
+use super::{Answer, AttrAggregates, FormatRunner, IoStats, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// The markers every index-fallback message below carries, and the exact
@@ -428,16 +370,15 @@ fn co_matches(
 /// Folds every index of one flatbuffer `u32` vector into a checksum: the
 /// point is the TOUCH, not the sum — every element is read off the buffer
 /// (little-endian, one at a time, exactly as a decoder would), and the
-/// result is `black_box`ed by [`full_read`] so the traversal cannot be
+/// result is `black_box`ed by [`visit_object`] so the traversal cannot be
 /// optimised away as dead code.
 fn touch_indices(values: impl Iterator<Item = u32>) -> u64 {
     values.fold(0u64, |acc, n| acc.wrapping_add(u64::from(n)))
 }
 
 /// One geometry's full boundary traversal: `(leaves, checksum)`, where
-/// `leaves` is the number of vertex indices in its `boundaries` array —
-/// the flattened equivalent of [`super::cityjsonseq::count_boundary_leaves`]
-/// over the nested CityJSON form — and `checksum` folds every element of
+/// `leaves` is the number of vertex indices in its `boundaries` array (the
+/// leaves of the nested CityJSON form) and `checksum` folds every element of
 /// EVERY one of FCB's five flattened arrays (`solids`, `shells`,
 /// `surfaces`, `strings`, `boundaries`) plus the per-surface `semantics`
 /// index array. Between them those arrays ARE the nesting structure a
@@ -445,10 +386,8 @@ fn touch_indices(values: impl Iterator<Item = u32>) -> u64 {
 /// read work `fcb_core`'s own `decode` does, minus the nested `Vec`
 /// allocation it builds on top.
 ///
-/// Deliberately NOT touched: `semantics_objects`, `material` and `texture`.
-/// Those are semantic-surface attribute tables and appearance mappings, not
-/// geometry — see this module's own doc comment, which states exactly what
-/// [`Scenario::FullRead`] materialises.
+/// The vertices themselves, `semantics_objects` and attributes are read by
+/// [`visit_object`]; `material` and `texture` (appearance) are not read.
 fn geometry_work(geom: &Geometry<'_>) -> (u64, u64) {
     let mut checksum = 0u64;
     let mut leaves = 0u64;
@@ -486,42 +425,436 @@ fn geometry_instance_work(instance: &GeometryInstance<'_>) -> (u64, u64) {
     }
 }
 
-/// One feature's whole geometry traversal: every CityObject's standard
-/// geometries and template instances, plus every one of the feature's own
-/// quantised vertices (read as the three `i32`s FCB stores, the same
-/// coordinates `to_cj_vertices` would copy into a `Vec<Vec<i64>>`).
-fn feature_geometry_work(feature: &fcb_core::CityFeature<'_>) -> (u64, u64) {
-    let mut leaves = 0u64;
-    let mut checksum = 0u64;
-    if let Some(vertices) = feature.vertices() {
-        for v in vertices.iter() {
-            checksum = checksum
-                .wrapping_add(v.x() as i64 as u64)
-                .wrapping_add(v.y() as i64 as u64)
-                .wrapping_add(v.z() as i64 as u64);
-        }
-    }
-    if let Some(objects) = feature.objects() {
-        for co in objects.iter() {
-            if let Some(geometries) = co.geometry() {
-                for geom in geometries.iter() {
-                    let (l, c) = geometry_work(&geom);
-                    leaves += l;
-                    checksum = checksum.wrapping_add(c);
-                }
-            }
-            if let Some(instances) = co.geometry_instances() {
-                for instance in instances.iter() {
-                    let (l, c) = geometry_instance_work(&instance);
-                    leaves += l;
-                    checksum = checksum.wrapping_add(c);
-                }
-            }
-        }
-    }
-    (leaves, checksum)
+/// The header's vertex quantisation: a stored `i32` vertex is
+/// `v * scale + translate` in real coordinates. A file without a transform
+/// stores real coordinates directly.
+#[derive(Clone, Copy, Debug)]
+struct Quant {
+    scale: [f64; 3],
+    translate: [f64; 3],
 }
 
+impl Quant {
+    fn of(header: &Header<'_>) -> Self {
+        match header.transform() {
+            Some(t) => {
+                let (s, tr) = (t.scale(), t.translate());
+                Self {
+                    scale: [s.x(), s.y(), s.z()],
+                    translate: [tr.x(), tr.y(), tr.z()],
+                }
+            }
+            None => Self {
+                scale: [1.0; 3],
+                translate: [0.0; 3],
+            },
+        }
+    }
+}
+
+/// Resolves every vertex index in `indices` against `feature`'s own vertex
+/// list, dequantises it to real `f64` coordinates in place and folds it
+/// into `extent`. Returns the number of coordinates visited.
+fn walk(
+    feature: &CityFeature<'_>,
+    q: Quant,
+    indices: impl Iterator<Item = u32>,
+    extent: &mut [f64; 6],
+) -> Result<u64> {
+    let vertices = feature.vertices();
+    let mut visited = 0u64;
+    for index in indices {
+        let i = index as usize;
+        let Some(vertices) = vertices.as_ref().filter(|v| i < v.len()) else {
+            bail!(
+                "feature {} references vertex {i}, beyond its {} vertices",
+                feature.id(),
+                vertices.as_ref().map_or(0, |v| v.len())
+            );
+        };
+        let v = vertices.get(i);
+        let p = [
+            f64::from(v.x()) * q.scale[0] + q.translate[0],
+            f64::from(v.y()) * q.scale[1] + q.translate[1],
+            f64::from(v.z()) * q.scale[2] + q.translate[2],
+        ];
+        for axis in 0..3 {
+            extent[axis] = extent[axis].min(p[axis]);
+            extent[axis + 3] = extent[axis + 3].max(p[axis]);
+        }
+        visited += 1;
+    }
+    Ok(visited)
+}
+
+/// Every byte of an attribute blob, folded: FlatCityBuf's attribute values
+/// in their native (binary) form, each one read.
+fn touch_bytes(bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(0u64, |acc, &b| acc.wrapping_add(u64::from(b)))
+}
+
+/// Reads every field of one CityObject natively and folds it into
+/// `totals`, counted as `cityparquet_core::visit::VisitTotals` counts:
+/// one object; one geometry per standard geometry (a template instance is
+/// read by its anchor, transformation and template index, never expanded,
+/// and not counted); every boundary vertex dequantised into the extent;
+/// every non-null per-face semantic reference; every semantic-surface
+/// object (type, attributes, children, parent); every attribute value.
+/// Appearance (`material`, `texture`) is not read.
+fn visit_object(
+    feature: &CityFeature<'_>,
+    co: &CityObject<'_>,
+    q: Quant,
+    totals: &mut ComparableTotals,
+) -> Result<()> {
+    totals.objects += 1;
+    let mut work = 0u64;
+    std::hint::black_box((co.id(), co.type_(), co.geographical_extent()));
+    if let Some(attributes) = co.attributes() {
+        work = work.wrapping_add(touch_bytes(attributes.bytes()));
+    }
+    if let Some(columns) = co.columns() {
+        for column in columns.iter() {
+            std::hint::black_box(column.name());
+        }
+    }
+    if let Some(children) = co.children() {
+        for child in children.iter() {
+            std::hint::black_box(child);
+        }
+    }
+    if let Some(parents) = co.parents() {
+        for parent in parents.iter() {
+            std::hint::black_box(parent);
+        }
+    }
+    if let Some(geometries) = co.geometry() {
+        for geom in geometries.iter() {
+            totals.geometries += 1;
+            std::hint::black_box((geom.type_(), geom.lod()));
+            work = work.wrapping_add(geometry_work(&geom).1);
+            if let Some(boundaries) = geom.boundaries() {
+                walk(feature, q, boundaries.iter(), &mut totals.extent)?;
+            }
+            if let Some(semantics) = geom.semantics() {
+                totals.semantic_faces += semantics.iter().filter(|&s| s != u32::MAX).count() as u64;
+            }
+            if let Some(objects) = geom.semantics_objects() {
+                for surface in objects.iter() {
+                    std::hint::black_box((surface.type_(), surface.parent()));
+                    if let Some(attributes) = surface.attributes() {
+                        work = work.wrapping_add(touch_bytes(attributes.bytes()));
+                    }
+                    if let Some(children) = surface.children() {
+                        work = work.wrapping_add(touch_indices(children.iter()));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(instances) = co.geometry_instances() {
+        for instance in instances.iter() {
+            work = work.wrapping_add(geometry_instance_work(&instance).1);
+            std::hint::black_box((instance.template(), instance.transformation()));
+        }
+    }
+    std::hint::black_box(work);
+    Ok(())
+}
+
+/// `co`'s most detailed standard geometry, LoDs ordered numerically as
+/// `(major, minor)` exactly as the text formats order them.
+fn highest_lod<'a>(co: &CityObject<'a>) -> Option<Geometry<'a>> {
+    co.geometry()?
+        .iter()
+        .max_by_key(|g| super::cjvisit::lod_rank(g.lod()))
+}
+
+/// The box over `co`'s own geometries (template-instance anchors
+/// included), as `cjvisit` boxes a CityJSON object.
+fn own_box(feature: &CityFeature<'_>, co: &CityObject<'_>, q: Quant) -> Result<MaybeBox> {
+    let mut e = EMPTY_EXTENT;
+    if let Some(geometries) = co.geometry() {
+        for geom in geometries.iter() {
+            if let Some(boundaries) = geom.boundaries() {
+                walk(feature, q, boundaries.iter(), &mut e)?;
+            }
+        }
+    }
+    if let Some(instances) = co.geometry_instances() {
+        for instance in instances.iter() {
+            if let Some(boundaries) = instance.boundaries() {
+                walk(feature, q, boundaries.iter(), &mut e)?;
+            }
+        }
+    }
+    Ok(e[0]
+        .is_finite()
+        .then_some(([e[0], e[1], e[2]], [e[3], e[4], e[5]])))
+}
+
+/// The box over object `i`'s whole `children` subtree inside one feature,
+/// memoised; a cycle is cut where it closes.
+fn subtree_box(
+    i: usize,
+    own: &[MaybeBox],
+    children: &[Vec<usize>],
+    memo: &mut [Option<MaybeBox>],
+    on_path: &mut [bool],
+) -> MaybeBox {
+    if let Some(done) = memo[i] {
+        return done;
+    }
+    on_path[i] = true;
+    let mut acc = own[i];
+    for &child in &children[i] {
+        if !on_path[child] {
+            acc = super::cjvisit::union(acc, subtree_box(child, own, children, memo, on_path));
+        }
+    }
+    on_path[i] = false;
+    memo[i] = Some(acc);
+    acc
+}
+
+/// What one scenario does with each feature it reads.
+enum Step<'p> {
+    /// Read all: every object, every field.
+    All,
+    /// The spatial window: ids and highest-LoD geometry of the matching
+    /// CityObjects.
+    Window(&'p [f64; 6]),
+    /// The attribute filter: ids of the matching CityObjects.
+    Filter(&'p str, &'p AttrPred),
+    /// The identifier lookup: every field of the one object found.
+    Lookup(&'p str),
+}
+
+/// One scenario's fold over the features a selection yields.
+struct Fold<'p> {
+    step: Step<'p>,
+    q: Quant,
+    root: Option<Vec<ColumnMeta>>,
+    /// Feature ids already read: an index can name a feature more than once
+    /// (one entry per matching CityObject), and each is read once.
+    seen: Option<HashSet<String>>,
+    features: u64,
+    ids: IdDigest,
+    totals: ComparableTotals,
+    geometry: ReturnedGeometry,
+    done: bool,
+}
+
+impl<'p> Fold<'p> {
+    fn new(step: Step<'p>, header: &Header<'_>, dedupe: bool) -> Self {
+        Self {
+            step,
+            q: Quant::of(header),
+            root: owned_columns(header),
+            seen: dedupe.then(HashSet::new),
+            features: 0,
+            ids: IdDigest::default(),
+            totals: ComparableTotals::default(),
+            geometry: ReturnedGeometry::default(),
+            done: false,
+        }
+    }
+
+    fn feature(&mut self, feature: &CityFeature<'_>) -> Result<()> {
+        if let Some(seen) = &mut self.seen
+            && !seen.insert(feature.id().to_owned())
+        {
+            return Ok(());
+        }
+        self.features += 1;
+        let q = self.q;
+        let Some(objects) = feature.objects() else {
+            return Ok(());
+        };
+        match self.step {
+            Step::All => {
+                for co in objects.iter() {
+                    visit_object(feature, &co, q, &mut self.totals)?;
+                }
+            }
+            Step::Window(window) => {
+                let n = objects.len();
+                let mut index = HashMap::with_capacity(n);
+                let mut own = Vec::with_capacity(n);
+                for (i, co) in objects.iter().enumerate() {
+                    index.insert(co.id(), i);
+                    own.push(own_box(feature, &co, q)?);
+                }
+                let children: Vec<Vec<usize>> = objects
+                    .iter()
+                    .map(|co| {
+                        co.children()
+                            .map(|c| c.iter().filter_map(|id| index.get(id).copied()).collect())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                let mut memo = vec![None; n];
+                let mut on_path = vec![false; n];
+                for (i, co) in objects.iter().enumerate() {
+                    if let Some((min, max)) =
+                        subtree_box(i, &own, &children, &mut memo, &mut on_path)
+                        && super::cityjsonseq::intersects(min, max, window)
+                    {
+                        self.ids.push(co.id());
+                        if let Some(geom) = highest_lod(&co) {
+                            self.geometry.geometries += 1;
+                            if let Some(boundaries) = geom.boundaries() {
+                                std::hint::black_box(walk(
+                                    feature,
+                                    q,
+                                    boundaries.iter(),
+                                    &mut self.geometry.extent,
+                                )?);
+                            }
+                        }
+                    }
+                }
+            }
+            Step::Filter(column, pred) => {
+                for co in objects.iter() {
+                    if co_matches(&co, self.root.as_deref(), column, pred)? {
+                        self.ids.push(co.id());
+                    }
+                }
+            }
+            Step::Lookup(id) => {
+                if let Some(co) = objects.iter().find(|co| co.id() == id) {
+                    visit_object(feature, &co, q, &mut self.totals)?;
+                    self.done = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn answer(self) -> Answer {
+        match self.step {
+            Step::All => Answer::reading(self.features, self.totals),
+            Step::Window(_) => Answer::returning(self.ids, Some(self.geometry)),
+            Step::Filter(..) => Answer::returning(self.ids, None),
+            Step::Lookup(_) => Answer::reading(self.totals.objects, self.totals),
+        }
+    }
+}
+
+/// Which FlatCityBuf mechanism selects the features a fold reads.
+enum Select {
+    /// `select_all`: every feature, in file order.
+    All,
+    /// The packed 2D R-tree (`SpatialQuery::BBox`), one entry per feature.
+    BBox([f64; 4]),
+    /// A B+-tree attribute index; on failure, a full `select_all` walk with
+    /// the `attr-index-failed` disclosure.
+    Attr(AttrQuery, &'static str),
+}
+
+/// Runs `step` over the features `select` yields from a local file.
+fn fold_local(input: &Path, select: Select, step: Step<'_>) -> Result<Answer> {
+    let reader = open(input)?;
+    let features = reader.header().features_count();
+    let mut fold = Fold::new(step, &reader.header(), !matches!(select, Select::All));
+    let mut iter = match select {
+        Select::All => reader.select_all()?,
+        Select::BBox(b) => {
+            reader.select_query(SpatialQuery::BBox(b[0], b[1], b[2], b[3]), None, None)?
+        }
+        Select::Attr(query, label) => match reader.select_attr_query(query) {
+            Ok(iter) if !truncates(iter.features_count(), features) => iter,
+            Ok(_) => {
+                index_failed(label, &TRUNCATED);
+                fold.seen = None;
+                open(input)?.select_all()?
+            }
+            Err(e) => {
+                index_failed(label, &e);
+                fold.seen = None;
+                open(input)?.select_all()?
+            }
+        },
+    };
+    while let Some(feat) = iter.next()? {
+        fold.feature(&feat.cur_feature())?;
+        if fold.done {
+            break;
+        }
+    }
+    Ok(fold.answer())
+}
+
+/// Runs `step` over the features `select` yields over HTTP range requests.
+async fn fold_http(url: &str, tally: RangeTally, select: Select, step: Step<'_>) -> Result<Answer> {
+    let reader = open_http(url, tally.clone()).await?;
+    let features = reader.header().features_count();
+    let mut fold = Fold::new(step, &reader.header(), !matches!(select, Select::All));
+    let mut iter = match select {
+        Select::All => reader.select_all().await?,
+        Select::BBox(b) => {
+            reader
+                .select_query(SpatialQuery::BBox(b[0], b[1], b[2], b[3]))
+                .await?
+        }
+        Select::Attr(query, label) => match reader.select_attr_query(&query).await {
+            Ok(iter) if !truncates(iter.features_count(), features) => iter,
+            Ok(_) => {
+                index_failed(label, &TRUNCATED);
+                fold.seen = None;
+                open_http(url, tally).await?.select_all().await?
+            }
+            Err(e) => {
+                index_failed(label, &e);
+                fold.seen = None;
+                open_http(url, tally).await?.select_all().await?
+            }
+        },
+    };
+    while iter.next().await?.is_some() {
+        fold.feature(&iter.cur_feature().feature())?;
+        if fold.done {
+            break;
+        }
+    }
+    Ok(fold.answer())
+}
+
+/// The disclosure for an attribute-index query that failed and fell back
+/// to a full walk (see [`FALLBACK_MARKERS`]).
+fn index_failed(label: &str, e: &dyn std::fmt::Display) {
+    eprintln!(
+        "cityparquet-readbench: flatcitybuf: indexed {label} query failed ({e}) \
+         (attr-index-failed); falling back to a full scan"
+    );
+}
+
+/// Why a B+-tree hit list cannot be iterated: it holds one entry per
+/// matching CityObject, never deduplicated by feature offset, and
+/// `fcb_core` 0.7.6's feature iterator stops after the header's
+/// `features_count` entries. A list longer than that would silently lose
+/// its tail (on `lod3_railway.city.json`, `function = "1070"` names 65
+/// objects in 8 features; the iterator yields 38 entries covering 6), so
+/// such a query is answered by the full walk and disclosed as a fallback.
+const TRUNCATED: &str = "the hit list is longer than the file's feature count, \
+                         which fcb_core 0.7.6's iterator truncates";
+
+/// Whether an attribute-index hit list of `hits` entries would be cut short
+/// by the iterator over a file of `features` features (see [`TRUNCATED`]).
+fn truncates(hits: Option<usize>, features: u64) -> bool {
+    hits.is_some_and(|n| n as u64 > features)
+}
+
+/// The disclosure for an attribute without a B+-tree index.
+fn no_index(column: &str) {
+    eprintln!(
+        "cityparquet-readbench: flatcitybuf: attribute '{column}' has no B+-tree index \
+         (no-attr-index); falling back to a full scan"
+    );
+}
 /// This runner's own attribute-predicate evaluation, used only by the
 /// full-scan fallback paths — the FlatCityBuf analogue of
 /// [`super::cityjsonseq`]'s own `matches_predicate`.
@@ -700,122 +1033,33 @@ fn attr_query_for(input: &Path, column: &str, pred: &AttrPred) -> Result<Option<
     Ok(build_attr_query(column, pred, column_type).ok())
 }
 
-/// Every feature in `input`, counting one FEATURE per record and decoding
-/// every one of its geometries through the raw flatbuffer accessors (see
-/// [`feature_geometry_work`] for exactly which arrays are read). The
-/// boundary-leaf and checksum totals are `black_box`ed rather than
-/// returned: they exist to force the traversal to happen, and the returned
-/// metric stays feature-level per this module's own doc comment — the same
-/// arrangement [`super::cityjsonseq`]'s own `FullRead` uses.
-fn full_read(input: &Path) -> Result<u64> {
-    let reader = open(input)?;
-    let mut iter = reader.select_all()?;
-    let mut feature_count = 0u64;
-    let mut leaves = 0u64;
-    let mut checksum = 0u64;
-    while let Some(feat) = iter.next()? {
-        let (l, c) = feature_geometry_work(&feat.cur_feature());
-        feature_count += 1;
-        leaves += l;
-        checksum = checksum.wrapping_add(c);
-    }
-    std::hint::black_box((leaves, checksum));
-    Ok(feature_count)
-}
-
-/// A full `select_all` walk, counting every CityObject (across every
-/// feature, parents AND children) matching `pred` on `column` — CityObject
-/// level, matching [`attr_filter`]'s own indexed-path granularity (see this
-/// module's own doc comment) and [`super::cityjsonseq`]'s convention for
-/// this same scenario. Used as [`Scenario::AttrFilter`]'s fallback when
-/// `column` isn't indexed.
-///
-/// No geometry is decoded and no CityJSON feature is built: each CityObject
-/// is tested through [`co_matches`], which reads one flatbuffer enum for
-/// the reserved `object_type` column and otherwise decodes only `column`'s
-/// own value out of that object's attribute blob.
-fn full_walk_attr_filter(input: &Path, column: &str, pred: &AttrPred) -> Result<u64> {
-    let reader = open(input)?;
-    let root = owned_columns(&reader.header());
-    let mut iter = reader.select_all()?;
-    let mut matched = 0u64;
-    while let Some(feat) = iter.next()? {
-        let Some(objects) = feat.cur_feature().objects() else {
-            continue;
-        };
-        for co in objects.iter() {
-            if co_matches(&co, root.as_deref(), column, pred)? {
-                matched += 1;
-            }
+/// [`Scenario::AttrFilter`]: the B+-tree attribute index selects the
+/// features holding a match, each read once WITHOUT decoding geometry, and
+/// every CityObject of each is re-tested so only the matching objects' ids
+/// return. Without an index, a full `select_all` walk tests every object.
+fn attr_filter(input: &Path, column: &str, pred: &AttrPred) -> Result<Answer> {
+    let step = Step::Filter(column, pred);
+    match attr_query_for(input, column, pred)? {
+        Some(query) => fold_local(input, Select::Attr(query, "attr-filter"), step),
+        None => {
+            no_index(column);
+            fold_local(input, Select::All, step)
         }
     }
-    Ok(matched)
 }
 
-/// A full `select_all` walk, short-circuiting as soon as a CityObject whose
-/// own `id` is `id` is found — one borrowed `&str` comparison per object,
-/// no decoding of anything else.
-fn full_walk_id_lookup(input: &Path, id: &str) -> Result<u64> {
-    let reader = open(input)?;
-    let mut iter = reader.select_all()?;
-    while let Some(feat) = iter.next()? {
-        if let Some(objects) = feat.cur_feature().objects()
-            && objects.iter().any(|co| co.id() == id)
-        {
-            return Ok(1);
-        }
-    }
-    Ok(0)
-}
-
-/// [`Scenario::AttrFilter`]: tries `column`'s B+-tree attribute index first
-/// (built by `fcb ser -A`); falls back to [`full_walk_attr_filter`] when
-/// `column` isn't indexed (see this module's own doc comment — expected
-/// for reserved fields like `object_type`, not a bug) or when the index
-/// query itself errors for any reason.
-fn attr_filter(input: &Path, column: &str, pred: &AttrPred) -> Result<u64> {
-    if let Some(query) = attr_query_for(input, column, pred)? {
-        let reader = open(input)?;
-        match reader.select_attr_query(query) {
-            Ok(iter) => return Ok(iter.features_count().unwrap_or(0) as u64),
-            Err(e) => eprintln!(
-                "cityparquet-readbench: flatcitybuf: indexed attr-filter query on '{column}' \
-                 failed ({e}) (attr-index-failed); falling back to a full scan"
-            ),
-        }
-    } else {
-        eprintln!(
-            "cityparquet-readbench: flatcitybuf: attribute '{column}' has no B+-tree index \
-             (no-attr-index); falling back to a full scan"
-        );
-    }
-    full_walk_attr_filter(input, column, pred)
-}
-
-/// [`Scenario::IdLookup`]: tries `id`'s B+-tree attribute index first (in
-/// case a future `fcb_core` release indexes it), but in practice `id` is a
-/// CityObject's map key, never part of the CityJSON `attributes` map FCB's
-/// schema covers, so this always takes the [`full_walk_id_lookup`]
-/// fallback on real data — documented, not a bug (see this module's own
-/// doc comment).
-fn id_lookup(input: &Path, id: &str) -> Result<u64> {
+/// [`Scenario::IdLookup`]: the `id` B+-tree selects the feature, which is
+/// read until the object is found; every field of that object is read.
+/// Without an index, a full `select_all` walk stops at the hit.
+fn id_lookup(input: &Path, id: &str) -> Result<Answer> {
     let pred = AttrPred::Eq(serde_json::Value::String(id.to_string()));
-    if let Some(query) = attr_query_for(input, "id", &pred)? {
-        let reader = open(input)?;
-        if let Ok(mut iter) = reader.select_attr_query(query) {
-            return Ok(if iter.next()?.is_some() { 1 } else { 0 });
+    match attr_query_for(input, "id", &pred)? {
+        Some(query) => fold_local(input, Select::Attr(query, "id-lookup"), Step::Lookup(id)),
+        None => {
+            no_index("id");
+            fold_local(input, Select::All, Step::Lookup(id))
         }
-        eprintln!(
-            "cityparquet-readbench: flatcitybuf: indexed id-lookup query failed \
-             (attr-index-failed); falling back to a full scan"
-        );
-    } else {
-        eprintln!(
-            "cityparquet-readbench: flatcitybuf: 'id' has no B+-tree index (no-attr-index); \
-             falling back to a full scan"
-        );
     }
-    full_walk_id_lookup(input, id)
 }
 
 /// [`Scenario::AttrStats`]: always a full `select_all` walk (FCB's B+-tree
@@ -928,64 +1172,6 @@ async fn open_http(
     Ok(HttpFcbReader::new(buffered).await?)
 }
 
-/// The async, HTTP-sourced mirror of [`full_read`] — the same raw-accessor
-/// traversal, so the two transports measure the same decode work.
-async fn full_read_http(url: &str, tally: RangeTally) -> Result<u64> {
-    let reader = open_http(url, tally).await?;
-    let mut iter = reader.select_all().await?;
-    let mut feature_count = 0u64;
-    let mut leaves = 0u64;
-    let mut checksum = 0u64;
-    while iter.next().await?.is_some() {
-        let (l, c) = feature_geometry_work(&iter.cur_feature().feature());
-        feature_count += 1;
-        leaves += l;
-        checksum = checksum.wrapping_add(c);
-    }
-    std::hint::black_box((leaves, checksum));
-    Ok(feature_count)
-}
-
-/// The async, HTTP-sourced mirror of [`full_walk_attr_filter`].
-async fn full_walk_attr_filter_http(
-    url: &str,
-    tally: RangeTally,
-    column: &str,
-    pred: &AttrPred,
-) -> Result<u64> {
-    let reader = open_http(url, tally).await?;
-    let root = owned_columns(&reader.header());
-    let mut iter = reader.select_all().await?;
-    let mut matched = 0u64;
-    while iter.next().await?.is_some() {
-        let feature = iter.cur_feature().feature();
-        let Some(objects) = feature.objects() else {
-            continue;
-        };
-        for co in objects.iter() {
-            if co_matches(&co, root.as_deref(), column, pred)? {
-                matched += 1;
-            }
-        }
-    }
-    Ok(matched)
-}
-
-/// The async, HTTP-sourced mirror of [`full_walk_id_lookup`].
-async fn full_walk_id_lookup_http(url: &str, tally: RangeTally, id: &str) -> Result<u64> {
-    let reader = open_http(url, tally).await?;
-    let mut iter = reader.select_all().await?;
-    while iter.next().await?.is_some() {
-        let feature = iter.cur_feature().feature();
-        if let Some(objects) = feature.objects()
-            && objects.iter().any(|co| co.id() == id)
-        {
-            return Ok(1);
-        }
-    }
-    Ok(0)
-}
-
 /// The async, HTTP-sourced mirror of [`attr_query_for`].
 async fn attr_query_for_http(
     url: &str,
@@ -1010,44 +1196,35 @@ async fn attr_filter_http(
     tally: RangeTally,
     column: &str,
     pred: &AttrPred,
-) -> Result<u64> {
-    if let Some(query) = attr_query_for_http(url, tally.clone(), column, pred).await? {
-        let reader = open_http(url, tally.clone()).await?;
-        match reader.select_attr_query(&query).await {
-            Ok(iter) => return Ok(iter.features_count().unwrap_or(0) as u64),
-            Err(e) => eprintln!(
-                "cityparquet-readbench: flatcitybuf: indexed attr-filter query on '{column}' \
-                 failed ({e}) (attr-index-failed); falling back to a full scan"
-            ),
+) -> Result<Answer> {
+    let step = Step::Filter(column, pred);
+    match attr_query_for_http(url, tally.clone(), column, pred).await? {
+        Some(query) => fold_http(url, tally, Select::Attr(query, "attr-filter"), step).await,
+        None => {
+            no_index(column);
+            fold_http(url, tally, Select::All, step).await
         }
-    } else {
-        eprintln!(
-            "cityparquet-readbench: flatcitybuf: attribute '{column}' has no B+-tree index \
-             (no-attr-index); falling back to a full scan"
-        );
     }
-    full_walk_attr_filter_http(url, tally, column, pred).await
 }
 
 /// The async, HTTP-sourced mirror of [`id_lookup`].
-async fn id_lookup_http(url: &str, tally: RangeTally, id: &str) -> Result<u64> {
+async fn id_lookup_http(url: &str, tally: RangeTally, id: &str) -> Result<Answer> {
     let pred = AttrPred::Eq(serde_json::Value::String(id.to_string()));
-    if let Some(query) = attr_query_for_http(url, tally.clone(), "id", &pred).await? {
-        let reader = open_http(url, tally.clone()).await?;
-        if let Ok(mut iter) = reader.select_attr_query(&query).await {
-            return Ok(if iter.next().await?.is_some() { 1 } else { 0 });
+    match attr_query_for_http(url, tally.clone(), "id", &pred).await? {
+        Some(query) => {
+            fold_http(
+                url,
+                tally,
+                Select::Attr(query, "id-lookup"),
+                Step::Lookup(id),
+            )
+            .await
         }
-        eprintln!(
-            "cityparquet-readbench: flatcitybuf: indexed id-lookup query failed \
-             (attr-index-failed); falling back to a full scan"
-        );
-    } else {
-        eprintln!(
-            "cityparquet-readbench: flatcitybuf: 'id' has no B+-tree index (no-attr-index); \
-             falling back to a full scan"
-        );
+        None => {
+            no_index("id");
+            fold_http(url, tally, Select::All, Step::Lookup(id)).await
+        }
     }
-    full_walk_id_lookup_http(url, tally, id).await
 }
 
 /// The async, HTTP-sourced mirror of [`attr_stats`].
@@ -1099,21 +1276,16 @@ async fn run_http(
     let url = join_url(base_url, key)?;
     let tally = RangeTally::default();
 
-    let mut aggregates = None;
-    let result_count = match scenario {
+    let answer: Answer = match scenario {
         Scenario::Count => {
             let reader = open_http(&url, tally.clone()).await?;
-            reader.header().features_count()
+            reader.header().features_count().into()
         }
-        Scenario::FullRead => full_read_http(&url, tally.clone()).await?,
+        Scenario::FullRead => fold_http(&url, tally.clone(), Select::All, Step::All).await?,
         Scenario::BBoxQuery => {
             let bbox = *require(&params.bbox, "bbox", scenario)?;
-            let reader = open_http(&url, tally.clone()).await?;
-            // FCB's packed R-tree is 2D; drop the z components (indices
-            // 2/5) rather than approximate them — same as the local branch.
-            let query = SpatialQuery::BBox(bbox[0], bbox[1], bbox[3], bbox[4]);
-            let iter = reader.select_query(query).await?;
-            iter.features_count().unwrap_or(0) as u64
+            let select = Select::BBox([bbox[0], bbox[1], bbox[3], bbox[4]]);
+            fold_http(&url, tally.clone(), select, Step::Window(&bbox)).await?
         }
         Scenario::AttrFilter => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
@@ -1122,9 +1294,7 @@ async fn run_http(
         }
         Scenario::AttrStats => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
-            let stats = attr_stats_http(&url, tally.clone(), column).await?;
-            aggregates = Some(stats);
-            stats.count
+            attr_stats_http(&url, tally.clone(), column).await?.into()
         }
         Scenario::IdLookup => {
             let id = require(&params.target_id, "target-id", scenario)?;
@@ -1134,17 +1304,20 @@ async fn run_http(
     };
 
     let (bytes, requests) = tally.snapshot();
-    Ok(RunOutcome {
-        result_count,
-        io: Some(IoStats { bytes, requests }),
-        lookup: None,
-        attr_stats: aggregates,
-        returned: Default::default(),
-    })
+    Ok(outcome(answer, Some(IoStats { bytes, requests })))
 }
 
-/// The FlatCityBuf backend (see this module's own doc comment for which
-/// scenarios count features vs. CityObjects).
+/// One scenario's [`Answer`] as the [`RunOutcome`] the child reports.
+fn outcome(answer: Answer, io: Option<IoStats>) -> RunOutcome {
+    RunOutcome {
+        result_count: answer.result_count,
+        io,
+        lookup: None,
+        attr_stats: answer.attr_stats,
+        returned: answer.returned,
+    }
+}
+
 pub struct FlatCityBufRunner;
 
 impl FormatRunner for FlatCityBufRunner {
@@ -1152,21 +1325,13 @@ impl FormatRunner for FlatCityBufRunner {
         let (base_url, key) = match source {
             Source::Local(path) => {
                 let input = path.as_path();
-                let mut aggregates = None;
-                let result_count = match scenario {
-                    Scenario::Count => {
-                        let reader = open(input)?;
-                        reader.header().features_count()
-                    }
-                    Scenario::FullRead => full_read(input)?,
+                let answer: Answer = match scenario {
+                    Scenario::Count => open(input)?.header().features_count().into(),
+                    Scenario::FullRead => fold_local(input, Select::All, Step::All)?,
                     Scenario::BBoxQuery => {
                         let bbox = *require(&params.bbox, "bbox", scenario)?;
-                        let reader = open(input)?;
-                        // FCB's packed R-tree is 2D; drop the z components
-                        // (indices 2/5) rather than approximate them.
-                        let query = SpatialQuery::BBox(bbox[0], bbox[1], bbox[3], bbox[4]);
-                        let iter = reader.select_query(query, None, None)?;
-                        iter.features_count().unwrap_or(0) as u64
+                        let select = Select::BBox([bbox[0], bbox[1], bbox[3], bbox[4]]);
+                        fold_local(input, select, Step::Window(&bbox))?
                     }
                     Scenario::AttrFilter => {
                         let column = require(&params.attr_column, "attr-column", scenario)?;
@@ -1176,9 +1341,7 @@ impl FormatRunner for FlatCityBufRunner {
                     }
                     Scenario::AttrStats => {
                         let column = require(&params.attr_column, "attr-column", scenario)?;
-                        let stats = attr_stats(input, column)?;
-                        aggregates = Some(stats);
-                        stats.count
+                        attr_stats(input, column)?.into()
                     }
                     Scenario::IdLookup => {
                         let id = require(&params.target_id, "target-id", scenario)?;
@@ -1186,13 +1349,7 @@ impl FormatRunner for FlatCityBufRunner {
                     }
                     Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
                 };
-                return Ok(RunOutcome {
-                    result_count,
-                    io: None,
-                    lookup: None,
-                    attr_stats: aggregates,
-                    returned: Default::default(),
-                });
+                return Ok(outcome(answer, None));
             }
             Source::Http { base_url, key } => (base_url, key),
         };
@@ -1210,8 +1367,7 @@ mod tests {
     use anyhow::Result;
 
     use super::{
-        AttrPred, attr_stats, full_read, full_walk_attr_filter, full_walk_id_lookup, join_url,
-        matches_predicate, open,
+        AttrPred, Select, Step, attr_stats, fold_local, join_url, matches_predicate, open,
     };
 
     // ---------------------------------------------------------------
@@ -1237,7 +1393,7 @@ mod tests {
             .cloned()
     }
 
-    /// The OLD `full_walk_attr_filter`.
+    /// The attribute filter through `cur_cj_feature`, the oracle for the raw walk.
     fn cj_walk_attr_filter(input: &Path, column: &str, pred: &AttrPred) -> Result<u64> {
         let reader = open(input)?;
         let mut iter = reader.select_all()?;
@@ -1273,7 +1429,7 @@ mod tests {
         Ok(count)
     }
 
-    /// The OLD `full_walk_id_lookup`.
+    /// The identifier lookup through `cur_cj_feature`, the oracle for the raw walk.
     fn cj_id_lookup(input: &Path, id: &str) -> Result<u64> {
         let reader = open(input)?;
         let mut iter = reader.select_all()?;
@@ -1286,7 +1442,7 @@ mod tests {
         Ok(0)
     }
 
-    /// The OLD `full_read`.
+    /// Read all through `cur_cj_feature`, the oracle for the raw walk.
     fn cj_full_read(input: &Path) -> Result<u64> {
         let reader = open(input)?;
         let mut iter = reader.select_all()?;
@@ -1387,7 +1543,9 @@ mod tests {
         ];
 
         for (column, pred) in &cases {
-            let raw = full_walk_attr_filter(&input, column, pred).unwrap();
+            let raw = fold_local(&input, Select::All, Step::Filter(column, pred))
+                .unwrap()
+                .result_count;
             let cj = cj_walk_attr_filter(&input, column, pred).unwrap();
             assert_eq!(
                 raw, cj,
@@ -1399,12 +1557,14 @@ mod tests {
 
         // One absolute anchor, so the pair cannot agree on a wrong number:
         // delft's own 1116 BuildingParts (Caveat 1 of READ_BENCHMARK.md).
-        let building_parts = full_walk_attr_filter(
+        let building_part = AttrPred::Eq(serde_json::Value::String("BuildingPart".into()));
+        let building_parts = fold_local(
             &input,
-            "object_type",
-            &AttrPred::Eq(serde_json::Value::String("BuildingPart".into())),
+            Select::All,
+            Step::Filter("object_type", &building_part),
         )
-        .unwrap();
+        .unwrap()
+        .result_count;
         assert_eq!(
             building_parts, 1116,
             "delft carries 1116 BuildingParts across its 1115 features"
@@ -1449,7 +1609,9 @@ mod tests {
             "NL.IMBAG.Pand.0503100000012869-0",
             "NL.IMBAG.Pand.0503100000012869-absent",
         ] {
-            let raw = full_walk_id_lookup(&input, id).unwrap();
+            let raw = fold_local(&input, Select::All, Step::Lookup(id))
+                .unwrap()
+                .result_count;
             let cj = cj_id_lookup(&input, id).unwrap();
             assert_eq!(
                 raw, cj,
@@ -1457,7 +1619,9 @@ mod tests {
             );
         }
 
-        let raw = full_read(&input).unwrap();
+        let raw = fold_local(&input, Select::All, Step::All)
+            .unwrap()
+            .result_count;
         let cj = cj_full_read(&input).unwrap();
         assert_eq!(
             raw, cj,

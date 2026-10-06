@@ -183,7 +183,7 @@ pub(super) fn visit_object(
 
 /// `(major, minor)` of a CityJSON `lod` string (`"2.2"` → `(2, 2)`, `"1"` →
 /// `(1, 0)`), so LoDs order numerically as CityParquet's columns do.
-fn lod_rank(lod: Option<&str>) -> (u32, u32) {
+pub(super) fn lod_rank(lod: Option<&str>) -> (u32, u32) {
     let Some(lod) = lod else { return (0, 0) };
     let mut parts = lod.splitn(2, '.');
     let major = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
@@ -230,7 +230,7 @@ fn own_box(co: &CityObject, verts: Vertices<'_>) -> Result<MaybeBox> {
     Ok(any.then_some(([e[0], e[1], e[2]], [e[3], e[4], e[5]])))
 }
 
-fn union(a: MaybeBox, b: MaybeBox) -> MaybeBox {
+pub(super) fn union(a: MaybeBox, b: MaybeBox) -> MaybeBox {
     match (a, b) {
         (None, x) | (x, None) => x,
         (Some((amin, amax)), Some((bmin, bmax))) => Some((
