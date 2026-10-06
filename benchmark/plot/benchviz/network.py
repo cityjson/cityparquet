@@ -190,7 +190,7 @@ def _figure(records: list[dict], profile: dict, statistic: str, out: Path) -> li
     base = {r["query"]: r for r in records if r["format"] == BASELINE_FORMAT}
     repeat = max((r["repeat"] or 0) for r in records) or None
     fig, axes = plt.subplots(
-        1, 3, figsize=(4.2 * 3, 0.6 + 0.32 * len(queries)), constrained_layout=True
+        1, 3, figsize=(5.0 * 3, 1.0 + 0.5 * len(queries)), constrained_layout=True
     )
     for ax, (metric, title, _unit) in zip(axes, METRICS):
         ax.set_xlim(0, len(formats))
@@ -211,10 +211,11 @@ def _figure(records: list[dict], profile: dict, statistic: str, out: Path) -> li
                 else:
                     value, ref = cell[metric], base.get(query, {}).get(metric)
                     text, colour = _fmt(metric, value), "#111"
-                    if fmt != BASELINE_FORMAT and value and ref:
-                        text += f" ({ref / value:.2g}x)"
+                    if metric != "http_requests" and fmt != BASELINE_FORMAT and value and ref:
+                        factor = ref / value
+                        text += f"\n({factor:.2g}x)" if factor < 10 else f"\n({factor:.0f}x)"
                 ax.text(x + 0.5, y + 0.5, text, ha="center", va="center", fontsize=7, color=colour)
-    fig.suptitle(caption(profile, statistic, repeat) + "; (Nx) = CityGML / format", fontsize=8, x=0.01, ha="left")
+    fig.suptitle(caption(profile, statistic, repeat) + "; (Nx) = CityGML's value / the format's", fontsize=8, x=0.01, ha="left")
     written = []
     for ext in ("svg", "png"):
         path = out / f"network.{ext}"
