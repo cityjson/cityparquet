@@ -74,10 +74,10 @@ records no Git revision and no timestamp.
 
 | tag                            | what it is                                                                                                                                                                           | runs                                                                       | index support                                                                                                                                                                  |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `duckdb-cityparquet`           | DuckDB (Python client) `read_parquet()` over the CityParquet package `<prepared>/<dataset>.parquet`, rows in Hilbert-curve order; no separate ingest                                 | every scenario                                                             | Parquet statistics used by DuckDB's own scan, and the package's bloom filters on `id`, `feature_id` and high-cardinality string attributes for equality predicates (Caveat 21) |
+| `duckdb-cityparquet`           | DuckDB 1.5.4 (Python client) over the format benchmark's prepared CityParquet package `<prepared>/<dataset>.parquet` (Hilbert-ordered, `--no-lod0`), through an explicitly chosen build of the `cityjson` extension; no separate ingest | every scenario                                                             | Parquet statistics used by DuckDB's own scan, and the package's bloom filters on `id`, `feature_id` and high-cardinality string attributes for equality predicates (Caveat 21) |
 | `duckdb-cityparquet-writeback` | the same as `duckdb-cityparquet`, with `cityparquet_write` inside the timed window                                                                                                   | the write tier only                                                        | —                                                                                                                                                                              |
-| `cjdb`                         | cjdb 2.2.0, **patched (Caveat 2)**, imported into PostgreSQL/PostGIS. Full geometry is JSONB (`city_object.geometry`); only a 2D footprint is a PostGIS geometry (`ground_geometry`) | every scenario                                                             | cjdb's own defaults plus one added btree(`object_id`) — see "Index sets"                                                                                                       |
-| `3dcitydb`                     | 3DCityDB v5.1.2, imported with `citydb-tool` 1.3.2 into PostgreSQL/PostGIS. Generic `feature`/`property`/`geometry_data` schema: CityGML classes are rows, attributes are EAV rows   | every scenario                                                             | the indexes `citydb-tool import cityjson` creates; none added                                                                                                                  |
+| `cjdb`                         | cjdb 2.2.0, **patched (Caveat 2)**, imported into PostgreSQL 16.4/PostGIS 3.4.3. Full geometry is JSONB (`city_object.geometry`); only a 2D footprint is a PostGIS geometry (`ground_geometry`) | every scenario                                                             | cjdb's defaults, plus btree(`object_id`) and per-dataset attribute expression indexes — "Index sets"                                                                                             |
+| `3dcitydb`                     | 3DCityDB v5.1.2, imported with `citydb-tool` 1.3.2 into PostgreSQL 16.4/PostGIS 3.4.3. Generic `feature`/`property`/`geometry_data` schema: CityGML classes are rows, attributes are EAV rows   | every scenario                                                             | the indexes `citydb-tool import` creates, plus one numeric attribute index — "Index sets"                                                                                                  |
 | `cityparquet`                  | the native Rust reader over the same package, driven per sample as `cityparquet-readbench --child --format cityparquet`                                                              | `count`, `bbox-query`, `attr-filter`, `attr-stats`, `id-lookup` (Caveat 7) | Parquet row-group min/max statistics and column projection                                                                                                                     |
 
 `citybench run` uses the two `duckdb-cityparquet*` tags plus `cjdb` and
@@ -103,35 +103,38 @@ measurement of CityParquet in some other row order.
 
 ## Query parameters
 
-Every system receives the **same** parameters, derived deterministically by
-`citybench.params.derive` (ties are broken by sorting). No system derives
-its own idea of "a 5 % window" or "a typical building".
+Every system receives the **same** parameters, and they are the format
+family's own: no system derives its own idea of "a 5 % window" or "a
+typical building", and the two families ask the same questions of the same
+dataset.
 
-Derivation reads two things: the source CityJSON/CityJSONSeq file, and the
-**CityParquet package**. The package supplies the extent, the query
-windows, the `attr-filter` predicate and `attr-range`'s threshold — every
-parameter the format harness also derives from the package — so the two
-families ask the same questions of the same dataset. None of these
-parameters depends on the package's row order: the windows come from the
-`bbox` column and the attribute picks from value counts, and the id probes
-are taken from the source's CityJSONSeq stream order.
+`citybench run` first derives a full parameter set with
+`citybench.params.derive` from the prepared `.city.jsonl` source (resolved
+automatically beside the package) and the CityParquet package, then
+replaces every parameter the format family resolves with that family's own
+value (`params.adopt_format_params`), read from the `params.json` sidecar
+`cityparquet-readbench` writes for the same package: the bbox windows, the
+id probes, the `attr-filter` predicate, the `attr-stats` column, the
+CityObject total and the axis order. A fact the sidecar reports as absent
+stays absent, so the scenario is skipped, never fabricated. The sidecar's
+path and SHA-256 are recorded in the manifest. What the sidecar does not
+carry — `attr-range`, the append file, the centre point, the LoDs and the
+full extent — is derived from the same package.
 
 | field                | derivation                                                                                                               | from    |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------- |
 | `bbox_full`          | union of every row's `bbox`                                                                                              | package |
-| `windows`            | three row-fraction windows, below                                                                                        | package |
+| `windows`            | three row-fraction windows, below                                                                                        | sidecar |
 | `point_xy`           | the median row centre the windows are built around; recorded as the windows' provenance, not asked as a query of its own | package |
-| `attr_filter`        | the per-dataset `attr-filter` predicate, below                                                                           | package |
+| `attr_filter`        | the per-dataset `attr-filter` predicate, below                                                                           | sidecar |
 | `attr_range`         | `b3_h_dak_max` where present, else `numeric_column`, thresholded at its own 0.8 quantile                                 | package |
-| `numeric_column`     | most frequent numeric attribute; `null` if none                                                                          | source  |
-| `id_probes`          | `id-lookup`'s four targets, below                                                                                        | source  |
+| `numeric_column`     | most frequent numeric attribute; `null` if none                                                                          | sidecar |
+| `id_probes`          | `id-lookup`'s four targets, below                                                                                        | sidecar |
 | `append`             | the derived one-feature file `append-object` imports, below                                                              | source  |
-| `total_city_objects` | the selectivity denominator                                                                                              | source  |
+| `total_city_objects` | the selectivity denominator                                                                                              | sidecar |
 | `window_rows`        | rows with a non-NULL `bbox`; the windows' own denominator                                                                | package |
 
-`citybench run` derives the parameters afresh on every run and writes them
-beside the CSV as `<dataset>.params.json`; it never reads a name-keyed
-file.
+The parameters are written beside the CSV as `<dataset>.params.json`.
 
 ### The query windows
 
@@ -144,22 +147,17 @@ including its ±10 %-of-target `approx` disclosure. `notes` carries the tag
 (`bbox-1pct`, suffixed `-approx` when the target was not reachable on this
 data) and the fraction the window actually achieved.
 
-This replaces a construction that scaled the extent's **area** from its
-**lower-left corner**. The two harnesses' labels then named different
-queries: the database family achieved 0.49 %, 6.37 % and 22.1 % where the
-format family achieved 1.00 %, 5.00 % and 25.0 %, while two places in this
-repository asserted that the constructions matched
-(`notes/benchmark-fairness-review-2026-09-22.md` §4.4). A corner window is
-also one workload rather than a spatial sample, and it interacts with row
-ordering.
+A window centred on the data is a spatial sample of it; a window anchored
+on a corner of the extent would be one workload, and one that interacts
+with row ordering.
 
 **The window's z range is never narrowed**: every object is in range
 vertically, so no system is ever tested against a z-restricted window,
 whatever its mechanism could support.
 
-The median centre is still recorded in the sidecar as `point_xy`, because
-it is what the windows are built around. It is no longer asked as a query:
-CJDB's Q3 is not reproduced, since a point query is a window query
+The median centre is recorded in the sidecar as `point_xy`, because it
+is what the windows are built around. It is not asked as a query of its
+own: CJDB's Q3 is not reproduced, since a point query is a window query
 (`notes/benchmark-queries.md`).
 
 ### The four `id-lookup` probes
@@ -220,12 +218,10 @@ the string attribute whose most frequent value's share lands closest to
 25 %, then to the alphabetically first numeric attribute at its 0.75
 quantile, then to `skipped:`.
 
-It previously filtered `object_type`, which is a reserved structural
-column, not an attribute. That is both an unnatural query and the exact
-predicate that made every FlatCityBuf row in the format family fall back to
-a full walk, because FCB's B+-tree indexes only the `attributes` map
-(review §0). The column is now recorded in the params sidecar along with
-the predicate, the matched count and whether it was hand-picked.
+The predicate is a CityJSON attribute rather than a structural column
+such as `object_type`, which is both an unnatural query and one that
+FlatCityBuf's attribute index cannot serve. The sidecar records the
+column, the predicate, the matched count and whether it was hand-picked.
 
 ## The ten read scenarios
 
