@@ -551,6 +551,61 @@ cityjson` sizes its thread pool from `nproc`, and each thread opens a
 connection, so the adapter passes `--threads=4` to stay within
 `max_connections`.
 
+### Host isolation
+
+The citable runs come from a shared two-socket host without root, so the
+harness isolates what an unprivileged user can, records what it applied in
+the manifest's `isolation` object, and never aborts a run because a step
+could not be applied (`src/citybench/isolation.py`):
+
+- **NUMA node.** `--numa-node` (env `BENCH_NUMA_NODE`; recipe parameter
+  `NUMA_NODE`) takes a node id, `auto` or `off`. `auto` picks the node with
+  the most `MemFree` in `/sys/devices/system/node/node*/meminfo` at run
+  start, ties going to the lowest id; without NUMA information on Linux it
+  is node 0 with every CPU the process may use.
+- **Client and DuckDB.** The citybench process pins itself to the node's
+  cores with `os.sched_setaffinity` before any container starts. DuckDB runs
+  inside that process and the `cityparquet` reader child inherits the mask,
+  so both are pinned. Memory is not bound: `--membind` needs a `numactl`
+  re-exec, which the harness does not do, so Linux's first-touch allocation
+  favours the node's memory without enforcing it.
+- **PostgreSQL containers.** When the run starts the containers
+  (`--data-root`), each `podman run` receives `--cpuset-cpus=<node cores>
+  --cpuset-mems=<node>`, but only if the user's cgroup v2 delegation
+  (`/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service/cgroup.controllers`)
+  includes `cpuset`. Otherwise the flags are omitted and the record says
+  `not applied: cpuset controller not delegated to the user`; podman is
+  still launched from the pinned client, so the container processes are
+  expected to inherit its affinity, which no cgroup enforces. The
+  containers share the node's cores with the client because the matrix runs
+  one system at a time. Containers started outside the run (the fixed-port
+  recipes) are not pinned, and the `citydb-tool` import container only
+  inherits the client's affinity.
+- **Load gate.** Before each system's cell the harness reads `/proc/loadavg`
+  and compares the node's share of the one-minute load,
+  `load1 × node cores / total cores`, against `--max-load` (`auto`, the
+  default, is half the node's cores; `off` disables it). Above it, the
+  harness waits in 10 s steps up to `--max-load-wait-s` (default 600) and
+  logs each wait; if the node is still loaded, the cell proceeds and its
+  rows carry the `busy` token in `notes` (space-separated, like the other
+  citybench note tokens). The load (`load1`, runnable tasks) and
+  `MemAvailable` are recorded before and after every cell, and each cell's
+  `load1_max`, `runnable_max` and `mem_available_min_bytes` are in
+  `isolation.load.cells`, with the run's maxima beside them. Samples inside
+  a cell are not recorded individually; the adapters' repetition loops are
+  left untouched. `MemTotal` and `MemAvailable` at run start are in
+  `isolation.host_memory`.
+- **Memory cap.** `--memory-max` is recorded but not applied to this family:
+  the client is not re-executed under `systemd-run`, and the containers keep
+  their podman `--memory` limit above.
+
+Samples of one cell run back to back, and cells of different systems are
+never interleaved. On a host that is not Linux (a development laptop) every
+step is recorded as `not applied: not Linux` and the load as
+`not applied: no /proc`. Binding memory to the node and capping the
+client's memory with a cgroup need root or a `numactl` or `systemd-run`
+re-exec, and are not done.
+
 ### Index sets
 
 Every scenario's index requirement is checked against what each system builds
@@ -1133,6 +1188,8 @@ uv run python -m citybench.cli run \
   --dataset <path/to/dataset>.city.jsonl \
   [--systems duckdb-cityparquet,duckdb-cityparquet-writeback,cjdb,3dcitydb] \
   [--repeat 25] [--srid 7415] [--count-tolerance 0.001] \
+  [--numa-node auto|off|<N>] [--max-load auto|off|<x>] \
+  [--max-load-wait-s 600] [--memory-max <bytes>] \
   [--output-dir <dir>]
 ```
 
@@ -1190,7 +1247,7 @@ export CITYBENCH_DB_ROOT=<dir below benchmark/runs>
 just build-citydb                  # pinned citydb-tool image
 just patch-cjdb                    # patched cjdb (Caveat 2)
 CITYDB_SRID=<epsg> just up         # start both, wait for readiness and the citydb schema
-just bench <dataset> [REPEAT]      # citybench run without --data-root: ports 55432/55433
+just bench <dataset> [REPEAT] [NUMA_NODE] [MAX_LOAD] [MAX_LOAD_WAIT_S]  # citybench run without --data-root: ports 55432/55433
 just down
 ```
 
