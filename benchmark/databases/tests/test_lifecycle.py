@@ -102,3 +102,18 @@ def test_runs_root_override_admits_a_data_root_outside_the_repository(tmp_path, 
     assert lifecycle.runs_root() == tmp_path.resolve()
     monkeypatch.delenv("CITYBENCH_RUNS_ROOT")
     assert lifecycle.runs_root() == lifecycle.ROOT
+
+
+def test_database_containers_name_the_amd64_platform(tmp_path, monkeypatch):
+    monkeypatch.setattr(lifecycle, 'ROOT', tmp_path)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
+    calls = []
+    monkeypatch.setattr(lifecycle, '_run', lambda *args, **kwargs: calls.append(args) or '')
+    monkeypatch.setattr(lifecycle, '_wait', lambda *args, **kwargs: None)
+    monkeypatch.setattr(lifecycle.subprocess, 'run', lambda args, **kwargs: None)
+    with lifecycle.isolated_databases(tmp_path, 7415):
+        pass
+    runs = [c for c in calls if 'run' in c[:2]]
+    assert len(runs) == 2
+    for argv in runs:
+        assert argv[argv.index('--platform') + 1] == lifecycle.DB_PLATFORM == 'linux/amd64'

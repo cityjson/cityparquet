@@ -113,7 +113,7 @@ class Engine:
                  memory: str | None = None, shm_size: str | None = None,
                  publish: tuple[str, int] | None = None, host_network: bool = False,
                  volumes: tuple[tuple[str, str], ...] = (), env: dict[str, str] | None = None,
-                 extra: tuple[str, ...] = ()) -> list[str]:
+                 extra: tuple[str, ...] = (), platform: str | None = None) -> list[str]:
         """A ``run`` command; flags the engine lacks are left out (the caller
         records the matching ``*_gap()`` in the manifest)."""
         argv = [self.binary, "run"]
@@ -132,6 +132,10 @@ class Engine:
         for key, value in (env or {}).items():
             argv += ["-e", f"{key}={value}"]
         if name: argv += ["--name", name]
+        # All three engines spell it `--platform os/arch`; on an arm64 host
+        # an amd64-only image then runs under emulation (Rosetta on Apple
+        # `container`).
+        if platform: argv += ["--platform", platform]
         return [*argv, *extra, image, *command]
 
     def rm_args(self, name: str) -> list[str]:

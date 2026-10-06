@@ -119,3 +119,12 @@ def test_compose_front_end_per_engine():
     assert eng.compose_command(_engine("podman", "linux")) == "podman-compose"
     assert eng.compose_command(_engine("docker", "darwin")) == "docker compose"
     assert eng.compose_command(_engine("container", "darwin")) is None
+
+
+@pytest.mark.parametrize("name", ["container", "docker", "podman"])
+def test_run_args_pins_the_image_platform(name):
+    # Both PostgreSQL images publish linux/amd64 only; an arm64 host runs
+    # them under emulation only when the platform is named.
+    argv = _engine(name, "darwin").run_args(name="x", image="img", platform="linux/amd64")
+    assert argv[argv.index("--platform") + 1] == "linux/amd64"
+    assert argv.index("--platform") < argv.index("img")

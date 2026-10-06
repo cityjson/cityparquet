@@ -19,6 +19,10 @@ DATABASES_DIR = Path(__file__).resolve().parents[2]
 ROOT = (DATABASES_DIR.parent / "runs").resolve()
 CJDB_IMAGE = "docker.io/postgis/postgis:16-3.4"
 CITYDB_IMAGE = "docker.io/3dcitydb/3dcitydb-pg:16-3.4-5.1.2-alpine"
+#: Both images above publish linux/amd64 only, so the platform is named:
+#: on an arm64 host the engine then runs them under emulation instead of
+#: failing to find an arm64 variant.
+DB_PLATFORM = "linux/amd64"
 POSTGRES_CONF = Path(__file__).resolve().parents[2] / "docker" / "postgresql.conf"
 CPU_LIMIT = "16"
 MEMORY_LIMIT = "32g"
@@ -141,7 +145,8 @@ def isolated_databases(data_root: Path, srid: int, *, container_args: list[str] 
                     shm_size=SHM_SIZE, publish=(5432, ports[key]), env=env, extra=tuple(flags),
                     volumes=((str(data), "/var/lib/postgresql/data"), (str(temp_dirs[key]), "/tmp"),
                              (str(POSTGRES_CONF), "/etc/postgresql/postgresql.conf:ro")),
-                    command=("postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"))
+                    command=("postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"),
+                    platform=DB_PLATFORM)
             try:
                 _run(*run_args(extra))
             except subprocess.CalledProcessError:
