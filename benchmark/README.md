@@ -9,7 +9,7 @@ just bench-run
 just bench-summary
 ```
 
-Preparation downloads and prepares inputs; running measures them; summarising
+Preparation obtains the prepared inputs (see [The hosted corpus](#the-hosted-corpus)); running measures them; summarising
 renders existing results. Rendering never starts a benchmark.
 
 On this machine the data and output root is
@@ -27,6 +27,86 @@ On this machine the data and output root is
 Benchmark inputs, derived artefacts, results and rendered summaries are generated
 beneath this ignored directory. The paper checkout may explicitly export figures
 to `paper/assets/bench/`.
+
+## The hosted corpus
+
+The prepared corpus is published on Cloudflare R2, so that a machine obtains
+it without converting anything, the network benchmark reads the very same
+files over HTTP, and a run's evidence names the exact bytes it measured. It
+is public at `https://other-data.open3d.city`, under
+`cityparquet-paper/benchmark/v<chain>/`, one folder per preparation-chain
+version (`CHAIN_VERSION` in `scripts/readbench_prepare.sh`):
+
+```
+v<chain>/manifest.json
+v<chain>/citygml/<id>.gml
+v<chain>/cityjson/<id>.city.json          the normalised, compact source every artefact derives from
+v<chain>/cityjsonseq/<id>.city.jsonl
+v<chain>/flatcitybuf/<id>.fcb
+v<chain>/cityparquet/<id>.parquet/...     every file of the package
+v<chain>/cityparquet-nobloom/<id>.parquet/...  reserved for the bloom axis (see below)
+```
+
+`<id>` is the dataset's file stem (`rotterdam_delfshaven`). The folders exist
+only in the keys: locally every artefact keeps its flat name in
+`data/readbench/`, which is what `bench-run` and the database family read.
+`scripts/corpus_bucket.py` owns the layout, the manifest, the download and
+the upload; the read harness maps a format to its folder in `Format::key`
+(`--key-layout bucket`), and a test holds the two in step.
+
+`just bench-prep` has four modes:
+
+| Mode | Downloads | Builds locally | Uploads |
+| --- | --- | --- | --- |
+| default | every artefact of the selected datasets | nothing | nothing |
+| `--no-cache` | `cityjson/` and `citygml/` | CityJSONSeq, FlatCityBuf and the CityParquet package, with the current code | those artefacts, then the manifest |
+| `--rebuild-sources` | the published sources (`fetch-data`, `fetch-3dbag`) | everything: normalisation, compaction, CityGML synthesis, every artefact | everything, then the manifest |
+| `--local` | the published sources | everything | nothing; no bucket access |
+
+The `smoke` profile always prepares locally. The default mode checks every
+file against the manifest (bytes and sha256), resumes an interrupted download
+with a range request, skips a file that already matches, and refuses, naming
+`--no-cache` and `--rebuild-sources`, when the bucket holds no `v<chain>/`
+for the code's chain version, when the manifest lacks a selected dataset or
+artefact, or when a hash does not match. Only the two uploading modes need
+credentials: an `rclone` remote with write access to the bucket. The token
+cannot list the bucket root, so every call passes `--s3-no-check-bucket`.
+
+An upload never silently replaces: identical content is skipped, and a key
+that exists with different content stops the upload before anything is sent,
+naming every differing key, unless `--force-upload` is given. The object
+store keeps no sha256, so an existing key is compared with the manifest's
+recorded hash, or, when the manifest does not record it, downloaded through
+`rclone cat` and hashed. After the upload every key is checked by size with
+`rclone lsjson`; the content relies on rclone's own transfer checksum.
+
+`manifest.json` is written last, so a partial upload shows as keys the
+manifest does not list. It holds `schema`, `chain_version`, `created_at`,
+`updated_at` and, per dataset, `source` (the published source's `url` and
+`sha256`), `built` (`created_at`, `monorepo_commit`, `monorepo_tree_dirty`,
+`cityparquet_rs_commit` and the `tools`: citygml-tools, cjseq, the fcb CLI,
+the pinned `fcb_core`, the `cityparquet` CLI) and `artefacts` (per artefact
+its `key`, `bytes` and `sha256`, or for a package directory `files`, each
+with `bytes` and `sha256`). Datasets are merged into the manifest, so one
+machine can add a dataset without re-uploading the others. The provenance
+chain is published source, then normalised CityJSON (`cityjson/`), then
+every other artefact; `cityjson20/` and `citygml20/` beside `v<chain>/` are
+an earlier upload and stay the published home of the Tokyo and Montréal
+sources.
+
+The prepared directory records where its artefacts came from in
+`data/readbench/.corpus-origin.json`: the manifest's URL and sha256, or
+`local`. Each run manifest (`*.run.json`) copies it into its `corpus` field.
+
+The configuration is read from the environment, with these defaults:
+`CITYPARQUET_CORPUS_REMOTE=r2`, `CITYPARQUET_CORPUS_BUCKET=other-data`,
+`CITYPARQUET_CORPUS_PREFIX=cityparquet-paper/benchmark`,
+`CITYPARQUET_CORPUS_BASE_URL=https://other-data.open3d.city`. Use the custom
+domain, not the rate-limited `r2.dev` URL.
+
+The no-bloom package of the bloom axis is not prepared: the bloom run builds
+both variants from the prepared CityJSONSeq itself, so its folder stays
+empty until the harness reads a prepared variant.
 
 ## Selecting work
 

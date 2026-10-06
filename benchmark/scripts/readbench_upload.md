@@ -1,3 +1,10 @@
+> The hosted corpus (`v<chain>/` on R2, one folder per format) is described in
+> `benchmark/README.md`, "The hosted corpus"; read it over HTTP with
+> `--transport http --key-layout bucket --base-url
+> https://other-data.open3d.city/cityparquet-paper/benchmark/v<chain>`. This
+> page describes the flat layout (`--key-layout flat`, the default): a prepared
+> directory uploaded as it is.
+
 # Uploading readbench artefacts for HTTP transport
 
 `cityparquet-readbench run --transport http` (and its own `--child

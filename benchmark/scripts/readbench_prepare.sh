@@ -28,6 +28,13 @@
 # `naming::strip_known_extension`), held in lockstep by
 # `benchmark/readbench/tests/strip_extension.rs`.
 #
+# THE HOSTED CORPUS: `just bench-prep` normally downloads what this script
+# builds from `v<CHAIN_VERSION>/` in the bucket, verified against its
+# manifest, and runs this script only under `--no-cache`, `--rebuild-sources`
+# or `--local` (benchmark/README.md, "The hosted corpus"; the key layout is
+# in `corpus_bucket.py`). Bumping CHAIN_VERSION therefore points every
+# machine at a new, empty bucket folder until someone rebuilds and uploads.
+#
 # THE CORPUS IS NORMALISED FIRST: ONE GEOMETRY PER LoD AND OBJECT. Before any
 # artefact is built, a CityJSON/CityJSONSeq INPUT goes through `lod-normalise`
 # (benchmark/readbench, `lod::keep_first_per_lod`): each CityObject keeps the
