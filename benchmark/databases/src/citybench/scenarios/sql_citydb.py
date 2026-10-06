@@ -473,7 +473,7 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         return (
             f"SELECT f.{CAPTURED_ID_COLUMN}, g.geometry FROM {_F} f "
             "JOIN LATERAL (SELECT og.geometry "
-            f"FROM ({_object_geometries(cityobject_class_ids)}) og WHERE og.lod = %s) g ON true "
+            f"FROM ({_object_geometries(cityobject_class_ids)}) og WHERE og.lod = %s::int) g ON true "
             f"WHERE {_static_predicate(cityobject_class_ids)}",
             (CITYDB_LOD_TIER,),
         )
