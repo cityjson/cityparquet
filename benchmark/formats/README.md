@@ -14,7 +14,7 @@ builds) is never a measurement.
 
 **The committed evidence is `benchmark/runs/formats/results/`**, where the
 `formats` family writes its per-dataset read rows and its package `sizes.csv`,
-alongside the bloom family's `scaling_bloom_results/`; both carry a
+alongside the bloom family's `bloom_results/`; both carry a
 `MACHINE.md` describing the host they were measured on. What the figures cite
 is the ratios within a single directory. Nothing in this document quotes a
 number, so the methodology here cannot go stale against a re-run; the CSVs
@@ -29,7 +29,7 @@ reader of the figures.
 
 ## The corpus
 
-Seven city datasets and the largest 3DBAG slice. Each CityJSON source is pinned
+Seven city datasets and one 3DBAG slice. Each CityJSON source is pinned
 by byte size and sha256 in `benchmark/scripts/fetch_benchmark.sh`, and
 `corpus_urls.txt` records its provenance; every one is also mirrored at
 `https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/<id>.city.json`,
@@ -46,7 +46,7 @@ citygml-tools, identical once the tool's random `ID_<uuid>`s are masked).
 | `zurich_building_lod2` | Zurich              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json>                             | `class == "BB01"`                              | `GebaeudeStatus`                               |
 | `tokyo`                | Tokyo (Chiyoda)     | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/tokyo.city.json>              | `usage == "401"`                               | `measuredHeight`, `-9999` placeholder included |
 | `montreal`             | Montréal            | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json>           | `measuredHeight >=` its 0.75 quantile (15.543) | `measuredHeight`                               |
-| `3dbag_n1000000`       | 3DBAG (Netherlands) | cut by `just fetch-scaling-data` from <https://flatcitybuf.open3d.city/data/3dbag_subset2_all_index.fcb>, without LoD 1.2 | `b3_dak_type == "slanted"`                     | `b3_bag_bag_overlap`                           |
+| `3dbag_n1000000`       | 3DBAG (Netherlands) | cut by `just fetch-3dbag` from <https://flatcitybuf.open3d.city/data/3dbag_subset2_all_index.fcb>, without LoD 1.2 | `b3_dak_type == "slanted"`                     | `b3_bag_bag_overlap`                           |
 
 The predicates are declared in `benchmark/readbench/src/params.rs`
 (`HAND_PICKED`, `HAND_PICKED_STATS`); a quantile is computed from the data when
@@ -87,15 +87,16 @@ just bench-summary
 
 The `formats` family compares read performance across file formats, and the
 `sizes` family records each format's file or package size. The `bloom` family
-holds the format fixed and changes one configuration dimension over nested
-3DBAG slices and the city datasets. Its read scenarios are the identifier
+holds the format fixed and changes one configuration dimension over the
+city datasets and the 3DBAG slice. Its read scenarios are the identifier
 lookups described under "The bloom family" below.
 
-The primary format configuration is Hilbert-ordered CityParquet, displayed as
-**CityParquet** in figures. Internal variant IDs retain the ordering and
-configuration information needed to reproduce each configuration. The bloom
-figures show the largest measured slice, a separate scaling line chart and the
-corpus datasets apart from it.
+The format comparison measures five formats — CityGML, CityJSON, CityJSONSeq,
+FlatCityBuf and CityParquet — with one artefact each per dataset. The
+CityParquet artefact is one package written in Hilbert-curve order
+(`cityparquet convert --ordering hilbert`; the CLI's own default is source
+order), displayed as **CityParquet** in figures. The bloom figures are `bloom`,
+for the 3DBAG slice, and `bloom-corpus`, for the corpus datasets.
 See [`../README.md`](../README.md) for the experimental matrix and figure list.
 
 ## Measurement discipline
@@ -120,20 +121,22 @@ from each input, untimed — `cityparquet`, which carries bloom filters, and
 `cityparquet+nobloom`, which carries none — and times `id-lookup` (`id-50pct`,
 `id-miss`) and `feature-lookup` (`feature-50pct`, `feature-miss`) against
 both. Package bytes go to `sizes.csv`. Every lookup row carries `row_groups_total`, `bloom_pruned` and `filter_bytes` (the
-bitset bytes of the filters examined). The scaling curves are drawn from the
-nested 3DBAG slices alone; the corpus datasets are other city models, not
-larger slices, and are drawn apart, per dataset, in `bloom-corpus`.
+bitset bytes of the filters examined). Both packages are written in Hilbert
+order: the coordinator builds every variant package that way and refuses a
+`+hilbert` suffix as redundant, so the two differ in their bloom filters alone.
+The 3DBAG slice is drawn in `bloom`; the corpus datasets are drawn per dataset
+in `bloom-corpus`.
 
 Over HTTP, `just bloom-bench-http FOLDER BASE_URL` reads — never builds — the
 two packages a local `bloom-bench` run left in the prepared directory, once that
 directory is uploaded to `BASE_URL` (`benchmark/scripts/readbench_upload.md`).
 Its rows add `bytes_read` and `http_requests`; the results go to
-`scaling_bloom_http_results/` and are not part of `bench-run` or the rendered
+`bloom_http_results/` and are not part of `bench-run` or the rendered
 summary. They are a snapshot of one network path at one time.
 
 The caveats that travel with every one of its numbers are
 [`READ_BENCHMARK.md`](READ_BENCHMARK.md)'s fairness caveats **24 to 29** —
-the row-group scale a slice has to reach before its pruning means anything, a
+the row-group scale a table has to reach before its pruning means anything, a
 positive not being a match, the twice-read footer, the single-table
 restriction, what the `feature-*` probes are, and requests being logical. They
 live there, not here, because that numbered list is the one `benchviz` renders
@@ -147,10 +150,11 @@ just bench-run --families bloom
 just bench-summary
 ```
 
-Add `--smoke` for a small pipeline check. Full experiments use all configured
-scaling slices, cut without LoD 1.2 so that every format holds the same
-geometry (`READ_BENCHMARK.md`, Caveat 14); actual counts are recorded because
-feature boundaries can cross a nominal target. Keep machine metadata, source identity, software
+Add `--smoke` for a small pipeline check, or `--profile short` for the corpus
+without the slice. Full experiments use the corpus datasets and the 3DBAG
+slice, cut without LoD 1.2 so that every format holds the same geometry
+(`READ_BENCHMARK.md`, Caveat 14); its actual count is recorded because a
+feature boundary can cross the nominal target. Keep machine metadata, source identity, software
 revision, query parameters and repetition settings alongside the results.
 Prepared data and result directories have separate responsibilities: preparing
 an artefact is never a measurement.

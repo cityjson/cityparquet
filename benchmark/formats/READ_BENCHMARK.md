@@ -1,8 +1,8 @@
 # CityParquet read-benchmark methodology
 
 The format family's query definitions live here, and so does the **one
-numbered fairness-caveat list for every family** — the format family's own,
-the configuration families' and the `bloom` family's. It is single because
+numbered fairness-caveat list for every family** — the format family's own
+and the `bloom` configuration family's. It is single because
 `benchviz` renders exactly this list onto the summary page (`prep.read_caveats`
 extracts it verbatim, `html.py` prints it under "Measurement caveats"), so a
 caveat kept anywhere else never reaches a reader of the figures. The
@@ -31,48 +31,47 @@ bloom-filter configuration are covered by `benchmark/formats/README.md`.
 
 ## Formats
 
-Eight format tags. The canonical vocabulary, spelling and order are owned by
+Five format tags. The canonical vocabulary, spelling and order are owned by
 `Format::ALL` in `benchmark/readbench/src/format.rs` — this table is
 a copy of it, and the CSV's `format` column, the `--formats` flag, the
 `readbench_prepare.sh` artefact names and the plotter's ordering all use the
-same eight strings. They run left-to-right from "what the data ships as
-today" through "what we propose" to "a different engine over the same file":
+same five strings. A run with no `--formats` measures all five. They run
+left-to-right from "what the data ships as today" to "what we propose":
 
 | format tag            | what it is                                                                                                                                                                                                                                                                                         | index available                                                                                                                                      |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `citygml`             | CityGML 2.0 XML (`.gml`) — the format most national datasets are published in, read through **this repository's own reader** (`cityparquet::citygml`). On the current corpus this artefact is **synthesised** from the CityJSON source; see "CityGML synthesis" below                              | **none** — no offsets, no object directory, no spatial or attribute tree; every scenario is a full XML parse and an in-memory filter (see Caveat 12) |
+| `citygml`             | CityGML 2.0 XML (`.gml`) — the format most national datasets are published in, read through **this repository's own reader** (`cityparquet::citygml`). On the current corpus, the 3DBAG slice included, this artefact is **synthesised** from the CityJSON source (Caveat 14)                              | **none** — no offsets, no object directory, no spatial or attribute tree; every scenario is a full XML parse and an in-memory filter (see Caveat 12) |
 | `cityjson`            | plain, whole-document CityJSON (`.city.json`): one JSON document, one `CityObjects` map, one shared document-level `vertices` array                                                                                                                                                                | **none** — the document must be parsed in one piece before any object is readable, so every scenario is a full parse (see Caveat 13)                 |
 | `cityjsonseq`         | CityJSONSeq, one self-contained JSON feature per line, feature-local vertices. Read from the PREPARED `<base>.city.jsonl` — `readbench_prepare.sh` always materialises one (copied from a `.city.jsonl` input, `cjseq cat` from anything else), and the runner refuses a CityGML document outright | **none** — every scenario is a full parse                                                                                                            |
-| `cityjsonseq-gz`      | the same stream, `gzip -9`'d                                                                                                                                                                                                                                                                       | **none** — full parse, plus gzip inflate                                                                                                             |
 | `flatcitybuf`         | FlatCityBuf, written `fcb ser -A` and NOTHING else — every other index knob at its `fcb ser` default (attribute B+-tree branching factor 256, R-tree node size 16). One configuration, measured once, not a swept axis; see Caveat 33                                                              | R-tree spatial index (**2D only**, see Caveat 4) + B+-tree index over **every** attribute (`-A`)                                                     |
-| `cityparquet`         | our CityParquet package, **source row order** (`cityparquet convert --overwrite`)                                                                                                                                                                                                                  | Parquet row-group min/max statistics + column projection                                                                                             |
-| `cityparquet-hilbert` | the same package, rows written in Hilbert-curve order (`--ordering hilbert`)                                                                                                                                                                                                                       | the same Parquet statistics, but tighter per-row-group bboxes from spatial clustering                                                                |
-| `duckdb-parquet`      | DuckDB (v1.5.x) SQL, `read_parquet()` directly over our `cityparquet` package's own table                                                                                                                                                                                                          | whatever Parquet statistics DuckDB's own scan uses — same file as `cityparquet`, different engine                                                    |
+| `cityparquet` | our CityParquet package, one per dataset (`<x>.parquet/`), its rows written in Hilbert-curve order (`cityparquet convert --ordering hilbert`); displayed as **CityParquet** | Parquet row-group min/max statistics, tightened by the spatial clustering of Hilbert order, + column projection |
 
-The first four are **unindexed by construction**: a published `.gml`,
+The first three are **unindexed by construction**: a published `.gml`,
 `.city.json` or `.city.jsonl` carries no way to answer any question without
 reading all of it. That is not an omission in the harness — it is the finding
 the benchmark exists to quantify, and the reason a `count` gap grows linearly
 with dataset size while CityParquet's stays flat.
 
-## Format and ordering configurations
+## Format configurations
 
-The suite's format comparison uses one configuration per format family:
-`citygml`, `cityjson`, `cityjsonseq`, `flatcitybuf` and
-`cityparquet-hilbert`. The last is displayed as **CityParquet** in figures;
-Hilbert ordering is an experimental condition, not a different format name.
-The harness retains separate internal identifiers for source order
-(`cityparquet`) and Hilbert order (`cityparquet-hilbert`). They must not be
-merged when interpreting configuration measurements.
+The format comparison measures one configuration per format, so each of the
+five tags names exactly one artefact per dataset. For CityParquet that
+artefact is a package whose rows `readbench_prepare.sh` writes in Hilbert-curve
+order. Hilbert order is the benchmark's choice, not the writer's default: the
+`cityparquet convert` CLI writes rows in source order unless `--ordering` says
+otherwise. Row order changes how tightly each row group's bbox statistics
+enclose its rows, and so how much a `bbox-query` can prune; it changes neither
+the package's schema nor what a reader must understand to read it.
 
-`Format::DEFAULT_SET` defines these five reader identifiers. The lower-level
-harness also supports `Format::ORDERING_SET` for source-order versus Hilbert
-experiments, gzipped CityJSONSeq, and DuckDB over Parquet. These are not extra
-series in the default format comparison. The database family compares DuckDB
-with cjdb and 3DCityDB separately.
+The only configuration axis is the `bloom` family's: `cityparquet` against
+`cityparquet+nobloom`, both written in Hilbert order (see "The bloom family"
+in `README.md`). The coordinator builds every variant package in Hilbert order
+and refuses a `+hilbert` suffix on a variant as redundant, so the two packages
+differ in their bloom filters alone.
 
-The reader's `duckdb-parquet` identifier means DuckDB reading a CityParquet
-package (Caveat 5).
+DuckDB reading a CityParquet package is not a format in this comparison: it is
+a query engine, and the database comparison measures it beside cjdb and
+3DCityDB (`benchmark/databases/README.md`; Caveat 5).
 
 ## HTTP transport
 
@@ -98,7 +97,7 @@ just how long it takes locally.
   one time, not a reproducible local benchmark.
 - **Two extra metrics, per scenario: bytes transferred and HTTP request
   count — successful, LOGICAL reads, not raw wire traffic.** The CSV's
-  trailing `bytes_read`/`http_requests` columns (see the CSV contract above)
+  trailing `bytes_read`/`http_requests` columns (see the CSV contract below)
   are empty for every `local`-transport row and populated for every
   `http`-transport row, straight from each format's own transport-agnostic
   reader. Both tallies count successful logical range/GET calls the reader
@@ -120,14 +119,12 @@ just how long it takes locally.
     (`fcb_core::http_reader`) drives its native R-tree/B+-tree indexes over
     HTTP range requests, tallied by a `CountingRangeClient` wrapper
     (`benchmark/readbench/src/formats/flatcitybuf.rs`).
-  - `citygml`, `cityjson`, `cityjsonseq`(+gz) — every unindexed format: a
+  - `citygml`, `cityjson`, `cityjsonseq` — every unindexed format: a
     single **whole-object GET** — exactly 1 request, the whole file's byte
     length, by construction, regardless of scenario (there is no index to
-    prune with, so there is nothing smaller to fetch). All four route through
+    prune with, so there is nothing smaller to fetch). All three route through
     the same `CountingObjectStore` as `cityparquet`, so the tally is measured
     rather than asserted.
-  - `duckdb-parquet` has no HTTP-transport row; it is a local-only SQL
-    baseline (`benchmark/scripts/readbench_duckdb.sh`), unaffected by `--transport`.
 
   This is the benchmark's headline cloud-native argument: CityParquet and
   FlatCityBuf pull kilobytes via a handful of range requests for a selective
@@ -158,18 +155,20 @@ coordinator.rs`'s own module doc). This means an http-transport run still
 
 ## The corpus
 
-The format and size families use seven city datasets — Rotterdam,
-Ingolstadt, Vienna, New York, Zurich, Tokyo (Chiyoda) and Montréal — and the
-largest 3DBAG scaling slice. Every CityJSON input is listed with its
-provenance, byte size and sha256 in `corpus_urls.txt`; Tokyo and Montréal are
-derived by this project, and that file records how, step by step.
-`README.md` lists every dataset with its download URL and its query
-predicates.
+The format, size and bloom families use seven city datasets — Rotterdam,
+Ingolstadt, Vienna, New York, Zurich, Tokyo (Chiyoda) and Montréal — and one
+3DBAG slice, `3dbag_n1000000`, which every family treats as one more dataset.
+Every CityJSON input is listed with its provenance, byte size and sha256 in
+`corpus_urls.txt`; Tokyo and Montréal are derived by this project, and that
+file records how, step by step. `README.md` lists every dataset with its
+download URL and its query predicates.
 
-The 3DBAG slices are nested prefixes of a pinned FlatCityBuf source, cut at
-whole-feature boundaries. Their names give nominal targets; recorded actual
-CityObject counts determine the scaling axis. All families that request the
-largest slice must use the same source bytes and derived query parameters.
+The 3DBAG slice is the first 1,000,000 CityObjects of a pinned 7.6 GB
+FlatCityBuf source, cut at a whole-feature boundary by `fcb-slice` (`just
+fetch-3dbag`), so it holds 1,000,001 CityObjects: its name gives the nominal
+target, and the recorded count is the actual one. It is also the database
+family's dataset, and every family that reads it uses the same source bytes
+and derived query parameters.
 
 The corpus is building-focused and does not establish coverage of all CityGML
 modules. Ingolstadt provides LoD3 data; 3DBAG and Tokyo provide several LoDs
@@ -182,19 +181,19 @@ checked for information loss, including collapse of fractional LoDs
 Every format implements every scenario via its own natural mechanism —
 never a hand-tuned shortcut, never an artificial common code path:
 
-| scenario                         | common target                                                                                                                | `citygml` mechanism                                                                                                                                                                                                     | `cityjson` mechanism                                                                                                                                                 | `cityjsonseq`(+gz) mechanism                                | `flatcitybuf` mechanism                                                                                                                                                                                                  | `cityparquet`(+`-hilbert`) mechanism                                                               | `duckdb-parquet` mechanism                                                                                                                              |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `full-read`                      | decode every feature's geometry; `(feature_count, boundary_count)`                                                           | stream every `cityObjectMember` (quick-xml), decoding every `gml:pos`/`posList`, resolving every `xlink:href` surface reference and rebuilding a feature-local vertex pool, then walk each geometry's `boundaries` tree | parse the whole document, then **resolve every boundary leaf** through the shared `vertices` + `transform` — _not_ the same operation as `cityjsonseq`'s (Caveat 13) | parse every line, walk each feature's own `boundaries` tree | `select_all` + a RAW `CityFeature` walk (`cur_feature`): every geometry's five flattened index arrays and its semantics indices, every template instance's boundaries, every vertex — no CityJSON conversion (Caveat 32) | scan all row groups, decode WKB                                                                    | `SELECT sum(hash(COLUMNS(*)))` — forces every column decoded                                                                                            |
-| `count`                          | total feature/object count                                                                                                   | count `cityObjectMember`s (full parse)                                                                                                                                                                                  | size of the `CityObjects` map (full parse)                                                                                                                           | count parsed lines (full parse)                             | `features_count()` header field (O(1))                                                                                                                                                                                   | Parquet file metadata `num_rows` (O(1), no scan)                                                   | `SELECT count(*)`                                                                                                                                       |
-| `bbox-query` (1%/5%/25% of rows) | ids/count of objects whose bbox intersects a query window                                                                    | parse all, test each member's own unioned bbox                                                                                                                                                                          | parse all, test each CityObject's bbox (min/max over the vertices its geometries reference, resolved through `transform`)                                            | parse all, test each feature's own unioned bbox             | `select_query(Query::BBox)` — R-tree, **2D only** (see Caveat 4); the R-tree's hit count is returned and no feature is read or decoded, which is what its index affords                                                  | row-group prune (`with_bbox_row_groups`) + row-level bbox test — **exact**                         | `WHERE bbox.xmax>=.. AND bbox.xmin<=.. AND bbox.ymax>=.. AND bbox.ymin<=..` (full z window, so no z clause needed)                                      |
-| `attr-filter`                    | count of objects matching an ATTRIBUTE predicate — `attr == v`, or `attr >= q` (see "Which attribute the predicate runs on") | parse all, test each CityObject's `attributes`                                                                                                                                                                          | parse all, test each CityObject's `attributes`                                                                                                                       | parse all, test each CityObject's `attributes`              | B+-tree attribute index (`select_attr_query`) when the column is in the CityJSON `attributes` map; otherwise a raw `select_all` walk that decodes only that one column (Caveats 11, 19, 24)                              | `RowFilter` (`ArrowPredicateFn`) + row-group statistics prune                                      | `WHERE "<attr>" = '<v>'` / `WHERE "<attr>" >= <q>`, read from the sidecar                                                                               |
-| `attr-stats`                     | `(min, max, sum, count)` of a numeric attribute                                                                              | parse all, fold `(min, max, sum, count)` over every numeric value (Caveat 35)                                                                                                                                           | parse all, fold `(min, max, sum, count)` over every numeric value (Caveat 35)                                                                                        | parse all, fold `(min, max, sum, count)` (Caveat 35)        | full walk decoding only that one attribute column, no geometry, folding `(min, max, sum, count)` (no numeric-range index; Caveat 35)                                                                                     | min/max from Parquet column-chunk statistics (near-free); sum/count from a 1-column projected scan | `SELECT min(c), max(c), sum(c), count(c)`                                                                                                               |
-| `id-lookup` (x4)                 | the single object with a given id, materialised                                                                              | parse until found (early exit); a miss drains to EOF                                                                                                                                                                    | parse the whole document, then one map lookup                                                                                                                        | parse until found (early exit)                              | the B+-tree is tried and never has the field, so in practice a raw `select_all` walk comparing each CityObject's borrowed `id()`, exiting at the hit (Caveats 19, 24)                                                    | `RowFilter` on `id` + decode of the one surviving row                                              | not run (id lookup is not a distinct DuckDB SQL pattern worth timing separately from `attr-filter`'s `WHERE` plan; the coordinator's own rows carry it) |
+| scenario                         | common target                                                                                                                | `citygml` mechanism                                                                                                                                                                                                     | `cityjson` mechanism                                                                                                                                                 | `cityjsonseq` mechanism                                | `flatcitybuf` mechanism                                                                                                                                                                                                  | `cityparquet` mechanism                                                               |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `full-read`                      | decode every feature's geometry; `(feature_count, boundary_count)`                                                           | stream every `cityObjectMember` (quick-xml), decoding every `gml:pos`/`posList`, resolving every `xlink:href` surface reference and rebuilding a feature-local vertex pool, then walk each geometry's `boundaries` tree | parse the whole document, then **resolve every boundary leaf** through the shared `vertices` + `transform` — _not_ the same operation as `cityjsonseq`'s (Caveat 13) | parse every line, walk each feature's own `boundaries` tree | `select_all` + a RAW `CityFeature` walk (`cur_feature`): every geometry's five flattened index arrays and its semantics indices, every template instance's boundaries, every vertex — no CityJSON conversion (Caveat 32) | scan all row groups, decode WKB                                                                    |
+| `count`                          | total feature/object count                                                                                                   | count `cityObjectMember`s (full parse)                                                                                                                                                                                  | size of the `CityObjects` map (full parse)                                                                                                                           | count parsed lines (full parse)                             | `features_count()` header field (O(1))                                                                                                                                                                                   | Parquet file metadata `num_rows` (O(1), no scan)                                                   |
+| `bbox-query` (1%/5%/25% of rows) | ids/count of objects whose bbox intersects a query window                                                                    | parse all, test each member's own unioned bbox                                                                                                                                                                          | parse all, test each CityObject's bbox (min/max over the vertices its geometries reference, resolved through `transform`)                                            | parse all, test each feature's own unioned bbox             | `select_query(Query::BBox)` — R-tree, **2D only** (see Caveat 4); the R-tree's hit count is returned and no feature is read or decoded, which is what its index affords                                                  | row-group prune (`with_bbox_row_groups`) + row-level bbox test — **exact**                         |
+| `attr-filter`                    | count of objects matching an ATTRIBUTE predicate — `attr == v`, or `attr >= q` (see "Which attribute the predicate runs on") | parse all, test each CityObject's `attributes`                                                                                                                                                                          | parse all, test each CityObject's `attributes`                                                                                                                       | parse all, test each CityObject's `attributes`              | B+-tree attribute index (`select_attr_query`) when the column is in the CityJSON `attributes` map; otherwise a raw `select_all` walk that decodes only that one column (Caveats 11, 19, 32)                              | `RowFilter` (`ArrowPredicateFn`) + row-group statistics prune                                      |
+| `attr-stats`                     | `(min, max, sum, count)` of a numeric attribute                                                                              | parse all, fold `(min, max, sum, count)` over every numeric value (Caveat 35)                                                                                                                                           | parse all, fold `(min, max, sum, count)` over every numeric value (Caveat 35)                                                                                        | parse all, fold `(min, max, sum, count)` (Caveat 35)        | full walk decoding only that one attribute column, no geometry, folding `(min, max, sum, count)` (no numeric-range index; Caveat 35)                                                                                     | min/max from Parquet column-chunk statistics (near-free); sum/count from a 1-column projected scan |
+| `id-lookup` (x4)                 | the single object with a given id, materialised                                                                              | parse until found (early exit); a miss drains to EOF                                                                                                                                                                    | parse the whole document, then one map lookup                                                                                                                        | parse until found (early exit)                              | the B+-tree is tried and never has the field, so in practice a raw `select_all` walk comparing each CityObject's borrowed `id()`, exiting at the hit (Caveats 19, 32)                                                    | `RowFilter` on `id` + decode of the one surviving row                                              |
 
-`cityparquet` and `cityparquet-hilbert` share one runner and one column here:
-a Hilbert-ordered package is still a plain CityParquet package on disk, and
-the only thing that differs between the two tags is which artefact path
-resolves (`Format::artefact`). That is exactly why the ordering question gets
+The `bloom` family's two packages, `cityparquet` and `cityparquet+nobloom`,
+share the `cityparquet` runner and its column here: a package without bloom
+filters is still a plain CityParquet package on disk, read by the same code,
+and only its row groups' filters differ. That is why the bloom question gets
 its own single-axis run rather than an extra column.
 
 The three unindexed formats' `attr-filter`/`attr-stats`/`id-lookup`
@@ -216,8 +215,8 @@ every earlier run carried `no-attr-index` and answered by a full walk.
 The predicate is derived once per dataset by
 `benchmark/readbench/src/params.rs` (`pick_attr_filter`), recorded in the
 `<out>.csv.params.json` sidecar as `attr_filter` (column, predicate, matched
-count, share), and read from there by `readbench_duckdb.sh` rather than
-re-derived. It appears in `notes` as `attr=<column>=<value>` or
+count, share); `benchmark/databases` derives its own with the same rule
+(`citybench/params.py`). It appears in `notes` as `attr=<column>=<value>` or
 `attr=<column>>=<q>`.
 
 **Hand-picked, for the datasets this benchmark actually measures.** These are
@@ -226,7 +225,7 @@ of the prepared packages; the share is of all CityObject rows:
 
 | dataset                         | predicate                     | share |
 | ------------------------------- | ----------------------------- | ----- |
-| `3dbag_*` (every scaling slice) | `b3_dak_type == "slanted"`    | ~35%  |
+| `3dbag_*` (the slice, and any smaller prefix `fcb-slice` cuts) | `b3_dak_type == "slanted"`    | ~35%  |
 | `zurich_building_lod2`          | `class == "BB01"`             | 19.4% |
 | `vienna_102081`                 | `roofType == "FLACHDACH"`     | 45.4% |
 | `ingolstadt`                    | `klumMaterialClass == "Wood"` | 6.9%  |
@@ -307,13 +306,10 @@ dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_byt
   sample (see "Warm vs cold" below) — independent OS page-cache and
   independent `peak_alloc` state per sample, never reused across repeats.
 - `peak_heap_bytes` — the `peak_alloc` global-allocator high-water mark for
-  that one in-process scenario call. **Empty for `duckdb-parquet`**: DuckDB
-  runs out-of-process, so there is no allocator hook into it the way the
-  `--child` protocol has one into `cityparquet-readbench` itself.
-- `peak_rss_bytes` — the child's own peak resident set size
-  (`cityparquet`/`cityparquet-hilbert`/`flatcitybuf`/`cityjsonseq`/
-  `cityjsonseq-gz`), or a separate untimed `/usr/bin/time -l`/`-v` capture
-  around the same query (`duckdb-parquet`). On Linux the child reads
+  that one in-process scenario call. Every format runs in the
+  `cityparquet-readbench` child, so every row carries one.
+- `peak_rss_bytes` — the child's own peak resident set size, for every
+  format. On Linux the child reads
   `VmHWM` from `/proc/self/status`; elsewhere it reads
   `getrusage(RUSAGE_SELF).ru_maxrss`, **normalised to bytes** by
   `rss_to_bytes` in `benchmark/readbench/src/main.rs` (`ru_maxrss` is
@@ -338,7 +334,7 @@ dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_byt
 - `bytes_read` / `http_requests` — **empty for every `--transport local`
   row** (no HTTP concept locally); for a `--transport http` row, the total
   bytes transferred and HTTP request count that scenario's own
-  transport-agnostic reader made (see "HTTP transport" below).
+  transport-agnostic reader made (see "HTTP transport" above).
 - `row_groups_total` / `bloom_pruned` / `filter_bytes` — **empty on every
   row but a CityParquet `id-lookup` or `feature-lookup`**: the table's row
   groups, those its bloom filters ruled out, and the bitset bytes of every
@@ -375,17 +371,17 @@ each cold number stands alone, one per format, one `full-read` only.
    CityParquet's `count`/`full-read` count **one row per CityObject** —
    parents _and_ children each get a row — and `cityjson` matches that grain
    (its `CityObjects` map is flat: a `Building` and its `BuildingPart`s are
-   sibling entries linked only by `parents`/`children`). `cityjsonseq`(+gz),
+   sibling entries linked only by `parents`/`children`). `cityjsonseq`,
    `flatcitybuf` and `citygml` instead count top-level **features/members**
    for `count`/`full-read`/`bbox-query` (a CityJSONSeq/FCB feature bundles
    one top-level CityObject with all its children inline, exactly as a
    CityGML `cityObjectMember` nests its `BuildingPart`s). So the
    `count`/`full-read`/`bbox-query` rows split into **two grains**:
 
-   | grain                                                      | formats                                                            |
-   | ---------------------------------------------------------- | ------------------------------------------------------------------ |
-   | one row per **CityObject** (children counted separately)   | `cityparquet`, `cityparquet-hilbert`, `cityjson`, `duckdb-parquet` |
-   | one row per **top-level feature/member** (children inline) | `citygml`, `cityjsonseq`, `cityjsonseq-gz`, `flatcitybuf`          |
+   | grain                                                      | formats                                  |
+   | ---------------------------------------------------------- | ---------------------------------------- |
+   | one row per **CityObject** (children counted separately)   | `cityparquet`, `cityjson`                |
+   | one row per **top-level feature/member** (children inline) | `citygml`, `cityjsonseq`, `flatcitybuf`  |
 
    But `attr-filter`, `attr-stats` and `id-lookup` are
    **CityObject-granular in every format** — `citygml`/`cityjsonseq`/
@@ -467,14 +463,12 @@ each cold number stands alone, one per format, one `full-read` only.
    and rebuilds a feature-local vertex pool before it can walk a boundary
    tree at all; plain CityJSON parses one whole document and then resolves
    every boundary leaf through its shared vertex array (Caveat 13);
-   CityJSONSeq(+gz) serde-parses every JSON line and traverses its geometry;
+   CityJSONSeq serde-parses every JSON line and traverses its geometry;
    FlatCityBuf decodes its own FlatBuffers representation; CityParquet
-   decodes every row's WKB geometry and counts surfaces; DuckDB runs
-   `SELECT sum(hash(COLUMNS(*)))` (forcing every column, including every
-   geometry column, to be decoded). Each is that format's own honest
-   full-read cost — reported per-format, never normalised into a shared
-   unit of work that doesn't actually exist across six different
-   encodings. Where two of them are _labelled_ the same but are not the same
+   decodes every row's WKB geometry and counts surfaces. Each is that
+   format's own honest full-read cost — reported per-format, never
+   normalised into a shared unit of work that doesn't actually exist across
+   five different encodings. Where two of them are _labelled_ the same but are not the same
    operation, that is called out explicitly rather than left to the label
    (Caveat 13).
 
@@ -483,41 +477,50 @@ each cold number stands alone, one per format, one `full-read` only.
    FCB (the window itself is still constructed with a full z range, as it
    is for every other format, but FCB's own index simply has no z
    dimension to test against). A comparison of `bbox-query` result counts
-   between FlatCityBuf and any 3D-tested format (CityParquet, DuckDB) can
+   between FlatCityBuf and any 3D-tested format (every other format here) can
    therefore only ever show FlatCityBuf matching **more** rows for the same
    window, never fewer, purely from the missing z test — not a query-plan
    or index-quality difference.
 
-5. **`duckdb-parquet` reads OUR CityParquet package directly — the community
-   extension's geometry-coverage gaps do NOT carry over.** Unlike a table
-   encoded through the community `cityjson` extension's `read_cityjson`/
-   `read_cityjsonseq` (which writes 0% `geom_lod0` coverage everywhere and 0%
-   of _everything_ on `lod3_railway.city.json`), `duckdb-parquet` here runs
-   `read_parquet()` straight over a `cityparquet-rs`-written package — full
-   geometry, every LoD column.
-   **However**: our packages' WKB geometry columns carry GeoParquet "geo"
+5. **DuckDB over CityParquet is measured by the database comparison, not
+   here — and an ad-hoc DuckDB query over a package needs one setting.**
+   This family times each format through its own reader in a
+   `cityparquet-readbench` child. DuckDB reading the same Hilbert-ordered
+   package is a query engine rather than a format, so
+   `benchmark/databases/README.md` measures it beside cjdb and 3DCityDB,
+   with its own query suite, thread configurations and count cross-check.
+   Its rows are not a sixth format and must not be set beside this
+   family's rows as if they were.
+   DuckDB reads the package with `read_parquet()` straight over a
+   `cityparquet-rs`-written package — full geometry, every LoD column.
+   **However**: the package's WKB geometry columns carry GeoParquet "geo"
    file metadata, and DuckDB's spatial extension (autoloaded) eagerly
    tries to decode them into its own native `GEOMETRY` type the instant a
    query references the column — even a bare `SELECT` with no function
    applied — and that native decode does not support the multi-surface/
    solid WKB shapes our LoD1.2/LoD1.3/LoD2 geometries use, failing with
-   `Invalid Input Error: Unsupported geometry type in WKB`.
-   `benchmark/scripts/readbench_duckdb.sh` sets `enable_geoparquet_conversion=false`
-   on every invocation to work around this, which makes every geometry
-   column read back as plain `BLOB` instead. **Anyone running an ad-hoc
+   `Invalid Input Error: Unsupported geometry type in WKB`. The database
+   family sets `enable_geoparquet_conversion=false` on every connection
+   (`benchmark/databases/src/citybench/systems/duckdb_cp.py`,
+   `citybench/params.py`), which makes
+   those columns read back as plain `BLOB`. **Anyone running an ad-hoc
    DuckDB query against a `cityparquet-rs` package that touches a geometry
-   column needs the same setting**, or will hit the identical error.
+   column needs the same setting**, or will hit the identical error. The
+   LoD0 footprint is the exception: it is written with Parquet's own
+   GEOMETRY logical type, which DuckDB decodes to `GEOMETRY` whatever the
+   setting.
 
-6. **`duckdb-parquet` has no `peak_heap_bytes`** (see the CSV contract
-   above — it is an out-of-process SQL engine, not a `--child` process with
-   an allocator hook) and every one of its `time_s` samples carries a fixed
-   per-invocation DuckDB process-startup overhead (~0.06 s on the
-   committed-run machine below; plain `read_parquet()` needs no
-   `INSTALL`/`LOAD`, so this is pure process/interpreter startup, not
-   extension loading). `benchmark/scripts/readbench_duckdb.sh` measures this via 5
-   timed `SELECT 1;` calls and prints it as a `# calibration:` stderr line
-   before every run — it is **disclosed, never subtracted**, from any
-   reported `time_s`/`time_std_s`.
+6. **A DuckDB memory figure and a format memory figure measure different
+   processes.** Here `peak_heap_bytes` and `peak_rss_bytes` belong to one
+   fresh `cityparquet-readbench` child per sample (see the CSV contract
+   above). The database comparison reports no `peak_heap_bytes` for DuckDB,
+   and its `peak_rss_bytes` samples the process executing the query — for
+   DuckDB the harness's own Python process, which hosts the engine
+   in-process, keeps one connection across the scenario sequence and so
+   carries the interpreter, the engine's idle baseline and memory retained
+   from earlier scenarios (the `peak_rss_bytes` scope caveat in
+   `benchmark/databases/README.md`). Quote each within its own family; a
+   ratio between the two is a ratio of different scopes.
 
 7. **Warm vs cold — never silently mixed.** The headline numbers everywhere
    in this document and in `benchmark/runs/formats/results/*.csv` are warm-cache
@@ -530,10 +533,12 @@ each cold number stands alone, one per format, one `full-read` only.
    As in `benchmark/formats/README.md`'s own methodology, deltas under roughly 10 ms at
    `repeat = 7` are within scheduler/filesystem-cache noise and are not
    cited as a finding by themselves. Every format's reads here run
-   single-threaded (no Parquet multi-threaded row-group decode, no
-   DuckDB multi-threaded query execution) — a deliberate, disclosed choice
-   so timing differences reflect the format/mechanism, not thread-count
-   parallelism a production deployment might or might not enable.
+   single-threaded (no Parquet multi-threaded row-group decode) — a
+   deliberate, disclosed choice so timing differences reflect the
+   format/mechanism, not thread-count parallelism a production deployment
+   might or might not enable. Parallel query execution is measured in the
+   database comparison, whose rows carry `threads=single` or
+   `threads=parallel`.
 
 9. **`id-lookup` is FOUR rows per format, and the three hit rows are not
    comparable across formats as raw times.** A single target made the
@@ -549,8 +554,8 @@ each cold number stands alone, one per format, one `full-read` only.
    | `id-miss`  | an id verified absent from the dataset |
 
    The **canonical order is the CityJSONSeq stream**, because
-   `readbench_prepare.sh` cuts the gzipped, FlatCityBuf and CityParquet
-   artefacts from that one file. Each probe is verified present in both the
+   `readbench_prepare.sh` cuts the FlatCityBuf and CityParquet artefacts
+   from that one file. Each probe is verified present in both the
    CityParquet table and the CityGML artefact before it is used; a probe that
    fails verification is replaced by the nearest feature that passes and the
    row carries `id-substituted`.
@@ -558,7 +563,7 @@ each cold number stands alone, one per format, one `full-read` only.
    **Every format now takes the best mechanism its encoding affords**, which
    is the change that makes the column mean one thing:
 
-   - `cityjsonseq`(+gz) and `citygml` stop at the hit. CityGML did not
+   - `cityjsonseq` and `citygml` stop at the hit. CityGML did not
      before, because its skipped-member guard (Caveat 12) is only
      authoritative at EOF; that guard now rides on the **untimed `count`
      pass** the coordinator runs per format per dataset before any scenario,
@@ -588,7 +593,7 @@ each cold number stands alone, one per format, one `full-read` only.
     not query work. Interpret the numbers as end-to-end single-query latency,
     not a pure in-memory kernel micro-benchmark.
 
-11. **FlatCityBuf index assumptions and gzip scope (known limitations).** The
+11. **FlatCityBuf index assumptions and compression scope (known limitations).** The
     FlatCityBuf runner uses FCB's native indexes (`select_query` for bbox,
     `select_attr_query` for attribute/id), which requires the `.fcb` to carry
     a spatial index (default) and an attribute index (`fcb ser -A`, which
@@ -599,11 +604,13 @@ each cold number stands alone, one per format, one `full-read` only.
     index-vs-scan measurement is never silently mislabelled. It used to say
     so on stderr only, which meant a fallback was invisible to everyone
     reading the artefact. That fallback is a raw-flatbuffer walk, not a
-    CityJSON conversion — see Caveat 32. The `cityjsonseq-gz` runner fully supports
-    CityJSONSeq and single-line whole-document `.city.json.gz` (the form the
-    committed fixtures use); a _pretty-printed_ multi-line whole-document
-    `.city.json.gz` is not yet handled (it needs the fuller sniff
-    `cityparquet::source::Source::open` already implements). External review
+    CityJSON conversion — see Caveat 32. No artefact is read through an
+    external compression layer: `citygml`, `cityjson` and `cityjsonseq` are
+    read as uncompressed text and `flatcitybuf` as an uncompressed file, so
+    their sizes and read times are those of the uncompressed files, while
+    CityParquet's only compression is the Parquet page
+    compression its writer applies by default. A gzipped text file is not
+    one of the five formats, and no number here describes one. External review
     (Codex, 2026-07-08) confirmed the query primitives, bbox prune + row-level
     filter, and allocator placement correct; its two flagged "dictionary"
     criticals were verified FALSE POSITIVES — `TypedDictionaryArray::value(i)`
@@ -712,7 +719,7 @@ each cold number stands alone, one per format, one `full-read` only.
     reversal, in the order a sceptical reader will raise them:
 
     - **Why it changed.** This benchmark's claim is a comparison BETWEEN
-      formats, so a dataset that produces seven artefacts and skips the eighth
+      formats, so a dataset that produces four artefacts and skips the fifth
       does not weaken the comparison, it removes the baseline from it. Under
       the retired corpus the skipped ones were precisely the datasets a reader
       recognises — 3DBAG, Rotterdam, Vienna, NYC and Zurich all ship as
@@ -737,8 +744,8 @@ each cold number stands alone, one per format, one `full-read` only.
       `citygml-tools from-cityjson -v 2.0` writes the LoD 1.3 solid as
       `lod1Solid` and drops the LoD 1.2 one, so a CityGML artefact
       synthesised from it would carry less geometry than the other four. The
-      3DBAG slices are therefore cut **without LoD 1.2**
-      (`scaling-corpus --drop-lod 1.2`, which `just fetch-scaling-data`
+      3DBAG slice is therefore cut **without LoD 1.2**
+      (`fcb-slice --drop-lod 1.2`, which `just fetch-3dbag`
       passes): all five artefacts hold the same LoD 0, 1.3 and 2.2. The drop
       keeps every CityObject and removes the vertices only LoD 1.2 used, so
       no format carries orphan coordinates;
@@ -903,8 +910,8 @@ each cold number stands alone, one per format, one `full-read` only.
     (Estonia's 11 MB archive expanded to 323 MB) and the disk figure was the
     one to quote. That distinction no longer applies here.
 
-    What does apply: **a dataset's pinned size is its CityJSON size, and seven
-    of the eight measured artefacts are not that file.** The synthesised
+    What does apply: **a dataset's pinned size is its CityJSON size, and four
+    of the five measured artefacts are not that file.** The synthesised
     CityGML is several times larger (Rotterdam: 2.7 MB CityJSON, 14.0 MB
     CityGML), the CityParquet package is smaller, and so on. When relating "a
     dataset's size" to a read time or a peak-RSS number, use the per-format
@@ -925,16 +932,18 @@ each cold number stands alone, one per format, one `full-read` only.
     which of the two a given row measured.
 
 20. **A probe's POSITION is only nominal outside the CityJSONSeq stream.**
-    The deciles are cut from the seq order, and the gzipped, FlatCityBuf and
-    CityParquet artefacts are cut from that same file — but neither the
-    CityGML nor the FlatCityBuf artefact preserves it. The CityGML is
-    synthesised independently by `citygml-tools`; the `.fcb` is ordered by
-    its own R-tree. Both therefore show **non-monotonic** times across
+    The deciles are cut from the seq order, and the FlatCityBuf and
+    CityParquet artefacts are cut from that same file — but none of the
+    CityGML, FlatCityBuf and CityParquet artefacts preserves it. The CityGML
+    is synthesised independently by `citygml-tools`; the `.fcb` is ordered by
+    its own R-tree; the CityParquet package's rows are in Hilbert-curve
+    order, so a probe sits wherever its object's Hilbert key puts it. The
+    CityGML and FlatCityBuf rows show **non-monotonic** times across
     `id-10pct`/`id-50pct`/`id-90pct`, and on `ingolstadt` FlatCityBuf's
     `id-90pct` is roughly 40x faster than its `id-10pct`. Presence is
     verified for every probe; position is not. Read the three hit rows for
-    those two formats as three samples of the distribution, never as a
-    position curve.
+    any of those three formats as three samples of the distribution, never
+    as a position curve.
 
 21. **A bbox row's target and its achieved selectivity can differ, and
     `approx` says where.** Row counts are discrete, so a target is not always
@@ -973,35 +982,29 @@ each cold number stands alone, one per format, one `full-read` only.
     EPSG:6697) `citygml`, `cityjson`, `cityjsonseq` and `flatcitybuf` receive
     the window with `x` and `y` swapped. The parameter sidecar records the
     fact as `swap_xy`, read from the CRS's declared axis directions, never
-    guessed from coordinate magnitudes; `readbench_duckdb.sh` reads the
+    guessed from coordinate magnitudes; the `cityparquet` runner reads the
     package and uses the window as written.
 
-23. **The scaling corpus's format set is NOT uniform across its seven
-    cardinalities.** The scaling slices measure 1k, 5k, 10k, 50k and
-    100k CityObjects with all five formats, but 500k and 1M with **four** —
-    `cityjson`, `cityjsonseq`, `flatcitybuf`, `cityparquet-hilbert`. There is
-    no `citygml` row at the two largest sizes.
+23. **The format set is uniform across every dataset, the 3DBAG slice
+    included.** Every dataset the suite measures gets all five formats,
+    so a `citygml` row exists wherever any other row does and every
+    factor against CityGML has its baseline. On the slice, as on every
+    corpus dataset, that CityGML is a `citygml-tools` serialisation the
+    preparation chain synthesises, not a published file (Caveat 14), and it
+    is the largest artefact the chain writes: about 3.7 times the
+    CityJSONSeq it derives from in the committed `sizes.csv` (10.8 GB
+    against 2.9 GB). Synthesising it is the longest step of `just
+    bench-prep`, and parsing it dominates the slice's `citygml` rows; quote
+    those rows as the cost of reading this serialisation of the slice, with
+    the same qualification as every other `citygml` number.
 
-    The reason is the artefact, not the reader. These slices carry no `.gml`
-    of their own, so `readbench_prepare.sh` synthesises one with
-    `citygml-tools`, and the synthesised file is roughly 4x the CityJSONSeq
-    it came from. On the 1M slice — a 2.75 GB stream — that pass ran for over
-    four hours at 30 GB resident and had written 6.6 GB of an estimated 10 GB
-    when it was abandoned. The two large cardinalities are therefore measured
-    without it deliberately.
-
-    **What this forbids:** reading a `citygml` scaling curve across the whole
-    axis, or comparing a 1M-row figure against a `citygml` number that does
-    not exist. What it still supports: the four-format curve across all seven
-    cardinalities, and the five-format comparison up to 100k. CityGML's
-    cross-format cost is measured properly in `formats/results/`, on the seven
-    city datasets, which is what that family is for.
-
-24. **The `bloom` family's larger slices show pruning across many row
-    groups.** At the default 65 536-row groups the small slices are one row
-    group, which a filter can still prune on a miss but which says nothing
-    about how pruning scales; the slices from `3dbag_n100000` upward, at two
-    or more groups, are the informative ones.
+24. **The `bloom` family's pruning is informative only where a table spans
+    several row groups.** At the default 65 536-row groups a table of fewer
+    rows is one row group, which a filter can still prune on a miss but
+    which says nothing about how pruning scales. The 3DBAG slice's
+    1,000,001 rows span 16 row groups and Zurich's 198,699 span 4; every
+    other corpus dataset holds fewer than 65 536 CityObjects and is a single
+    row group. The slice and Zurich are the informative ones.
 
 25. **In the `bloom` family, a filter's positive is not a match.** At FPP 0.01
     a miss can still keep a row group; `row_groups_total − bloom_pruned` on
@@ -1040,9 +1043,12 @@ each cold number stands alone, one per format, one `full-read` only.
     with `time_mad_s`) and from before default-on bloom filters exist only in
     git history and must not be set beside these: a median and a mean are
     different statistics, and an `id-lookup` without filters is a different
-    operation. The shapes keep them apart mechanically: `readbench_duckdb.sh`
-    refuses to append to a CSV whose header differs from the coordinator's,
-    and the summary loader refuses such a CSV instead of rendering it.
+    operation. The shapes keep them apart mechanically: the coordinator's
+    `CSV_HEADER` (`benchmark/readbench/src/coordinator.rs`) is the only
+    writer of a results header, `benchmark/plot/tests/test_csv_contract.py`
+    holds the renderer's `READ_COLUMNS` to a leading prefix of it, and the
+    summary loader refuses to render a CSV whose leading columns differ
+    from `READ_COLUMNS` (a `time_mad_s` header among them).
 
 32. **FlatCityBuf is read through the raw FlatBuffers accessors, not
     `cur_cj_feature`.** Every FCB walk — `full-read`, the `attr-filter`
@@ -1064,14 +1070,15 @@ each cold number stands alone, one per format, one `full-read` only.
     question needing one comparison. That made FCB's attribute/id rows
     cost the same as its `full-read` row, and measured the conversion rather
     than the format. Measured on this machine, 3 repeats, medians, identical
-    `result_count` in every pair: on `3dbag_n10000` `full-read` 0.404 s ->
+    `result_count` in every pair: on a 10,000-object prefix of the 3DBAG
+    stream `full-read` 0.404 s ->
     0.037 s, `attr-filter` on `object_type` 0.405 s -> 0.034 s, `id-miss`
     0.407 s -> 0.035 s, `attr-stats` 0.404 s -> 0.045 s; on
     `zurich_building_lod2` the same four rows 2.22/2.05/2.22/2.22 s ->
     0.55/0.50/0.50/0.51 s. Peak heap falls with
     them (1.3 MB -> 0.3 MB on zurich). The INDEXED paths
     (`select_attr_query`, `select_query`) were already native and are
-    unchanged — `b3_dak_type == slanted` on `3dbag_n10000` sits at ~1 ms
+    unchanged — `b3_dak_type == slanted` on that prefix sits at ~1 ms
     either way.
 
     FlatCityBuf is a comparison baseline here, not this repository's
@@ -1083,10 +1090,11 @@ each cold number stands alone, one per format, one `full-read` only.
 33. **One FlatCityBuf configuration, chosen by measurement.** The `.fcb`
     artefacts are written `fcb ser -A` with every other index knob left at
     its default — attribute B+-tree branching factor 256, R-tree node size 16. That is a decision, not an oversight, and it is not a swept axis:
-    the paper's configuration axes are CityParquet's own.
+    the paper's only configuration axis is CityParquet's own (bloom
+    filters).
 
-    `3dbag_n100000` was written at attribute branching factors 16, 64, 128
-    and 256 and read back with the benchmark's own child (3 repeats,
+    A 100,000-object prefix of the 3DBAG stream was written at attribute
+    branching factors 16, 64, 128 and 256 and read back with the benchmark's own child (3 repeats,
     medians): `count` 0.1 ms, `bbox-1pct` 0.3 ms, `bbox-5pct` 1.0 ms,
     `bbox-25pct` 3.4-4.0 ms, the indexed `attr-filter` (`b3_dak_type ==
 slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
@@ -1112,7 +1120,7 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     `posix_spawn`/`vfork` that address space is the parent's, so a freshly
     exec'd child can never report less than the coordinator's peak. On the
     committed 1M 3DBAG run 36 of the 43 read rows — every `citygml`,
-    `cityjson`, `flatcitybuf` and `cityparquet-hilbert` row — carry the
+    `cityjson`, `flatcitybuf` and CityParquet row — carry the
     identical value 269 963 264 B, the coordinator's RSS after deriving the
     query parameters from the package; only `cityjsonseq` (4.3 GB) rose
     above it. On Zurich 35 rows share 54 816 768 B. Those numbers are the
@@ -1128,7 +1136,7 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
 
 35. **Before 2026-09-23, only CityParquet's `attr-stats` computed the
     aggregate.** The scenario's contract is `(min, max, sum, count)` of a
-    numeric attribute, but the `citygml`, `cityjson`, `cityjsonseq`(+gz) and
+    numeric attribute, but the `citygml`, `cityjson`, `cityjsonseq` and
     `flatcitybuf` runners only COUNTED the CityObjects carrying a numeric
     value: the same `result_count`, a cheaper question. Every runner now
     folds each value into all four aggregates — `as_f64()` of the JSON (or
@@ -1163,7 +1171,7 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     package carries a footprint for each of Tokyo's 11,172
     `BuildingInstallation`s and for the 12 Montréal buildings without LoD0,
     which no other artefact has. It changes no `result_count` (verified on
-    Tokyo, with and without it), but it adds bytes: on Tokyo the Hilbert package is
+    Tokyo, with and without it), but it adds bytes: on Tokyo the package is
     80,249,026 B with it and 80,184,081 B without (`--no-lod0`), 64,945 B or
     0.08 %.
 
@@ -1200,8 +1208,8 @@ cjseq         = cjseq 0.3.1             # CityJSON <-> CityJSONSeq
 java          = openjdk 21.0.11 (2026-04-21)   # citygml-tools 2.x needs 17+
 ```
 
-`fcb` (FlatCityBuf serialisation) and `duckdb` are listed with the machine
-below, because unlike the two above they are not pinned by a fetch script.
+`fcb` (FlatCityBuf serialisation) is listed with the machine below, because
+unlike the two above it is not pinned by a fetch script.
 
 **FlatCityBuf is written and read by different versions, and that is
 deliberate.** `readbench_prepare.sh` writes the `.fcb` with whatever `fcb`
@@ -1210,7 +1218,7 @@ CLI is on PATH (`fcb 0.7.8` on this host); the harness reads it with
 `benchmark/readbench/Cargo.toml`, because that is the release the published
 FlatCityBuf figures were produced by and a caret range would let a later
 one silently change what they mean. The skew is real and it bites: Caveat
-25's `--index-node-size` panic is a 0.7.8-written index the 0.7.6 reader
+33's `--index-node-size` panic is a 0.7.8-written index the 0.7.6 reader
 mis-reads. Record BOTH versions with a run — the writing CLI's `fcb
 --version` and the manifest's `fcb_core` pin — because neither alone
 identifies the bytes that were measured.
@@ -1226,15 +1234,15 @@ paper's hardware.
 `benchmark/scripts/machine_record.sh` is the canonical capture: it runs the
 `uname`, `lscpu`/`sysctl` and `free` lines below, plus `rustc`, `cargo` and the
 commit hash, into a results directory's `MACHINE.md` — how `variant-bench`
-records its host. The two lines it does not cover are the DuckDB and `fcb`
-versions and the pinned conversion chain:
+records its host. The two lines it does not cover are the `fcb` version and
+the pinned conversion chain:
 
 ```sh
 uname -srm     # kernel, release and architecture; NOT `uname -a`, whose node
                # name is the host's address and these files are published
 # Linux: lscpu | sed -n '1,15p'; free -b | head -2
 # macOS: sysctl -n machdep.cpu.brand_string hw.memsize
-duckdb --version; cargo --version; rustc --version; fcb --version
+cargo --version; rustc --version; fcb --version
 cat benchmark/formats/tools/tool_versions.txt      # the pinned conversion chain
 ```
 
@@ -1254,9 +1262,13 @@ just bench-run --families formats
 just bench-summary
 ```
 
-Use `--datasets` to select datasets and `--smoke` for a small validation run.
-Run each command with `--help` for the available options. The three commands
-separate preparation, measurement and rendering; a summary never measures data.
+Use `--datasets` to select datasets (`3dbag` names the slice),
+`--profile short` for the corpus without the slice and `--smoke` for a small
+validation run. Run each command with `--help` for the available options. The
+three commands separate preparation, measurement and rendering; a summary never
+measures data. `just bench-prep` fetches the slice's source and cuts it
+(`just fetch-3dbag`) and prepares every artefact (`readbench_prepare.sh`);
+the `bench` recipe measures prepared artefacts and prepares nothing.
 
 Prepared artefacts carry conversion-chain stamps. Inputs whose stamps do not
 match the active preparation chain must be rebuilt before measurement; an

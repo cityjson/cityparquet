@@ -22,9 +22,10 @@ mix the two.
   preparation (CityParquet packages carry bloom filters; `MACHINE.md`
   records the host, the commit and the tool versions). Seven read
   repetitions.
-- **Bloom** (`formats/scaling_bloom_results/`): the seven 3DBAG slices and
-  the five city datasets, `cityparquet` against `cityparquet+nobloom`:
-  lookup reads and package sizes.
+- **Bloom** (`formats/bloom_results/`): the 1,000,001-object 3DBAG slice
+  and the five city datasets, `cityparquet` against `cityparquet+nobloom`:
+  lookup reads and package sizes. These two packages were written in source
+  order; the present harness writes every bloom package in Hilbert order.
 - **Databases** (`databases/results/`): the 1,000,001-object slice, both
   thread configurations (`threads=single` is the primary figure), the four
   write scenarios, the 0.1 % explained-deviation tolerance. The DuckDB
@@ -39,11 +40,24 @@ without re-measuring, every other column unchanged.
 The run also timed writes. The suite no longer measures them, so the
 `write` rows were removed from the format and bloom CSVs and the bloom
 samples, and the format family's `*.write.samples.csv` files were deleted;
-every read row, read sample and size is unchanged. The `*.run.json`
-manifests record the run as it was made: their `write_repeat`, their
-`fixed_configuration` and their `files_sha256` (the CSVs as the run wrote
-them, and the deleted write-samples files) no longer match the committed
-files. `EVIDENCE_SHA256SUMS` is current.
+every read row, read sample and size is unchanged.
+
+The run also measured what the suite no longer has: the bloom axis on six
+smaller 3DBAG slices (1,000 to 500,000 objects), whose files and size rows
+were deleted, and a DuckDB configuration over the source-order package,
+whose six `duckdb-cityparquet-source` rows were deleted from the database
+CSV. The format CSVs, their samples and `sizes.csv` carried the
+Hilbert-ordered package as `cityparquet-hilbert`; it is relabelled
+`cityparquet`, the benchmark's one CityParquet format, with no value
+changed.
+
+The `*.run.json` manifests and the database `3dbag_n1000000.manifest.json`
+record the run as it was made, and stay as that record: the run manifests'
+`write_repeat`, `fixed_configuration`, source paths (`data/scaling/`) and
+`files_sha256` (the CSVs as the run wrote them, and the deleted
+write-samples files), and the database manifest's
+`duckdb-cityparquet-source` entries, no longer match the committed files.
+`EVIDENCE_SHA256SUMS` is current.
 
 ## Coverage and limitations
 
