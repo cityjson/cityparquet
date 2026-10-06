@@ -1161,3 +1161,61 @@ fn an_unusable_crs_is_reported_even_when_the_source_declares_its_own() {
         assert!(stderr.contains(needle), "--crs {spec:?}: stderr: {stderr}");
     }
 }
+
+/// The `id` column of a package's `building.parquet`, in row order.
+fn building_ids_in(package: &std::path::Path) -> Vec<String> {
+    use arrow_array::{Array, StringArray};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let file = std::fs::File::open(package.join("building.parquet")).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut ids = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        let column = batch.column_by_name("id").expect("an id column");
+        let column = column
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("a Utf8 id");
+        ids.extend((0..column.len()).map(|i| column.value(i).to_string()));
+    }
+    ids
+}
+
+/// `convert` with no `--ordering` writes rows in Hilbert order: its row order
+/// is `--ordering hilbert`'s, and not `--ordering source`'s. `--ordering
+/// source` stays available as the streaming opt-out.
+#[test]
+fn convert_writes_hilbert_order_by_default_and_ordering_source_opts_out() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let convert_with = |ordering: Option<&str>| -> Vec<String> {
+        let pkg = tempfile::tempdir().unwrap();
+        let mut cmd = Command::new(binary);
+        cmd.arg("convert").arg(fixture("delft.city.jsonl"));
+        if let Some(ordering) = ordering {
+            cmd.arg("--ordering").arg(ordering);
+        }
+        let status = cmd
+            .arg("-o")
+            .arg(pkg.path())
+            .status()
+            .expect("failed to run convert");
+        assert!(status.success());
+        building_ids_in(pkg.path())
+    };
+
+    let default = convert_with(None);
+    let hilbert = convert_with(Some("hilbert"));
+    let source = convert_with(Some("source"));
+    // `assert!`, not `assert_eq!`: a failure would print 2,231 ids twice.
+    assert!(
+        hilbert != source,
+        "delft's Hilbert order must differ from its source order, or this test proves nothing"
+    );
+    assert!(
+        default == hilbert,
+        "convert without --ordering must write Hilbert order"
+    );
+}

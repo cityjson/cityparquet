@@ -36,6 +36,10 @@ fn convert_delft_small_row_groups() -> tempfile::TempDir {
         row_group_size: 256,
         ..WriterRecipe::default()
     };
+    // Source order, not the Hilbert default: the Hilbert pruning payoff test
+    // compares against this package, and the pruning tests are calibrated on
+    // row groups that spread across the whole extent.
+    opts.ordering = RowOrder::Source;
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 2231);
     out

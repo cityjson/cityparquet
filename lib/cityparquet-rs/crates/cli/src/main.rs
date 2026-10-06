@@ -99,11 +99,13 @@ enum Commands {
         #[arg(long, default_value_t = BloomPolicy::DEFAULT_FPP)]
         bloom_fpp: f64,
 
-        /// Row-emission order for the main table: "source" (as the input
-        /// stream yields features) or "hilbert" (buffer every feature and
-        /// sort by bbox-centroid Hilbert index, improving bbox row-group
-        /// pruning at the cost of holding the whole dataset in memory).
-        #[arg(long, value_enum, default_value = "source")]
+        /// Row-emission order for the main table: "hilbert" (the default:
+        /// buffer every feature and sort by bbox-centroid Hilbert index,
+        /// improving bbox row-group pruning at the cost of holding the whole
+        /// dataset in memory) or "source" (stream features as the input
+        /// yields them, one at a time — the low-memory path for an input too
+        /// large to hold).
+        #[arg(long, value_enum, default_value = "hilbert")]
         ordering: OrderingArg,
 
         /// Do NOT synthesise an LoD0 footprint into the primary `geometry`
@@ -186,9 +188,10 @@ enum Commands {
         repeat: usize,
 
         /// Comma-separated variant identifiers
-        /// (`<preset>[+hilbert][+rg<N>][+<codec>[<level>]][+nobloom]`, e.g.
-        /// `cityparquet+hilbert`, `cityparquet+rg512`, `cityparquet+zstd9`;
-        /// see `cityparquet::variant`); omit for the default 9-variant set
+        /// (`<preset>[+source][+rg<N>][+<codec>[<level>]][+nobloom]`, e.g.
+        /// `cityparquet+source`, `cityparquet+rg512`, `cityparquet+zstd9`;
+        /// every variant is Hilbert-ordered unless it says `+source`; see
+        /// `cityparquet::variant`); omit for the default 9-variant set
         #[arg(long)]
         variants: Option<String>,
 

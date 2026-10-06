@@ -72,10 +72,9 @@ fn bench_run_produces_the_default_nine_variant_matrix_for_delft() {
     assert_eq!(
         rows.len(),
         9,
-        "the default variant set must produce exactly 9 rows (M5 Codex-review fix 4 added \
-         `cityparquet+rg512` / `cityparquet+hilbert+rg512` to the prior 8, whose \
-         `cityparquet+by-type` was retired 2026-07-21 when by-type became the sole, mandatory \
-         layout), got: {csv_text}"
+        "the default variant set must produce exactly 9 rows: every preset, \
+         `cityparquet+source`, `cityparquet+rg512` and `cityparquet+source+rg512`, got: \
+         {csv_text}"
     );
 
     let mut by_variant = std::collections::HashMap::new();
@@ -107,16 +106,19 @@ fn bench_run_produces_the_default_nine_variant_matrix_for_delft() {
         by_variant.insert(variant, (row_groups_total, row_groups_touched));
     }
 
-    let (_, cityparquet_touched) = *by_variant
+    // Plain `cityparquet` is written in Hilbert order, the default;
+    // `+source` is the source-order opt-out.
+    let (_, hilbert_touched) = *by_variant
         .get("cityparquet")
         .expect("the default set must include the plain 'cityparquet' variant");
-    let (_, hilbert_touched) = *by_variant
-        .get("cityparquet+hilbert")
-        .expect("the default set must include 'cityparquet+hilbert'");
+    let (_, source_touched) = *by_variant
+        .get("cityparquet+source")
+        .expect("the default set must include 'cityparquet+source'");
     assert!(
-        hilbert_touched <= cityparquet_touched,
-        "cityparquet+hilbert should touch no more row groups than plain cityparquet on delft's \
-         window query: hilbert={hilbert_touched} cityparquet={cityparquet_touched}"
+        hilbert_touched <= source_touched,
+        "plain (Hilbert-ordered) cityparquet should touch no more row groups than \
+         cityparquet+source on delft's window query: hilbert={hilbert_touched} \
+         source={source_touched}"
     );
 
     // M5 Codex review (Important finding 4, revised ruling): the default
@@ -127,26 +129,26 @@ fn bench_run_produces_the_default_nine_variant_matrix_for_delft() {
     // groups to prune, Hilbert ordering must do no worse than source order
     // on the window query (measured: source order touches 2 of 5, Hilbert
     // 1 of 5 — see `benchmark/formats/README.md`'s pruning numbers).
-    let (rg512_total, rg512_touched) = *by_variant
+    let (hilbert_rg512_total, hilbert_rg512_touched) = *by_variant
         .get("cityparquet+rg512")
         .expect("the default set must include 'cityparquet+rg512'");
-    let (hilbert_rg512_total, hilbert_rg512_touched) = *by_variant
-        .get("cityparquet+hilbert+rg512")
-        .expect("the default set must include 'cityparquet+hilbert+rg512'");
+    let (source_rg512_total, source_rg512_touched) = *by_variant
+        .get("cityparquet+source+rg512")
+        .expect("the default set must include 'cityparquet+source+rg512'");
     assert_eq!(
-        rg512_total, 5,
+        hilbert_rg512_total, 5,
         "cityparquet+rg512 on delft (2231 objects) must write ceil(2231/512) = 5 row groups"
     );
     assert_eq!(
-        hilbert_rg512_total, 5,
-        "cityparquet+hilbert+rg512 on delft (2231 objects) must write ceil(2231/512) = 5 row \
+        source_rg512_total, 5,
+        "cityparquet+source+rg512 on delft (2231 objects) must write ceil(2231/512) = 5 row \
          groups"
     );
     assert!(
-        hilbert_rg512_touched <= rg512_touched,
-        "cityparquet+hilbert+rg512 should touch no more row groups than plain \
-         cityparquet+rg512 on delft's window query: \
-         hilbert_rg512={hilbert_rg512_touched} rg512={rg512_touched}"
+        hilbert_rg512_touched <= source_rg512_touched,
+        "cityparquet+rg512 (Hilbert-ordered) should touch no more row groups than \
+         cityparquet+source+rg512 on delft's window query: \
+         hilbert_rg512={hilbert_rg512_touched} source_rg512={source_rg512_touched}"
     );
 }
 
@@ -169,7 +171,7 @@ fn bench_run_rejects_an_unknown_variant_with_the_grammar_in_the_message() {
         "error should name the offending variant, got: {msg}"
     );
     assert!(
-        msg.contains("<preset>[+hilbert][+rg<N>]"),
+        msg.contains("<preset>[+source][+rg<N>]"),
         "error should show the variant grammar, got: {msg}"
     );
 }
@@ -261,13 +263,13 @@ fn bench_run_rejects_an_invalid_window_frac() {
 }
 
 /// M5 Codex review (Minor finding): the variant parser must reject a
-/// duplicated suffix (e.g. `+hilbert` or `+rg<N>` appearing twice) rather
+/// duplicated suffix (e.g. `+source` or `+rg<N>` appearing twice) rather
 /// than silently accepting it as a distinct-looking label for the same —
 /// or, for two conflicting `+rg<N>`s, an ambiguous — writer configuration.
 #[test]
 fn bench_run_rejects_duplicate_variant_suffixes() {
     for variant in [
-        "cityparquet+hilbert+hilbert",
+        "cityparquet+source+source",
         "cityparquet+rg4096+rg8192",
         "cityparquet+gzip+zstd",
     ] {

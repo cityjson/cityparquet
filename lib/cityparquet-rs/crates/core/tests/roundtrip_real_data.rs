@@ -419,10 +419,16 @@ fn railway_interior_ring_texture_survives_round_trip() {
 /// single exclusion into two (the writer's own drop counts in
 /// `wkb_roundtrip_real_data.rs` were updated alongside this same change:
 /// railway's former 6 writer-side drops are now 0).
+///
+/// Written in `RowOrder::Source`, the streaming opt-out, so the round trip is
+/// proven for both orderings: `convert_real_data.rs`'s
+/// `hilbert_ordering_never_changes_railway_compatibility_semantics` is its
+/// Hilbert twin.
 #[test]
 fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
-    let (exported, _package_dir, _export_dir) = convert_and_export_path(&railway_path);
+    let (exported, _package_dir, _export_dir) =
+        convert_and_export_with_path(&railway_path, RowOrder::Source);
     let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
         report.equal,

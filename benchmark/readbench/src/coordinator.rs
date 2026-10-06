@@ -803,18 +803,21 @@ fn retain_requested_probes(
 /// The variant list, parsed, de-duplicated by canonical id, and required to
 /// carry the bare `cityparquet` baseline every ratio is taken against.
 ///
-/// A `+hilbert` suffix is refused: every package this benchmark builds is
-/// written in Hilbert order ([`build_variant`]), so the suffix would name
-/// the same package as the id without it.
+/// A `+source` suffix is refused: every package this benchmark builds is
+/// written in Hilbert order ([`build_variant`]), as is the `<base>.parquet`
+/// the query parameters derive from, so a variant differs from the baseline
+/// in its recipe alone. A source-order variant would differ in its row order
+/// too.
 fn parse_variant_list(ids: &[String]) -> Result<Vec<(String, Variant)>> {
     let mut seen: Vec<String> = Vec::new();
     let mut out = Vec::with_capacity(ids.len());
     for raw in ids {
         let variant = Variant::parse(raw).map_err(|e| anyhow::anyhow!("--variants: {e}"))?;
-        if variant.ordering() == RowOrder::Hilbert {
+        if variant.ordering() != RowOrder::Hilbert {
             bail!(
-                "--variants: '{raw}' carries +hilbert, but every benchmark package is written in \
-                 Hilbert order already; drop the suffix"
+                "--variants: '{raw}' asks for source order, but every benchmark package is \
+                 written in Hilbert order so that variants differ in their recipe alone; drop \
+                 the +source suffix"
             );
         }
         let id = variant.id();
@@ -1390,6 +1393,11 @@ fn run_measurement(
 /// the same content as `<base>.parquet` and differs from it only in the
 /// recipe under test. A library-default `ConvertOptions::new`
 /// would leave LoD0 generation OFF and the row counts would not line up.
+///
+/// Hilbert order is also the library default, and it is pinned here
+/// regardless — as `--ordering hilbert` is in the prepare script — so the
+/// benchmark states its configuration rather than inheriting it, and a later
+/// change of default cannot change what its figures measure.
 fn build_variant(
     base: &str,
     id: &str,

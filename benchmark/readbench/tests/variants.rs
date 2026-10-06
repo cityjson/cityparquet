@@ -358,8 +358,8 @@ fn variants_and_formats_are_exclusive_and_the_list_is_validated() {
         "only zstd takes a level",
     );
     expect_rejection(
-        &with(&base, &["--variants", "cityparquet,cityparquet+hilbert"]),
-        "Hilbert order already",
+        &with(&base, &["--variants", "cityparquet,cityparquet+source"]),
+        "asks for source order",
     );
     expect_rejection(
         &with(&base, &["--variants", "cityparquet", "--write-repeat", "1"]),

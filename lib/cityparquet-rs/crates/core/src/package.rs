@@ -72,9 +72,9 @@ const TMP_DIR_NAME: &str = ".cityparquet-tmp";
 /// or on-disk order for a CityJSONSeq stream), with no extra memory cost
 /// beyond one feature at a time.
 ///
-/// `Hilbert` reorders FEATURES (never splitting one feature's objects
-/// across the reorder — see `crate::order`'s module doc and
-/// `hilbert_ordered_features` below) by the Hilbert-curve index of each
+/// `Hilbert`, the default, reorders FEATURES (never splitting one
+/// feature's objects across the reorder — see `crate::order`'s module doc
+/// and `hilbert_ordered_features` below) by the Hilbert-curve index of each
 /// feature's own bbox centroid, so spatially nearby features land in the
 /// same or adjacent row groups and bbox row-group pruning
 /// (`crate::reader::CityParquetReaderBuilder::with_bbox_row_groups`) skips
@@ -82,11 +82,13 @@ const TMP_DIR_NAME: &str = ".cityparquet-tmp";
 /// parsed feature in memory before encoding a single row — the same
 /// full-load trade-off `crate::compare`'s comparator already makes,
 /// documented rather than hidden; a national-scale external sort is out of
-/// scope for this milestone (M6).
+/// scope for this milestone (M6). Peak memory therefore grows with the
+/// dataset, and `Source` is the streaming, low-memory choice for an input
+/// too large to hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RowOrder {
-    #[default]
     Source,
+    #[default]
     Hilbert,
 }
 
@@ -140,7 +142,7 @@ pub struct ConvertOptions {
 }
 
 impl ConvertOptions {
-    /// 4096-row batches, the default [`WriterRecipe`], [`RowOrder::Source`]
+    /// 4096-row batches, the default [`WriterRecipe`], [`RowOrder::Hilbert`]
     /// emission order, no overwrite, and no GeoParquet/GeoArrow
     /// self-description — the sensible defaults for a first conversion of
     /// `input` into `output_dir`. Sidecars (`materials.parquet`,

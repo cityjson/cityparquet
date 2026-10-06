@@ -78,9 +78,10 @@ impl Default for BenchOptions {
     }
 }
 
-/// The default 9-variant set: every [`RecipePreset::ALL`] plain, plus
-/// `cityparquet+hilbert`, and — M5 Codex review (Important finding 4) —
-/// `cityparquet+rg512` / `cityparquet+hilbert+rg512`, a row-group size small
+/// The default 9-variant set: every [`RecipePreset::ALL`] plain (each in
+/// Hilbert order, the default), plus `cityparquet+source` for the
+/// source-order comparison, and — M5 Codex review (Important finding 4) —
+/// `cityparquet+rg512` / `cityparquet+source+rg512`, a row-group size small
 /// enough that the larger committed datasets (delft 2,231 objects, the
 /// dense-urban tile 2,423) genuinely split into multiple (5) row groups, so
 /// `row_groups_touched` can actually demonstrate pruning instead of every
@@ -98,9 +99,9 @@ fn default_variant_ids() -> Vec<String> {
         .iter()
         .map(|preset| preset.name().to_string())
         .collect();
-    ids.push("cityparquet+hilbert".to_string());
+    ids.push("cityparquet+source".to_string());
     ids.push("cityparquet+rg512".to_string());
-    ids.push("cityparquet+hilbert+rg512".to_string());
+    ids.push("cityparquet+source+rg512".to_string());
     ids
 }
 

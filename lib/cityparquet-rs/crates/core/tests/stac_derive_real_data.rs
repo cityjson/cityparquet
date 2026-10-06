@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use city3d_stac_types::metadata::AttributeType;
 use city3d_stac_types::stac::CityObjectsCount;
 use cityparquet::merge::merge_sources;
-use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::source::{Source, SourceFormat};
 use cityparquet::stac::properties::{PackageTables, derive_co_types, derive_from_footer};
 use cityparquet::stac::{ItemOptions, item_for_package, package_bbox};
@@ -172,8 +172,13 @@ fn city3d_lods_is_the_union_across_every_table_not_just_the_first() {
     let src_path = src_dir.path().join("railway_and_delft.city.jsonl");
     write_railway_and_delft_merged(&src_path);
 
+    // Source order: a table is listed where its module's first row lands, so
+    // only source order keeps the merged file's railway-first table order.
     let dir = tempfile::tempdir().unwrap();
-    let pkg = convert_fixture_path(&src_path, &dir);
+    let pkg = dir.path().join("pkg");
+    let mut opts = ConvertOptions::new(src_path.clone(), pkg.clone());
+    opts.ordering = RowOrder::Source;
+    convert(&opts).expect("convert fixture");
 
     let tables = PackageTables::open(&pkg).expect("resolve tables");
 
