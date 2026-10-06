@@ -74,7 +74,6 @@ class DuckDBCityParquet:
         self._schema_loaded = False
         self._spatial = False
         self._building_rows: int | None = None
-        self._write_scratch: Path | None = None
 
     def prepare(self) -> None:
         self._conn = duckdb.connect()

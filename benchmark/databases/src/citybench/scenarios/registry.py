@@ -54,14 +54,6 @@ ALL: tuple[str, ...] = TIER1 + TIER2 + TIER3
 
 READ_SCENARIOS: tuple[str, ...] = TIER1 + TIER2
 
-ALL_SYSTEMS: tuple[str, ...] = (
-    "cityparquet",
-    "duckdb-cityparquet",
-    "duckdb-cityparquet-writeback",
-    "cjdb",
-    "3dcitydb",
-)
-
 SQL_SYSTEMS: tuple[str, ...] = ("duckdb-cityparquet", "cjdb", "3dcitydb")
 
 # Scenarios measured at three window sizes rather than once.

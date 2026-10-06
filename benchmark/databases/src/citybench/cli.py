@@ -7,7 +7,6 @@ import csv
 import json
 import sys
 import os
-from contextlib import nullcontext
 from citybench.lifecycle import isolated_databases
 from pathlib import Path
 
