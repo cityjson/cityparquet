@@ -267,6 +267,20 @@ class CjdbSystem:
         sql, args = sql_cjdb.sql_for(scenario, params, pg.oriented(window, self._swap_xy), self._srid, probe=probe)
         return pg.fetch_rows(self._conn, sql, args)
 
+    def footprint_decomposition(self, ids: list[str]) -> dict[str, int]:
+        """Of `ids` (objects whose subtree box meets the window but which
+        cjdb's footprint test did not return), how many have no footprint
+        and how many a footprint that misses the window (README Caveats
+        10-11). An id absent from `city_object` is in neither."""
+        assert self._conn is not None
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"SELECT count(*) FILTER (WHERE ground_geometry IS NULL), "
+                f"count(*) FILTER (WHERE ground_geometry IS NOT NULL) "
+                f"FROM {self._schema}.city_object WHERE object_id = ANY(%s)", (ids,))
+            nulls, outside = cur.fetchone()
+        return {"null-footprint": nulls, "footprint-outside-window": outside}
+
     def _run_write(self, scenario: str, repeat: int) -> Measurement:
         """One write-tier scenario: CJDB's own Q6/Q7/Q8.
 

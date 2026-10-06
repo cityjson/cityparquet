@@ -481,3 +481,48 @@ def test_non_object_scenarios_are_not_verified():
                VerifyingSystem("cjdb", ["a"])]
     run_matrix(systems, make_params(), "d", repeat=1, scenarios=["count"])
     assert [s.verified for s in systems] == [0, 0]
+
+
+# --- cjdb's footprint-only bbox answer, verified and decomposed ---
+
+import pytest  # noqa: E402
+from citybench import identity as _identity  # noqa: E402
+from citybench.runner import explained_footprint_deviation  # noqa: E402
+
+
+class _Footprint:
+    tag = "cjdb"
+
+    def __init__(self, null_ids):
+        self.null_ids = null_ids
+
+    def footprint_decomposition(self, ids):
+        nulls = sum(1 for i in ids if i in self.null_ids)
+        return {"null-footprint": nulls, "footprint-outside-window": len(ids) - nulls}
+
+
+def _ids(*ids):
+    return _identity.Identity(frozenset(ids), len(ids))
+
+
+def test_a_footprint_subset_is_an_explained_deviation_when_the_others_agree():
+    summaries = {"duckdb-cityparquet": _ids("a", "b", "c"), "cjdb": _ids("a"),
+                 "3dcitydb": _ids("a", "b", "c")}
+    note = explained_footprint_deviation("bbox-query", summaries, [_Footprint({"b"})])
+    assert note == ("explained-deviation: cjdb tests its footprint, lacks 2 of 3 "
+                    "(null-footprint=1 footprint-outside-window=1; README Caveats 10-11)")
+
+
+@pytest.mark.parametrize("summaries", [
+    # cjdb returns an id the reference lacks: not a footprint undercount
+    {"duckdb-cityparquet": _ids("a", "b"), "cjdb": _ids("a", "z"), "3dcitydb": _ids("a", "b")},
+    # the box-testing systems disagree with each other: a defect, not cjdb's
+    {"duckdb-cityparquet": _ids("a", "b"), "cjdb": _ids("a"), "3dcitydb": _ids("a", "b", "c")},
+])
+def test_anything_else_stays_unexplained(summaries):
+    assert explained_footprint_deviation("bbox-query", summaries, [_Footprint(set())]) is None
+
+
+def test_only_bbox_query_is_explained():
+    summaries = {"duckdb-cityparquet": _ids("a", "b"), "cjdb": _ids("a")}
+    assert explained_footprint_deviation("attr-range", summaries, [_Footprint(set())]) is None

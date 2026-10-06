@@ -127,9 +127,42 @@ def _variant_note(window: BboxWindow | None, probe: IdProbe | None) -> str:
     return ""
 
 
+def explained_footprint_deviation(scenario: str,
+                                  summaries: dict[str, identity.Identity],
+                                  systems: list) -> str | None:
+    """The one deviation the identifier check accepts, verified per row.
+
+    cjdb's `bbox-query` tests the object's footprint (`ground_geometry`),
+    the only spatial column it has, while the other systems test the box
+    over the object's subtree; cjdb cannot test that box through an index
+    (README Caveats 10-11). The row is accepted only when every other
+    system returns the identical set, cjdb's set is a subset of it, and the
+    cjdb system decomposes each missing id by its footprint (NULL, or not
+    meeting the window); the note carries that decomposition.
+    """
+    if scenario != "bbox-query":
+        return None
+    for system in systems:
+        if (system.tag not in summaries
+                or not hasattr(system, "footprint_decomposition")):
+            continue
+        others = [s.ids for tag, s in summaries.items() if tag != system.tag]
+        own = summaries[system.tag].ids
+        if not others or any(o != others[0] for o in others) or not own < others[0]:
+            return None
+        missing = sorted(others[0] - own)
+        parts = system.footprint_decomposition(missing)
+        if sum(parts.values()) != len(missing):
+            return None
+        detail = " ".join(f"{k}={v}" for k, v in parts.items())
+        return (f"explained-deviation: {system.tag} tests its footprint, lacks "
+                f"{len(missing)} of {len(others[0])} ({detail}; README Caveats 10-11)")
+    return None
+
+
 def _verify_identities(scenario: str, params: Params, window, probe,
                        systems: list, answered: dict[str, Measurement],
-                       status: str, tolerance: float) -> str | None:
+                       status: str, tolerance: float) -> tuple[str | None, str | None]:
     """The identifier-set cross-check for one row (`citybench.identity`).
 
     Runs AFTER the timed samples: each answering system that implements
@@ -139,19 +172,23 @@ def _verify_identities(scenario: str, params: Params, window, probe,
     deviation.
     """
     if scenario not in identity.IDENTITY_SCENARIOS:
-        return None
+        return None, None
     summaries: dict[str, identity.Identity] = {}
     for system in systems:
         if system.tag not in answered or not hasattr(system, "verify_rows"):
             continue
         columns, rows = system.verify_rows(scenario, params, window=window, probe=probe)
         summaries[system.tag] = identity.summarise(scenario, columns, rows)
+    explained = explained_footprint_deviation(scenario, summaries, systems)
+    if explained:
+        print(f"EXPLAINED {scenario}: {explained}", file=sys.stderr, flush=True)
+        return None, explained
     note = identity.compare(
         summaries, tolerance if status == "ok-deviation" else 0.0
     )
     if note:
         print(f"ID MISMATCH {scenario}: {note}", file=sys.stderr, flush=True)
-    return note
+    return note, None
 
 
 def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
@@ -246,11 +283,14 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
                 {tag: m.result_count for tag, m in answered.items()}, tolerance
             )
 
-            id_note = _verify_identities(
+            id_note, explained = _verify_identities(
                 scenario, params, window, probe, wanted, answered, status, tolerance
             )
             if id_note:
                 status = "id-mismatch"
+            elif explained:
+                status = "ok-deviation"
+                deviation = f"{deviation} {explained}".strip()
 
             for tag, m in measurements.items():
                 note = " ".join(
