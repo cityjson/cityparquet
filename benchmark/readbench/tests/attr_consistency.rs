@@ -23,8 +23,8 @@
 //!
 //! **CityParquet leg split off (2026-07-21, mandatory-by-type-layout):**
 //! the single-file table layout is gone, so converting
-//! `lod3_railway.city.json` (10 1st-level families) now always writes 10
-//! separate family tables, and the
+//! `lod3_railway.city.json` (10 1st-level CityObject types) now always
+//! writes 9 separate CityGML-module tables, and the
 //! `cityparquet` `FormatRunner`'s single-file `locate_main_table` correctly
 //! rejects that package outright rather than silently reading only one
 //! family's rows — see `cityparquet_attr_filter_rejects_a_multi_family_by_type_package`
@@ -240,12 +240,13 @@ fn cityjson_cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_c
 }
 
 /// Single-file table layout removal (2026-07-21, mandatory-by-type-layout):
-/// `lod3_railway.city.json` has 10 1st-level families, so `convert()` now
-/// always writes 10 separate family tables — there is no longer a single
-/// file holding the whole dataset. The `cityparquet` `FormatRunner`'s
+/// `lod3_railway.city.json` has 10 1st-level CityObject types, which land
+/// in 9 CityGML-module tables, so `convert()` now always writes 9 separate
+/// family tables — there is no longer a single file holding the whole
+/// dataset. The `cityparquet` `FormatRunner`'s
 /// `locate_main_table` must reject that package with a clear diagnostic
 /// (never a panic, and never a silently-wrong count from just one family's
-/// table) — pinned here with a real 10-table package, not a hand-rolled one.
+/// table) — pinned here with a real 9-table package, not a hand-rolled one.
 #[test]
 fn cityparquet_attr_filter_rejects_a_multi_family_by_type_package() {
     let out = tempfile::tempdir().unwrap();
@@ -319,8 +320,9 @@ fn citygml_agrees_on_the_string_typed_numeric_attr_code() {
 }
 
 /// DEFERRED (2026-07-21, feat/mandatory-bytype-layout): the single-file
-/// table layout was removed, so `convert()` on this 10-family fixture now
-/// always writes 10 tables, and readbench's single-table `locate_main_table`
+/// table layout was removed, so `convert()` on this fixture — 10 1st-level
+/// CityObject types in 9 CityGML-module tables — now always writes 9
+/// tables, and readbench's single-table `locate_main_table`
 /// correctly bails.
 /// Re-enable when a follow-up readbench plan teaches the runners to
 /// aggregate across every table in the manifest (the same deferral as the
