@@ -51,3 +51,16 @@ def test_a_tolerated_count_deviation_tolerates_the_same_set_difference():
     big = frozenset(str(i) for i in range(10_000))
     assert compare({"a": Identity(big, None),
                     "b": Identity(big | {"x"}, None)}, tolerance=0.001) is None
+
+
+def test_a_postgresql_geometry_array_in_text_counts_its_non_null_elements():
+    """The untimed verification fetch is in text format, where psycopg
+    hands an array of PostGIS `geometry` (no registered loader) over as
+    one array literal, `{hex,hex,NULL}`; each element counts, not the
+    string as a whole."""
+    citydb = summarise("id-lookup", ["id", "objectid", "geometries"],
+                       [(9, "NL.1", "{01070000A0,0106000080,NULL}")])
+    empty = summarise("id-lookup", ["id", "objectid", "geometries"],
+                      [(9, "NL.1", "{}")])
+    assert citydb == Identity(frozenset({"NL.1"}), 2)
+    assert empty == Identity(frozenset({"NL.1"}), 0)

@@ -60,7 +60,15 @@ def _geometry_count(columns: list[str], row: tuple) -> int:
     for name in ("geometry", "geometries"):
         value = by_name.get(name)
         if isinstance(value, str):
-            value = json.loads(value) if value.startswith("[") else [value]
+            if value.startswith("["):
+                value = json.loads(value)
+            elif value.startswith("{"):
+                # A PostgreSQL array literal (text fetch, no loader for
+                # `geometry`): hex WKB elements hold no commas.
+                value = [None if e == "NULL" else e
+                         for e in value[1:-1].split(",") if e]
+            else:
+                value = [value]
         if isinstance(value, (list, tuple)):
             count += sum(1 for g in value if g is not None)
     return count
