@@ -11,7 +11,9 @@
 //! three identical times in the MONOREPO's root `justfile` (which is where
 //! the per-dataset recipes live: they reach both this crate and the corpora
 //! under `benchmark/`) — because a shell script cannot import a Rust
-//! function and `just` has no functions of its own.
+//! function and `just` has no functions of its own. The suite runner,
+//! `benchmark/scripts/bench_suite.py`, carries a Python copy
+//! (`dataset_stem`), run here over the same table.
 //!
 //! Every one of them used to know only `.json`/`.jsonl`. A `.gml` input was
 //! therefore invisible to every `find` pattern in the justfile, and a
@@ -212,6 +214,51 @@ fn extract_shell_function(source: &str, name: &str) -> String {
         }
     }
     panic!("no `{name}()` shell function found");
+}
+
+// 2b. benchmark/scripts/bench_suite.py
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_suite_runner_strips_identically() {
+    // The function is extracted and run on its own, like the shell copies:
+    // importing the whole runner would tie this test to its interpreter
+    // version and imports.
+    let source = read("benchmark/scripts/bench_suite.py");
+    let start = source
+        .find("def dataset_stem(")
+        .expect("bench_suite.py defines dataset_stem");
+    let body: String = source[start..]
+        .lines()
+        .enumerate()
+        .take_while(|(i, line)| *i == 0 || line.is_empty() || line.starts_with(' '))
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    let program = format!(
+        "import sys\nfrom pathlib import Path\n{body}\nprint(dataset_stem(Path(sys.argv[1])))\n"
+    );
+    let produced: Vec<String> = CASES
+        .iter()
+        .map(|(input, _)| {
+            let out = Command::new("python3")
+                .arg("-I")
+                .arg("-c")
+                .arg(&program)
+                .arg(input)
+                .output()
+                .unwrap_or_else(|e| panic!("running bench_suite.dataset_stem under python3: {e}"));
+            assert!(
+                out.status.success(),
+                "bench_suite.dataset_stem failed on '{input}': {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout)
+                .expect("a dataset name is UTF-8")
+                .trim_end_matches('\n')
+                .to_string()
+        })
+        .collect();
+    assert_matches_the_table("benchmark/scripts/bench_suite.py", &produced);
 }
 
 // ---------------------------------------------------------------------------

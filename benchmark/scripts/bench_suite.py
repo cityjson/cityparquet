@@ -135,7 +135,9 @@ def dataset_stem(path: Path) -> str:
     for suffix in (".city.jsonl", ".city.json", ".citygml", ".jsonl", ".json", ".gml", ".xml"):
         if path.name.endswith(suffix):
             return path.name[: -len(suffix)]
-    return path.stem
+    # An extension nothing here knows is left alone, never half-stripped
+    # (the shared table in benchmark/readbench/tests/strip_extension.rs).
+    return path.name
 
 
 def sizes_command(input_path: Path, prepared: Path, output: Path) -> list[str]:
