@@ -6,6 +6,7 @@ pub mod citygml;
 pub mod cityjson;
 pub mod cityjsonseq;
 pub mod cityparquet;
+mod cjvisit;
 pub mod flatcitybuf;
 pub mod returned;
 
@@ -102,6 +103,39 @@ pub(crate) struct Answer {
     pub result_count: u64,
     pub attr_stats: Option<AttrAggregates>,
     pub returned: returned::Returned,
+}
+
+impl Answer {
+    /// An answer carrying the returned identifiers (and, for the spatial
+    /// window, the returned geometry); `result_count` is the identifier count.
+    pub(crate) fn returning(
+        ids: returned::IdDigest,
+        geometry: Option<returned::ReturnedGeometry>,
+    ) -> Self {
+        Self {
+            result_count: ids.count,
+            attr_stats: None,
+            returned: returned::Returned {
+                ids: Some(ids),
+                totals: None,
+                geometry,
+            },
+        }
+    }
+
+    /// An answer carrying the comparable totals of what was read, with
+    /// `result_count` as given.
+    pub(crate) fn reading(result_count: u64, totals: returned::ComparableTotals) -> Self {
+        Self {
+            result_count,
+            attr_stats: None,
+            returned: returned::Returned {
+                ids: None,
+                totals: Some(totals),
+                geometry: None,
+            },
+        }
+    }
 }
 
 impl From<u64> for Answer {

@@ -140,19 +140,19 @@ fn id_lookup_finds_a_real_id_and_none_for_a_bogus_id() {
 }
 
 #[test]
-fn bbox_query_is_feature_level_and_uses_the_header_transform() {
+fn bbox_query_is_object_level_and_uses_the_header_transform() {
     let input = fixture("delft.city.jsonl");
     // The full dataset extent, taken straight from delft.city.jsonl's header
-    // `metadata.geographicalExtent` — every feature must intersect it.
+    // `metadata.geographicalExtent` — every CityObject must intersect it.
     let whole_dataset = [
         "--bbox",
         "84501.5546875,445805.03125,-3.746997833251953,85675.234375,446983.46875,95.04200744628906",
     ];
     let all = run_child("cityjsonseq", "bbox-query", &input, &whole_dataset);
     assert_eq!(
-        all, 1115,
+        all, 2231,
         "a query window covering the whole dataset extent must match every \
-         one of delft's 1115 features"
+         one of delft's 2231 CityObjects"
     );
 
     // A window far outside the dataset (middle of the North Sea) must match

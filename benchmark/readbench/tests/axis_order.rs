@@ -34,19 +34,30 @@ fn table(dir: &Path) -> PathBuf {
         .join("building.parquet")
 }
 
-/// Each feature's box over every vertex its objects' geometries reference,
+/// Each CityObject's box over every vertex of its `children` subtree,
 /// in the source's own (latitude-first) order.
-fn feature_boxes() -> Vec<[f64; 6]> {
+fn object_boxes() -> Vec<[f64; 6]> {
     let text = std::fs::read_to_string(fixture()).unwrap();
     let mut lines = text.lines();
     let header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     let scale: Vec<f64> = serde_json::from_value(header["transform"]["scale"].clone()).unwrap();
     let translate: Vec<f64> =
         serde_json::from_value(header["transform"]["translate"].clone()).unwrap();
-    lines
-        .map(|line| {
-            let feature: Value = serde_json::from_str(line).unwrap();
-            let vertices = feature["vertices"].as_array().unwrap();
+    fn walk(v: &Value, f: &mut dyn FnMut(usize)) {
+        match v {
+            Value::Array(items) => items.iter().for_each(|i| walk(i, f)),
+            Value::Number(n) => f(n.as_u64().unwrap() as usize),
+            _ => {}
+        }
+    }
+    let mut boxes = Vec::new();
+    for line in lines {
+        let feature: Value = serde_json::from_str(line).unwrap();
+        let vertices = feature["vertices"].as_array().unwrap();
+        let objects = feature["CityObjects"].as_object().unwrap();
+        // An object's box is the min/max over every vertex of its
+        // `children` subtree (READ_BENCHMARK.md, the spatial window).
+        let subtree = |root: &str| {
             let mut b = [
                 f64::INFINITY,
                 f64::INFINITY,
@@ -55,14 +66,9 @@ fn feature_boxes() -> Vec<[f64; 6]> {
                 f64::NEG_INFINITY,
                 f64::NEG_INFINITY,
             ];
-            fn walk(v: &Value, f: &mut dyn FnMut(usize)) {
-                match v {
-                    Value::Array(items) => items.iter().for_each(|i| walk(i, f)),
-                    Value::Number(n) => f(n.as_u64().unwrap() as usize),
-                    _ => {}
-                }
-            }
-            for object in feature["CityObjects"].as_object().unwrap().values() {
+            let mut stack = vec![root.to_string()];
+            while let Some(id) = stack.pop() {
+                let object = &objects[&id];
                 for geometry in object["geometry"].as_array().into_iter().flatten() {
                     walk(&geometry["boundaries"], &mut |i| {
                         for axis in 0..3 {
@@ -73,10 +79,15 @@ fn feature_boxes() -> Vec<[f64; 6]> {
                         }
                     });
                 }
+                for child in object["children"].as_array().into_iter().flatten() {
+                    stack.push(child.as_str().unwrap().to_string());
+                }
             }
             b
-        })
-        .collect()
+        };
+        boxes.extend(objects.keys().map(|id| subtree(id)));
+    }
+    boxes
 }
 
 fn intersects(b: &[f64; 6], w: &[f64; 6]) -> bool {
@@ -126,7 +137,7 @@ fn a_projected_or_unknown_crs_needs_no_swap() {
 }
 
 /// The CityJSONSeq runner, reading the latitude-first stream, selects the
-/// same features as an oracle intersecting the source-order boxes with the
+/// same CityObjects as an oracle intersecting the source-order boxes with the
 /// window swapped into source order — and without the swap it would select
 /// none.
 #[test]
@@ -160,7 +171,7 @@ fn the_source_order_runner_gets_the_window_in_source_order() {
         &std::fs::read_to_string(dir.path().join("out.csv.params.json")).unwrap(),
     )
     .unwrap();
-    let boxes = feature_boxes();
+    let boxes = object_boxes();
     let csv = std::fs::read_to_string(&out).unwrap();
     let counts: Vec<u64> = csv
         .lines()
@@ -179,7 +190,7 @@ fn the_source_order_runner_gets_the_window_in_source_order() {
             .filter(|b| intersects(b, &window.window))
             .count();
         assert_eq!(*count as usize, expected, "{}", window.tag);
-        assert_eq!(unswapped, 0, "the unswapped window misses every feature");
+        assert_eq!(unswapped, 0, "the unswapped window misses every object");
         any |= expected > 0;
     }
     assert!(any, "at least one window selects something");

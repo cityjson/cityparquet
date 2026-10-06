@@ -718,7 +718,13 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             *scenario,
                             &params,
                             &opts.sampling,
-                            Some(total),
+                            // The window's selectivity is over the format's
+                            // own counting level for it.
+                            Some(if format.bbox_counts_features() {
+                                total
+                            } else {
+                                resolved.cp_object_total
+                            }),
                             &notes,
                         )?;
                     }
@@ -1044,8 +1050,9 @@ const COUNT_MISMATCH: &str = "count-mismatch";
 /// scenario, the formats and the counts.
 ///
 /// Formats count at two levels (READ_BENCHMARK.md, Caveat 1):
-/// [`Format::counts_features`] formats count features, the others
-/// CityObjects. Where the parameters carry a reference for both levels the
+/// [`Format::counts_features`] formats count features for `count` and
+/// `full-read`, and [`Format::bbox_counts_features`] formats for the
+/// windows; the others count CityObjects. Where the parameters carry a reference for both levels the
 /// row is checked against its own level's reference:
 ///
 /// - `count` / `full-read`: [`params::ResolvedParams::cp_object_total`] or
@@ -1082,18 +1089,35 @@ fn check_consistency(
             continue;
         };
         let features = format.counts_features();
-        let level = if features { "features" } else { "CityObjects" };
+        let level_features = if row.scenario == Scenario::BBoxQuery {
+            format.bbox_counts_features()
+        } else {
+            features
+        };
+        let level = if level_features {
+            "features"
+        } else {
+            "CityObjects"
+        };
         let expected = match row.scenario {
             Scenario::Count | Scenario::FullRead => Some(if features {
                 resolved.cp_feature_total
             } else {
                 resolved.cp_object_total
             }),
-            Scenario::BBoxQuery => resolved
-                .windows
-                .iter()
-                .find(|w| w.tag == primary(row))
-                .map(|w| if features { w.features } else { w.objects }),
+            Scenario::BBoxQuery => {
+                resolved
+                    .windows
+                    .iter()
+                    .find(|w| w.tag == primary(row))
+                    .map(|w| {
+                        if format.bbox_counts_features() {
+                            w.features
+                        } else {
+                            w.objects
+                        }
+                    })
+            }
             Scenario::AttrFilter => resolved.attr_filter.as_ref().map(|spec| spec.matched),
             _ => None,
         };
@@ -1627,9 +1651,9 @@ fn spawn_child(
 /// Each format counts at its own natural grain (see
 /// `formats::cityparquet`/`formats::cityjsonseq`/`formats::flatcitybuf`'s own
 /// module docs on CityObject-vs-feature granularity), so this per-format
-/// total is the correct SELECTIVITY denominator only for [`Scenario::BBoxQuery`]
-/// (feature-level numerator over a feature-level denominator, for every
-/// format). For the CityObject-level scenarios (`AttrFilter`/`AttrStats`/
+/// total is the SELECTIVITY denominator of [`Scenario::BBoxQuery`] for a
+/// format whose window counts features ([`Format::bbox_counts_features`]);
+/// the others use the dataset-global CityObject total. For the CityObject-level scenarios (`AttrFilter`/`AttrStats`/
 /// `IdLookup`), [`run`] instead uses the dataset-global CityObject
 /// total — this same function called once against the `cityparquet` package
 /// — as a SHARED denominator across every format, so those scenarios'
@@ -2225,7 +2249,7 @@ mod tests {
                 "cityjsonseq",
                 Scenario::BBoxQuery,
                 &["bbox-1pct;approx"],
-                262,
+                499,
             ),
             labelled("cityparquet", Scenario::BBoxQuery, &["bbox-1pct"], 499),
             labelled("cityjson", Scenario::Count, &[], 49_915),
@@ -2252,7 +2276,7 @@ mod tests {
             failures,
             vec![
                 "bbox-1pct: cityjson reports 0, expected 499 CityObjects".to_string(),
-                "bbox-1pct: cityjsonseq reports 0, expected 262 features".to_string(),
+                "bbox-1pct: cityjsonseq reports 0, expected 499 CityObjects".to_string(),
             ]
         );
         assert!(rows[0].render().contains(COUNT_MISMATCH));

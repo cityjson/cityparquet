@@ -46,24 +46,18 @@
 //!   "Spatial metadata"). An object with no geometry anywhere in its subtree
 //!   has no bbox and matches no window.
 //!   A `GeometryInstance` contributes its anchor point (the one vertex index
-//!   its `boundaries` hold), not the bounds of the template it instantiates;
-//!   the same simplification [`super::cityjsonseq`]'s feature bbox makes.
-//! - [`Scenario::FullRead`] is **not the same operation** here as in
-//!   [`super::cityjsonseq`], even though both wear the same scenario label.
-//!   That runner walks each geometry's `boundaries` index tree and stops
-//!   there; this one *resolves every boundary leaf* through the
-//!   document-level `vertices` array and `transform` into a real-world
-//!   coordinate — 245,137 leaf resolutions against 73,554 unique vertices on
-//!   the `lod3_railway` fixture; roughly a fifth more wall-clock than
-//!   [`Scenario::Count`] in release mode on this machine (median of 9 runs:
-//!   0.199 s vs 0.243 s), so it is real work rather than something the
-//!   optimiser elides — and `run_scenario` pins that with
-//!   `std::hint::black_box` rather than trusting it to stay true.
-//!   Resolving coordinates IS the honest cost
-//!   of a shared document-level vertex array (a Seq feature carries its own
-//!   local vertices instead), so neither side is bent to match the other —
-//!   but a published `full-read` row must not be read as "both formats did
-//!   the same thing".
+//!   its `boundaries` hold), not the bounds of the template it instantiates.
+//!   The window returns the matching objects' identifiers and walks each
+//!   one's highest-LoD geometry in place. The same definition is shared with
+//!   `cityjsonseq` and `citygml` ([`super::cjvisit::window_objects`]).
+//! - [`Scenario::FullRead`] and [`Scenario::IdLookup`] read every field of
+//!   the objects they reach natively ([`super::cjvisit::visit_object`]),
+//!   exactly as `cityjsonseq` and `citygml` do: every boundary leaf resolved
+//!   through the vertex array and `transform` into a real coordinate, every
+//!   semantic reference and surface object, every attribute value. The
+//!   difference left between this runner and `cityjsonseq` is where the
+//!   vertices live: one document-level array here, a feature-local one per
+//!   Seq line there.
 //! - [`Scenario::AttrStats`] aggregates NUMERIC values only, so a
 //!   string-typed column (the railway fixture's numeric-LOOKING `function`
 //!   codes, e.g. `"1070"`) counts 0 — identical to
@@ -73,17 +67,18 @@
 //! None of this is silently normalised to match another format; the
 //! methodology doc is responsible for disclosing it alongside the numbers.
 
-use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
-use cityparquet::cjseq::{CityJSON, CityObject, Transform};
+use cityparquet::cjseq::{CityJSON, CityObject};
 use cityparquet::counting_store::CountingObjectStore;
 use object_store::ObjectStoreExt;
 use object_store::http::HttpBuilder;
 use object_store::path::Path as ObjectPath;
 
-use super::cityjsonseq::{column_value, intersects, matches_predicate, push_numeric, require};
+use super::cityjsonseq::{column_value, matches_predicate, push_numeric, require};
+use super::cjvisit::{Vertices, visit_object, window_objects};
+use super::returned::{ComparableTotals, IdDigest, ReturnedGeometry};
 use super::{Answer, AttrAggregates, FormatRunner, IoStats, RunOutcome, Source as TransportSource};
 use crate::scenario::{QueryParams, Scenario};
 
@@ -126,210 +121,50 @@ impl Document {
     }
 }
 
-/// A running min/max over decoded (real-world) coordinates, plus whether any
-/// vertex was seen at all — `any == false` means "this object has no bbox",
-/// which is a real state (a geometry-less `CityObjectGroup`), not an error.
-struct Bounds {
-    min: [f64; 3],
-    max: [f64; 3],
-    any: bool,
-}
-
-impl Bounds {
-    fn new() -> Self {
-        Self {
-            min: [f64::INFINITY; 3],
-            max: [f64::NEG_INFINITY; 3],
-            any: false,
-        }
-    }
-
-    fn finish(self) -> Option<([f64; 3], [f64; 3])> {
-        self.any.then_some((self.min, self.max))
-    }
-}
-
-/// Walks one geometry's `boundaries` tree, resolving EVERY leaf (a
-/// document-level vertex index) through `vertices` + `transform` into a
-/// real-world coordinate and folding it into `acc`.
-///
-/// This is the runner's geometry decode: [`Scenario::BBoxQuery`] uses the
-/// resulting bounds, and [`Scenario::FullRead`] runs the identical traversal
-/// purely for the work it forces (so "full read" really does touch every
-/// coordinate rather than merely deserialising the boundary arrays into a
-/// [`serde_json::Value`] tree).
-///
-/// Fallible on malformed input rather than silently skipping it: a boundary
-/// leaf that is not a valid, in-range vertex index means the document is
-/// broken, and a benchmark that quietly measured a shorter walk over broken
-/// data would report a number nobody could trust.
-fn accumulate_boundaries(
-    value: &serde_json::Value,
-    vertices: &[Vec<i64>],
-    transform: &Transform,
-    acc: &mut Bounds,
-) -> Result<()> {
-    match value {
-        serde_json::Value::Array(items) => {
-            for item in items {
-                accumulate_boundaries(item, vertices, transform, acc)?;
-            }
-            Ok(())
-        }
-        serde_json::Value::Number(number) => {
-            let index = number.as_u64().ok_or_else(|| {
-                anyhow!("geometry boundary index '{number}' is not a whole number")
-            })? as usize;
-            let vertex = vertices.get(index).ok_or_else(|| {
-                anyhow!(
-                    "geometry boundary references vertex {index}, but the document has only {}",
-                    vertices.len()
-                )
-            })?;
-            if vertex.len() < 3 {
-                bail!("vertex {index} has {} components, expected 3", vertex.len());
-            }
-            for (axis, coord) in vertex.iter().take(3).enumerate() {
-                let real = *coord as f64 * transform.scale[axis] + transform.translate[axis];
-                acc.min[axis] = acc.min[axis].min(real);
-                acc.max[axis] = acc.max[axis].max(real);
-            }
-            acc.any = true;
-            Ok(())
-        }
-        other => bail!("unexpected value in geometry boundaries: {other}"),
-    }
-}
-
-/// One CityObject's bbox over the DOCUMENT-level vertex array — `None` when
-/// the object carries no geometry (or no boundaries) at all.
-fn object_bounds(
-    co: &CityObject,
-    vertices: &[Vec<i64>],
-    transform: &Transform,
-) -> Result<Option<([f64; 3], [f64; 3])>> {
-    let mut acc = Bounds::new();
-    if let Some(geometries) = &co.geometry {
-        for geometry in geometries {
-            accumulate_boundaries(&geometry.boundaries, vertices, transform, &mut acc)?;
-        }
-    }
-    Ok(acc.finish())
-}
-
-/// An object's box, `(min, max)`, or `None` when it has no geometry.
-type MaybeBox = Option<([f64; 3], [f64; 3])>;
-
-/// The union of two optional boxes.
-fn union(a: MaybeBox, b: MaybeBox) -> MaybeBox {
-    match (a, b) {
-        (None, x) | (x, None) => x,
-        (Some((amin, amax)), Some((bmin, bmax))) => Some((
-            [
-                amin[0].min(bmin[0]),
-                amin[1].min(bmin[1]),
-                amin[2].min(bmin[2]),
-            ],
-            [
-                amax[0].max(bmax[0]),
-                amax[1].max(bmax[1]),
-                amax[2].max(bmax[2]),
-            ],
-        )),
-    }
-}
-
-/// `id`'s box over its whole subtree: its own geometry and, through
-/// `children`, every descendant's — memoised, and guarded against a cycle in
-/// a malformed hierarchy (a child already on the path contributes nothing).
-fn subtree_bounds<'a>(
-    id: &'a str,
-    doc: &'a CityJSON,
-    own: &HashMap<&'a str, MaybeBox>,
-    memo: &mut HashMap<&'a str, MaybeBox>,
-    path: &mut HashSet<&'a str>,
-) -> MaybeBox {
-    if let Some(done) = memo.get(id) {
-        return *done;
-    }
-    let (key, co) = doc.city_objects.get_key_value(id)?;
-    let key = key.as_str();
-    path.insert(key);
-    let mut acc = own.get(key).copied().flatten();
-    for child in co.children.iter().flatten() {
-        if path.contains(child.as_str()) {
-            continue;
-        }
-        if let Some((child_key, _)) = doc.city_objects.get_key_value(child.as_str()) {
-            acc = union(
-                acc,
-                subtree_bounds(child_key.as_str(), doc, own, memo, path),
-            );
-        }
-    }
-    path.remove(key);
-    memo.insert(key, acc);
-    acc
-}
-
 /// The scenario dispatch shared by the local and HTTP branches of
 /// [`FormatRunner::run`]: everything below the parse (which only differs in
 /// WHERE the bytes come from) is transport-independent.
 fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -> Result<Answer> {
     let doc = &document.doc;
+    let verts = Vertices {
+        vertices: &doc.vertices,
+        transform: &doc.transform,
+    };
     match scenario {
         // The `CityObjects` map is already fully materialised by the parse
         // this format cannot avoid, so `count` IS its size — there is no
         // cheaper path to pretend otherwise.
         Scenario::Count => Ok((doc.city_objects.len() as u64).into()),
         Scenario::FullRead => {
-            let mut object_count = 0u64;
+            let mut totals = ComparableTotals::default();
             for co in document.objects() {
-                object_count += 1;
-                // The bounds are discarded — the traversal itself is the
-                // measured work (see `accumulate_boundaries`), and the
-                // returned metric stays object-level per this module's own
-                // doc comment. `black_box` so "full read genuinely touches
-                // every coordinate" holds BY CONSTRUCTION rather than by
-                // the optimiser's current mood: without it nothing stops
-                // LLVM concluding the coordinate arithmetic is dead and
-                // measuring a walk that never happened.
-                std::hint::black_box(object_bounds(co, &doc.vertices, &doc.transform)?);
+                visit_object(co, verts, &mut totals)?;
             }
-            Ok(object_count.into())
+            Ok(Answer::reading(totals.objects, totals))
         }
         Scenario::BBoxQuery => {
             let query_bbox = *require(&params.bbox, "bbox", scenario)?;
-            let own: HashMap<&str, MaybeBox> = doc
-                .city_objects
-                .iter()
-                .map(|(id, co)| {
-                    Ok((
-                        id.as_str(),
-                        object_bounds(co, &doc.vertices, &doc.transform)?,
-                    ))
-                })
-                .collect::<Result<_>>()?;
-            let mut memo: HashMap<&str, MaybeBox> = HashMap::new();
-            let mut matched = 0u64;
-            for id in doc.city_objects.keys() {
-                if let Some((min, max)) =
-                    subtree_bounds(id, doc, &own, &mut memo, &mut HashSet::new())
-                    && intersects(min, max, &query_bbox)
-                {
-                    matched += 1;
-                }
-            }
-            Ok(matched.into())
+            let mut ids = IdDigest::default();
+            let mut geometry = ReturnedGeometry::default();
+            window_objects(
+                &doc.city_objects,
+                verts,
+                &query_bbox,
+                &mut ids,
+                &mut geometry,
+            )?;
+            Ok(Answer::returning(ids, Some(geometry)))
         }
         Scenario::AttrFilter => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
             let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-            Ok((document
-                .objects()
-                .filter(|co| matches_predicate(column_value(co, column).as_ref(), pred))
-                .count() as u64)
-                .into())
+            let mut ids = IdDigest::default();
+            for (id, co) in &doc.city_objects {
+                if matches_predicate(column_value(co, column).as_ref(), pred) {
+                    ids.push(id);
+                }
+            }
+            Ok(Answer::returning(ids, None))
         }
         Scenario::AttrStats => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
@@ -346,7 +181,11 @@ fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -
         // to expose for an unindexed format.
         Scenario::IdLookup => {
             let id = require(&params.target_id, "target-id", scenario)?;
-            Ok((doc.city_objects.contains_key(id) as u64).into())
+            let mut totals = ComparableTotals::default();
+            if let Some(co) = doc.city_objects.get(id) {
+                visit_object(co, verts, &mut totals)?;
+            }
+            Ok(Answer::reading(totals.objects, totals))
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
     }

@@ -15,18 +15,23 @@
 //!   FEATURES (lines), because that is this format's natural unit — the
 //!   delft fixture has 1115 features (one per `Building`), vs. CityParquet's
 //!   own 2231 (one row per CityObject, parents AND children). This mirrors
-//!   FlatCityBuf's own feature-level counting.
+//!   FlatCityBuf's own feature-level counting. Read all reads every field
+//!   of every CityObject natively ([`super::cjvisit::visit_object`]) and
+//!   reports the object-level comparable totals.
 //! - [`Scenario::AttrFilter`], [`Scenario::AttrStats`] and
 //!   [`Scenario::IdLookup`] instead iterate over CityOBJECTS — flattening
 //!   every feature's `CityObjects` map (parents AND children) — so their
 //!   `result_count` matches CityParquet's own object-level count EXACTLY on
 //!   the same data (delft: `object_type == "BuildingPart"` -> 1116;
-//!   `oorspronkelijkbouwjaar` numeric -> 1115). This is what makes these
-//!   three scenarios meaningfully comparable across formats at all.
-//! - [`Scenario::BBoxQuery`] is feature-level: each feature's bbox is the
-//!   min/max over ALL of its (feature-local, transform-encoded) vertices,
-//!   decoded via the stream header's `transform` — i.e. the union of every
-//!   CityObject in that feature, not tested per-object.
+//!   `oorspronkelijkbouwjaar` numeric -> 1115). The attribute filter returns
+//!   the matching identifiers; the identifier lookup reads every field of
+//!   the object it finds and stops at that feature.
+//! - [`Scenario::BBoxQuery`] is CityObject-level too: an object's box is the
+//!   min/max over every vertex of its `children` subtree (the feature
+//!   carries the whole subtree), decoded via the stream header's
+//!   `transform`. It returns the matching objects' identifiers and walks
+//!   each one's highest-LoD geometry in place
+//!   ([`super::cjvisit::window_objects`]).
 //!
 //! None of this is silently normalised to match another format; the
 //! milestone's methodology doc is responsible for disclosing it alongside
@@ -42,6 +47,8 @@ use object_store::ObjectStoreExt;
 use object_store::http::HttpBuilder;
 use object_store::path::Path as ObjectPath;
 
+use super::cjvisit::{Vertices, visit_object, window_objects};
+use super::returned::{ComparableTotals, IdDigest, ReturnedGeometry};
 use super::{Answer, AttrAggregates, FormatRunner, IoStats, RunOutcome, Source as TransportSource};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
@@ -161,55 +168,6 @@ pub(super) fn push_numeric(stats: &mut AttrAggregates, co: &CityObject, column: 
     }
 }
 
-/// Total leaf (numeric) values in `value`'s nested-array tree — a
-/// geometry-type-agnostic stand-in for "how much boundary work would
-/// decoding this geometry take", used only to force [`Scenario::FullRead`]
-/// to actually traverse every geometry's `boundaries`, not merely to have
-/// deserialized them into a [`serde_json::Value`] tree. The result itself is
-/// discarded — [`Scenario::FullRead`]'s returned metric stays feature-level,
-/// per this module's own counting-unit ruling above.
-///
-/// `pub(super)` because [`super::citygml`] reuses it: that runner's
-/// [`Scenario::FullRead`] is deliberately the SAME operation as this one's, so
-/// the two rows stay comparable — sharing the traversal is what makes that
-/// true by construction rather than by two copies happening to agree.
-pub(super) fn count_boundary_leaves(value: &serde_json::Value) -> u64 {
-    match value {
-        serde_json::Value::Array(items) => items.iter().map(count_boundary_leaves).sum(),
-        serde_json::Value::Number(_) => 1,
-        _ => 0,
-    }
-}
-
-/// A feature's overall bbox: the min/max over every one of its
-/// (feature-local, integer, transform-encoded) vertices, decoded via the
-/// stream header's `transform` exactly as CityJSON's own
-/// `scale`/`translate` convention specifies. `None` if the feature carries
-/// no vertices at all (never true for a real geometry-bearing feature, but
-/// guards against a division-by-nothing rather than panicking).
-///
-/// `pub(super)` because [`super::citygml`] reuses it: a CityGML feature is
-/// built with feature-local, transform-quantised vertices exactly like a
-/// CityJSONSeq one, so both runners' `bbox-query` windows must mean the same
-/// thing.
-pub(super) fn feature_bbox(
-    feature: &CityJSONFeature,
-    transform: &Transform,
-) -> Option<([f64; 3], [f64; 3])> {
-    let mut min = [f64::INFINITY; 3];
-    let mut max = [f64::NEG_INFINITY; 3];
-    let mut any = false;
-    for vertex in &feature.vertices {
-        any = true;
-        for axis in 0..3 {
-            let real = vertex[axis] as f64 * transform.scale[axis] + transform.translate[axis];
-            min[axis] = min[axis].min(real);
-            max[axis] = max[axis].max(real);
-        }
-    }
-    any.then_some((min, max))
-}
-
 /// Axis-aligned 3D interval-overlap test, identical in spirit to
 /// `cityparquet::reader::box_intersects_query` (that function is
 /// `pub(crate)` inside the `cityparquet` crate, so this runner keeps its own
@@ -243,56 +201,56 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
             Ok(feature_count.into())
         }
         Scenario::FullRead => {
+            let transform = backend.transform().clone();
             let mut feature_count = 0u64;
-            let mut boundary_work = 0u64;
+            let mut totals = ComparableTotals::default();
             for feature in backend.features()? {
                 let feature = feature?;
                 feature_count += 1;
+                let verts = Vertices {
+                    vertices: &feature.vertices,
+                    transform: &transform,
+                };
                 for co in feature.city_objects.values() {
-                    if let Some(geoms) = &co.geometry {
-                        for geom in geoms {
-                            boundary_work += count_boundary_leaves(&geom.boundaries);
-                        }
-                    }
+                    visit_object(co, verts, &mut totals)?;
                 }
             }
-            // `boundary_work` is computed purely to force full geometry
-            // traversal (the "full read" cost); the returned metric
-            // stays feature-level, per this module's own doc comment.
-            // `black_box` rather than `let _ =`, so the traversal cannot be
-            // optimised away as dead code — the same guarantee
-            // [`super::cityjson`]'s own `FullRead` needs for its coordinate
-            // resolution.
-            std::hint::black_box(boundary_work);
-            Ok(feature_count.into())
+            Ok(Answer::reading(feature_count, totals))
         }
         Scenario::BBoxQuery => {
             let query_bbox = *require(&params.bbox, "bbox", scenario)?;
             let transform = backend.transform().clone();
-            let mut matched = 0u64;
+            let mut ids = IdDigest::default();
+            let mut geometry = ReturnedGeometry::default();
             for feature in backend.features()? {
                 let feature = feature?;
-                if let Some((min, max)) = feature_bbox(&feature, &transform)
-                    && intersects(min, max, &query_bbox)
-                {
-                    matched += 1;
-                }
+                let verts = Vertices {
+                    vertices: &feature.vertices,
+                    transform: &transform,
+                };
+                window_objects(
+                    &feature.city_objects,
+                    verts,
+                    &query_bbox,
+                    &mut ids,
+                    &mut geometry,
+                )?;
             }
-            Ok(matched.into())
+            Ok(Answer::returning(ids, Some(geometry)))
         }
         Scenario::AttrFilter => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
             let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-            let mut matched = 0u64;
+            let mut ids = IdDigest::default();
             for feature in backend.features()? {
                 let feature = feature?;
-                for co in feature.city_objects.values() {
+                for (id, co) in &feature.city_objects {
                     if matches_predicate(column_value(co, column).as_ref(), pred) {
-                        matched += 1;
+                        ids.push(id);
                     }
                 }
             }
-            Ok(matched.into())
+            Ok(Answer::returning(ids, None))
         }
         Scenario::AttrStats => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
@@ -310,13 +268,20 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
         }
         Scenario::IdLookup => {
             let id = require(&params.target_id, "target-id", scenario)?;
+            let transform = backend.transform().clone();
+            let mut totals = ComparableTotals::default();
             for feature in backend.features()? {
                 let feature = feature?;
-                if feature.city_objects.contains_key(id) {
-                    return Ok(1u64.into());
+                if let Some(co) = feature.city_objects.get(id) {
+                    let verts = Vertices {
+                        vertices: &feature.vertices,
+                        transform: &transform,
+                    };
+                    visit_object(co, verts, &mut totals)?;
+                    return Ok(Answer::reading(1, totals));
                 }
             }
-            Ok(0u64.into())
+            Ok(Answer::reading(0, totals))
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
     }

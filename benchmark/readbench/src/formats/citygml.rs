@@ -49,7 +49,7 @@
 //! This runner's grain is [`super::cityjsonseq`]'s, exactly, so the two rows
 //! are directly comparable:
 //!
-//! - [`Scenario::Count`], [`Scenario::FullRead`] and [`Scenario::BBoxQuery`]
+//! - [`Scenario::Count`] and [`Scenario::FullRead`]
 //!   are **member-level**: they count top-level `cityObjectMember`s, one per
 //!   1st-level CityObject. A `bldg:BuildingPart` or a
 //!   `bldg:BuildingInstallation` is NOT counted in its own right here — it is
@@ -58,7 +58,10 @@
 //! - [`Scenario::AttrFilter`], [`Scenario::AttrStats`] and
 //!   [`Scenario::IdLookup`] are **CityObject-level**: they flatten every
 //!   feature's `CityObjects` map, so those nested parts and installations DO
-//!   count. On `railway_lod3_fragment.gml` that is 4 vs. 6 — both honest
+//!   count. [`Scenario::BBoxQuery`] is CityObject-level as well: an object's
+//!   box is the min/max over every vertex of its `children` subtree, and the
+//!   window returns the matching objects' identifiers and walks each one's
+//!   highest-LoD geometry in place ([`super::cjvisit::window_objects`]). On `railway_lod3_fragment.gml` that is 4 vs. 6 — both honest
 //!   answers to different questions, and asserted rather than merely claimed
 //!   in `tests/citygml_runner.rs`.
 //! - Those three scenarios reuse [`super::cityjsonseq`]'s own attribute helpers
@@ -66,14 +69,15 @@
 //!   name and an `--attr-eq` predicate mean by construction rather than by
 //!   coincidence.
 //! - [`Scenario::FullRead`] is the SAME operation as
-//!   [`super::cityjsonseq`]'s: parse every feature, then walk every geometry's
-//!   `boundaries` index tree. It costs more here only because the parse itself
-//!   costs more — a CityGML parse must additionally decode every `gml:pos` /
-//!   `gml:posList` coordinate, resolve every `xlink:href` surface reference,
-//!   and rebuild a feature-local vertex pool, none of which a JSON reader
-//!   does. The boundary walk's own tally is discarded, so it is wrapped in
-//!   [`std::hint::black_box`]: "full read genuinely touches every boundary"
-//!   then holds by construction rather than by the optimiser's current mood.
+//!   [`super::cityjsonseq`]'s: parse every feature, then read every field of
+//!   every CityObject natively ([`super::cjvisit::visit_object`]): every
+//!   coordinate resolved, every ring, every semantic reference and surface
+//!   object, every attribute value. It costs more here only because the
+//!   parse itself costs more — a CityGML parse must additionally decode every
+//!   `gml:pos` / `gml:posList` coordinate, resolve every `xlink:href` surface
+//!   reference, and rebuild a feature-local vertex pool, none of which a JSON
+//!   reader does. The identifier lookup reads every field of the object it
+//!   finds the same way, and stops at that member.
 //! - **Every member must be of a type the reader maps, or the run fails.** The
 //!   reader streams `bldg:Building` plus the 1st-level non-building types it
 //!   supports (WaterBody, LandUse, CityFurniture, SolitaryVegetationObject,
@@ -101,10 +105,9 @@ use object_store::ObjectStoreExt;
 use object_store::http::HttpBuilder;
 use object_store::path::Path as ObjectPath;
 
-use super::cityjsonseq::{
-    column_value, count_boundary_leaves, feature_bbox, intersects, matches_predicate, push_numeric,
-    require,
-};
+use super::cityjsonseq::{column_value, matches_predicate, push_numeric, require};
+use super::cjvisit::{Vertices, visit_object, window_objects};
+use super::returned::{ComparableTotals, IdDigest, ReturnedGeometry};
 use super::{Answer, AttrAggregates, FormatRunner, IoStats, RunOutcome, Source as TransportSource};
 use crate::scenario::{QueryParams, Scenario};
 
@@ -288,55 +291,51 @@ fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Res
     match scenario {
         Scenario::Count => stream_members(doc, |_| Ok(())).map(Answer::from),
         Scenario::FullRead => {
-            let mut boundary_work = 0u64;
+            let mut totals = ComparableTotals::default();
             let members = stream_members(doc, |feature| {
+                let verts = Vertices {
+                    vertices: &feature.vertices,
+                    transform: &doc.transform,
+                };
                 for co in feature.city_objects.values() {
-                    if let Some(geoms) = &co.geometry {
-                        for geom in geoms {
-                            boundary_work += count_boundary_leaves(&geom.boundaries);
-                        }
-                    }
+                    visit_object(co, verts, &mut totals)?;
                 }
                 Ok(())
             })?;
-            // `boundary_work` is computed purely to force the full geometry
-            // traversal; the returned metric stays member-level per this
-            // module's own counting-grain ruling. `black_box` rather than
-            // `let _ =`, so the walk cannot be optimised away as dead code.
-            std::hint::black_box(boundary_work);
-            Ok(members.into())
+            Ok(Answer::reading(members, totals))
         }
         Scenario::BBoxQuery => {
             let query_bbox = *require(&params.bbox, "bbox", scenario)?;
-            let mut matched = 0u64;
+            let mut ids = IdDigest::default();
+            let mut geometry = ReturnedGeometry::default();
             stream_members(doc, |feature| {
-                // A member carrying no vertices at all (e.g. a
-                // `grp:CityObjectGroup`, or an object whose only geometry is an
-                // implicit representation the reader does not expand) has no
-                // bbox and is honestly excluded rather than counted as
-                // intersecting everything.
-                if let Some((min, max)) = feature_bbox(&feature, &doc.transform)
-                    && intersects(min, max, &query_bbox)
-                {
-                    matched += 1;
-                }
-                Ok(())
+                let verts = Vertices {
+                    vertices: &feature.vertices,
+                    transform: &doc.transform,
+                };
+                window_objects(
+                    &feature.city_objects,
+                    verts,
+                    &query_bbox,
+                    &mut ids,
+                    &mut geometry,
+                )
             })?;
-            Ok(matched.into())
+            Ok(Answer::returning(ids, Some(geometry)))
         }
         Scenario::AttrFilter => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
             let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-            let mut matched = 0u64;
+            let mut ids = IdDigest::default();
             stream_members(doc, |feature| {
-                for co in feature.city_objects.values() {
+                for (id, co) in &feature.city_objects {
                     if matches_predicate(column_value(co, column).as_ref(), pred) {
-                        matched += 1;
+                        ids.push(id);
                     }
                 }
                 Ok(())
             })?;
-            Ok(matched.into())
+            Ok(Answer::returning(ids, None))
         }
         Scenario::AttrStats => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
@@ -356,9 +355,19 @@ fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Res
         // [`stream_members_until`] for where the skipped-member guard goes.
         Scenario::IdLookup => {
             let id = require(&params.target_id, "target-id", scenario)?;
-            let found =
-                stream_members_until(doc, |feature| Ok(feature.city_objects.contains_key(id)))?;
-            Ok((found as u64).into())
+            let mut totals = ComparableTotals::default();
+            let found = stream_members_until(doc, |feature| {
+                let Some(co) = feature.city_objects.get(id) else {
+                    return Ok(false);
+                };
+                let verts = Vertices {
+                    vertices: &feature.vertices,
+                    transform: &doc.transform,
+                };
+                visit_object(co, verts, &mut totals)?;
+                Ok(true)
+            })?;
+            Ok(Answer::reading(found as u64, totals))
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
     }
