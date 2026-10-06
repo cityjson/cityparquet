@@ -251,7 +251,7 @@ def test_run_passes_the_stored_srid_into_sql_for(tmp_path, monkeypatch):
     system.run("bbox-query", PARAMS, repeat=1,
                window=PARAMS.window("bbox-25pct"))
 
-    assert captured_args["args"][-1] == 28992
+    assert captured_args["args"][4] == 28992
 
 
 def test_run_raises_scenario_unavailable_for_attr_stats_without_a_numeric_column(monkeypatch):

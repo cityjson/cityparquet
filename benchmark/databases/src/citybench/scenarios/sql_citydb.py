@@ -289,6 +289,28 @@ def resolve_datatype_id(conn, typename: str = DOUBLE_TYPENAME) -> int:
     return int(row[0])
 
 
+def exact_box_predicate(column: str) -> str:
+    """The window test on a stored box: the GiST probe, then the exact one.
+
+    `&&` is the index-cooperating PostGIS form, but it compares the float4
+    box PostGIS caches in every serialised geometry, so it admits objects
+    lying up to one float4 step outside the window (about 1 m at EPSG:6697
+    longitudes, 1.6 cm at EPSG:7415 magnitudes). The recheck compares the
+    box's double-precision bounds, edges included, which is the format
+    benchmark's definition. Arguments: `exact_box_args`.
+    """
+    return (
+        f"{column} && ST_MakeEnvelope(%s, %s, %s, %s, %s) "
+        f"AND ST_XMax({column}) >= %s AND ST_XMin({column}) <= %s "
+        f"AND ST_YMax({column}) >= %s AND ST_YMin({column}) <= %s"
+    )
+
+
+def exact_box_args(win: BBox, srid: int) -> tuple:
+    return (win.minx, win.miny, win.maxx, win.maxy, srid,
+            win.minx, win.maxx, win.miny, win.maxy)
+
+
 def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
             srid: int = 0, *,
             probe: IdProbe | None = None,
@@ -336,9 +358,9 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
             "LEFT JOIN LATERAL (SELECT og.geometry "
             f"FROM ({_object_geometries(cityobject_class_ids)}) og "
             "ORDER BY og.lod DESC NULLS LAST LIMIT 1) g ON true "
-            f"WHERE {_static_predicate(cityobject_class_ids)} AND f.{CAPTURED_ENVELOPE_COLUMN} "
-            "&& ST_MakeEnvelope(%s, %s, %s, %s, %s)",
-            (win.minx, win.miny, win.maxx, win.maxy, srid),
+            f"WHERE {_static_predicate(cityobject_class_ids)} AND "
+            f"{exact_box_predicate(f'f.{CAPTURED_ENVELOPE_COLUMN}')}",
+            exact_box_args(win, srid),
         )
 
     if scenario == "attr-filter":

@@ -19,6 +19,7 @@ import re
 from citybench.config import BBox, BboxWindow, IdProbe, Params
 from citybench.scenarios import registry
 from citybench.scenarios.registry import ScenarioUnavailable
+from citybench.scenarios.sql_citydb import exact_box_args, exact_box_predicate
 
 SCHEMA = "cjdb"
 SRID_PLACEHOLDER = 0  # replaced by the adapter with the dataset's real SRID
@@ -52,8 +53,8 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
             "SELECT object_id, (SELECT g FROM jsonb_array_elements(geometry) g "
             "ORDER BY string_to_array(g ->> 'lod', '.')::int[] DESC LIMIT 1) AS geometry "
             f"FROM {t} "
-            "WHERE ground_geometry && ST_MakeEnvelope(%s, %s, %s, %s, %s)",
-            (win.minx, win.miny, win.maxx, win.maxy, srid),
+            f"WHERE {exact_box_predicate('ground_geometry')}",
+            exact_box_args(win, srid),
         )
 
     if scenario == "attr-filter":

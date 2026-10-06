@@ -113,7 +113,7 @@ def test_bbox_query_uses_postgis_operator_for_index_use():
                         cityobject_class_ids=IDS)
     assert "&&" in sql
     assert "envelope" in sql
-    assert len(args) == 5  # four ordinates plus the SRID
+    assert len(args) == 9  # the probe's four ordinates and SRID, then the recheck's four
 
 
 def test_attr_filter_joins_property_on_name_and_val_string():
@@ -286,14 +286,15 @@ def test_bbox_query_parameterises_the_window_and_srid_in_order():
         "bbox-query", params, window, 7415, cityobject_class_ids=IDS,
     )
     w = window.window
-    assert args == (w.minx, w.miny, w.maxx, w.maxy, 7415)
+    assert args == (w.minx, w.miny, w.maxx, w.maxy, 7415,
+                    w.minx, w.maxx, w.miny, w.maxy)
 
 
 def test_bbox_query_defaults_to_zero_srid_when_none_is_given():
     params = _params()
     _, args = sql_for("bbox-query", params, _window(params),
                       cityobject_class_ids=IDS)
-    assert args[-1] == 0
+    assert args[4] == 0
 
 
 def test_attr_filter_parameterises_rather_than_interpolating_the_value():
@@ -562,3 +563,16 @@ def test_attribute_index_ddl_adds_name_plus_numeric_value_index():
 def test_attribute_index_ddl_empty_without_a_numeric_predicate():
     p = make_params(attr_range=None)
     assert attribute_index_ddl(p) == []
+
+
+def test_bbox_query_rechecks_the_probe_in_double_precision():
+    """`&&` compares PostGIS's cached float4 box: at EPSG:6697 magnitudes
+    one float4 step is about a metre, so the index probe alone admitted
+    objects outside the window (Tokyo: +14 of 499 on 3DCityDB). The exact,
+    edge-inclusive test on the box's double-precision bounds follows it."""
+    params = _params()
+    sql, args = sql_for("bbox-query", params, _window(params), cityobject_class_ids=IDS)
+    assert "envelope && ST_MakeEnvelope" in sql
+    for bound in ("ST_XMax(f.envelope) >= %s", "ST_XMin(f.envelope) <= %s",
+                  "ST_YMax(f.envelope) >= %s", "ST_YMin(f.envelope) <= %s"):
+        assert bound in sql

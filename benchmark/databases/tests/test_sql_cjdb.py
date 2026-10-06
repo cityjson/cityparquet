@@ -33,7 +33,7 @@ def test_bbox_query_uses_postgis_operator_for_index_use():
     # raw geometry without && would not.
     assert "&&" in sql
     assert "ground_geometry" in sql
-    assert len(args) == 5  # four ordinates plus the SRID
+    assert len(args) == 9  # the probe's four ordinates and SRID, then the recheck's four
 
 
 def test_unknown_scenario_raises():
@@ -69,13 +69,14 @@ def test_bbox_query_parameterises_the_window_and_srid_in_order():
     window = _window(params)
     sql, args = sql_for("bbox-query", params, window, srid=7415)
     w = window.window
-    assert args == (w.minx, w.miny, w.maxx, w.maxy, 7415)
+    assert args == (w.minx, w.miny, w.maxx, w.maxy, 7415,
+                    w.minx, w.maxx, w.miny, w.maxy)
 
 
 def test_bbox_query_defaults_to_the_srid_placeholder_when_none_is_given():
     params = _params()
     _, args = sql_for("bbox-query", params, _window(params))
-    assert args[-1] == 0  # SRID_PLACEHOLDER, unmistakably not a real SRID
+    assert args[4] == 0  # SRID_PLACEHOLDER, unmistakably not a real SRID
 
 
 def test_attr_filter_reaches_the_attribute_through_the_jsonb_document():
@@ -326,3 +327,16 @@ def test_attribute_index_names_are_safe_identifiers():
         name = d.split("IF NOT EXISTS ")[1].split(" ")[0]
         assert name.replace("_", "").isalnum() and len(name) <= 63
     assert any("'Weird-Col Name''x'" in d for d in ddl)
+
+
+def test_bbox_query_rechecks_the_probe_in_double_precision():
+    """`&&` compares PostGIS's cached float4 box: at EPSG:6697 magnitudes
+    one float4 step is about a metre, so the index probe alone admitted
+    objects outside the window (Tokyo: +14 of 499 on 3DCityDB). The exact,
+    edge-inclusive test on the box's double-precision bounds follows it."""
+    params = _params()
+    sql, args = sql_for("bbox-query", params, _window(params))
+    assert "ground_geometry && ST_MakeEnvelope" in sql
+    for bound in ("ST_XMax(ground_geometry) >= %s", "ST_XMin(ground_geometry) <= %s",
+                  "ST_YMax(ground_geometry) >= %s", "ST_YMin(ground_geometry) <= %s"):
+        assert bound in sql
