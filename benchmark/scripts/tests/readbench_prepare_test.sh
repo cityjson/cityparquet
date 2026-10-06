@@ -1699,7 +1699,7 @@ case_a_citygml_input_is_not_normalised() {
   local name="a CityGML input is not normalised"
   local dir
   dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
-  RUN_PREPARE_LOD_NORMALISE=/usr/bin/false run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
+  RUN_PREPARE_LOD_NORMALISE="$(command -v false)" run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
   if [[ $LAST_RC -ne 0 ]] || log_mentions "normalise tiny"; then
     fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
     return

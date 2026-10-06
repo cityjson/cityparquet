@@ -139,9 +139,10 @@
 # EXTERNAL TOOLS ARE GUARDED PER FORMAT, not up front: `fcb` is only required
 # when `flatcitybuf` was requested, `citygml-tools`/`cjseq`/`jq` only when the
 # request actually needs that hop of the chain, and the release CityParquet
-# CLI is only built when a CityParquet artefact was requested. A missing `fcb`
-# used to kill every run of this script, including runs that never asked for
-# FlatCityBuf.
+# CLI is only built when a CityParquet artefact was requested. The one
+# exception is the corpus normalisation, which every CityJSON/CityJSONSeq input
+# goes through whatever `--formats` asks for: it needs `cargo` to build
+# `lod-normalise`, unless `LOD_NORMALISE` names a prebuilt one.
 #
 # citygml-tools comes from `just fetch-tools` (benchmark/scripts/fetch_tools.sh, which
 # owns the pinned version and its sha256) and is resolved via benchmark/formats/tools/,
