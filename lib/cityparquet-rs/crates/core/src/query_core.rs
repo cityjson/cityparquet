@@ -24,36 +24,6 @@ use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 
 use crate::decode::{DecodedObject, decode_batch};
 use crate::reader::{box_intersects_query, row_group_intersects};
-use crate::wkb_read::DecodedKind;
-
-/// The result of a [`crate::query::full_read`]: the total feature (row) count
-/// and a stable geometry-work metric (`boundary_count`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FullReadResult {
-    pub feature_count: u64,
-    /// Total number of decoded surfaces/faces across every non-null
-    /// geometry cell read (`DecodedKind::MultiPolygon`/`PolyhedralSurface`'s
-    /// outer `Vec` length, summed, recursing into
-    /// `DecodedKind::GeometryCollection` members). `MultiPoint`/
-    /// `MultiLineString` geometries contribute 0 — they have no surfaces.
-    /// Deliberately simple and deterministic: this is the metric later
-    /// cross-format ("full read forces materialisation") comparisons key
-    /// off, so its definition must be stable across formats, not a
-    /// CityParquet-specific detail.
-    pub boundary_count: u64,
-}
-
-/// Total surface/face count in `kind`, recursing into
-/// [`DecodedKind::GeometryCollection`] members.
-fn surface_count(kind: &DecodedKind) -> u64 {
-    match kind {
-        DecodedKind::MultiPoint(_) | DecodedKind::MultiLineString(_) => 0,
-        DecodedKind::MultiPolygon(surfaces) | DecodedKind::PolyhedralSurface(surfaces) => {
-            surfaces.len() as u64
-        }
-        DecodedKind::GeometryCollection(members) => members.iter().map(surface_count).sum(),
-    }
-}
 
 /// The result of an exact [`crate::query::bbox_query`]: the matching object
 /// `id`s, plus how many of the table's row groups were pruned away vs.
@@ -636,23 +606,6 @@ pub(crate) fn bbox_row_group_counts(
     (total, touched)
 }
 
-/// Fold one (already restamped, on the async path) batch into a running
-/// [`FullReadResult`]: row count plus decoded surface/face count.
-pub(crate) fn accumulate_full_read(
-    acc: &mut FullReadResult,
-    batch: &RecordBatch,
-    meta: &CityMetadata,
-) -> Result<()> {
-    acc.feature_count += batch.num_rows() as u64;
-    let decoded = decode_batch(batch, meta)?;
-    for object in &decoded {
-        for (_, geometry, _) in &object.geometries {
-            acc.boundary_count += surface_count(&geometry.kind);
-        }
-    }
-    Ok(())
-}
-
 /// Exact row-level bbox filter over one `id`/`bbox`-projected batch,
 /// appending matching ids.
 pub(crate) fn collect_bbox_ids(
@@ -734,12 +687,6 @@ pub(crate) fn first_decoded_object(
         return Ok(None);
     }
     Ok(decode_batch(batch, meta)?.into_iter().next())
-}
-
-/// Non-null cells in a single-column projected batch.
-pub(crate) fn non_null_count(batch: &RecordBatch) -> u64 {
-    let array = batch.column(0);
-    (array.len() - array.null_count()) as u64
 }
 
 /// The `attr_stats` aggregation state: the statistics min/max fast path is

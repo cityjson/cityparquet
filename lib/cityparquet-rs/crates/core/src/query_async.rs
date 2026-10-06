@@ -36,8 +36,8 @@ use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 
 use crate::decode::DecodedObject;
 use crate::query::{
-    AttrPredicate, AttrStats, BBoxGeometryResult, BBoxQueryResult, BloomPrune, FullReadResult,
-    LookupStats, VisitTotals,
+    AttrPredicate, AttrStats, BBoxGeometryResult, BBoxQueryResult, BloomPrune, LookupStats,
+    VisitTotals,
 };
 use crate::query_core;
 use crate::reader::CityParquetReaderBuilder;
@@ -51,7 +51,7 @@ use parquet::file::metadata::ParquetMetaData;
 /// Re-stamps `batch` with `schema` (field metadata included) — the async
 /// analogue of [`crate::reader::CityParquetRecordBatchReader`]'s per-batch
 /// rewrap, inlined here rather than as its own stream-wrapper type since
-/// only the full-row readers ([`full_read_async`] and the identifier lookups)
+/// only the full-row readers (the identifier lookups)
 /// need it.
 fn restamp(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
     RecordBatch::try_new(SchemaRef::clone(schema), batch.columns().to_vec())
@@ -68,37 +68,6 @@ pub async fn count_async(store: Arc<dyn ObjectStore>, path: &ObjectPath) -> Resu
         .await
         .map_err(CityParquetError::parquet_from)?;
     Ok(builder.metadata().file_metadata().num_rows() as u64)
-}
-
-/// The async mirror of [`crate::query::full_read`]: scans every row group
-/// (via the stream, sequential — no `.with_row_groups` restriction),
-/// decoding every row's geometry. `meta` is the caller's already-resolved
-/// [`CityMetadata`] (callers typically get it once via
-/// [`CityParquetReaderBuilder::cityparquet_metadata`] on their own builder
-/// before consuming it, mirroring the sync path's own two-open pattern in
-/// `formats::cityparquet::open_metadata`).
-pub async fn full_read_async(
-    store: Arc<dyn ObjectStore>,
-    path: &ObjectPath,
-    meta: &CityMetadata,
-) -> Result<FullReadResult> {
-    let reader = ParquetObjectReader::new(store, path.clone());
-    let builder = ParquetRecordBatchStreamBuilder::new(reader)
-        .await
-        .map_err(CityParquetError::parquet_from)?;
-    let schema = builder.cityparquet_arrow_schema()?;
-    let mut stream = builder.build().map_err(CityParquetError::parquet_from)?;
-
-    let mut acc = FullReadResult::default();
-    while let Some(batch) = stream
-        .try_next()
-        .await
-        .map_err(CityParquetError::parquet_from)?
-    {
-        let batch = restamp(batch, &schema)?;
-        query_core::accumulate_full_read(&mut acc, &batch, meta)?;
-    }
-    Ok(acc)
 }
 
 /// The async mirror of [`crate::query::bbox_query`]. Row-group pruning
@@ -627,37 +596,6 @@ pub async fn feature_lookup_async_with_stats(
     Ok((objects, stats))
 }
 
-/// The async mirror of [`crate::query::project_column`]: a single-column
-/// projected scan across every row, counting non-null values.
-pub async fn project_column_async(
-    store: Arc<dyn ObjectStore>,
-    path: &ObjectPath,
-    column: &str,
-) -> Result<u64> {
-    let reader = ParquetObjectReader::new(store, path.clone());
-    let builder = ParquetRecordBatchStreamBuilder::new(reader)
-        .await
-        .map_err(CityParquetError::parquet_from)?;
-
-    query_core::require_column(builder.schema(), column)?;
-
-    let projection = query_core::root_mask(builder.parquet_schema(), column)?;
-    let mut stream = builder
-        .with_projection(projection)
-        .build()
-        .map_err(CityParquetError::parquet_from)?;
-
-    let mut count = 0u64;
-    while let Some(batch) = stream
-        .try_next()
-        .await
-        .map_err(CityParquetError::parquet_from)?
-    {
-        count += query_core::non_null_count(&batch);
-    }
-    Ok(count)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -972,25 +910,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_read_async_matches_sync_full_read_on_a_real_fixture() {
-        let dir = tempfile::tempdir().unwrap();
-        let (store, path) = delft_table(dir.path()).await;
-        let table_file = dir.path().join(path.as_ref());
-
-        let meta = {
-            let file = std::fs::File::open(&table_file).unwrap();
-            let builder =
-                parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
-                    .unwrap();
-            crate::reader::CityParquetReaderBuilder::cityparquet_metadata(&builder).unwrap()
-        };
-        let sync_result = crate::query::full_read(&table_file, &meta).unwrap();
-        let async_result = full_read_async(store, &path, &meta).await.unwrap();
-        assert_eq!(async_result.feature_count, sync_result.feature_count);
-        assert_eq!(async_result.boundary_count, sync_result.boundary_count);
-    }
-
-    #[tokio::test]
     async fn bbox_query_async_matches_sync_bbox_query_on_a_real_fixture() {
         let dir = tempfile::tempdir().unwrap();
         let (store, path) = delft_table(dir.path()).await;
@@ -1087,20 +1006,6 @@ mod tests {
         assert!(sync_result.is_some());
         assert!(async_result.is_some());
         assert_eq!(sync_result.unwrap().id, async_result.unwrap().id);
-    }
-
-    #[tokio::test]
-    async fn project_column_async_matches_sync_project_column_on_a_real_fixture() {
-        let dir = tempfile::tempdir().unwrap();
-        let (store, path) = delft_table(dir.path()).await;
-        let table_file = dir.path().join(path.as_ref());
-
-        let sync_count = crate::query::project_column(&table_file, "object_type").unwrap();
-        let async_count = project_column_async(store, &path, "object_type")
-            .await
-            .unwrap();
-        assert_eq!(async_count, sync_count);
-        assert_eq!(async_count, 2231);
     }
 
     #[tokio::test]

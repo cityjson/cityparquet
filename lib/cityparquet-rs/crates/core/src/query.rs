@@ -1,12 +1,9 @@
-//! Read/query primitives over a CityParquet package: the first primitives
-//! of the cross-format read-benchmark milestone (later tasks add
-//! attribute/id queries on top of these).
+//! Read/query primitives over a CityParquet package.
 //!
 //! [`count`] is O(1) — it reads the row count straight out of the Parquet
-//! file metadata, no row scan. [`full_read`] is the opposite extreme: a
-//! single-threaded scan of every row group that decodes every row's WKB
-//! geometry (via [`crate::decode`]/[`crate::wkb_read`]), forcing full
-//! materialisation — the metric later cross-format comparisons key off.
+//! file metadata, no row scan. [`full_read_visit`] is the opposite extreme: a
+//! single-threaded scan of every row group that visits every object natively
+//! (every WKB vertex, semantic reference and attribute value, read in place).
 //! [`bbox_query`] sits in between: it prunes row groups via
 //! [`crate::reader::CityParquetReaderBuilder::with_bbox_row_groups`] (a
 //! superset — never wrong, but may over-select) and then applies a row-level
@@ -46,31 +43,9 @@ use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 
 pub use crate::query_core::{
     AttrPredicate, AttrStats, BBoxGeometryResult, BBoxQueryResult, BloomPrune, BloomTarget,
-    BloomTargets, FullReadResult, LookupStats, bloom_targets,
+    BloomTargets, LookupStats, bloom_targets,
 };
 pub use crate::visit::VisitTotals;
-
-/// Opens `table_path`, scans every row group single-threaded (the
-/// `parquet` crate's synchronous [`ParquetRecordBatchReaderBuilder`] path
-/// never spreads batch iteration across a thread pool, unlike its async
-/// counterpart), and decodes each row's WKB geometry, accumulating
-/// [`FullReadResult::feature_count`] (total rows) and
-/// [`FullReadResult::boundary_count`] (total decoded surfaces/faces).
-/// Forces full geometry materialisation.
-pub fn full_read(table_path: &Path, meta: &CityMetadata) -> Result<FullReadResult> {
-    let file = File::open(table_path)?;
-    let builder =
-        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
-    let schema = builder.cityparquet_arrow_schema()?;
-    let parquet_reader = builder.build().map_err(CityParquetError::parquet_from)?;
-    let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
-
-    let mut acc = FullReadResult::default();
-    for batch in reader {
-        query_core::accumulate_full_read(&mut acc, &batch?, meta)?;
-    }
-    Ok(acc)
-}
 
 /// Scans every row group of `table_path` single-threaded and visits every
 /// object natively ([`crate::visit::visit_batch`]): every WKB vertex, every
@@ -549,30 +524,4 @@ pub fn package_feature_lookup_with_stats(
         stats += table_stats;
     }
     Ok((objects, stats))
-}
-
-/// Projected single-column read of `column` across every row, via a
-/// [`ProjectionMask`] restricting the scan to that column alone (nothing
-/// else in the table is ever decoded — the columnar-projection primitive).
-/// Returns the count of NON-NULL values in `column`.
-pub fn project_column(table_path: &Path, column: &str) -> Result<u64> {
-    let file = File::open(table_path)?;
-    let builder =
-        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
-
-    // Fail fast with a clear "column not found" error before `builder` is
-    // consumed by `with_projection` below.
-    query_core::require_column(builder.schema(), column)?;
-
-    let projection = query_core::root_mask(builder.parquet_schema(), column)?;
-    let reader = builder
-        .with_projection(projection)
-        .build()
-        .map_err(CityParquetError::parquet_from)?;
-
-    let mut count = 0u64;
-    for batch in reader {
-        count += query_core::non_null_count(&batch.map_err(CityParquetError::parquet_from)?);
-    }
-    Ok(count)
 }
