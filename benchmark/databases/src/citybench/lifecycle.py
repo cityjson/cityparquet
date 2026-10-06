@@ -26,6 +26,14 @@ SHM_SIZE = "2g"
 DEFAULT_TMPDIR = Path("/data2/hideba/tmp")
 
 
+def runs_root() -> Path:
+    """The directory every data root must lie below: ``benchmark/runs/``,
+    or ``CITYBENCH_RUNS_ROOT`` when set (a scratch run outside the
+    repository)."""
+    override = os.environ.get("CITYBENCH_RUNS_ROOT")
+    return Path(override).resolve() if override else ROOT
+
+
 def benchmark_temp_directory() -> Path:
     """Return this process's benchmark temporary directory.
 
@@ -96,8 +104,9 @@ def isolated_databases(data_root: Path, srid: int, *, container_args: list[str] 
     ``--cpuset-cpus``/``--cpuset-mems`` flags, when the cpuset controller is
     delegated) are added to each container ``run``."""
     root = data_root.resolve()
-    if root != ROOT and ROOT not in root.parents:
-        raise ValueError(f"data root must be below {ROOT}")
+    allowed = runs_root()
+    if root != allowed and allowed not in root.parents:
+        raise ValueError(f"data root must be below {allowed}")
     run_id = uuid.uuid4().hex
     run_root = root / "databases" / run_id
     run_root.mkdir(parents=True)

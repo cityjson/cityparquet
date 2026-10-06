@@ -93,3 +93,12 @@ def test_container_args_applied_is_reported(tmp_path, monkeypatch):
     monkeypatch.setattr(lifecycle.subprocess, 'run', lambda args, **kwargs: None)
     with lifecycle.isolated_databases(tmp_path, 7415, container_args=["--cpuset-mems=0"]) as context:
         assert context["container_args_applied"] is True
+
+
+def test_runs_root_override_admits_a_data_root_outside_the_repository(tmp_path, monkeypatch):
+    """CITYBENCH_RUNS_ROOT moves the permitted root, so a scratch run never
+    writes under the repository's own benchmark/runs/."""
+    monkeypatch.setenv("CITYBENCH_RUNS_ROOT", str(tmp_path))
+    assert lifecycle.runs_root() == tmp_path.resolve()
+    monkeypatch.delenv("CITYBENCH_RUNS_ROOT")
+    assert lifecycle.runs_root() == lifecycle.ROOT
