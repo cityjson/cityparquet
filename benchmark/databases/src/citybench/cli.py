@@ -374,6 +374,7 @@ def cmd_bench(args) -> int:
                 pg_settings=pg_settings,
                 patches=_patches(systems),
                 srid=_srids(systems),
+                servers=_servers(systems),
                 execution=_execution(resolved, args.repeat),
                 isolation=isolation_record,
                 count_check={
@@ -580,6 +581,23 @@ def _patches(systems: list) -> dict[str, dict[str, str]]:
 
         patches["cjdb"] = patch_disclosure()
     return patches
+
+
+def _servers(systems: list) -> dict:
+    """Live provenance of the database servers and the images behind them:
+    each PostgreSQL system's `provenance()` (server, PostGIS, and for
+    3DCityDB the schema version and citydb-tool's `--version`), plus the
+    container engine's digest of every image the run used."""
+    out: dict = {s.tag: s.provenance() for s in systems if hasattr(s, "provenance")}
+    if out:
+        from citybench.lifecycle import CJDB_IMAGE, CITYDB_IMAGE
+        from citybench.systems.citydb import _IMAGE as CITYDB_TOOL_IMAGE
+        engine = container_engine.active()
+        out["images"] = {
+            image: engine.image_digest(image) or "not reported by the engine"
+            for image in (CJDB_IMAGE, CITYDB_IMAGE, CITYDB_TOOL_IMAGE)
+        }
+    return out
 
 
 def _srids(systems: list) -> dict[str, int]:

@@ -13,9 +13,11 @@ The container runtime is rootless **Podman**.
 
 ## Purpose and claim
 
-The harness measures **steady-state performance** — wall-clock time, peak
-resident memory of the executing process and, for PostgreSQL read
-scenarios, server-reported execution time — against a dataset already
+The harness measures **steady-state performance** — client-side
+wall-clock time (`time_*`: from the harness issuing the query until it has
+every row), peak resident memory of the executing process and, for
+PostgreSQL read scenarios, the server-reported execution time recorded
+separately (`server_time_*`, from `EXPLAIN (ANALYZE)`) — against a dataset already
 loaded into each system. Ten **read** scenarios run under two disclosed
 thread configurations; four **write** scenarios then run once, under
 `threads=single`, reported as the write-tier rows below the reads in the
@@ -502,8 +504,16 @@ in `src/citybench/lifecycle.py` and `docker/compose.yml`:
 different PostgreSQL and PostGIS major version. `docs/cjdb-schema.md` and
 `docs/3dcitydb-v5-schema.md` record `server_version` 16.4 and
 `PostGIS_Version()` `3.4 USE_GEOS=1 USE_PROJ=1 USE_STATS=1` on both servers
-at capture time. The run manifest does not record server or PostGIS
-versions.
+at capture time. Each run reads them again from the live servers: the
+manifest's `servers` block records, per PostgreSQL system, `postgresql`
+(`SHOW server_version`) and `postgis` (`postgis_lib_version()`); for
+3DCityDB also `3dcitydb` (`citydb_pkg.citydb_version()`) and `citydb-tool`
+(the tool image's own `--version`); and under `images` the container
+engine's digest of the two PostgreSQL images and the `citybench/citydb-tool`
+image. `versions` records DuckDB, the DuckDB CityJSON extension build, and
+cjdb's upstream version with a patch marker; `patches.cjdb` records the
+patch file `vendor/cjdb/ground-surfaces-tie.patch` and its SHA-256. The
+container engine and its version are under `isolation.containers.engine`.
 
 ### Tuning and parallelism
 

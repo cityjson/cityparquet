@@ -186,6 +186,9 @@ class CjdbSystem:
             env={**os.environ, "PGPASSWORD": _PASSWORD},
         )
 
+    def provenance(self) -> dict[str, str]:
+        return pg.server_provenance(self._conn)
+
     def ingest(self, dataset: Dataset) -> IngestResult:
         start = time.perf_counter()
         self._import(str(dataset.source), overwrite=True)

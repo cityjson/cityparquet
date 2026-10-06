@@ -119,6 +119,20 @@ class CityDbSystem:
         assert self._conn is not None
         return pg.parallel_settings(self._conn)
 
+    def provenance(self) -> dict[str, str]:
+        out = pg.server_provenance(self._conn)
+        if self._conn is not None:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT version FROM citydb_pkg.citydb_version()")
+                out["3dcitydb"] = str(cur.fetchone()[0])
+        engine = container_engine.active()
+        result = subprocess.run([*engine.run_args(name=None, image=_IMAGE), "--version"],
+                                capture_output=True, text=True)
+        out["citydb-tool"] = next(
+            (line.strip() for line in result.stdout.splitlines()
+             if line.startswith("citydb-tool ")), "not reported")
+        return out
+
     def ingest(self, dataset: Dataset) -> IngestResult:
         self._mount = str(dataset.source.parent.resolve())
         # No schema-creation step: the 3dcitydb-pg image creates the v5

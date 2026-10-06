@@ -135,3 +135,28 @@ def test_only_apple_container_refuses_ownership_changes_on_bind_mounts():
     # entrypoint runs on its data directory.
     assert _engine("container", "darwin").bind_mount_ownership_gap()
     assert _engine("docker", "linux").bind_mount_ownership_gap() is None
+
+
+def test_image_digest_parses_each_engines_inspect_document():
+    apple = '[{"configuration": {"descriptor": {"digest": "sha256:aaa"}}, "id": "aaa"}]'
+    docker = '[{"Id": "sha256:local", "RepoDigests": ["docker.io/postgis/postgis@sha256:bbb"]}]'
+    local_only = '[{"Id": "sha256:local", "RepoDigests": []}]'
+    assert eng.parse_image_digest(apple) == "sha256:aaa"
+    assert eng.parse_image_digest(docker) == "sha256:bbb"
+    assert eng.parse_image_digest(local_only) == "sha256:local"
+    assert eng.parse_image_digest("not json") is None
+
+
+def test_image_digest_asks_each_engine_with_its_own_spelling():
+    seen = []
+
+    def runner(argv):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, '[{"Id": "sha256:x", "RepoDigests": []}]', "")
+
+    for name in ("container", "docker", "podman"):
+        e = eng.Engine(name=name, binary=name, version="1", platform="linux", run_flags=frozenset())
+        assert e.image_digest("img:1", runner=runner) == "sha256:x"
+    assert seen == [["container", "image", "inspect", "img:1"],
+                    ["docker", "image", "inspect", "img:1"],
+                    ["podman", "image", "inspect", "img:1"]]

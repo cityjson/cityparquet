@@ -43,6 +43,20 @@ from citybench.config import SizeReport
 from citybench.stats import container_init_host_pid, host_pid_for_namespace_pid, host_pid_from_engine_top, peak_resident_bytes
 
 
+def server_provenance(conn) -> dict[str, str]:
+    """The live server's PostgreSQL and PostGIS versions; empty without a
+    connection (a system that never connected reports nothing, not a guess)."""
+    if conn is None:
+        return {}
+    out: dict[str, str] = {}
+    for key, sql in (("postgresql", "SHOW server_version"),
+                     ("postgis", "SELECT postgis_lib_version()")):
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            out[key] = str(cur.fetchone()[0])
+    return out
+
+
 def connect(port: int, *, dbname: str = "bench", user: str = "bench",
             password: str = "bench", host: str = "localhost") -> psycopg.Connection:
     conn = psycopg.connect(

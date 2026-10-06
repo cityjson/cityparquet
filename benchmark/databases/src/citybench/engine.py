@@ -164,6 +164,12 @@ class Engine:
             return None
         return parse_container_address(result.stdout)
 
+    def image_digest(self, image: str, runner: Runner = _default_runner) -> str | None:
+        """The local image's content digest, or None when the engine does not
+        report one. Every supported engine spells this ``image inspect``."""
+        result = runner([self.binary, "image", "inspect", image])
+        return parse_image_digest(result.stdout) if result.returncode == 0 else None
+
     def proc_status(self, name: str, pid: int, runner: Runner = _default_runner) -> str | None:
         """``/proc/<pid>/status`` of a container-namespace PID, read through exec."""
         result = runner(self.exec_args(name, "cat", f"/proc/{pid}/status"))
@@ -181,6 +187,28 @@ def parse_container_address(inspect_json: str) -> str | None:
         for match in re.finditer(rf'"{key}": "(\d+\.\d+\.\d+\.\d+)(?:/\d+)?"', text):
             return match.group(1)
     return None
+
+
+def parse_image_digest(inspect_json: str) -> str | None:
+    """The digest in an ``image inspect`` document: the registry digest
+    (Docker/Podman ``RepoDigests``, Apple ``container``'s index descriptor),
+    else the local image id for an image that was built, not pulled."""
+    try:
+        document = json.loads(inspect_json)
+    except ValueError:
+        return None
+    first = document[0] if isinstance(document, list) and document else document
+    if not isinstance(first, dict):
+        return None
+    for repo_digest in first.get("RepoDigests") or ():
+        return repo_digest.rsplit("@", 1)[-1]
+    descriptor = (first.get("configuration") or {}).get("descriptor") or {}
+    if descriptor.get("digest"):
+        return descriptor["digest"]
+    local = first.get("Id") or first.get("id")
+    if not local:
+        return None
+    return local if ":" in local else f"sha256:{local}"
 
 
 def free_host_port() -> int:

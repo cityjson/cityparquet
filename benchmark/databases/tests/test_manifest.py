@@ -204,3 +204,14 @@ def test_memory_measurement_names_working_memory_and_provisioned_limits():
 def test_memory_read_path_defaults_to_not_applied_never_blank():
     m = collect(dataset_name="d", ingest={}, sizes={}, versions={}, pg_settings={})
     assert m["memory_measurement"]["read_path"]["postgresql"].startswith("not applied")
+
+
+def test_servers_carry_live_versions_and_image_digests_verbatim():
+    from citybench import manifest
+    servers = {"cjdb": {"postgresql": "16.4", "postgis": "3.4.3"},
+               "images": {"docker.io/postgis/postgis:16-3.4": "sha256:aaa"}}
+    m = manifest.collect(dataset_name="d", ingest={}, sizes={}, versions={},
+                         pg_settings={}, servers=servers)
+    assert m["servers"] == servers
+    assert manifest.collect(dataset_name="d", ingest={}, sizes={}, versions={},
+                            pg_settings={})["servers"] == {}

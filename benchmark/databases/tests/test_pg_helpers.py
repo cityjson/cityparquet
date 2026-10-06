@@ -179,3 +179,21 @@ def test_extract_count_last_column_reads_the_final_column():
     # attr-stats returns min, max, sum, count.
     assert extract_count([(1.0, 9.0, 20.0, 4)], "last-column") == 4
     assert extract_count([], "last-column") == 0
+
+
+def test_server_provenance_reads_the_live_server_and_postgis_versions():
+    from citybench.systems import pg
+
+    class Cur:
+        def __init__(self): self.sql = None
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, sql): self.sql = sql
+        def fetchone(self):
+            return ("16.4 (Debian)",) if "server_version" in self.sql else ("3.4.3",)
+
+    class Conn:
+        def cursor(self): return Cur()
+
+    assert pg.server_provenance(Conn()) == {"postgresql": "16.4 (Debian)", "postgis": "3.4.3"}
+    assert pg.server_provenance(None) == {}

@@ -81,7 +81,8 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
             isolation: dict[str, Any] | None = None,
             index_build: dict[str, float | None] | None = None,
             size_detail: dict[str, dict[str, int]] | None = None,
-            memory_read: dict[str, str] | None = None) -> dict[str, Any]:
+            memory_read: dict[str, str] | None = None,
+            servers: dict[str, Any] | None = None) -> dict[str, Any]:
     """``srid`` — the SRID each PostgreSQL-backed system actually landed on.
 
     Added for Task 14 (the heterogeneity corpus): 3DCityDB's SRID is baked
@@ -105,6 +106,10 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
             "python": platform.python_version(),
         },
         "versions": versions,
+        # Read from the live servers and the container engine during the
+        # run: PostgreSQL/PostGIS per server, the 3DCityDB schema version,
+        # citydb-tool's own `--version`, and each image's digest.
+        "servers": servers or {},
         "pg_settings": pg_settings,
         "ingest": {
             "wall_clock_s": ingest,
