@@ -32,7 +32,7 @@ STREAM_ARTEFACTS = ("cityjsonseq", "cityparquet")
 # What `--no-cache` downloads; the rest it builds with the current code.
 SOURCE_ARTEFACTS = ("cityjson", "citygml")
 MANIFEST = REPO / "benchmark" / "manifest.toml"
-FAMILIES = ("sizes", "formats", "bloom", "databases")
+FAMILIES = ("sizes", "formats", "bloom", "databases", "network")
 
 # A run profile fixes which datasets are measured, how many repetitions and
 # where the results go, so that a test run can never overwrite the paper's
@@ -144,6 +144,7 @@ def paths(root: Path) -> dict[str, Path]:
         "prepared": root / "data" / "readbench",
         "formats": root / "formats",
         "databases": root / "databases",
+        "network": root / "network",
         "summary": root / "summary",
         "work": root / "work",
     }
@@ -470,6 +471,40 @@ def result_dir(locations: dict[str, Path], family: str, profile: str) -> Path:
     return root / names[family]
 
 
+def network_profiles(manifest: dict, requested: str, bandwidth_mbps: float | None, latency_ms: float | None) -> list[tuple[str, float, float]]:
+    """The network family's profiles: manifest data, or one custom profile from explicit numbers."""
+    if (bandwidth_mbps is None) != (latency_ms is None):
+        raise SystemExit("a custom network profile needs both --network-bandwidth-mbps and --network-latency-ms")
+    if bandwidth_mbps is not None:
+        return [("custom", float(bandwidth_mbps), float(latency_ms))]
+    known = manifest.get("network_profiles", {})
+    names = list(known) if requested == "all" else values(requested)
+    unknown = [name for name in names if name not in known]
+    if unknown or not names:
+        raise SystemExit(f"unknown network profile {', '.join(unknown) or requested!r}; known: {', '.join(known)}, all")
+    return [(name, float(known[name]["bandwidth_mbps"]), float(known[name]["latency_ms"])) for name in names]
+
+
+def network_dir(locations: dict[str, Path], profile: str, network_profile: str) -> Path:
+    return locations["network"] / profile / network_profile
+
+
+def write_model_times(result_csv: Path) -> None:
+    """Beside a network CSV, each row's model time: bytes_read * 8 / bandwidth + http_requests * latency."""
+    import csv
+    params = json.loads(Path(f"{result_csv}.params.json").read_text())["network"]
+    output = result_csv.with_suffix(".model.csv")
+    with result_csv.open(newline="") as source, output.open("w", newline="") as target:
+        writer = csv.writer(target)
+        writer.writerow(["dataset", "format", "scenario", "notes", "network_profile", "target", "bandwidth_mbps", "latency_ms", "bytes_read", "http_requests", "median_s", "model_s"])
+        for row in csv.DictReader(source):
+            if not row.get("bytes_read") or not row.get("http_requests") or "bandwidth_mbps" not in params:
+                model = ""
+            else:
+                model = f"{int(row['bytes_read']) * 8 / (params['bandwidth_mbps'] * 1e6) + int(row['http_requests']) * params['latency_ms'] / 1e3:.6f}"
+            writer.writerow([row["dataset"], row["format"], row["scenario"], row.get("notes", ""), params["profile"], params["target"], params.get("bandwidth_mbps", ""), params.get("latency_ms", ""), row.get("bytes_read", ""), row.get("http_requests", ""), row.get("median_s", ""), model])
+
+
 def require_prepared(inputs: list[Path], locations: dict[str, Path]) -> None:
     missing = [str(item) for item in inputs if not item.is_file()]
     if missing:
@@ -501,7 +536,7 @@ def memory_ceiling(requested: str | None, profile: str) -> int | None:
     return int(requested)
 
 
-def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None, database_datasets: str = "", bloom_attributes: list[str] | None = None) -> None:
+def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None, database_datasets: str = "", bloom_attributes: list[str] | None = None, network: dict | None = None) -> None:
     smoke = profile == "smoke"
     repeat = read_repeat(profile)
     budget = "" if cell_budget_s is None else str(cell_budget_s)
@@ -511,7 +546,7 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
     selected = {key: manifest["datasets"][key] for key in datasets}
     inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in INPUT_ROLES]
     require_prepared(inputs, locations)
-    if any(family in {"sizes", "formats", "bloom"} for family in families) and not inputs:
+    if any(family in {"sizes", "formats", "bloom", "network"} for family in families) and not inputs:
         raise SystemExit("formats, sizes and bloom need a corpus dataset or the 3DBAG slice")
     if "formats" in families:
         # `bench` is the low-level format runner. It must be passed explicit
@@ -544,6 +579,8 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         just("bloom-bench", str(stage(locations, "bloom", bloom_inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args, attributes)
         for input_path in bloom_inputs:
             write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile, **sampling, corpus=corpus_origin(locations["prepared"]))
+    if "network" in families:
+        run_network(manifest, locations, selected, inputs, profile, network or {}, budget, min_repeat, isolation_args, sampling, read_formats, bloom_attributes)
     if "databases" in families:
         # --database-datasets: `all`, or manifest ids (`3dbag` = the slice);
         # empty keeps the profile's one dataset (the slice under full/quick,
@@ -581,6 +618,35 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
                     *([] if isolation["memory_max"] is None else ["--memory-max", str(isolation["memory_max"])]))
 
 
+def run_network(manifest: dict, locations: dict[str, Path], selected: dict, inputs: list[Path], profile: str, network: dict, budget: str, min_repeat: int, isolation_args: tuple, sampling: dict, read_formats: str, bloom_attributes: list[str] | None) -> None:
+    """The format comparison (and, on the slice, the bloom pair) over HTTP, per network profile."""
+    repeat = int(network.get("repeat", 3))
+    target = network.get("target", "simulated")
+    bloom_inputs = [source(entry, locations) for entry in selected.values() if entry["role"] == "slice"]
+    attributes = ",".join(bloom_attributes or next((entry.get("bloom_attributes", []) for entry in selected.values() if entry["role"] == "slice"), []))
+    if target == "real":
+        if not network.get("base_url"):
+            raise SystemExit("--network-target real needs --base-url")
+        cells = [("real", None, None)]
+    else:
+        cells = network_profiles(manifest, network.get("profiles", "typical"), network.get("bandwidth_mbps"), network.get("latency_ms"))
+    for name, bandwidth, latency in cells:
+        output = network_dir(locations, profile, name)
+        if target == "real":
+            net_args = f"--transport http --network-profile real --base-url {network['base_url']} --key-layout {network.get('key_layout', 'bucket')}"
+        else:
+            net_args = f"--transport http --network-profile {name} --network-bandwidth-mbps {bandwidth} --network-latency-ms {latency}"
+        just("bench", str(stage(locations, "network", inputs)), str(output), read_formats, str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args, net_args)
+        if bloom_inputs:
+            just("variant-bench", str(stage(locations, "network-bloom", bloom_inputs)), str(output / "bloom"), "cityparquet,cityparquet+nobloom", str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args,
+                 "id-lookup,feature-lookup,attr-lookup", "id-50pct,id-miss", "feature-50pct,feature-miss", attributes, "", net_args)
+        configuration = f"network={name}; target={target}" + ("" if target == "real" else f"; bandwidth_mbps={bandwidth}; latency_ms={latency}")
+        for input_path in inputs:
+            result_csv = output / f"{dataset_stem(input_path)}.csv"
+            write_model_times(result_csv)
+            write_run_manifest(input_path, result_csv, family="network", repeat=repeat, smoke=profile == "smoke", fixed_configuration=configuration, profile=profile, **sampling, corpus=corpus_origin(locations["prepared"]))
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("command", choices=("prep", "run", "summary"))
@@ -597,6 +663,13 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--max-load", default="auto", help="run only: load gate before every read sample: the pinned node's load share against this threshold; auto = half the node's cores, off disables")
     result.add_argument("--max-load-wait-s", type=int, default=600, help="run only: the longest a read sample waits for the load to drop before it proceeds and its cell is tagged busy (default 600)")
     result.add_argument("--min-repeat", type=int, default=7, help="run only: the fewest timed samples a budgeted cell takes (default 7, clamped to the repetitions)")
+    result.add_argument("--network-profile", default="typical", help="run only: the network family's simulated profiles from manifest.toml (fast, typical, slow), comma-separated, or all (default: typical)")
+    result.add_argument("--network-bandwidth-mbps", type=float, default=None, help="run only: a custom simulated profile's bandwidth, shared by all connections (needs --network-latency-ms)")
+    result.add_argument("--network-latency-ms", type=float, default=None, help="run only: a custom simulated profile's latency per request (needs --network-bandwidth-mbps)")
+    result.add_argument("--network-target", choices=("simulated", "real"), default="simulated", help="run only: simulated (the local net-sim server; the primary measurement) or real (--base-url; a snapshot of one path at one time)")
+    result.add_argument("--network-repeat", type=int, default=3, help="run only: the network family's timed samples per cell, after one discarded warm-up (default 3; the simulated network is deterministic)")
+    result.add_argument("--base-url", default="", help="run only: the object-storage base URL for --network-target real")
+    result.add_argument("--key-layout", choices=("flat", "bucket"), default="bucket", help="run only: the key layout under --base-url (default bucket, the hosted corpus)")
     result.add_argument("--local", action="store_true", help="prep only: fetch the published sources and build every artefact here, with no bucket access (implied by --profile smoke)")
     result.add_argument("--no-cache", action="store_true", help="prep only: download the hosted normalised CityJSON and CityGML, build the other artefacts with the current code and upload them (needs the rclone credentials)")
     result.add_argument("--rebuild-sources", action="store_true", help="prep only: build everything from the published sources and upload it (needs the rclone credentials)")
@@ -624,7 +697,7 @@ def main() -> None:
     if args.command == "prep":
         prepare(data, locations, families, datasets, profile, prep_mode(local=args.local, no_cache=args.no_cache, rebuild_sources=args.rebuild_sources, profile=profile), args.force_upload)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s}, args.database_datasets, [c for c in args.bloom_attributes.split(",") if c] if args.bloom_attributes else None)
+        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s}, args.database_datasets, [c for c in args.bloom_attributes.split(",") if c] if args.bloom_attributes else None, network={"profiles": args.network_profile, "bandwidth_mbps": args.network_bandwidth_mbps, "latency_ms": args.network_latency_ms, "target": args.network_target, "repeat": args.network_repeat, "base_url": args.base_url, "key_layout": args.key_layout})
     else:
         output = (args.out or locations["summary"] / profile).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None

@@ -4,13 +4,27 @@
 
 [suite]
 version = 2
-families = ["sizes", "formats", "bloom", "databases"]
+families = ["sizes", "formats", "bloom", "databases", "network"]
 # The 3DBAG slice: the largest input of the format and size comparisons, and
 # the dataset the database family measures.
 slice_dataset = "3dbag_n1000000"
 # The dataset that stands in for the slice in the database family under the
 # `short` and `smoke` profiles: small, and in the slice's CRS (EPSG:7415).
 small_database_dataset = "rotterdam"
+
+# The network family's simulated profiles: a bandwidth shared by every
+# connection and a latency paid by every request. `typical` is the default.
+[network_profiles.fast]
+bandwidth_mbps = 1000.0
+latency_ms = 5.0
+
+[network_profiles.typical]
+bandwidth_mbps = 100.0
+latency_ms = 20.0
+
+[network_profiles.slow]
+bandwidth_mbps = 20.0
+latency_ms = 50.0
 
 [datasets.rotterdam]
 source = "rotterdam_delfshaven.city.json"

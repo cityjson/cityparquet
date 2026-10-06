@@ -124,7 +124,7 @@ case_positional_arguments_line_up() {
   local name="bloom-bench and bloom-bench-http pass each argument in its own parameter's position"
   local params
   params="$(variant_bench_params | tr '\n' ' ')"
-  if [[ "$params" != "FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_NODE MEMORY_MAX MAX_LOAD MAX_LOAD_WAIT_S SCENARIOS ID_PROBES FEATURE_PROBES BLOOM_ATTRIBUTES BASE_URL " ]]; then
+  if [[ "$params" != "FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_NODE MEMORY_MAX MAX_LOAD MAX_LOAD_WAIT_S SCENARIOS ID_PROBES FEATURE_PROBES BLOOM_ATTRIBUTES BASE_URL NET_ARGS " ]]; then
     fail "$name" "variant-bench's parameters changed: $params"
     return
   fi
@@ -166,11 +166,11 @@ case_positional_arguments_line_up() {
 # benchmark nobody chose. Only BASE_URL defaults (to empty: a local run).
 # --------------------------------------------------------------------------
 case_variant_bench_has_no_caller_defaults() {
-  local name="variant-bench declares a default for BASE_URL alone"
+  local name="variant-bench declares defaults for BASE_URL and NET_ARGS alone"
   local signature defaulted
   signature="$(grep -E '^variant-bench ' "$JUSTFILE")"
   defaulted="$(printf '%s' "$signature" | grep -oE '[A-Z_]+=' | tr -d '=' | tr '\n' ' ')"
-  if [[ "$defaulted" != "BASE_URL " ]]; then
+  if [[ "$defaulted" != "BASE_URL NET_ARGS " ]]; then
     fail "$name" "variant-bench defaults: ${defaulted:-none}"
     return
   fi

@@ -331,7 +331,7 @@ readbench-prepare INPUT OUTDIR=(BENCH / "runs/data/readbench") FORMATS='':
 # anyway carries `busy` in `notes`. Off Linux each is recorded as not applied.
 [private]
 [doc("Cross-format READ benchmark over every input under FOLDER")]
-bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7' NUMA_NODE=env('BENCH_NUMA_NODE', 'auto') MEMORY_MAX='64000000000' MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
+bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7' NUMA_NODE=env('BENCH_NUMA_NODE', 'auto') MEMORY_MAX='64000000000' MAX_LOAD='auto' MAX_LOAD_WAIT_S='600' NET_ARGS='':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -374,7 +374,7 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
             --numa-node "{{NUMA_NODE}}" \
             --max-load "{{MAX_LOAD}}" \
             --max-load-wait-s "{{MAX_LOAD_WAIT_S}}" \
-            ${run_args[@]+"${run_args[@]}"}
+            ${run_args[@]+"${run_args[@]}"} {{NET_ARGS}}
 
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
@@ -412,7 +412,7 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
 # reads those lists back out of this file.
 [private]
 [doc("Configuration-axis run: reads and package size per variant, over every input under FOLDER")]
-variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_NODE MEMORY_MAX MAX_LOAD MAX_LOAD_WAIT_S SCENARIOS ID_PROBES FEATURE_PROBES BLOOM_ATTRIBUTES BASE_URL='':
+variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_NODE MEMORY_MAX MAX_LOAD MAX_LOAD_WAIT_S SCENARIOS ID_PROBES FEATURE_PROBES BLOOM_ATTRIBUTES BASE_URL='' NET_ARGS='':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -473,7 +473,7 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_
             --id-probes "{{ID_PROBES}}" \
             ${feature_args[@]+"${feature_args[@]}"} \
             ${attr_args[@]+"${attr_args[@]}"} \
-            ${transport_args[@]+"${transport_args[@]}"} \
+            ${transport_args[@]+"${transport_args[@]}"} {{NET_ARGS}} \
             --variants "{{VARIANTS}}"
 
         found=$((found + 1))

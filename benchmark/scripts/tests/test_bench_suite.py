@@ -327,3 +327,61 @@ class PublishedSourceTest(unittest.TestCase):
     def test_the_published_url_comes_from_the_fetch_table(self):
         self.assertTrue(bench_suite.published_source_url("rotterdam_delfshaven.city.json").endswith("/3-20-DELFSHAVEN.city.json"))
         self.assertIsNone(bench_suite.published_source_url("nothing.city.json"))
+
+
+class NetworkFamilyTest(unittest.TestCase):
+    manifest = bench_suite.load_manifest()
+
+    def test_network_is_a_family_and_typical_is_the_default_profile(self):
+        self.assertIn("network", bench_suite.family_selection("all"))
+        self.assertEqual(bench_suite.network_profiles(self.manifest, "typical", None, None), [("typical", 100.0, 20.0)])
+
+    def test_profiles_are_manifest_data_and_all_selects_three(self):
+        self.assertEqual(bench_suite.network_profiles(self.manifest, "all", None, None),
+                         [("fast", 1000.0, 5.0), ("typical", 100.0, 20.0), ("slow", 20.0, 50.0)])
+
+    def test_explicit_bandwidth_and_latency_make_a_custom_profile(self):
+        self.assertEqual(bench_suite.network_profiles(self.manifest, "typical", 50.0, 10.0), [("custom", 50.0, 10.0)])
+
+    def test_an_unknown_profile_names_the_known_ones(self):
+        with self.assertRaises(SystemExit) as raised:
+            bench_suite.network_profiles(self.manifest, "dialup", None, None)
+        self.assertIn("fast, typical, slow", str(raised.exception))
+
+    def test_network_results_land_per_suite_and_network_profile(self):
+        locations = bench_suite.paths(bench_suite.DEFAULT_DATA_ROOT)
+        self.assertEqual(bench_suite.network_dir(locations, "short", "slow"), locations["network"] / "short" / "slow")
+
+    def test_simulated_runs_pass_the_profile_and_the_slice_adds_the_bloom_pair(self):
+        from unittest import mock
+        calls = []
+        with mock.patch.object(bench_suite, "just", lambda *a: calls.append(a)), \
+             mock.patch.object(bench_suite, "require_prepared", lambda *a: None), \
+             mock.patch.object(bench_suite, "source", lambda entry, locations: Path(entry["file"])), \
+             mock.patch.object(bench_suite, "stage", lambda locations, name, inputs: Path("+".join(str(i) for i in inputs))), \
+             mock.patch.object(bench_suite, "write_model_times", lambda *a: None), \
+             mock.patch.object(bench_suite, "write_run_manifest", lambda *a, **k: None):
+            manifest = {"suite": {}, "network_profiles": self.manifest["network_profiles"],
+                        "datasets": {"c": {"role": "corpus", "file": "c.city.json"}, "s": {"role": "slice", "file": "s.city.jsonl", "bloom_attributes": ["a"]}}}
+            locations = {"prepared": Path("p"), "network": Path("n")}
+            bench_suite.run_suite(manifest, locations, ["network"], ["c", "s"], "full", network={"profiles": "slow"})
+        bench = [c for c in calls if c[0] == "bench"]
+        self.assertEqual(len(bench), 1)
+        self.assertIn("--transport http --network-profile slow --network-bandwidth-mbps 20.0 --network-latency-ms 50.0", bench[0][-1])
+        self.assertEqual(bench[0][2], str(Path("n/full/slow")))
+        self.assertEqual(bench[0][5], "3")  # repeat: the deterministic network needs few samples
+        bloom = [c for c in calls if c[0] == "variant-bench"]
+        self.assertEqual(len(bloom), 1)
+        self.assertEqual(bloom[0][1], "s.city.jsonl")
+        self.assertIn("--network-latency-ms 50.0", bloom[0][-1])
+
+    def test_the_model_time_is_transfer_plus_latency_per_request(self):
+        import csv, json, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "d.csv"
+            out.write_text("dataset,format,scenario,median_s,notes,bytes_read,http_requests\nd,cityparquet,count,0.05,,1250000,2\n")
+            Path(f"{out}.params.json").write_text(json.dumps({"network": {"target": "simulated", "profile": "typical", "bandwidth_mbps": 100.0, "latency_ms": 20.0}}))
+            bench_suite.write_model_times(out)
+            rows = list(csv.DictReader(out.with_suffix(".model.csv").open()))
+        self.assertEqual(rows[0]["model_s"], "0.140000")
+        self.assertEqual(rows[0]["network_profile"], "typical")
