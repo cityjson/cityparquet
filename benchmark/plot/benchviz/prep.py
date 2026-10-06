@@ -22,6 +22,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import units
 from .paths import DEFAULT_BENCH_DIR, DEFAULT_DATA_PATH
 
 SIZES_CSV_NAME = "sizes.csv"
@@ -749,7 +750,7 @@ def load_sizes(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], d
         base_bytes = _float(base["bytes"]) if base else None
         stream = next((r for r in group if r["format"] == STREAM_FORMAT), None)
         if stream is not None:
-            raw_mb[dataset] = int(stream["bytes"]) / 1_000_000
+            raw_mb[dataset] = units.megabytes(int(stream["bytes"]))
         for row in group:
             if row["format"] not in FORMATS:
                 excluded.record(row["format"], "sizes")
@@ -1262,7 +1263,7 @@ def main(
         json.dumps(completeness, indent=2) + "\n", encoding="utf-8"
     )
 
-    print(f"wrote {out} ({out.stat().st_size / 1024:.1f} KB)")
+    print(f"wrote {out} ({units.format_bytes(out.stat().st_size)})")
     print(
         f"  {len(data['datasets'])} datasets, {len(data['read'])} read records, "
         f"{len(data['sizes'])} size records, "

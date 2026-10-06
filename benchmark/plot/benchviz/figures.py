@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
 
-from . import prep, tables
+from . import prep, tables, units
 from .paths import DEFAULT_DATA_PATH, DEFAULT_FIGURES_DIR
 
 BG = "#fffff8"
@@ -118,12 +118,6 @@ def _label(value: str) -> str:
     return LABELS.get(value) or SCENARIO_LABELS.get(value) or value.replace("-", " ").title()
 
 
-def _mib(value: Any) -> str:
-    if value is None:
-        return "—"
-    return f"{float(value) / 1024**2:.1f} MiB"
-
-
 def _seconds(value: Any) -> str:
     if value is None:
         return "—"
@@ -143,22 +137,6 @@ def _statistic_note(data: dict[str, Any]) -> str:
 
 def _ratio(value: Any, base: Any) -> float | None:
     return float(value) / float(base) if value is not None and base not in (None, 0) else None
-
-
-def _size_text(value: Any) -> str:
-    """A byte count in the unit a reader expects: GB once it is a GB."""
-    if value is None:
-        return "—"
-    value = float(value)
-    if value >= 1024**3:
-        return f"{value / 1024**3:.2f} GB"
-    return f"{value / 1024**2:.1f} MB"
-
-
-def _size_unit(values: list[Any]) -> str:
-    """The unit a whole panel is drawn in: GB when its largest bar needs one."""
-    known = [float(v) for v in values if v is not None]
-    return "GB" if known and max(known) >= 1024**3 else "MB"
 
 
 def _format_fill(fmt: str) -> str:
@@ -346,8 +324,7 @@ def sizes(data: dict[str, Any], out: Path) -> list[Path]:
             r["format"]: r for r in data.get("sizes", []) if r.get("dataset") == dataset.get("id")
         }
         values = [by.get(f, {}).get("bytes") for f in formats]
-        unit = _size_unit(values)
-        divisor = 1024**3 if unit == "GB" else 1024**2
+        unit, divisor = units.size_unit(values)
         bars = ax.bar(
             range(len(formats)),
             [float(v) / divisor if v is not None else math.nan for v in values],
@@ -370,7 +347,7 @@ def sizes(data: dict[str, Any], out: Path) -> list[Path]:
             ax.text(
                 x,
                 bar.get_height(),
-                f"{_size_text(value)}\n{_factor_text(factor)}",
+                f"{units.format_bytes(value)}\n{_factor_text(factor)}",
                 ha="center",
                 va="bottom",
                 fontsize=5,
@@ -425,7 +402,7 @@ def format_cells(
             if value is None:
                 row.append((None, _unavailable_label(record)))
                 continue
-            number = float(value) / (1024**2 if field == "rss_b" else 1)
+            number = float(value) / (units.MB if field == "rss_b" else 1)
             factor = record.get(factor_field)
             row.append((factor, f"{number:.3g}\n{_factor_text(factor)}"))
         cells.append(row)
@@ -568,7 +545,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     for col, (title, source, _ratio_field, value, measure) in enumerate(
         (
             (
-                "size (MiB)",
+                "size (MB)",
                 [r for r in sizes if r.get("dataset") == largest],
                 "size_ratio",
                 "bytes",
@@ -578,7 +555,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     ):
         ax = fig.add_subplot(grid[0, col])
         by = {r.get("variant"): r for r in source if measure is None or r.get("measure") == measure}
-        divisor = 1024**2 if value in ("bytes", "rss_b") else 1
+        divisor = units.MB if value in ("bytes", "rss_b") else 1
         vals = [
             (float(by[v][value]) / divisor) if v in by and by[v].get(value) is not None else None
             for v in variants
@@ -605,7 +582,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
             if row and v is not None:
                 actual = float(row[value])
                 if value in ("bytes", "rss_b"):
-                    actual /= 1024**2
+                    actual /= units.MB
                 ax.text(x, v, _compact(actual), ha="center", va="bottom", fontsize=4.5)
     short_variants = [
         v.replace("cityparquet+", "").replace("cityparquet", "default") for v in variants
@@ -632,7 +609,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
                 if actual is None:
                     text = "—"
                 else:
-                    number = float(actual) / (1024**2 if field == "rss_b" else 1)
+                    number = float(actual) / (units.MB if field == "rss_b" else 1)
                     text = f"{number:.3g}\n{_ratio_short(ratio)}" if ratio else f"{number:.3g}"
                 row.append((ratio, text))
             cells.append(row)
@@ -641,7 +618,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     # bound can serve them; the cells carry the precision either way.
     bound = _cell_bound([row for block in cell_blocks for row in block], "diverging")
     for col, (ax, cells, title) in enumerate(
-        zip(heat_axes, cell_blocks, ("read time (s)", "read peak RSS (MiB)"), strict=True)
+        zip(heat_axes, cell_blocks, ("read time (s)", "read peak RSS (MB)"), strict=True)
     ):
         _heat(ax, cells, short_variants, queries, title, vmax=bound, scale="diverging")
         for text in ax.texts:
@@ -690,7 +667,7 @@ def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     queries = _axis_queries(corpus)
     palette = _axis_palette(variants)
     metrics = [
-        ("File size (MiB)", corpus_sizes, "bytes", None),
+        ("File size (MB)", corpus_sizes, "bytes", None),
     ] + [(f"Read time (s)\n{_label(q)}", corpus, "time_s", q) for q in queries]
     columns = 3
     rows = -(-len(metrics) // columns)
@@ -699,7 +676,7 @@ def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     )
     width = 0.8 / max(1, len(variants))
     for ax, (title, source, field, measure) in zip(axes.flat, metrics, strict=False):
-        divisor = 1024**2 if field in ("bytes", "rss_b") else 1
+        divisor = units.MB if field in ("bytes", "rss_b") else 1
         for vi, variant in enumerate(variants):
             by = {
                 r["dataset"]: r
@@ -898,7 +875,7 @@ def database_blocks(data: dict[str, Any]) -> dict[str, Any]:
 
 DB_HEAT_SPECS = (
     ("time_s", "{statistic} query time", _seconds),
-    ("peak_rss_bytes", "Peak execution-process RSS", _mib),
+    ("peak_rss_bytes", "Peak execution-process RSS", units.format_bytes),
 )
 
 
@@ -968,11 +945,11 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
     values = [by_size.get(system) for system in size_systems]
     bars = storage.bar(
         range(len(size_systems)),
-        [float(v) / 1024**2 if v is not None else math.nan for v in values],
+        [float(v) / units.MB if v is not None else math.nan for v in values],
         color=[DATABASE_FILL.get(s, MUTED) for s in size_systems],
     )
     storage.set_title("Storage including indexes", loc="left", fontsize=9)
-    storage.set_ylabel("MiB", fontsize=7)
+    storage.set_ylabel("MB", fontsize=7)
     storage.set_xticks(
         range(len(size_systems)),
         [_db_label(s).replace("\n", " ") for s in size_systems],
@@ -984,7 +961,7 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
             storage.text(x, 0, "missing", ha="center", va="bottom", fontsize=6)
         else:
             ratio = _ratio(value, base_size)
-            detail = _mib(value) + (f" · {ratio:.2g}×" if ratio else "")
+            detail = units.format_bytes(value) + (f" · {ratio:.2g}×" if ratio else "")
             storage.text(x, bar.get_height(), detail, ha="center", va="bottom", fontsize=6)
 
     separator = rows.index(DB_WRITE_SEPARATOR) if DB_WRITE_SEPARATOR in rows else None

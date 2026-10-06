@@ -33,7 +33,7 @@ SIZE_FORMATS = tuple(f for f in prep.FORMATS if f != prep.BASELINE_FORMAT)
 FORMATS_DIR = "formats"
 FORMAT_METRICS = (
     ("time", "time_s", "read time", "Read time (s)"),
-    ("rss", "rss_b", "read peak memory", "Read peak RSS (MiB)"),
+    ("rss", "rss_b", "read peak memory", "Read peak RSS (MB)"),
 )
 ORIENTATION = (
     "Every factor is CityGML's value divided by the format's, so a larger factor is "
