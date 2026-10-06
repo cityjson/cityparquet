@@ -100,8 +100,10 @@ class ProvenanceTests(unittest.TestCase):
             result = root / "slice.csv"; result.write_text("dataset\n")
             Path(f"{result}.samples.json").write_text("[]\n")
             Path(f"{result}.params.json").write_text(json.dumps({"isolation": {"pinning": {"status": "not applied: not Linux"}}}))
-            bench_suite.write_run_manifest(source, result, family="formats", repeat=1, smoke=True, fixed_configuration="test")
+            origin = {"origin": "bucket", "manifest_url": "https://h/v7/manifest.json", "manifest_sha256": "abc"}
+            bench_suite.write_run_manifest(source, result, family="formats", repeat=1, smoke=True, fixed_configuration="test", corpus=origin)
             manifest = json.loads(result.with_suffix(".run.json").read_text())
+            self.assertEqual(manifest["corpus"], origin)
             self.assertEqual(set(manifest["result"]["files_sha256"]), {"slice.csv", "slice.csv.samples.json", "slice.csv.params.json"})
             self.assertEqual(manifest["measurement"], {"read_repeat": 1, "cell_budget_s": None, "min_repeat": 7, "fixed_configuration": "test",
                                                        "isolation": {"requested": bench_suite.DEFAULT_ISOLATION, "applied": {"pinning": {"status": "not applied: not Linux"}}}})
@@ -222,3 +224,89 @@ class SizesCommandTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--prepared") + 1], "/prepared")
         self.assertEqual(argv[argv.index("--out") + 1], "/out/sizes.csv")
         self.assertNotIn("--input", argv)
+
+
+class PrepModeTest(unittest.TestCase):
+    """`bench-prep`'s modes: download (default), --no-cache, --rebuild-sources, --local."""
+
+    def setUp(self):
+        import tempfile
+        from unittest import mock
+        self.mock = mock
+        self.root = Path(tempfile.mkdtemp())
+        self.locations = bench_suite.paths(self.root)
+        self.manifest = {"datasets": {"rotterdam": {"role": "corpus", "source": "rotterdam_delfshaven.city.json"}}}
+        self.calls = []
+
+    def run_prep(self, mode, force=False, families=("formats",)):
+        mock = self.mock
+        bucket = bench_suite.corpus_bucket
+        hosted = {"schema": 1, "chain_version": 7, "datasets": {"rotterdam_delfshaven": {"source": {"url": "u", "sha256": "s"}, "artefacts": {}}}}
+        def fake_download(cfg, chain, manifest, dataset_id, artefacts, prepared):
+            self.calls.append(("download", dataset_id, tuple(artefacts)))
+            for artefact in artefacts:
+                (prepared / bucket.local_name(artefact, dataset_id)).parent.mkdir(parents=True, exist_ok=True)
+                (prepared / bucket.local_name(artefact, dataset_id)).write_text(artefact)
+            return []
+        with mock.patch.object(bench_suite, "just", lambda *a: self.calls.append(("just",) + a)), \
+             mock.patch.object(bench_suite, "command", lambda *a: self.calls.append(("command",) + a)), \
+             mock.patch.object(bucket, "fetch_manifest", lambda cfg, chain: (hosted, "https://h/v7/manifest.json", "abc")), \
+             mock.patch.object(bucket, "download_dataset", fake_download), \
+             mock.patch.object(bucket, "dataset_entry", lambda prepared, dataset_id, artefacts, source, built: {"artefacts": list(artefacts), "source": source}), \
+             mock.patch.object(bucket, "remote_manifest", lambda cfg, chain: hosted), \
+             mock.patch.object(bucket, "upload_dataset", lambda cfg, chain, prepared, entry, dataset_id, existing, force=False: self.calls.append(("upload", dataset_id, tuple(entry["artefacts"]), force, entry["source"]["url"])) or {"uploaded": [], "skipped": []}), \
+             mock.patch.object(bucket, "publish_manifest", lambda cfg, chain, entries: self.calls.append(("publish", sorted(entries)))), \
+             mock.patch.object(bench_suite, "source", lambda entry, locations: self.root / entry["source"]), \
+             mock.patch.object(bench_suite, "fetched_source", lambda entry, path: {"url": "published", "sha256": "x"}):
+            (self.root / "rotterdam_delfshaven.city.json").write_text("{}")
+            bench_suite.prepare(self.manifest, self.locations, list(families), ["rotterdam"], "full", mode=mode, force_upload=force)
+
+    def provenance(self):
+        import json
+        return json.loads((self.locations["prepared"] / bench_suite.CORPUS_ORIGIN).read_text())
+
+    def test_smoke_and_local_flag_prepare_locally_and_plain_prep_downloads(self):
+        self.assertEqual(bench_suite.prep_mode(local=False, no_cache=False, rebuild_sources=False, profile="smoke"), "local")
+        self.assertEqual(bench_suite.prep_mode(local=True, no_cache=False, rebuild_sources=False, profile="full"), "local")
+        self.assertEqual(bench_suite.prep_mode(local=False, no_cache=False, rebuild_sources=False, profile="full"), "download")
+        self.assertEqual(bench_suite.prep_mode(local=False, no_cache=True, rebuild_sources=False, profile="full"), "no-cache")
+        self.assertEqual(bench_suite.prep_mode(local=False, no_cache=False, rebuild_sources=True, profile="full"), "rebuild-sources")
+        with self.assertRaises(SystemExit):
+            bench_suite.prep_mode(local=True, no_cache=True, rebuild_sources=False, profile="full")
+
+    def test_download_builds_nothing_and_records_the_hosted_manifest(self):
+        self.run_prep("download")
+        self.assertEqual([c for c in self.calls if c[0] in ("just", "command")], [])
+        self.assertEqual(self.calls, [("download", "rotterdam_delfshaven", ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet"))])
+        self.assertEqual(self.provenance()["origin"], "bucket")
+        self.assertEqual(self.provenance()["manifest_sha256"], "abc")
+        stamp = self.locations["prepared"] / ".readbench-chain" / "rotterdam_delfshaven"
+        self.assertEqual(stamp.read_text().strip(), str(bench_suite.chain_version()))
+
+    def test_no_cache_downloads_the_sources_builds_the_rest_and_uploads(self):
+        self.run_prep("no-cache", force=True)
+        self.assertEqual(self.calls[0], ("download", "rotterdam_delfshaven", ("cityjson", "citygml")))
+        prepares = [c for c in self.calls if c[:2] == ("just", "readbench-prepare")]
+        self.assertEqual(prepares[0][3:], (str(self.locations["prepared"]), "cityjsonseq,flatcitybuf,cityparquet"))
+        uploads = [c for c in self.calls if c[0] == "upload"]
+        self.assertEqual(uploads, [("upload", "rotterdam_delfshaven", ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet"), True, "u")])
+        self.assertEqual(self.calls[-1], ("publish", ["rotterdam_delfshaven"]))
+
+    def test_rebuild_sources_builds_everything_and_records_the_published_source(self):
+        self.run_prep("rebuild-sources")
+        self.assertIn(("just", "fetch-data", str(self.locations["corpus"])), self.calls)
+        self.assertNotIn("download", [c[0] for c in self.calls])
+        uploads = [c for c in self.calls if c[0] == "upload"]
+        self.assertEqual(uploads[0][3:], (False, "published"))
+        self.assertEqual(self.calls[-1][0], "publish")
+
+    def test_local_mode_touches_no_bucket(self):
+        self.run_prep("local")
+        self.assertFalse([c for c in self.calls if c[0] in ("download", "upload", "publish")])
+        self.assertEqual(self.provenance(), {"origin": "local"})
+
+
+class PublishedSourceTest(unittest.TestCase):
+    def test_the_published_url_comes_from_the_fetch_table(self):
+        self.assertTrue(bench_suite.published_source_url("rotterdam_delfshaven.city.json").endswith("/3-20-DELFSHAVEN.city.json"))
+        self.assertIsNone(bench_suite.published_source_url("nothing.city.json"))

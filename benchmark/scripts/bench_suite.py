@@ -18,6 +18,19 @@ import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import corpus_bucket  # noqa: E402
+
+PREPARE_SCRIPT = REPO / "benchmark" / "scripts" / "readbench_prepare.sh"
+# Which hosted manifest the prepared directory's artefacts came from, or
+# "local" (benchmark/README.md, "The hosted corpus").
+CORPUS_ORIGIN = ".corpus-origin.json"
+# Every artefact the format and size families read; the bloom and database
+# families need only the CityJSONSeq stream and the CityParquet package.
+FULL_ARTEFACTS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet")
+STREAM_ARTEFACTS = ("cityjsonseq", "cityparquet")
+# What `--no-cache` downloads; the rest it builds with the current code.
+SOURCE_ARTEFACTS = ("cityjson", "citygml")
 MANIFEST = REPO / "benchmark" / "manifest.toml"
 FAMILIES = ("sizes", "formats", "bloom", "databases")
 
@@ -220,7 +233,7 @@ def code_identity() -> dict[str, object]:
     }
 
 
-def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repeat: int, smoke: bool, fixed_configuration: str, profile: str = "full", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None) -> None:
+def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repeat: int, smoke: bool, fixed_configuration: str, profile: str = "full", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None, corpus: dict | None = None) -> None:
     """Persist enough local evidence to identify one benchmark result exactly."""
     artefacts = [
         result_csv,
@@ -240,6 +253,9 @@ def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repe
         "result": {"csv": str(result_csv.resolve()), "files_sha256": files, "params_sha256": sha256(params) if params.is_file() else None},
         "measurement": {"read_repeat": repeat, "cell_budget_s": cell_budget_s, "min_repeat": min_repeat, "fixed_configuration": fixed_configuration, "isolation": {"requested": isolation or DEFAULT_ISOLATION, "applied": applied}},
         "code": code_identity(),
+        # Which hosted manifest (URL + sha256) the prepared artefacts came
+        # from, or {"origin": "local"} when they were built here.
+        "corpus": corpus or {"origin": "unrecorded"},
         "machine": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "processor": platform.processor(), "python": sys.version.split()[0]},
         "tools": {"rust": version("rustc", "--version"), "fcb": version("fcb", "--version"), "cjseq": version("cjseq", "--version"), "cityparquet": version("lib/cityparquet-rs/target/release/cityparquet", "--version")},
     }
@@ -249,15 +265,51 @@ def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repe
     temporary.replace(target)
 
 
-def prepare(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str) -> None:
-    selected = [manifest["datasets"][key] for key in datasets]
-    if any(entry["role"] == "corpus" for entry in selected):
-        just("fetch-data", str(locations["corpus"]))
-    if any(entry["role"] == "slice" for entry in selected):
-        just("fetch-3dbag", str(locations["3dbag"]))
-    # Format and size comparisons need every artefact; the bloom and database
-    # families need only CityParquet + CityJSONSeq.
-    full_formats = any(family in {"sizes", "formats"} for family in families)
+def chain_version() -> int:
+    """`CHAIN_VERSION` of the prepare script: the hosted corpus's `v<chain>/`."""
+    for line in PREPARE_SCRIPT.read_text().splitlines():
+        if line.startswith("CHAIN_VERSION="):
+            return int(line.split("=", 1)[1])
+    raise SystemExit(f"no CHAIN_VERSION in {PREPARE_SCRIPT}")
+
+
+def prep_mode(*, local: bool, no_cache: bool, rebuild_sources: bool, profile: str) -> str:
+    """download (default), no-cache, rebuild-sources or local; smoke is always local."""
+    chosen = [name for name, flag in (("local", local), ("no-cache", no_cache), ("rebuild-sources", rebuild_sources)) if flag]
+    if len(chosen) > 1:
+        raise SystemExit("choose one of --local, --no-cache, --rebuild-sources")
+    if profile == "smoke":
+        return "local"
+    return chosen[0] if chosen else "download"
+
+
+def fetched_source(entry: dict, path: Path) -> dict:
+    """The published source an artefact chain derives from: where it is published and its sha256."""
+    return {"url": entry.get("url") or published_source_url(path.name), "sha256": sha256(path)}
+
+
+def published_source_url(name: str) -> str | None:
+    """The URL `fetch_benchmark.sh` downloads `name` from (its `name|bytes|...|url|sha256` table)."""
+    for line in (REPO / "benchmark" / "scripts" / "fetch_benchmark.sh").read_text().splitlines():
+        fields = line.strip().strip('"').split("|")
+        if len(fields) >= 5 and fields[0] == name:
+            return fields[4]
+    return None
+
+
+def build_identity() -> dict:
+    readbench = (REPO / "benchmark" / "readbench" / "Cargo.toml").read_text()
+    fcb_core = next((line.split("=", 1)[1].strip() for line in readbench.splitlines() if line.startswith("fcb_core")), "unknown")
+    return {
+        "created_at": corpus_bucket.now(),
+        "monorepo_commit": version("git", "rev-parse", "HEAD"),
+        "monorepo_tree_dirty": bool(version("git", "status", "--porcelain", "--untracked-files=no")),
+        "cityparquet_rs_commit": version("git", "log", "-1", "--format=%H", "--", "lib/cityparquet-rs"),
+        "tools": {"citygml_tools": version("citygml-tools", "--version"), "cjseq": version("cjseq", "--version"), "fcb": version("fcb", "--version"), "fcb_core": fcb_core, "cityparquet": version("lib/cityparquet-rs/target/release/cityparquet", "--version")},
+    }
+
+
+def build_tools(full_formats: bool) -> None:
     if full_formats:
         just("fetch-tools")
         command("cargo", "build", "--release", "--manifest-path", "lib/cityparquet-rs/Cargo.toml", "-p", "cityparquet-cli", "--bin", "cityparquet")
@@ -265,13 +317,89 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
         # second target directory. Building it here keeps compilation out of
         # the run.
         command("cargo", "build", "--release", "--manifest-path", "benchmark/readbench/Cargo.toml", "--bin", "cityparquet-readbench")
-    locations["prepared"].mkdir(parents=True, exist_ok=True)
-    for key in datasets:
-        entry = manifest["datasets"][key]
-        input_path = source(entry, locations)
-        if not input_path.is_file():
-            raise SystemExit(f"prepared source missing after fetch: {input_path}")
-        just("readbench-prepare", str(input_path), str(locations["prepared"]), "" if full_formats else "cityparquet,cityjsonseq")
+
+
+def write_origin(prepared: Path, origin: dict) -> None:
+    prepared.mkdir(parents=True, exist_ok=True)
+    (prepared / CORPUS_ORIGIN).write_text(json.dumps(origin, indent=2, sort_keys=True) + "\n")
+
+
+def corpus_origin(prepared: Path) -> dict:
+    path = prepared / CORPUS_ORIGIN
+    return json.loads(path.read_text()) if path.is_file() else {"origin": "unrecorded"}
+
+
+def prepare(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, mode: str = "local", force_upload: bool = False) -> None:
+    """Fill the prepared directory with the flat layout `bench-run` reads.
+
+    local: fetch the published sources and build every artefact here, no
+    bucket. download: fetch every artefact from the hosted corpus, verified.
+    no-cache: fetch the hosted normalised CityJSON and CityGML, build the
+    rest with the current code and upload it. rebuild-sources: build
+    everything from the published sources and upload it all."""
+    selected = [manifest["datasets"][key] for key in datasets]
+    prepared = locations["prepared"]
+    full_formats = any(family in {"sizes", "formats"} for family in families)
+    artefacts = list(FULL_ARTEFACTS if full_formats or mode in {"no-cache", "rebuild-sources"} else STREAM_ARTEFACTS)
+    cfg, chain = corpus_bucket.config(), chain_version()
+    prepared.mkdir(parents=True, exist_ok=True)
+    hosted = None
+    if mode in {"download", "no-cache"}:
+        try:
+            hosted, url, digest = corpus_bucket.fetch_manifest(cfg, chain)
+            for key in datasets:
+                dataset_id = dataset_stem(source(manifest["datasets"][key], locations))
+                corpus_bucket.download_dataset(cfg, chain, hosted, dataset_id, artefacts if mode == "download" else list(SOURCE_ARTEFACTS), prepared)
+                stamp = prepared / ".readbench-chain" / dataset_id
+                stamp.parent.mkdir(parents=True, exist_ok=True)
+                stamp.write_text(f"{chain}\n")
+        except corpus_bucket.CorpusError as error:
+            raise SystemExit(f"bench-prep: {error}") from error
+        if mode == "download":
+            write_origin(prepared, {"origin": "bucket", "manifest_url": url, "manifest_sha256": digest, "chain_version": chain, "config": cfg})
+    if mode in {"local", "rebuild-sources"}:
+        if any(entry["role"] == "corpus" for entry in selected):
+            just("fetch-data", str(locations["corpus"]))
+        if any(entry["role"] == "slice" for entry in selected):
+            just("fetch-3dbag", str(locations["3dbag"]))
+    if mode != "download":
+        build_tools(full_formats or mode != "local")
+        work = locations["work"] / "no-cache"
+        for key in datasets:
+            entry = manifest["datasets"][key]
+            input_path = source(entry, locations)
+            if mode == "no-cache":
+                # The hosted normalised CityJSON is the input; a copy, so
+                # the chain never reads and writes the same path.
+                work.mkdir(parents=True, exist_ok=True)
+                input_path = work / f"{dataset_stem(input_path)}.city.json"
+                shutil.copyfile(prepared / input_path.name, input_path)
+                just("readbench-prepare", str(input_path), str(prepared), "cityjsonseq,flatcitybuf,cityparquet")
+                continue
+            if not input_path.is_file():
+                raise SystemExit(f"prepared source missing after fetch: {input_path}")
+            just("readbench-prepare", str(input_path), str(prepared), "" if full_formats or mode != "local" else "cityparquet,cityjsonseq")
+    if mode in {"no-cache", "rebuild-sources"}:
+        try:
+            existing = corpus_bucket.remote_manifest(cfg, chain)
+            built, entries = build_identity(), {}
+            for key in datasets:
+                entry = manifest["datasets"][key]
+                dataset_id = dataset_stem(source(entry, locations))
+                if mode == "no-cache":
+                    origin = (hosted or {}).get("datasets", {}).get(dataset_id, {}).get("source", {})
+                else:
+                    origin = fetched_source(entry, source(entry, locations))
+                record = corpus_bucket.dataset_entry(prepared, dataset_id, artefacts, origin, built)
+                done = corpus_bucket.upload_dataset(cfg, chain, prepared, record, dataset_id, existing, force=force_upload)
+                print(f"{dataset_id}: {len(done['uploaded'])} uploaded, {len(done['skipped'])} identical and skipped")
+                entries[dataset_id] = record
+            corpus_bucket.publish_manifest(cfg, chain, entries)
+            print(f"published {corpus_bucket.public_url(cfg, chain, corpus_bucket.MANIFEST_NAME)}")
+        except corpus_bucket.CorpusError as error:
+            raise SystemExit(f"bench-prep: {error}") from error
+    if mode != "download":
+        write_origin(prepared, {"origin": "local"})
 
     if "databases" in families:
         root = locations["formats"].parent
@@ -357,7 +485,7 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
             configuration = "CityParquet=Hilbert"
             if read_formats:
                 configuration += f"; read-formats={read_formats}"
-            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=repeat, smoke=smoke, fixed_configuration=configuration, profile=profile, **sampling)
+            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=repeat, smoke=smoke, fixed_configuration=configuration, profile=profile, **sampling, corpus=corpus_origin(locations["prepared"]))
     if "sizes" in families:
         output = result_dir(locations, "sizes", profile) / "sizes.csv"
         for input_path in inputs:
@@ -376,7 +504,7 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         attributes = ",".join(bloom_attributes or next((entry.get("bloom_attributes", []) for entry in selected.values() if entry["role"] == "slice"), []))
         just("bloom-bench", str(stage(locations, "bloom", bloom_inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args, attributes)
         for input_path in bloom_inputs:
-            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile, **sampling)
+            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile, **sampling, corpus=corpus_origin(locations["prepared"]))
     if "databases" in families:
         # --database-datasets: `all`, or manifest ids (`3dbag` = the slice);
         # empty keeps the profile's one dataset (the slice under full/quick,
@@ -430,6 +558,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--max-load", default="auto", help="run only: load gate before every read sample: the pinned node's load share against this threshold; auto = half the node's cores, off disables")
     result.add_argument("--max-load-wait-s", type=int, default=600, help="run only: the longest a read sample waits for the load to drop before it proceeds and its cell is tagged busy (default 600)")
     result.add_argument("--min-repeat", type=int, default=7, help="run only: the fewest timed samples a budgeted cell takes (default 7, clamped to the repetitions)")
+    result.add_argument("--local", action="store_true", help="prep only: fetch the published sources and build every artefact here, with no bucket access (implied by --profile smoke)")
+    result.add_argument("--no-cache", action="store_true", help="prep only: download the hosted normalised CityJSON and CityGML, build the other artefacts with the current code and upload them (needs the rclone credentials)")
+    result.add_argument("--rebuild-sources", action="store_true", help="prep only: build everything from the published sources and upload it (needs the rclone credentials)")
+    result.add_argument("--force-upload", action="store_true", help="prep only: let an upload replace a hosted key whose content differs (identical content is always skipped)")
     result.add_argument("--data-root", type=Path, default=Path(os.environ.get("CITYPARQUET_BENCH_ROOT", DEFAULT_DATA_ROOT)))
     result.add_argument("--out", type=Path)
     result.add_argument("--figures", type=Path)
@@ -451,7 +583,7 @@ def main() -> None:
     # Low-level fetch and conversion recipes inherit this explicit root.
     os.environ["CITYPARQUET_BENCH_ROOT"] = str(root)
     if args.command == "prep":
-        prepare(data, locations, families, datasets, profile)
+        prepare(data, locations, families, datasets, profile, prep_mode(local=args.local, no_cache=args.no_cache, rebuild_sources=args.rebuild_sources, profile=profile), args.force_upload)
     elif args.command == "run":
         run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s}, args.database_datasets, [c for c in args.bloom_attributes.split(",") if c] if args.bloom_attributes else None)
     else:

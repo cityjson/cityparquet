@@ -695,7 +695,7 @@ usecase-energy-features input output="features.parquet":
 # `tomllib`), so it does not depend on the system `python3`. `--project`, not
 # `--directory`: relative paths such as `--data-root benchmark/runs` stay
 # relative to the repository root.
-[doc("Fetch and prepare selected benchmark inputs without measuring")]
+[doc("Obtain the prepared corpus: download it verified from the hosted v<chain>/ (default), or --no-cache / --rebuild-sources (build and upload), or --local (build here, no bucket)")]
 [positional-arguments]
 bench-prep *ARGS:
     uv run --project {{PLOT}} python benchmark/scripts/bench_suite.py prep "$@"
