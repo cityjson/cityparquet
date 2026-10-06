@@ -151,13 +151,19 @@ impl BloomPrune {
     }
 }
 
-/// What the bloom filters did for one lookup or filter.
+/// What the row-group filters did for one lookup or filter: the bloom
+/// filters first, then the min/max column statistics on the row groups the
+/// bloom filters kept ([`attr_row_groups`]'s rules). A row group counts once,
+/// against the filter that dropped it first, so
+/// `row_groups_total - bloom_pruned - stats_pruned` row groups are read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LookupStats {
     pub row_groups_total: usize,
     pub bloom_pruned: usize,
     /// [`BloomPrune::filter_bytes`].
     pub filter_bytes: u64,
+    /// Row groups the bloom filters kept whose statistics rule out a match.
+    pub stats_pruned: usize,
 }
 
 impl LookupStats {
@@ -166,7 +172,27 @@ impl LookupStats {
             row_groups_total: prune.total,
             bloom_pruned: prune.pruned,
             filter_bytes: prune.filter_bytes,
+            stats_pruned: 0,
         }
+    }
+
+    /// Applies statistics pruning to the row groups `prune` kept, returning
+    /// the row groups to read with the combined counts.
+    pub(crate) fn from_prune_and_statistics(
+        prune: BloomPrune,
+        metadata: &ParquetMetaData,
+        column: &str,
+        pred: &AttrPredicate,
+    ) -> (Vec<usize>, Self) {
+        let mut stats = Self::from_prune(&prune);
+        let survivors = attr_row_groups(metadata, column, pred);
+        let keep: Vec<usize> = prune
+            .keep
+            .into_iter()
+            .filter(|rg| survivors.binary_search(rg).is_ok())
+            .collect();
+        stats.stats_pruned = stats.row_groups_total - stats.bloom_pruned - keep.len();
+        (keep, stats)
     }
 }
 
@@ -175,6 +201,7 @@ impl std::ops::AddAssign for LookupStats {
         self.row_groups_total += other.row_groups_total;
         self.bloom_pruned += other.bloom_pruned;
         self.filter_bytes += other.filter_bytes;
+        self.stats_pruned += other.stats_pruned;
     }
 }
 
@@ -469,6 +496,132 @@ fn statistics_min_max(stats: &Statistics) -> Option<(f64, f64)> {
         Statistics::Double(v) => Some((*v.min_opt()?, *v.max_opt()?)),
         _ => None,
     }
+}
+
+/// The result of a visit-based bbox query: the native visit of every row
+/// whose `bbox` intersects the window, plus the row-group pruning counts
+/// [`BBoxQueryResult`] reports.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BBoxVisitResult {
+    pub totals: crate::visit::VisitTotals,
+    pub row_groups_total: usize,
+    pub row_groups_touched: usize,
+}
+
+/// The string-equality predicate a lookup by `value` applies to the
+/// statistics.
+pub(crate) fn eq_str(value: &str) -> AttrPredicate {
+    AttrPredicate::Eq(serde_json::Value::String(value.to_string()))
+}
+
+/// Visits every batch of `batches` natively into one [`VisitTotals`],
+/// stopping after the first batch that holds a row when `first_only`.
+/// Shared by the sync and async visit queries, which differ only in how the
+/// batches arrive.
+pub(crate) fn visit_into(
+    totals: &mut crate::visit::VisitTotals,
+    batch: &RecordBatch,
+    first_only: bool,
+) -> Result<bool> {
+    crate::visit::visit_batch(batch, totals)?;
+    Ok(first_only && totals.objects > 0)
+}
+
+/// The row groups of `metadata` whose `column` statistics cannot rule out a
+/// row satisfying `pred` — a superset of the matching row groups, never a
+/// subset. The rules:
+///
+/// - no statistics for the top-level `column` chunk: keep;
+/// - every value of the chunk null (`null_count == num_rows`): prune, since a
+///   null never matches;
+/// - `Int64`/`Double` statistics: keep unless `[min, max]` and the
+///   predicate's interval are disjoint, compared as `f64` exactly as
+///   [`evaluate_attr_predicate`] compares values (the `i64` to `f64` cast is
+///   monotone, so it cannot move a bound past a value); a NaN on either side
+///   keeps the group;
+/// - byte-array (string) statistics under `Eq(<string>)`: prune when the
+///   value sorts below `min` or, only when `max` is exact, above `max`. A
+///   truncated `min` is a prefix of the true minimum and so still a lower
+///   bound; an inexact (truncated) `max` is not trusted;
+/// - anything else: keep.
+///
+/// Page-index pruning is out of scope.
+pub(crate) fn attr_row_groups(
+    metadata: &ParquetMetaData,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Vec<usize> {
+    (0..metadata.num_row_groups())
+        .filter(|&i| row_group_may_match(metadata.row_group(i), column, pred))
+        .collect()
+}
+
+fn row_group_may_match(rg: &RowGroupMetaData, column: &str, pred: &AttrPredicate) -> bool {
+    let Some(stats) = column_statistics(rg, column) else {
+        return true;
+    };
+    if stats.null_count_opt() == Some(rg.num_rows() as u64) {
+        return false;
+    }
+    match stats {
+        Statistics::Int64(_) | Statistics::Double(_) => {
+            let Some((min, max)) = statistics_min_max(stats) else {
+                return true;
+            };
+            let (lo, hi) = match pred {
+                AttrPredicate::Ge(b) => (*b, f64::INFINITY),
+                AttrPredicate::Le(b) => (f64::NEG_INFINITY, *b),
+                AttrPredicate::Range(l, h) => (*l, *h),
+                AttrPredicate::Eq(v) => match v.as_f64() {
+                    Some(x) => (x, x),
+                    None => return true,
+                },
+            };
+            if [min, max, lo, hi].iter().any(|v| v.is_nan()) {
+                return true;
+            }
+            !(max < lo || min > hi)
+        }
+        Statistics::ByteArray(s) => {
+            let AttrPredicate::Eq(serde_json::Value::String(want)) = pred else {
+                return true;
+            };
+            let want = want.as_bytes();
+            if s.min_bytes_opt().is_some_and(|min| want < min) {
+                return false;
+            }
+            !(s.max_is_exact() && s.max_bytes_opt().is_some_and(|max| want > max))
+        }
+        _ => true,
+    }
+}
+
+/// The bbox-intersection [`RowFilter`] the visit-based bbox query installs:
+/// the predicate reads only the `bbox` struct, so a row outside the window
+/// never has its geometry or attribute columns decoded.
+pub(crate) fn bbox_row_filter(
+    parquet_schema: &SchemaDescriptor,
+    query_bbox: [f64; 6],
+) -> RowFilter {
+    let predicate_mask = ProjectionMask::columns(parquet_schema, ["bbox"]);
+    let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
+        let bbox_col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .ok_or_else(|| {
+                arrow_schema::ArrowError::SchemaError("'bbox' column is not a struct".to_string())
+            })?;
+        (0..bbox_col.len())
+            .map(|row| {
+                Ok(Some(row_bbox(bbox_col, row)?.is_some_and(|(lo, hi)| {
+                    box_intersects_query(lo, hi, &query_bbox)
+                })))
+            })
+            .collect::<Result<BooleanArray>>()
+            .map_err(arrow_schema::ArrowError::from)
+    });
+    RowFilter::new(vec![Box::new(predicate_fn)])
 }
 
 /// Fail fast with a clear error when `column` is not in the file's schema

@@ -405,10 +405,13 @@ fn a_miss_is_pruned_by_the_filters_and_unpruned_without_them() {
     assert!(found.is_none());
     assert_eq!(
         stats,
+        // Without filters the min/max statistics still rule the miss out:
+        // it sorts above every row group's exact `id` maximum.
         cityparquet::query::LookupStats {
             row_groups_total: 35,
             bloom_pruned: 0,
             filter_bytes: 0,
+            stats_pruned: 35,
         }
     );
 }

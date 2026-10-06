@@ -45,9 +45,10 @@ use crate::query_core;
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 
 pub use crate::query_core::{
-    AttrPredicate, AttrStats, BBoxQueryResult, BloomPrune, BloomTarget, BloomTargets,
-    FullReadResult, LookupStats, bloom_targets,
+    AttrPredicate, AttrStats, BBoxQueryResult, BBoxVisitResult, BloomPrune, BloomTarget,
+    BloomTargets, FullReadResult, LookupStats, bloom_targets,
 };
+pub use crate::visit::VisitTotals;
 
 /// Opens `table_path`, scans every row group single-threaded (the
 /// `parquet` crate's synchronous [`ParquetRecordBatchReaderBuilder`] path
@@ -69,6 +70,166 @@ pub fn full_read(table_path: &Path, meta: &CityMetadata) -> Result<FullReadResul
         query_core::accumulate_full_read(&mut acc, &batch?, meta)?;
     }
     Ok(acc)
+}
+
+/// Scans every row group of `table_path` single-threaded and visits every
+/// object natively ([`crate::visit::visit_batch`]): every WKB vertex, every
+/// semantic reference and semantic-surface object, and every attribute value,
+/// read in place from Arrow and WKB rather than decoded into CityJSON-shaped
+/// objects. Appearance is not read.
+pub fn full_read_visit(table_path: &Path) -> Result<VisitTotals> {
+    let file = File::open(table_path)?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(CityParquetError::parquet_from)?
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let mut totals = VisitTotals::default();
+    for batch in reader {
+        crate::visit::visit_batch(&batch.map_err(CityParquetError::parquet_from)?, &mut totals)?;
+    }
+    Ok(totals)
+}
+
+/// Visits every row of a row-filtered reader natively; see
+/// `query_core::visit_into`.
+fn visit_all(
+    reader: impl Iterator<
+        Item = std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>,
+    >,
+    first_only: bool,
+) -> Result<VisitTotals> {
+    let mut totals = VisitTotals::default();
+    for batch in reader {
+        let batch = batch.map_err(CityParquetError::parquet_from)?;
+        if query_core::visit_into(&mut totals, &batch, first_only)? {
+            break;
+        }
+    }
+    Ok(totals)
+}
+
+/// [`bbox_query`] that VISITS every matching object natively rather than
+/// returning ids. Row groups are pruned as in [`bbox_query`]; within the
+/// survivors a `RowFilter` reads the `bbox` struct alone, so rows outside
+/// the window never have their geometry or attribute columns decoded.
+pub fn bbox_query_visit(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxVisitResult> {
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
+    let (row_groups_total, row_groups_touched) =
+        query_core::bbox_row_group_counts(builder.metadata(), &query_bbox);
+    let row_filter = query_core::bbox_row_filter(builder.parquet_schema(), query_bbox);
+    let reader = builder
+        .with_bbox_row_groups(query_bbox)?
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    Ok(BBoxVisitResult {
+        totals: visit_all(reader, false)?,
+        row_groups_total,
+        row_groups_touched,
+    })
+}
+
+/// The row groups to read for `pred` on `column`: the bloom filters drop
+/// every row group that cannot hold `probe` (where the file carries them and
+/// a probe exists), then the min/max statistics drop the survivors that
+/// cannot satisfy `pred`.
+fn prune_row_groups(
+    file: &File,
+    metadata: &parquet::file::metadata::ParquetMetaData,
+    column: &str,
+    probe: Option<&str>,
+    pred: &AttrPredicate,
+) -> Result<(Vec<usize>, LookupStats)> {
+    let candidates: Vec<usize> = (0..metadata.num_row_groups()).collect();
+    let prune = match probe {
+        Some(value) => bloom_keep_row_groups(
+            file,
+            metadata,
+            &query_core::top_level_path(column),
+            &[value],
+            &candidates,
+        )?,
+        None => BloomPrune::unpruned(&candidates),
+    };
+    Ok(LookupStats::from_prune_and_statistics(
+        prune, metadata, column, pred,
+    ))
+}
+
+/// [`attr_filter_with_stats`] that VISITS every matching object natively;
+/// `totals.objects` is the count. Row groups are pruned exactly as in
+/// [`attr_filter_with_stats`].
+pub fn attr_filter_visit(
+    table_path: &Path,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<(VisitTotals, LookupStats)> {
+    let file = File::open(table_path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
+        .map_err(CityParquetError::parquet_from)?;
+    let probe = query_core::string_probe(builder.schema(), builder.parquet_schema(), column, pred)?;
+    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)?;
+    let (row_groups, stats) = prune_row_groups(&file, builder.metadata(), column, probe, pred)?;
+    let reader = builder
+        .with_row_filter(row_filter)
+        .with_row_groups(row_groups)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    Ok((visit_all(reader, false)?, stats))
+}
+
+/// [`id_lookup_with_stats`] that VISITS the matching object natively instead
+/// of decoding it; `totals.objects` is 0 or 1. The `id` bloom filters, then
+/// the `id` statistics, prune the row groups; the read stops at the first
+/// batch holding a match.
+pub fn id_lookup_visit(table_path: &Path, id: &str) -> Result<(VisitTotals, LookupStats)> {
+    let file = File::open(table_path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
+        .map_err(CityParquetError::parquet_from)?;
+    let (row_groups, stats) = prune_row_groups(
+        &file,
+        builder.metadata(),
+        "id",
+        Some(id),
+        &query_core::eq_str(id),
+    )?;
+    let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id)?;
+    let reader = builder
+        .with_row_groups(row_groups)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    Ok((visit_all(reader, true)?, stats))
+}
+
+/// [`feature_lookup_with_stats`] that VISITS every matching object natively;
+/// `totals.objects` is the feature's row count. The `feature_id` bloom
+/// filters, then its statistics, prune the row groups; every survivor is
+/// read to the end.
+pub fn feature_lookup_visit(
+    table_path: &Path,
+    feature_id: &str,
+) -> Result<(VisitTotals, LookupStats)> {
+    let file = File::open(table_path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
+        .map_err(CityParquetError::parquet_from)?;
+    let (row_groups, stats) = prune_row_groups(
+        &file,
+        builder.metadata(),
+        "feature_id",
+        Some(feature_id),
+        &query_core::eq_str(feature_id),
+    )?;
+    let row_filter =
+        query_core::utf8_eq_row_filter(builder.parquet_schema(), "feature_id", feature_id)?;
+    let reader = builder
+        .with_row_groups(row_groups)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    Ok((visit_all(reader, false)?, stats))
 }
 
 /// The table's row count straight from Parquet file metadata — O(1), no
@@ -131,7 +292,9 @@ pub fn attr_filter(table_path: &Path, column: &str, pred: &AttrPredicate) -> Res
 /// Opens `table_path`, restricts the scan to `column` alone (selected by its
 /// exact name) and applies `pred` as a Parquet
 /// [`RowFilter`](parquet::arrow::arrow_reader::RowFilter) (`ArrowPredicateFn`)
-/// so only `column` is ever decoded. Column statistics prune nothing here.
+/// so only `column` is ever decoded. Row groups whose `column` statistics
+/// rule out `pred` are skipped ([`LookupStats::stats_pruned`]; rules on
+/// `query_core::attr_row_groups`, page-index pruning is out of scope).
 /// The predicate's type rules are checked on the column's own type first, so
 /// a mismatch fails the same way with or without filters. For a string
 /// equality on a UTF-8 string column, the column's bloom filters — where the
@@ -152,23 +315,12 @@ pub fn attr_filter_with_stats(
     let probe = query_core::string_probe(builder.schema(), builder.parquet_schema(), column, pred)?;
     let output_mask = query_core::root_mask(builder.parquet_schema(), column)?;
     let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)?;
-    let candidates: Vec<usize> = (0..builder.metadata().num_row_groups()).collect();
-    let prune = match probe {
-        Some(value) => bloom_keep_row_groups(
-            &file,
-            builder.metadata(),
-            &query_core::top_level_path(column),
-            &[value],
-            &candidates,
-        )?,
-        None => BloomPrune::unpruned(&candidates),
-    };
-    let stats = LookupStats::from_prune(&prune);
+    let (row_groups, stats) = prune_row_groups(&file, builder.metadata(), column, probe, pred)?;
 
     let reader = builder
         .with_projection(output_mask)
         .with_row_filter(row_filter)
-        .with_row_groups(prune.keep)
+        .with_row_groups(row_groups)
         .build()
         .map_err(CityParquetError::parquet_from)?;
     let mut count = 0u64;
@@ -281,19 +433,17 @@ pub fn id_lookup_with_stats(
     let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
         .map_err(CityParquetError::parquet_from)?;
     let schema = builder.cityparquet_arrow_schema()?;
-    let candidates: Vec<usize> = (0..builder.metadata().num_row_groups()).collect();
-    let prune = bloom_keep_row_groups(
+    let (row_groups, stats) = prune_row_groups(
         &file,
         builder.metadata(),
-        &query_core::top_level_path("id"),
-        &[id],
-        &candidates,
+        "id",
+        Some(id),
+        &query_core::eq_str(id),
     )?;
-    let stats = LookupStats::from_prune(&prune);
 
     let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id)?;
     let parquet_reader = builder
-        .with_row_groups(prune.keep)
+        .with_row_groups(row_groups)
         .with_row_filter(row_filter)
         .build()
         .map_err(CityParquetError::parquet_from)?;
@@ -331,20 +481,18 @@ pub fn feature_lookup_with_stats(
     let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
         .map_err(CityParquetError::parquet_from)?;
     let schema = builder.cityparquet_arrow_schema()?;
-    let candidates: Vec<usize> = (0..builder.metadata().num_row_groups()).collect();
-    let prune = bloom_keep_row_groups(
+    let (row_groups, stats) = prune_row_groups(
         &file,
         builder.metadata(),
-        &query_core::top_level_path("feature_id"),
-        &[feature_id],
-        &candidates,
+        "feature_id",
+        Some(feature_id),
+        &query_core::eq_str(feature_id),
     )?;
-    let stats = LookupStats::from_prune(&prune);
 
     let row_filter =
         query_core::utf8_eq_row_filter(builder.parquet_schema(), "feature_id", feature_id)?;
     let parquet_reader = builder
-        .with_row_groups(prune.keep)
+        .with_row_groups(row_groups)
         .with_row_filter(row_filter)
         .build()
         .map_err(CityParquetError::parquet_from)?;

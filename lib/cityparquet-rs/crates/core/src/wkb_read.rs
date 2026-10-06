@@ -277,6 +277,130 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// Callbacks for [`visit_wkb`], the in-place WKB walk. Every method has an
+/// empty default, so a visitor overrides only what it consumes.
+///
+/// [`visit_wkb`] reports **every stored vertex**, the WKB ring-closing vertex
+/// included: equal work means every coordinate byte is read. A ring of `n`
+/// stored points therefore yields `n` [`coord`](Self::coord) calls and then
+/// one [`ring_end`](Self::ring_end) with `n`, where the owned decoder
+/// ([`wkb_to_geometry`]) keeps `n - 1` (it strips the closing vertex).
+pub trait WkbVisitor {
+    /// One stored XYZ vertex, in buffer order.
+    fn coord(&mut self, _xyz: [f64; 3]) {}
+    /// A ring (or linestring) of `n_points` stored points has ended.
+    fn ring_end(&mut self, _n_points: usize) {}
+    /// A polygon (MultiPolygon member or PolyhedralSurface face) of
+    /// `n_rings` rings has ended.
+    fn polygon_end(&mut self, _n_rings: usize) {}
+}
+
+impl Cursor<'_> {
+    fn visit_point_member<V: WkbVisitor>(&mut self, v: &mut V) -> Result<()> {
+        let tc = self.read_header()?;
+        self.expect_type(tc, POINT_Z, "PointZ")?;
+        v.coord(self.read_raw_coord()?);
+        Ok(())
+    }
+
+    fn visit_linestring_member<V: WkbVisitor>(&mut self, v: &mut V) -> Result<()> {
+        let tc = self.read_header()?;
+        self.expect_type(tc, LINESTRING_Z, "LineStringZ")?;
+        let n = self.read_u32()? as usize;
+        for _ in 0..n {
+            v.coord(self.read_raw_coord()?);
+        }
+        v.ring_end(n);
+        Ok(())
+    }
+
+    /// The validation [`Cursor::parse_polygon_body`] applies — zero rings,
+    /// an empty ring, an unclosed ring (bitwise) and fewer than three
+    /// distinct points are malformed — without interning or allocating.
+    fn visit_polygon_member<V: WkbVisitor>(&mut self, v: &mut V) -> Result<()> {
+        let tc = self.read_header()?;
+        self.expect_type(tc, POLYGON_Z, "PolygonZ")?;
+        let n_rings = self.read_u32()? as usize;
+        if n_rings == 0 {
+            return Err(geometry_err("polygon has zero rings"));
+        }
+        for _ in 0..n_rings {
+            let n_points = self.read_u32()? as usize;
+            if n_points == 0 {
+                return Err(geometry_err("polygon ring has zero points"));
+            }
+            let mut first = [0u64; 3];
+            let mut last = [0u64; 3];
+            for i in 0..n_points {
+                let c = self.read_raw_coord()?;
+                last = [c[0].to_bits(), c[1].to_bits(), c[2].to_bits()];
+                if i == 0 {
+                    first = last;
+                }
+                v.coord(c);
+            }
+            if first != last {
+                return Err(geometry_err(format!(
+                    "unclosed WKB ring: last of {n_points} points does not repeat the first"
+                )));
+            }
+            if n_points < 4 {
+                return Err(geometry_err(format!(
+                    "polygon ring has {} points after stripping the closing vertex, need at least 3",
+                    n_points - 1
+                )));
+            }
+            v.ring_end(n_points);
+        }
+        v.polygon_end(n_rings);
+        Ok(())
+    }
+
+    fn visit_body<V: WkbVisitor>(&mut self, type_code: u32, depth: usize, v: &mut V) -> Result<()> {
+        if depth > MAX_DEPTH {
+            return Err(geometry_err(format!(
+                "WKB geometry nesting exceeds the maximum depth of {MAX_DEPTH}"
+            )));
+        }
+        let n = self.read_u32()? as usize;
+        for _ in 0..n {
+            match type_code {
+                MULTIPOINT_Z => self.visit_point_member(v)?,
+                MULTILINESTRING_Z => self.visit_linestring_member(v)?,
+                MULTIPOLYGON_Z | POLYHEDRALSURFACE_Z => self.visit_polygon_member(v)?,
+                GEOMETRYCOLLECTION_Z => {
+                    let member_tc = self.read_header()?;
+                    self.visit_body(member_tc, depth + 1, v)?;
+                }
+                other => return Err(geometry_err(format!("unsupported WKB type code {other}"))),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Walks a complete WKB buffer in place, handing every vertex, ring and
+/// polygon to `visitor` without building an owned geometry. It accepts
+/// exactly what [`wkb_to_geometry`] accepts — the containers
+/// [`crate::wkb_write`] emits (MultiPointZ, MultiLineStringZ, MultiPolygonZ,
+/// PolyhedralSurfaceZ, and the GeometryCollectionZ of PolyhedralSurfaces a
+/// MultiSolid/CompositeSolid becomes) with their PointZ/LineStringZ/PolygonZ
+/// members, little-endian only — and reports malformed or trailing input as
+/// a `CityParquetError::Geometry`, never a panic.
+pub fn visit_wkb<V: WkbVisitor>(bytes: &[u8], visitor: &mut V) -> Result<()> {
+    let mut cursor = Cursor::new(bytes);
+    let type_code = cursor.read_header()?;
+    cursor.visit_body(type_code, 0, visitor)?;
+    if cursor.pos != bytes.len() {
+        return Err(geometry_err(format!(
+            "trailing bytes after WKB geometry: consumed {} of {}",
+            cursor.pos,
+            bytes.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Parses a complete WKB buffer (as produced by [`crate::wkb_write`]) into a
 /// [`DecodedGeometry`] with a deduplicated coordinate pool. Little-endian
 /// only; supports the container types the writer emits (MultiPoint,
