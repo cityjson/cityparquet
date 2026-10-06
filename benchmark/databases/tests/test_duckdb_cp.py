@@ -280,7 +280,10 @@ _REAL_PACKAGE = (
 
 @pytest.mark.skipif(
     not (_REAL_PACKAGE / "metadata.json").exists(),
-    reason=f"{_REAL_PACKAGE} not prepared; run `just bench-prep` first",
+    reason=(
+        f"{_REAL_PACKAGE} not prepared; cut it with `just fetch-3dbag` at "
+        "SIZES=1000 and prepare it with `just readbench-prepare`"
+    ),
 )
 def test_both_parts_per_building_forms_return_identical_row_sets():
     from citybench.scenarios.sql_duckdb import sql_for
