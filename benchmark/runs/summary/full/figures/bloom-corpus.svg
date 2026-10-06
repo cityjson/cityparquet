@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
   "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="728.39952pt" height="382.29976pt" viewBox="0 0 728.39952 382.29976" xmlns="http://www.w3.org/2000/svg" version="1.1">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="728.39952pt" height="386.12376pt" viewBox="0 0 728.39952 386.12376" xmlns="http://www.w3.org/2000/svg" version="1.1">
  <metadata>
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
@@ -20,8 +20,8 @@
  </defs>
  <g id="figure_1">
   <g id="patch_1">
-   <path d="M 0 382.29976 
-L 728.39952 382.29976 
+   <path d="M 0 386.12376 
+L 728.39952 386.12376 
 L 728.39952 0 
 L 0 0 
 z
@@ -1364,72 +1364,72 @@ z
    <g id="patch_16">
     <path d="M 278.239978 144.912826 
 L 294.439942 144.912826 
-L 294.439942 110.328208 
-L 278.239978 110.328208 
+L 294.439942 110.907461 
+L 278.239978 110.907461 
 z
 " clip-path="url(#pa43d0898a0)" style="fill: #666666"/>
    </g>
    <g id="patch_17">
     <path d="M 318.739887 144.912826 
 L 334.939851 144.912826 
-L 334.939851 129.671763 
-L 318.739887 129.671763 
+L 334.939851 130.171473 
+L 318.739887 130.171473 
 z
 " clip-path="url(#pa43d0898a0)" style="fill: #666666"/>
    </g>
    <g id="patch_18">
     <path d="M 359.239796 144.912826 
 L 375.43976 144.912826 
-L 375.43976 119.266235 
-L 359.239796 119.266235 
+L 375.43976 119.082982 
+L 359.239796 119.082982 
 z
 " clip-path="url(#pa43d0898a0)" style="fill: #666666"/>
    </g>
    <g id="patch_19">
     <path d="M 399.739705 144.912826 
 L 415.939669 144.912826 
-L 415.939669 98.062477 
-L 399.739705 98.062477 
+L 415.939669 98.353307 
+L 399.739705 98.353307 
 z
 " clip-path="url(#pa43d0898a0)" style="fill: #666666"/>
    </g>
    <g id="patch_20">
     <path d="M 440.239615 144.912826 
 L 456.439578 144.912826 
-L 456.439578 95.222291 
-L 440.239615 95.222291 
+L 456.439578 91.913849 
+L 440.239615 91.913849 
 z
 " clip-path="url(#pa43d0898a0)" style="fill: #666666"/>
    </g>
    <g id="patch_21">
     <path d="M 294.439942 144.912826 
 L 310.639905 144.912826 
-L 310.639905 107.356413 
-L 294.439942 107.356413 
+L 310.639905 108.628482 
+L 294.439942 108.628482 
 z
 " clip-path="url(#pa43d0898a0)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_22">
     <path d="M 334.939851 144.912826 
 L 351.139815 144.912826 
-L 351.139815 129.813984 
-L 334.939851 129.813984 
+L 351.139815 129.57843 
+L 334.939851 129.57843 
 z
 " clip-path="url(#pa43d0898a0)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_23">
     <path d="M 375.43976 144.912826 
 L 391.639724 144.912826 
-L 391.639724 118.611025 
-L 375.43976 118.611025 
+L 391.639724 119.668259 
+L 375.43976 119.668259 
 z
 " clip-path="url(#pa43d0898a0)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_24">
     <path d="M 415.939669 144.912826 
 L 432.139633 144.912826 
-L 432.139633 97.379672 
-L 415.939669 97.379672 
+L 432.139633 98.437322 
+L 415.939669 98.437322 
 z
 " clip-path="url(#pa43d0898a0)" style="fill: #5f6e7a"/>
    </g>
@@ -1617,12 +1617,12 @@ z
     <g id="ytick_7">
      <g id="line2d_17">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="130.761421" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="130.792756" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_18">
       <!-- 0.02 -->
-      <g transform="translate(249.52 133.761421) scale(0.06 -0.06)">
+      <g transform="translate(249.52 133.792756) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -1633,12 +1633,12 @@ z
     <g id="ytick_8">
      <g id="line2d_18">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="116.610016" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="116.672686" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_19">
       <!-- 0.04 -->
-      <g transform="translate(249.52 119.610016) scale(0.06 -0.06)">
+      <g transform="translate(249.52 119.672686) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -1649,12 +1649,12 @@ z
     <g id="ytick_9">
      <g id="line2d_19">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="102.458611" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="102.552616" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_20">
       <!-- 0.06 -->
-      <g transform="translate(249.52 105.458611) scale(0.06 -0.06)">
+      <g transform="translate(249.52 105.552616) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -1665,12 +1665,12 @@ z
     <g id="ytick_10">
      <g id="line2d_20">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="88.307207" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="88.432546" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_21">
       <!-- 0.08 -->
-      <g transform="translate(249.52 91.307207) scale(0.06 -0.06)">
+      <g transform="translate(249.52 91.432546) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -1681,12 +1681,12 @@ z
     <g id="ytick_11">
      <g id="line2d_21">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="74.155802" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="74.312476" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_22">
       <!-- 0.10 -->
-      <g transform="translate(249.52 77.155802) scale(0.06 -0.06)">
+      <g transform="translate(249.52 77.312476) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-14" transform="translate(84 0)"/>
@@ -1697,12 +1697,12 @@ z
     <g id="ytick_12">
      <g id="line2d_22">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="60.004397" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="60.192406" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_23">
       <!-- 0.12 -->
-      <g transform="translate(249.52 63.004397) scale(0.06 -0.06)">
+      <g transform="translate(249.52 63.192406) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-14" transform="translate(84 0)"/>
@@ -1984,72 +1984,72 @@ z
    <g id="patch_29">
     <path d="M 517.079978 144.912826 
 L 533.279942 144.912826 
-L 533.279942 136.55445 
-L 517.079978 136.55445 
+L 533.279942 136.930215 
+L 517.079978 136.930215 
 z
 " clip-path="url(#p5434fb624d)" style="fill: #666666"/>
    </g>
    <g id="patch_30">
     <path d="M 557.579887 144.912826 
 L 573.779851 144.912826 
-L 573.779851 138.539096 
-L 557.579887 138.539096 
+L 573.779851 139.031992 
+L 557.579887 139.031992 
 z
 " clip-path="url(#p5434fb624d)" style="fill: #666666"/>
    </g>
    <g id="patch_31">
     <path d="M 598.079796 144.912826 
 L 614.27976 144.912826 
-L 614.27976 140.124736 
-L 598.079796 140.124736 
+L 614.27976 140.104623 
+L 598.079796 140.104623 
 z
 " clip-path="url(#p5434fb624d)" style="fill: #666666"/>
    </g>
    <g id="patch_32">
     <path d="M 638.579705 144.912826 
 L 654.779669 144.912826 
-L 654.779669 139.808855 
-L 638.579705 139.808855 
+L 654.779669 139.841642 
+L 638.579705 139.841642 
 z
 " clip-path="url(#p5434fb624d)" style="fill: #666666"/>
    </g>
    <g id="patch_33">
     <path d="M 679.079615 144.912826 
 L 695.279578 144.912826 
-L 695.279578 137.18829 
-L 679.079615 137.18829 
+L 695.279578 137.170419 
+L 679.079615 137.170419 
 z
 " clip-path="url(#p5434fb624d)" style="fill: #666666"/>
    </g>
    <g id="patch_34">
     <path d="M 533.279942 144.912826 
 L 549.479905 144.912826 
-L 549.479905 136.334164 
-L 533.279942 136.334164 
+L 549.479905 136.180616 
+L 533.279942 136.180616 
 z
 " clip-path="url(#p5434fb624d)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_35">
     <path d="M 573.779851 144.912826 
 L 589.979815 144.912826 
-L 589.979815 136.870331 
-L 573.779851 136.870331 
+L 589.979815 137.23254 
+L 573.779851 137.23254 
 z
 " clip-path="url(#p5434fb624d)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_36">
     <path d="M 614.27976 144.912826 
 L 630.479724 144.912826 
-L 630.479724 138.842508 
-L 614.27976 138.842508 
+L 630.479724 139.027851 
+L 614.27976 139.027851 
 z
 " clip-path="url(#p5434fb624d)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_37">
     <path d="M 654.779669 144.912826 
 L 670.979633 144.912826 
-L 670.979633 126.936706 
-L 654.779669 126.936706 
+L 670.979633 126.516585 
+L 654.779669 126.516585 
 z
 " clip-path="url(#p5434fb624d)" style="fill: #5f6e7a"/>
    </g>
@@ -2224,12 +2224,12 @@ z
     <g id="ytick_14">
      <g id="line2d_29">
       <g>
-       <use xlink:href="#m0b7754accc" x="507.36" y="124.131185" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="507.36" y="124.205665" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_31">
       <!-- 0.01 -->
-      <g transform="translate(488.36 127.131185) scale(0.06 -0.06)">
+      <g transform="translate(488.36 127.205665) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -2240,12 +2240,12 @@ z
     <g id="ytick_15">
      <g id="line2d_30">
       <g>
-       <use xlink:href="#m0b7754accc" x="507.36" y="103.349544" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="507.36" y="103.498505" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_32">
       <!-- 0.02 -->
-      <g transform="translate(488.36 106.349544) scale(0.06 -0.06)">
+      <g transform="translate(488.36 106.498505) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -2256,12 +2256,12 @@ z
     <g id="ytick_16">
      <g id="line2d_31">
       <g>
-       <use xlink:href="#m0b7754accc" x="507.36" y="82.567902" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="507.36" y="82.791345" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_33">
       <!-- 0.03 -->
-      <g transform="translate(488.36 85.567902) scale(0.06 -0.06)">
+      <g transform="translate(488.36 85.791345) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -2272,12 +2272,12 @@ z
     <g id="ytick_17">
      <g id="line2d_32">
       <g>
-       <use xlink:href="#m0b7754accc" x="507.36" y="61.786261" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="507.36" y="62.084184" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_34">
       <!-- 0.04 -->
-      <g transform="translate(488.36 64.786261) scale(0.06 -0.06)">
+      <g transform="translate(488.36 65.084184) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -2346,74 +2346,74 @@ z
    <g id="patch_42">
     <path d="M 35.919978 310.335346 
 L 52.119942 310.335346 
-L 52.119942 270.541297 
-L 35.919978 270.541297 
+L 52.119942 269.688497 
+L 35.919978 269.688497 
 z
-" clip-path="url(#p1a58d9c379)" style="fill: #666666"/>
+" clip-path="url(#p5004c063c4)" style="fill: #666666"/>
    </g>
    <g id="patch_43">
     <path d="M 76.419887 310.335346 
 L 92.619851 310.335346 
-L 92.619851 293.876766 
-L 76.419887 293.876766 
+L 92.619851 293.61054 
+L 76.419887 293.61054 
 z
-" clip-path="url(#p1a58d9c379)" style="fill: #666666"/>
+" clip-path="url(#p5004c063c4)" style="fill: #666666"/>
    </g>
    <g id="patch_44">
     <path d="M 116.919796 310.335346 
 L 133.11976 310.335346 
-L 133.11976 282.032849 
-L 116.919796 282.032849 
+L 133.11976 281.413595 
+L 116.919796 281.413595 
 z
-" clip-path="url(#p1a58d9c379)" style="fill: #666666"/>
+" clip-path="url(#p5004c063c4)" style="fill: #666666"/>
    </g>
    <g id="patch_45">
     <path d="M 157.419705 310.335346 
 L 173.619669 310.335346 
-L 173.619669 259.171569 
-L 157.419705 259.171569 
+L 173.619669 258.558678 
+L 157.419705 258.558678 
 z
-" clip-path="url(#p1a58d9c379)" style="fill: #666666"/>
+" clip-path="url(#p5004c063c4)" style="fill: #666666"/>
    </g>
    <g id="patch_46">
     <path d="M 197.919615 310.335346 
 L 214.119578 310.335346 
-L 214.119578 256.287887 
-L 197.919615 256.287887 
+L 214.119578 255.805713 
+L 197.919615 255.805713 
 z
-" clip-path="url(#p1a58d9c379)" style="fill: #666666"/>
+" clip-path="url(#p5004c063c4)" style="fill: #666666"/>
    </g>
    <g id="patch_47">
     <path d="M 52.119942 310.335346 
 L 68.319905 310.335346 
-L 68.319905 269.118732 
-L 52.119942 269.118732 
+L 68.319905 269.667405 
+L 52.119942 269.667405 
 z
-" clip-path="url(#p1a58d9c379)" style="fill: #5f6e7a"/>
+" clip-path="url(#p5004c063c4)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_48">
     <path d="M 92.619851 310.335346 
 L 108.819815 310.335346 
-L 108.819815 293.630034 
-L 92.619851 293.630034 
+L 108.819815 293.303527 
+L 92.619851 293.303527 
 z
-" clip-path="url(#p1a58d9c379)" style="fill: #5f6e7a"/>
+" clip-path="url(#p5004c063c4)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_49">
     <path d="M 133.11976 310.335346 
 L 149.319724 310.335346 
-L 149.319724 282.64968 
-L 133.11976 282.64968 
+L 149.319724 283.043187 
+L 133.11976 283.043187 
 z
-" clip-path="url(#p1a58d9c379)" style="fill: #5f6e7a"/>
+" clip-path="url(#p5004c063c4)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_50">
     <path d="M 173.619669 310.335346 
 L 189.819633 310.335346 
-L 189.819633 258.091345 
-L 173.619669 258.091345 
+L 189.819633 258.634455 
+L 173.619669 258.634455 
 z
-" clip-path="url(#p1a58d9c379)" style="fill: #5f6e7a"/>
+" clip-path="url(#p5004c063c4)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_51">
     <path d="M 214.119578 310.335346 
@@ -2421,7 +2421,7 @@ L 230.319542 310.335346
 L 230.319542 224.247397 
 L 214.119578 224.247397 
 z
-" clip-path="url(#p1a58d9c379)" style="fill: #5f6e7a"/>
+" clip-path="url(#p5004c063c4)" style="fill: #5f6e7a"/>
    </g>
    <g id="matplotlib.axis_7">
     <g id="xtick_16">
@@ -2586,12 +2586,12 @@ z
     <g id="ytick_19">
      <g id="line2d_39">
       <g>
-       <use xlink:href="#m0b7754accc" x="26.2" y="294.914583" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="26.2" y="294.711257" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_42">
       <!-- 0.02 -->
-      <g transform="translate(7.2 297.914583) scale(0.06 -0.06)">
+      <g transform="translate(7.2 297.711257) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -2602,12 +2602,12 @@ z
     <g id="ytick_20">
      <g id="line2d_40">
       <g>
-       <use xlink:href="#m0b7754accc" x="26.2" y="279.493821" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="26.2" y="279.087168" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_43">
       <!-- 0.04 -->
-      <g transform="translate(7.2 282.493821) scale(0.06 -0.06)">
+      <g transform="translate(7.2 282.087168) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -2618,12 +2618,12 @@ z
     <g id="ytick_21">
      <g id="line2d_41">
       <g>
-       <use xlink:href="#m0b7754accc" x="26.2" y="264.073058" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="26.2" y="263.463079" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_44">
       <!-- 0.06 -->
-      <g transform="translate(7.2 267.073058) scale(0.06 -0.06)">
+      <g transform="translate(7.2 266.463079) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -2634,12 +2634,12 @@ z
     <g id="ytick_22">
      <g id="line2d_42">
       <g>
-       <use xlink:href="#m0b7754accc" x="26.2" y="248.652296" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="26.2" y="247.83899" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_45">
       <!-- 0.08 -->
-      <g transform="translate(7.2 251.652296) scale(0.06 -0.06)">
+      <g transform="translate(7.2 250.83899) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -2650,12 +2650,12 @@ z
     <g id="ytick_23">
      <g id="line2d_43">
       <g>
-       <use xlink:href="#m0b7754accc" x="26.2" y="233.231534" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="26.2" y="232.214902" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_46">
       <!-- 0.10 -->
-      <g transform="translate(7.2 236.231534) scale(0.06 -0.06)">
+      <g transform="translate(7.2 235.214902) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-14" transform="translate(84 0)"/>
@@ -2733,74 +2733,74 @@ z
    <g id="patch_55">
     <path d="M 278.239978 310.335346 
 L 294.439942 310.335346 
-L 294.439942 298.170818 
-L 278.239978 298.170818 
+L 294.439942 298.064628 
+L 278.239978 298.064628 
 z
-" clip-path="url(#p26816c6f60)" style="fill: #666666"/>
+" clip-path="url(#p6b3d2b6b9e)" style="fill: #666666"/>
    </g>
    <g id="patch_56">
     <path d="M 318.739887 310.335346 
 L 334.939851 310.335346 
-L 334.939851 300.257038 
-L 318.739887 300.257038 
+L 334.939851 300.64251 
+L 318.739887 300.64251 
 z
-" clip-path="url(#p26816c6f60)" style="fill: #666666"/>
+" clip-path="url(#p6b3d2b6b9e)" style="fill: #666666"/>
    </g>
    <g id="patch_57">
     <path d="M 359.239796 310.335346 
 L 375.43976 310.335346 
-L 375.43976 302.112586 
-L 359.239796 302.112586 
+L 375.43976 302.392143 
+L 359.239796 302.392143 
 z
-" clip-path="url(#p26816c6f60)" style="fill: #666666"/>
+" clip-path="url(#p6b3d2b6b9e)" style="fill: #666666"/>
    </g>
    <g id="patch_58">
     <path d="M 399.739705 310.335346 
 L 415.939669 310.335346 
-L 415.939669 301.926014 
-L 399.739705 301.926014 
+L 415.939669 302.348902 
+L 399.739705 302.348902 
 z
-" clip-path="url(#p26816c6f60)" style="fill: #666666"/>
+" clip-path="url(#p6b3d2b6b9e)" style="fill: #666666"/>
    </g>
    <g id="patch_59">
     <path d="M 440.239615 310.335346 
 L 456.439578 310.335346 
-L 456.439578 300.111172 
-L 440.239615 300.111172 
+L 456.439578 300.096997 
+L 440.239615 300.096997 
 z
-" clip-path="url(#p26816c6f60)" style="fill: #666666"/>
+" clip-path="url(#p6b3d2b6b9e)" style="fill: #666666"/>
    </g>
    <g id="patch_60">
     <path d="M 294.439942 310.335346 
 L 310.639905 310.335346 
-L 310.639905 297.638238 
-L 294.439942 297.638238 
+L 310.639905 298.403911 
+L 294.439942 298.403911 
 z
-" clip-path="url(#p26816c6f60)" style="fill: #5f6e7a"/>
+" clip-path="url(#p6b3d2b6b9e)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_61">
     <path d="M 334.939851 310.335346 
 L 351.139815 310.335346 
-L 351.139815 297.027637 
-L 334.939851 297.027637 
+L 351.139815 296.863834 
+L 334.939851 296.863834 
 z
-" clip-path="url(#p26816c6f60)" style="fill: #5f6e7a"/>
+" clip-path="url(#p6b3d2b6b9e)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_62">
     <path d="M 375.43976 310.335346 
 L 391.639724 310.335346 
-L 391.639724 299.829617 
-L 375.43976 299.829617 
+L 391.639724 299.724451 
+L 375.43976 299.724451 
 z
-" clip-path="url(#p26816c6f60)" style="fill: #5f6e7a"/>
+" clip-path="url(#p6b3d2b6b9e)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_63">
     <path d="M 415.939669 310.335346 
 L 432.139633 310.335346 
-L 432.139633 281.769398 
-L 415.939669 281.769398 
+L 432.139633 281.423154 
+L 415.939669 281.423154 
 z
-" clip-path="url(#p26816c6f60)" style="fill: #5f6e7a"/>
+" clip-path="url(#p6b3d2b6b9e)" style="fill: #5f6e7a"/>
    </g>
    <g id="patch_64">
     <path d="M 456.439578 310.335346 
@@ -2808,7 +2808,7 @@ L 472.639542 310.335346
 L 472.639542 224.247397 
 L 456.439578 224.247397 
 z
-" clip-path="url(#p26816c6f60)" style="fill: #5f6e7a"/>
+" clip-path="url(#p6b3d2b6b9e)" style="fill: #5f6e7a"/>
    </g>
    <g id="matplotlib.axis_9">
     <g id="xtick_21">
@@ -2974,12 +2974,12 @@ z
     <g id="ytick_25">
      <g id="line2d_50">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="293.374209" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="293.70385" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_54">
       <!-- 0.005 -->
-      <g transform="translate(246.04 296.374209) scale(0.06 -0.06)">
+      <g transform="translate(246.04 296.70385) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -2991,12 +2991,12 @@ z
     <g id="ytick_26">
      <g id="line2d_51">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="276.413071" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="277.072354" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_55">
       <!-- 0.010 -->
-      <g transform="translate(246.04 279.413071) scale(0.06 -0.06)">
+      <g transform="translate(246.04 280.072354) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -3008,12 +3008,12 @@ z
     <g id="ytick_27">
      <g id="line2d_52">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="259.451934" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="260.440858" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_56">
       <!-- 0.015 -->
-      <g transform="translate(246.04 262.451934) scale(0.06 -0.06)">
+      <g transform="translate(246.04 263.440858) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -3025,12 +3025,12 @@ z
     <g id="ytick_28">
      <g id="line2d_53">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="242.490797" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="243.809363" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_57">
       <!-- 0.020 -->
-      <g transform="translate(246.04 245.490797) scale(0.06 -0.06)">
+      <g transform="translate(246.04 246.809363) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -3042,12 +3042,12 @@ z
     <g id="ytick_29">
      <g id="line2d_54">
       <g>
-       <use xlink:href="#m0b7754accc" x="268.52" y="225.529659" style="stroke: #000000; stroke-width: 0.8"/>
+       <use xlink:href="#m0b7754accc" x="268.52" y="227.177867" style="stroke: #000000; stroke-width: 0.8"/>
       </g>
      </g>
      <g id="text_58">
       <!-- 0.025 -->
-      <g transform="translate(246.04 228.529659) scale(0.06 -0.06)">
+      <g transform="translate(246.04 230.177867) scale(0.06 -0.06)">
        <use xlink:href="#AvenirNext-Regular-13"/>
        <use xlink:href="#AvenirNext-Regular-11" transform="translate(58 0)"/>
        <use xlink:href="#AvenirNext-Regular-13" transform="translate(84 0)"/>
@@ -3148,18 +3148,265 @@ z
     <use xlink:href="#AvenirNext-Regular-56" transform="translate(1081.90625 0)"/>
    </g>
   </g>
+  <g id="text_61">
+   <!-- Times: median of 7 warm runs per cell; spread: interquartile range (q1–q3), min–max recorded. -->
+   <g style="fill: #666666" transform="translate(11.39976 376.72776) scale(0.06 -0.06)">
+    <defs>
+     <path id="AvenirNext-Regular-37" d="M 2054 0 
+L 1594 0 
+L 1594 4122 
+L 77 4122 
+L 77 4531 
+L 3571 4531 
+L 3571 4122 
+L 2054 4122 
+L 2054 0 
+z
+" transform="scale(0.015625)"/>
+     <path id="AvenirNext-Regular-1d" d="M 1306 2688 
+Q 1306 2554 1210 2448 
+Q 1114 2342 960 2342 
+Q 806 2342 710 2448 
+Q 614 2554 614 2688 
+Q 614 2822 710 2928 
+Q 806 3034 960 3034 
+Q 1114 3034 1210 2928 
+Q 1306 2822 1306 2688 
+z
+M 1306 307 
+Q 1306 173 1210 67 
+Q 1114 -38 960 -38 
+Q 806 -38 710 67 
+Q 614 173 614 307 
+Q 614 442 710 547 
+Q 806 653 960 653 
+Q 1114 653 1210 547 
+Q 1306 442 1306 307 
+z
+" transform="scale(0.015625)"/>
+     <path id="AvenirNext-Regular-1a" d="M 3187 4109 
+L 1363 0 
+L 845 0 
+L 2720 4122 
+L 499 4122 
+L 499 4531 
+L 3187 4531 
+L 3187 4109 
+z
+" transform="scale(0.015625)"/>
+     <path id="AvenirNext-Regular-5a" d="M 634 2995 
+L 1357 563 
+L 1370 563 
+L 2176 2995 
+L 2598 2995 
+L 3418 563 
+L 3430 563 
+L 4147 2995 
+L 4608 2995 
+L 3661 0 
+L 3187 0 
+L 2387 2426 
+L 2374 2426 
+L 1587 0 
+L 1114 0 
+L 166 2995 
+L 634 2995 
+z
+" transform="scale(0.015625)"/>
+     <path id="AvenirNext-Regular-1e" d="M 1306 2688 
+Q 1306 2554 1210 2448 
+Q 1114 2342 960 2342 
+Q 806 2342 710 2448 
+Q 614 2554 614 2688 
+Q 614 2822 710 2928 
+Q 806 3034 960 3034 
+Q 1114 3034 1210 2928 
+Q 1306 2822 1306 2688 
+z
+M 755 -896 
+L 371 -896 
+L 800 608 
+L 1274 608 
+L 755 -896 
+z
+" transform="scale(0.015625)"/>
+     <path id="AvenirNext-Regular-54" d="M 3034 506 
+Q 2848 224 2537 73 
+Q 2227 -77 1907 -77 
+Q 1555 -77 1270 44 
+Q 986 166 784 377 
+Q 582 589 470 877 
+Q 358 1165 358 1498 
+Q 358 1830 470 2118 
+Q 582 2406 784 2617 
+Q 986 2829 1270 2950 
+Q 1555 3072 1907 3072 
+Q 2227 3072 2537 2921 
+Q 2848 2771 3034 2477 
+L 3053 2477 
+L 3053 2995 
+L 3488 2995 
+L 3488 -1536 
+L 3053 -1536 
+L 3053 506 
+L 3034 506 
+z
+M 819 1498 
+Q 819 1248 896 1027 
+Q 973 806 1117 643 
+Q 1261 480 1472 387 
+Q 1683 294 1952 294 
+Q 2202 294 2413 387 
+Q 2624 480 2777 640 
+Q 2931 800 3017 1021 
+Q 3104 1242 3104 1498 
+Q 3104 1754 3017 1974 
+Q 2931 2195 2777 2358 
+Q 2624 2522 2413 2614 
+Q 2202 2707 1952 2707 
+Q 1683 2707 1472 2611 
+Q 1261 2515 1117 2352 
+Q 973 2189 896 1968 
+Q 819 1747 819 1498 
+z
+" transform="scale(0.015625)"/>
+     <path id="AvenirNext-Regular-14a" d="M 2368 1370 
+L 192 1370 
+L 192 1734 
+L 2368 1734 
+L 2368 1370 
+z
+" transform="scale(0.015625)"/>
+     <path id="AvenirNext-Regular-f" d="M 653 -896 
+L 288 -896 
+L 717 608 
+L 1171 608 
+L 653 -896 
+z
+" transform="scale(0.015625)"/>
+     <path id="AvenirNext-Regular-5b" d="M 1280 1549 
+L 173 2995 
+L 730 2995 
+L 1549 1856 
+L 2368 2995 
+L 2893 2995 
+L 1805 1568 
+L 2995 0 
+L 2432 0 
+L 1542 1248 
+L 627 0 
+L 102 0 
+L 1280 1549 
+z
+" transform="scale(0.015625)"/>
+    </defs>
+    <use xlink:href="#AvenirNext-Regular-37"/>
+    <use xlink:href="#AvenirNext-Regular-4c" transform="translate(55.796875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-50" transform="translate(80.796875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-48" transform="translate(169.09375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-56" transform="translate(226.296875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-1d" transform="translate(270.703125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(300.703125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-50" transform="translate(325.703125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-48" transform="translate(414 0)"/>
+    <use xlink:href="#AvenirNext-Regular-47" transform="translate(471.203125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-4c" transform="translate(534.90625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-44" transform="translate(559.90625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-51" transform="translate(613.3125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(671.40625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-52" transform="translate(696.40625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-49" transform="translate(757.5 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(789.40625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-1a" transform="translate(814.40625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(872.40625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-5a" transform="translate(897.40625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-44" transform="translate(972 0)"/>
+    <use xlink:href="#AvenirNext-Regular-55" transform="translate(1025.40625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-50" transform="translate(1061.40625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(1149.703125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-55" transform="translate(1174.703125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-58" transform="translate(1210.703125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-51" transform="translate(1268.796875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-56" transform="translate(1326.890625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(1371.296875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-53" transform="translate(1396.296875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-48" transform="translate(1459.796875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-55" transform="translate(1517 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(1553 0)"/>
+    <use xlink:href="#AvenirNext-Regular-46" transform="translate(1578 0)"/>
+    <use xlink:href="#AvenirNext-Regular-48" transform="translate(1628 0)"/>
+    <use xlink:href="#AvenirNext-Regular-4f" transform="translate(1685.203125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-4f" transform="translate(1710.40625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-1e" transform="translate(1735.609375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(1765.609375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-56" transform="translate(1790.609375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-53" transform="translate(1835.015625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-55" transform="translate(1898.515625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-48" transform="translate(1932.71875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-44" transform="translate(1989.328125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-47" transform="translate(2042.734375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-1d" transform="translate(2106.4375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(2136.4375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-4c" transform="translate(2161.4375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-51" transform="translate(2186.4375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-57" transform="translate(2244.53125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-48" transform="translate(2276.234375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-55" transform="translate(2333.4375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-54" transform="translate(2367.640625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-58" transform="translate(2431.140625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-44" transform="translate(2489.234375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-55" transform="translate(2542.640625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-57" transform="translate(2577.4375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-4c" transform="translate(2609.140625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-4f" transform="translate(2634.140625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-48" transform="translate(2659.34375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(2716.546875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-55" transform="translate(2741.546875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-44" transform="translate(2776.34375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-51" transform="translate(2829.75 0)"/>
+    <use xlink:href="#AvenirNext-Regular-4a" transform="translate(2887.84375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-48" transform="translate(2951.046875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(3008.25 0)"/>
+    <use xlink:href="#AvenirNext-Regular-b" transform="translate(3033.25 0)"/>
+    <use xlink:href="#AvenirNext-Regular-54" transform="translate(3063.25 0)"/>
+    <use xlink:href="#AvenirNext-Regular-14" transform="translate(3126.75 0)"/>
+    <use xlink:href="#AvenirNext-Regular-14a" transform="translate(3184.75 0)"/>
+    <use xlink:href="#AvenirNext-Regular-54" transform="translate(3224.75 0)"/>
+    <use xlink:href="#AvenirNext-Regular-16" transform="translate(3288.25 0)"/>
+    <use xlink:href="#AvenirNext-Regular-c" transform="translate(3346.25 0)"/>
+    <use xlink:href="#AvenirNext-Regular-f" transform="translate(3376.25 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(3399.25 0)"/>
+    <use xlink:href="#AvenirNext-Regular-50" transform="translate(3424.25 0)"/>
+    <use xlink:href="#AvenirNext-Regular-4c" transform="translate(3512.546875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-51" transform="translate(3537.546875 0)"/>
+    <use xlink:href="#AvenirNext-Regular-14a" transform="translate(3595.640625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-50" transform="translate(3635.640625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-44" transform="translate(3723.9375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-5b" transform="translate(3777.34375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-3" transform="translate(3825.75 0)"/>
+    <use xlink:href="#AvenirNext-Regular-55" transform="translate(3850.75 0)"/>
+    <use xlink:href="#AvenirNext-Regular-48" transform="translate(3884.953125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-46" transform="translate(3942.15625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-52" transform="translate(3992.15625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-55" transform="translate(4053.25 0)"/>
+    <use xlink:href="#AvenirNext-Regular-47" transform="translate(4087.453125 0)"/>
+    <use xlink:href="#AvenirNext-Regular-48" transform="translate(4151.15625 0)"/>
+    <use xlink:href="#AvenirNext-Regular-47" transform="translate(4208.359375 0)"/>
+    <use xlink:href="#AvenirNext-Regular-11" transform="translate(4272.0625 0)"/>
+   </g>
+  </g>
   <g id="legend_1">
    <g id="patch_67">
-    <path d="M 311.791088 373.43776 
-L 325.791088 373.43776 
-L 325.791088 368.53776 
-L 311.791088 368.53776 
+    <path d="M 311.791088 377.26176 
+L 325.791088 377.26176 
+L 325.791088 372.36176 
+L 311.791088 372.36176 
 z
 " style="fill: #666666"/>
    </g>
-   <g id="text_61">
+   <g id="text_62">
     <!-- default -->
-    <g transform="translate(331.391088 373.43776) scale(0.07 -0.07)">
+    <g transform="translate(331.391088 377.26176) scale(0.07 -0.07)">
      <use xlink:href="#AvenirNext-Regular-47"/>
      <use xlink:href="#AvenirNext-Regular-48" transform="translate(63.703125 0)"/>
      <use xlink:href="#AvenirNext-Regular-49" transform="translate(120.90625 0)"/>
@@ -3170,16 +3417,16 @@ z
     </g>
    </g>
    <g id="patch_68">
-    <path d="M 367.707963 373.43776 
-L 381.707963 373.43776 
-L 381.707963 368.53776 
-L 367.707963 368.53776 
+    <path d="M 367.707963 377.26176 
+L 381.707963 377.26176 
+L 381.707963 372.36176 
+L 367.707963 372.36176 
 z
 " style="fill: #5f6e7a"/>
    </g>
-   <g id="text_62">
+   <g id="text_63">
     <!-- nobloom -->
-    <g transform="translate(387.307963 373.43776) scale(0.07 -0.07)">
+    <g transform="translate(387.307963 377.26176) scale(0.07 -0.07)">
      <use xlink:href="#AvenirNext-Regular-51"/>
      <use xlink:href="#AvenirNext-Regular-52" transform="translate(58.09375 0)"/>
      <use xlink:href="#AvenirNext-Regular-45" transform="translate(119.1875 0)"/>
@@ -3201,10 +3448,10 @@ z
   <clipPath id="p5434fb624d">
    <rect x="507.36" y="54.52048" width="213.83952" height="90.392346"/>
   </clipPath>
-  <clipPath id="p1a58d9c379">
+  <clipPath id="p5004c063c4">
    <rect x="26.2" y="219.943" width="213.83952" height="90.392346"/>
   </clipPath>
-  <clipPath id="p26816c6f60">
+  <clipPath id="p6b3d2b6b9e">
    <rect x="268.52" y="219.943" width="213.83952" height="90.392346"/>
   </clipPath>
  </defs>
