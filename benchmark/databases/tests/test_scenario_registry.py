@@ -6,6 +6,7 @@ from citybench.scenarios.registry import (
     ID_PROBE_SCENARIOS,
     ScenarioUnavailable,
     COUNT_FROM_FIRST_COLUMN,
+    COUNT_FROM_LAST_COLUMN,
     COUNT_FROM_ROWCOUNT,
     COUNT_FROM_WRITE_ROWCOUNT,
     READBENCH_SCENARIOS,
@@ -130,12 +131,12 @@ def test_count_mode_is_write_rowcount_for_the_write_tier(scenario):
 
 
 def test_count_mode_sets_partition_all_scenarios_exactly():
-    # Every scenario in ALL must be in exactly one of the three sets: none
+    # Every scenario in ALL must be in exactly one of the four sets: none
     # missing (count_mode would raise for a real scenario), none in two
     # (extract_count would be told contradictory things about the same
     # scenario). This is the invariant a newly added scenario could break
     # silently if only added to ALL and forgotten here.
-    sets = (COUNT_FROM_FIRST_COLUMN, COUNT_FROM_ROWCOUNT,
+    sets = (COUNT_FROM_FIRST_COLUMN, COUNT_FROM_LAST_COLUMN, COUNT_FROM_ROWCOUNT,
             set(COUNT_FROM_WRITE_ROWCOUNT))
     assert set().union(*sets) == set(ALL)
     assert sum(len(s) for s in sets) == len(ALL)
@@ -262,5 +263,6 @@ def test_scenarios_returning_rows_use_rowcount_not_a_first_column():
     for scenario in ("geometry-scan", "bbox-query", "attr-filter", "attr-range",
                      "id-lookup", "lod-query", "parts-per-building", "parts-per-building-join"):
         assert count_mode(scenario) == "rowcount", scenario
-    for scenario in ("count", "attr-stats"):
-        assert count_mode(scenario) == "first-column", scenario
+    assert count_mode("count") == "first-column"
+    # min, max, sum, count: the count is the LAST column.
+    assert count_mode("attr-stats") == "last-column"

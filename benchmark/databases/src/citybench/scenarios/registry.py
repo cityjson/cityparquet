@@ -109,11 +109,11 @@ def systems_for(scenario: str) -> tuple[str, ...]:
 #
 # Convention, enforced by every sql_* module: a scenario in
 # COUNT_FROM_FIRST_COLUMN returns a single row whose FIRST column is the
-# object count, with any forcing or aggregate work in later columns.
-# Everything else reports the number of rows materialised.
-COUNT_FROM_FIRST_COLUMN: frozenset[str] = frozenset({
-    "count", "attr-stats",
-})
+# object count; `attr-stats` (COUNT_FROM_LAST_COLUMN) returns min, max,
+# sum, count, so its count is the LAST column. Everything else reports the
+# number of rows materialised.
+COUNT_FROM_FIRST_COLUMN: frozenset[str] = frozenset({"count"})
+COUNT_FROM_LAST_COLUMN: frozenset[str] = frozenset({"attr-stats"})
 
 # Scenarios that RETURN ROWS — ids, or whole objects — the way the CJDB
 # paper's own queries do, and whose result count is therefore the number of
@@ -146,9 +146,12 @@ class ScenarioUnavailable(Exception):
 
 
 def count_mode(scenario: str) -> str:
-    """'first-column', 'rowcount' or 'write-rowcount'. KeyError if unknown."""
+    """'first-column', 'last-column', 'rowcount' or 'write-rowcount'.
+    KeyError if unknown."""
     if scenario in COUNT_FROM_FIRST_COLUMN:
         return "first-column"
+    if scenario in COUNT_FROM_LAST_COLUMN:
+        return "last-column"
     if scenario in COUNT_FROM_ROWCOUNT:
         return "rowcount"
     if scenario in COUNT_FROM_WRITE_ROWCOUNT:

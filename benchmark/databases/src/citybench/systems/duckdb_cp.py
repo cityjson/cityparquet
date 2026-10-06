@@ -88,8 +88,7 @@ class DuckDBCityParquet:
         # footer from silently re-typing a column mid-run. MEASURED, not
         # assumed: it does NOT change `geometry_lod0_0`, which CityParquet
         # writes with Parquet's own GEOMETRY logical type and DuckDB 1.5
-        # decodes to native `GEOMETRY` either way — see
-        # `sql_duckdb.geometry_byte_length` and README Caveat 18.
+        # decodes to native `GEOMETRY` either way (README Caveat 18).
         self._conn.execute("SET enable_geoparquet_conversion = false")
 
     def set_threads(self, threads: int) -> None:

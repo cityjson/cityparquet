@@ -384,8 +384,8 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         # that one stays a genuine, undoctored architectural difference.
         col = "coalesce(pr.val_double, pr.val_int)"
         return (
-            f"SELECT count({col}), min({col}), "
-            f"max({col}), sum({col}) "
+            f"SELECT min({col}), max({col}), "
+            f"sum({col}), count({col}) "
             f"FROM {_P} pr JOIN {_F} f ON f.id = pr.{CAPTURED_PROPERTY_FK} "
             f"WHERE {_static_predicate(cityobject_class_ids)} AND pr.{CAPTURED_PROPERTY_NAME_COLUMN} = %s",
             (p.numeric_column,),

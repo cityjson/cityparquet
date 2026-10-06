@@ -259,7 +259,8 @@ def extract_count(rows: list, mode: str) -> int:
     """A scenario's result count, per the registry's declared mode.
 
     'first-column' takes the first column of the single returned row —
-    every such scenario's SQL is written to put the object count there.
+    every such scenario's SQL is written to put the object count there —
+    and 'last-column' its last (attr-stats: min, max, sum, count).
     'rowcount' counts materialised rows.
 
     Inferring this from the result shape instead would silently compare
@@ -272,11 +273,11 @@ def extract_count(rows: list, mode: str) -> int:
             "write scenarios report the cursor's rowcount, not a result "
             "set; use time_write(), not extract_count()"
         )
-    if mode != "first-column":
+    if mode not in ("first-column", "last-column"):
         raise ValueError(f"unknown count mode: {mode!r}")
     if not rows:
         return 0
-    return int(rows[0][0])
+    return int(rows[0][0] if mode == "first-column" else rows[0][-1])
 
 
 def dump_indexes(conn: psycopg.Connection, schema: str) -> list[str]:

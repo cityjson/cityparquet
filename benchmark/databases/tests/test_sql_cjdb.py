@@ -283,3 +283,10 @@ def test_attr_stats_casts_to_float8_like_attr_range():
     from citybench.scenarios.sql_cjdb import sql_for
     sql, _ = sql_for("attr-stats", make_params())
     assert "::float8" in sql and "::numeric" not in sql
+
+
+def test_attr_stats_returns_min_max_sum_count_in_that_order():
+    sql, _ = sql_for("attr-stats", make_params())
+    select = sql.split(" FROM ")[0]
+    positions = [select.index(f"{agg}(") for agg in ("min", "max", "sum", "count")]
+    assert positions == sorted(positions), select

@@ -160,9 +160,9 @@ def sql_for(scenario: str, params: Params, table: str,
         # does not resolve as a table/struct alias at all
         # (`Binder Error: Referenced table "attributes" not found!`).
         col = f'"{p.numeric_column}"'
-        # count first, per the registry's first-column convention.
+        # min, max, sum, count: the registry's last-column convention.
         return (
-            f"SELECT count({col}), min({col}), max({col}), sum({col}) FROM {table}",
+            f"SELECT min({col}), max({col}), sum({col}), count({col}) FROM {table}",
             (),
         )
 

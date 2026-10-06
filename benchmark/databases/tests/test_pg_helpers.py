@@ -173,3 +173,9 @@ def test_time_query_fetches_in_binary_wire_format(monkeypatch):
     except Exception:
         pass
     assert True in seen["binary"]
+
+
+def test_extract_count_last_column_reads_the_final_column():
+    # attr-stats returns min, max, sum, count.
+    assert extract_count([(1.0, 9.0, 20.0, 4)], "last-column") == 4
+    assert extract_count([], "last-column") == 0

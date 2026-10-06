@@ -301,13 +301,6 @@ def test_attr_filter_parameterises_rather_than_interpolating_the_value():
     assert "'slanted'" not in sql  # would be a SQL-injection-shaped bug if it were
 
 
-def test_attr_stats_selects_count_first_per_registry_convention():
-    sql, _ = sql_for("attr-stats", _params(), cityobject_class_ids=IDS)
-    assert sql.strip().upper().startswith(
-        "SELECT COUNT(COALESCE(PR.VAL_DOUBLE, PR.VAL_INT))"
-    )
-
-
 def test_id_lookup_asks_for_the_probe_it_was_handed_on_objectid():
     """One call per probe — 10/50/90 % of the canonical stream order plus a
     verified-absent id — against `objectid`, the CityObject identifier,
@@ -529,3 +522,10 @@ def test_bbox_query_returns_ids_and_the_highest_lod_geometry_data_row():
     assert sql.startswith("SELECT f.objectid, g.geometry FROM")
     assert "ORDER BY NULLIF(pr.val_lod, '')::int DESC NULLS LAST" in sql
     assert "LEFT JOIN LATERAL" in sql and "count(" not in sql
+
+
+def test_attr_stats_returns_min_max_sum_count_in_that_order():
+    sql, _ = sql_for("attr-stats", PARAMS, cityobject_class_ids=IDS)
+    select = sql.split(" FROM ")[0]
+    positions = [select.index(f"{agg}(") for agg in ("min", "max", "sum", "count")]
+    assert positions == sorted(positions), select

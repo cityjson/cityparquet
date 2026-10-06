@@ -17,8 +17,7 @@ from conftest import ge_attr_filter, make_params, make_probes
 TABLE = "read_parquet('/data/example/building.parquet')"
 
 #: A delft-shaped package schema: a native `GEOMETRY` footprint and three
-#: `BLOB` solids, which is what a real package returns (measured — see
-#: `geometry_byte_length`).
+#: `BLOB` solids, which is what a real package returns (measured).
 COLUMNS = {
     "id": "VARCHAR", "object_type": "VARCHAR", "parents": "VARCHAR[]",
     "children": "VARCHAR[]", "bbox": "STRUCT(xmin DOUBLE, ...)",
@@ -74,11 +73,6 @@ def test_parts_per_building_join_form_left_joins_so_no_building_is_dropped():
     assert "unnest(parents)" in sql
     assert "GROUP BY b.id" in sql
     assert args == (BUILDING_PART_TYPE, BUILDING_TYPE)
-
-
-def test_attr_stats_puts_the_count_first():
-    sql, _ = sql_for("attr-stats", _params(), TABLE)
-    assert sql.strip().upper().startswith("SELECT COUNT(")
 
 
 def test_attr_stats_references_the_column_bare_not_under_an_attributes_struct():
@@ -282,3 +276,9 @@ def test_lod_query_without_columns_keeps_the_unconditional_query():
     assert "geometry_lod1_2" in sql
     assert "WHERE FALSE" not in sql.upper()
     assert args == ()
+
+def test_attr_stats_returns_min_max_sum_count_in_that_order():
+    sql, _ = sql_for("attr-stats", _params(), TABLE)
+    select = sql.split(" FROM ")[0]
+    positions = [select.index(f"{agg}(") for agg in ("min", "max", "sum", "count")]
+    assert positions == sorted(positions), select

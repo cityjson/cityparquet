@@ -93,9 +93,9 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         if p.numeric_column is None:
             raise ScenarioUnavailable("dataset has no numeric attribute")
         col = f"(attributes ->> '{p.numeric_column}')::float8"
-        # count first, per the registry's first-column convention.
+        # min, max, sum, count: the registry's last-column convention.
         return (
-            f"SELECT count({col}), min({col}), max({col}), sum({col}) FROM {t}",
+            f"SELECT min({col}), max({col}), sum({col}), count({col}) FROM {t}",
             (),
         )
 
