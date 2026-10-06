@@ -43,6 +43,39 @@ from citybench.config import SizeReport
 from citybench.stats import container_init_host_pid, host_pid_for_namespace_pid, host_pid_from_engine_top, peak_resident_bytes
 
 
+def oriented(window, swap: bool):
+    """``window`` (a `BboxWindow` in the package's longitude-first order) in
+    the order a system stores its coordinates: ``x``/``y`` exchanged when
+    ``swap``. cjdb and 3DCityDB keep a latitude-first source's order."""
+    if window is None or not swap:
+        return window
+    import dataclasses
+    b = window.window
+    return dataclasses.replace(window, window=dataclasses.replace(
+        b, minx=b.miny, miny=b.minx, maxx=b.maxy, maxy=b.maxx))
+
+
+def axis_swapped(extent, package) -> bool:
+    """Whether a system's stored ``(xmin, xmax, ymin, ymax)`` extent is the
+    package's extent with ``x`` and ``y`` exchanged. True only when the
+    stored x range misses the package's x range and lies within its y range
+    (with a tenth of the range as slack); an ambiguous extent — overlapping
+    ranges, as in a CRS-less local frame — is never swapped."""
+    if extent is None or any(v is None for v in extent):
+        return False
+    xmin, xmax, _, _ = extent
+
+    def within(lo, hi, a, b):
+        slack = 0.1 * max(b - a, 1e-9)
+        return lo >= a - slack and hi <= b + slack
+
+    def disjoint(lo, hi, a, b):
+        return hi < a or lo > b
+
+    return (disjoint(xmin, xmax, package.minx, package.maxx)
+            and within(xmin, xmax, package.miny, package.maxy))
+
+
 def server_provenance(conn) -> dict[str, str]:
     """The live server's PostgreSQL and PostGIS versions; empty without a
     connection (a system that never connected reports nothing, not a guess)."""

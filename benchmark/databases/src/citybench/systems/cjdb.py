@@ -186,6 +186,20 @@ class CjdbSystem:
             env={**os.environ, "PGPASSWORD": _PASSWORD},
         )
 
+    _swap_xy: bool = False
+
+    def orient_to(self, package_bbox) -> bool:
+        """Probe the stored extent and decide whether this store keeps the
+        source's latitude-first order, so every spatial window is applied
+        with x and y exchanged (`pg.axis_swapped`). Returns the decision."""
+        assert self._conn is not None
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"SELECT min(ST_XMin(ground_geometry)), max(ST_XMax(ground_geometry)), "
+                f"min(ST_YMin(ground_geometry)), max(ST_YMax(ground_geometry)) FROM {self._schema}.city_object")
+            self._swap_xy = pg.axis_swapped(cur.fetchone(), package_bbox)
+        return self._swap_xy
+
     def provenance(self) -> dict[str, str]:
         return pg.server_provenance(self._conn)
 
@@ -230,7 +244,7 @@ class CjdbSystem:
             return self._run_write(scenario, repeat)
 
         sql, args = sql_cjdb.sql_for(
-            scenario, params, window, self._srid, probe=probe
+            scenario, params, pg.oriented(window, self._swap_xy), self._srid, probe=probe
         )
         pg.time_query(self._conn, sql, args, count_mode=mode)  # discarded warm-up
         samples = [
@@ -250,7 +264,7 @@ class CjdbSystem:
                     probe=None) -> tuple[list[str], list[tuple]]:
         """The scenario's SQL once more, untimed (`citybench.identity`)."""
         assert self._conn is not None
-        sql, args = sql_cjdb.sql_for(scenario, params, window, self._srid, probe=probe)
+        sql, args = sql_cjdb.sql_for(scenario, params, pg.oriented(window, self._swap_xy), self._srid, probe=probe)
         return pg.fetch_rows(self._conn, sql, args)
 
     def _run_write(self, scenario: str, repeat: int) -> Measurement:

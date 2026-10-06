@@ -612,3 +612,50 @@ def test_no_append_directory_means_no_append_file(tmp_path):
     append file is an artefact of a run, not of reading a package."""
     package = line_package(tmp_path / "noappend.parquet")
     assert derive(FIXTURE, package).append is None
+
+
+def _sidecar():
+    return {
+        "dataset": "tokyo.city.json", "swap_xy": True, "cp_object_total": 49915,
+        "windows": [{"tag": "bbox-1pct", "target": 0.01, "achieved": 0.0102,
+                     "window": [139.75, 35.68, 0.0, 139.76, 35.69, 99.0], "approx": False}],
+        "id_probes": [{"tag": "id-50pct", "id": "bldg_x", "present": True, "substituted": False},
+                      {"tag": "id-miss", "id": "bldg_x-absent", "present": False, "substituted": False}],
+        "attr_filter": {"column": "measuredHeight", "pred": {"ge": 12.5}, "matched": 10,
+                        "share": 0.25, "hand_picked": False},
+        "numeric_attr": "measuredHeight",
+    }
+
+
+def test_the_format_familys_sidecar_replaces_every_shared_parameter():
+    from conftest import make_params
+    from citybench import params
+    p = params.adopt_format_params(make_params(), _sidecar())
+    assert [w.tag for w in p.windows] == ["bbox-1pct"]
+    assert p.windows[0].window.minx == 139.75 and p.windows[0].window.maxy == 35.69
+    assert [(i.tag, i.id, i.present) for i in p.id_probes] == [
+        ("id-50pct", "bldg_x", True), ("id-miss", "bldg_x-absent", False)]
+    assert (p.attr_filter.column, p.attr_filter.op, p.attr_filter.ge_bound) == ("measuredHeight", "ge", 12.5)
+    assert p.numeric_column == "measuredHeight"
+    assert p.total_city_objects == 49915 and p.swap_xy is True
+
+
+def test_absent_sidecar_facts_become_none_so_the_scenario_is_skipped():
+    from conftest import make_params
+    from citybench import params
+    side = {**_sidecar(), "attr_filter": {"column": "BIN", "pred": {"eq": "1000000"},
+                                          "matched": 3, "share": 0.1, "hand_picked": True},
+            "numeric_attr": None}
+    p = params.adopt_format_params(make_params(), side)
+    assert (p.attr_filter.op, p.attr_filter.eq_value) == ("eq", "1000000")
+    assert p.numeric_column is None
+    assert params.adopt_format_params(make_params(), {**side, "attr_filter": None}).attr_filter is None
+
+
+def test_the_crs_comes_from_the_package_footer():
+    from citybench import params
+    tokyo = {"id": {"authority": "EPSG", "code": 6697}, "type": "CompoundCRS"}
+    compound = {"type": "CompoundCRS", "components": [{"id": {"authority": "EPSG", "code": 28992}}]}
+    assert params.epsg_of(tokyo) == 6697
+    assert params.epsg_of(compound) == 28992
+    assert params.epsg_of(None) is None

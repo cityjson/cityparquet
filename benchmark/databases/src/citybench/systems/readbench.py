@@ -118,6 +118,26 @@ def build_child_args(scenario: str, params: Params, input_path: str,
     return args
 
 
+def format_params(binary: Path, source: Path, prepared_dir: Path, out_dir: Path) -> Path:
+    """The format family's resolved parameters for this dataset: run the
+    `cityparquet-readbench` coordinator once over the CityParquet package
+    alone (`count`, one sample) so it writes its `<csv>.params.json`
+    sidecar from the same resolver (`readbench/src/params.rs`) a format run
+    uses. The sidecar is written before any measurement; the one timed
+    `count` row it also writes is discarded."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    name = source.name.split(".")[0]
+    candidate = prepared_dir / f"{name}.city.json"
+    out = out_dir / f"{name}.csv"
+    subprocess.run(
+        [str(binary), "run", "--input", str(candidate if candidate.exists() else source),
+         "--prepared-dir", str(prepared_dir), "--out", str(out),
+         "--formats", "cityparquet", "--scenarios", "count",
+         "--repeat", "1", "--min-repeat", "1", "--numa-node", "off", "--max-load", "off"],
+        check=True, stdout=subprocess.DEVNULL)
+    return out.with_name(out.name + ".params.json")
+
+
 class ReadbenchSystem:
     """The native Rust reader over the dataset's one CityParquet package.
 

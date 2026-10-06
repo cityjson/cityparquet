@@ -669,6 +669,60 @@ def derive(source: Path, package: Path, *, append_dir: Path | None = None,
     )
 
 
+def adopt_format_params(p: Params, sidecar: dict[str, Any]) -> Params:
+    """``p`` with every parameter the format family resolved replaced by the
+    format family's own value, read from the `<csv>.params.json` sidecar the
+    `cityparquet-readbench` coordinator writes (`readbench/src/params.rs`):
+    the bbox windows (package order), the id probes, the `attr-filter`
+    predicate, the `attr-stats` column, the CityObject total and `swap_xy`.
+    A fact the sidecar reports as absent stays absent, so the scenario is
+    skipped, never fabricated. What the sidecar does not carry —
+    `attr-range`, the append file, the centre point, the LoDs and the full
+    extent — stays as derived in this module from the same package."""
+    windows = tuple(
+        BboxWindow(tag=w["tag"], target=w["target"], achieved=w["achieved"],
+                   window=BBox(*w["window"]), approx=w["approx"])
+        for w in sidecar["windows"]
+    )
+    probes = tuple(IdProbe(tag=i["tag"], id=i["id"], present=i["present"])
+                   for i in sidecar.get("id_probes", []))
+    spec = sidecar.get("attr_filter")
+    attr_filter = None
+    if spec:
+        (op, value), = spec["pred"].items()
+        attr_filter = AttrFilter(
+            column=spec["column"], op=op,
+            eq_value=str(value) if op == "eq" else None,
+            ge_bound=float(value) if op == "ge" else None,
+            matched=spec["matched"], share=spec["share"], hand_picked=spec["hand_picked"])
+    return dataclasses.replace(
+        p, windows=windows, id_probes=probes, attr_filter=attr_filter,
+        numeric_column=sidecar.get("numeric_attr"),
+        total_city_objects=sidecar.get("cp_object_total") or p.total_city_objects,
+        swap_xy=bool(sidecar.get("swap_xy", False)))
+
+
+def epsg_of(crs: dict[str, Any] | None) -> int | None:
+    """The EPSG code of a PROJJSON CRS: its own `id`, else (a CompoundCRS
+    without one) its first component's. None for a CRS-less package."""
+    if not crs:
+        return None
+    for candidate in (crs, *crs.get("components", ())):
+        ident = candidate.get("id") or {}
+        if ident.get("authority") == "EPSG" and ident.get("code"):
+            return int(ident["code"])
+    return None
+
+
+def package_crs(package: Path) -> dict[str, Any] | None:
+    """The `city.crs` PROJJSON from the package's object-table footer."""
+    files = object_table_files(package)
+    row = duckdb.sql(
+        f"SELECT decode(value) FROM parquet_kv_metadata('{files[0]}') "
+        "WHERE decode(key) = 'city'").fetchone()
+    return json.loads(row[0]).get("crs") if row else None
+
+
 def lods_from_columns(columns) -> tuple[str, ...]:
     """The LoDs a package carries, from its `geometry_lod<major>_<minor>`
     column names: `geometry_lod2_2` -> "2.2", `geometry_lod0_0` -> "0"."""
@@ -701,6 +755,7 @@ def to_json(p: Params) -> str:
         "id_probes": [dataclasses.asdict(probe) for probe in p.id_probes],
         "append": dataclasses.asdict(p.append) if p.append else None,
         "lods": list(p.lods),
+        "swap_xy": p.swap_xy,
         "total_city_objects": p.total_city_objects,
         "window_rows": p.window_rows,
         "windows": [

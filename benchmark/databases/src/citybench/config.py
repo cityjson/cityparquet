@@ -424,6 +424,10 @@ class Params:
     #: The dataset's LoDs, read from the package's `geometry_lod<d>_<d>`
     #: column names ("2.2"); `lod-query` is not applicable without its target.
     lods: tuple[str, ...] = ()
+    #: The dataset's CRS declares latitude first (the format family's
+    #: `swap_xy`): the windows above are in the package's longitude-first
+    #: order, and a store keeping the source's order needs them exchanged.
+    swap_xy: bool = False
 
     def window(self, tag: str) -> BboxWindow:
         for candidate in self.windows:

@@ -119,6 +119,20 @@ class CityDbSystem:
         assert self._conn is not None
         return pg.parallel_settings(self._conn)
 
+    _swap_xy: bool = False
+
+    def orient_to(self, package_bbox) -> bool:
+        """Probe the stored extent and decide whether this store keeps the
+        source's latitude-first order, so every spatial window is applied
+        with x and y exchanged (`pg.axis_swapped`). Returns the decision."""
+        assert self._conn is not None
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"SELECT min(ST_XMin(envelope)), max(ST_XMax(envelope)), "
+                f"min(ST_YMin(envelope)), max(ST_YMax(envelope)) FROM {self._schema}.feature")
+            self._swap_xy = pg.axis_swapped(cur.fetchone(), package_bbox)
+        return self._swap_xy
+
     def provenance(self) -> dict[str, str]:
         out = pg.server_provenance(self._conn)
         if self._conn is not None:
@@ -171,7 +185,7 @@ class CityDbSystem:
         """The scenario's SQL once more, untimed (`citybench.identity`)."""
         assert self._conn is not None
         sql, args = sql_citydb.sql_for(
-            scenario, params, window, self._srid, probe=probe,
+            scenario, params, pg.oriented(window, self._swap_xy), self._srid, probe=probe,
             cityobject_class_ids=self._cityobject_class_ids,
             building_class_id=self._building_class_id,
         )
@@ -203,7 +217,7 @@ class CityDbSystem:
             return self._run_write(scenario, repeat)
 
         sql, args = sql_citydb.sql_for(
-            scenario, params, window, self._srid, probe=probe,
+            scenario, params, pg.oriented(window, self._swap_xy), self._srid, probe=probe,
             cityobject_class_ids=self._cityobject_class_ids,
             building_class_id=self._building_class_id,
         )

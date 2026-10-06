@@ -550,6 +550,7 @@ def test_cmd_bench_plans_isolation_once_and_hands_the_cpuset_to_the_containers(m
         yield  # pragma: no cover
 
     monkeypatch.setattr(cli, "isolated_databases", fake_databases)
+    monkeypatch.setattr(cli, "_dataset_crs", lambda args: {"id": {"authority": "EPSG", "code": 7415}})
     args = Namespace(dataset="x", data_root=str(tmp_path), ports=None, srid=7415,
                      numa_node="auto", max_load="auto", max_load_wait_s=600.0,
                      memory_max=None)
@@ -591,6 +592,7 @@ def test_cmd_bench_records_the_engine_and_drops_cpuset_an_engine_lacks(monkeypat
         yield  # pragma: no cover
 
     monkeypatch.setattr(cli, "isolated_databases", fake_databases)
+    monkeypatch.setattr(cli, "_dataset_crs", lambda args: {"id": {"authority": "EPSG", "code": 7415}})
     args = Namespace(dataset="x", data_root=str(tmp_path), ports=None, srid=7415,
                      numa_node="auto", max_load="auto", max_load_wait_s=600.0, memory_max=None)
     try:
@@ -661,3 +663,28 @@ def test_a_run_with_a_duckdb_system_refuses_to_start_without_a_build(
     with pytest.raises(extension.ExtensionNotFound):
         cli._require_extension(["duckdb-cityparquet", "cjdb"])
     cli._require_extension(["cjdb", "3dcitydb"])  # no DuckDB system: no build needed
+
+
+def test_datasets_selects_every_corpus_dataset_or_a_named_subset(tmp_path):
+    from citybench import cli
+    stems = ["rotterdam_delfshaven", "ingolstadt", "vienna_102081", "nyc_da13_buildings",
+             "zurich_building_lod2", "tokyo", "montreal", "3dbag_n1000000"]
+    for stem in stems:
+        (tmp_path / f"{stem}.city.jsonl").write_text("{}\n")
+    assert [p.name.split(".")[0] for p in cli.resolve_datasets("all", tmp_path)] == stems
+    assert [p.name for p in cli.resolve_datasets("3dbag_n1000000", tmp_path)] == [
+        "3dbag_n1000000.city.jsonl"]
+    # Manifest ids and source stems are both accepted.
+    assert [p.name for p in cli.resolve_datasets("tokyo,new_york", tmp_path)] == [
+        "tokyo.city.jsonl", "nyc_da13_buildings.city.jsonl"]
+    with pytest.raises(SystemExit, match="unknown dataset"):
+        cli.resolve_datasets("atlantis", tmp_path)
+    (tmp_path / "montreal.city.jsonl").unlink()
+    with pytest.raises(SystemExit, match="montreal"):
+        cli.resolve_datasets("montreal", tmp_path)
+
+
+def test_the_srid_comes_from_the_dataset_and_a_crs_less_one_is_assumed():
+    from citybench import cli
+    assert cli.srid_for({"id": {"authority": "EPSG", "code": 6697}}) == (6697, False)
+    assert cli.srid_for(None) == (cli.CRSLESS_SRID, True)

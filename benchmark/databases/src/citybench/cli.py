@@ -25,6 +25,7 @@ from citybench.systems import pg
 from citybench.systems.cjdb import CjdbSystem
 from citybench.systems.citydb import CityDbSystem
 from citybench.systems.duckdb_cp import DuckDBCityParquet
+from citybench.systems import readbench as readbench_mod
 from citybench.systems.readbench import ReadbenchSystem
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -265,7 +266,66 @@ def _isolation(args) -> tuple[dict, isolation_mod.LoadGate]:
     return args.isolation, args.gate
 
 
+#: The SRID 3DCityDB's schema is created with for a dataset whose package
+#: declares no CRS (Vienna, New York, Zurich): its image refuses SRID 0. The
+#: coordinates are imported unchanged and every window is compared as plain
+#: numbers, as the format readers compare them; the manifest marks the SRID
+#: `assumed`. 7415 (Amersfoort / RD New + NAP) is a projected CRS, so
+#: PostGIS treats the coordinates as planar.
+CRSLESS_SRID = 7415
+
+
+def _corpus() -> dict[str, str]:
+    """Manifest dataset id -> source stem, in manifest order."""
+    import tomllib
+    data = tomllib.loads((BENCHMARK_DIR / "manifest.toml").read_text())
+    return {key: entry["source"].split(".")[0] for key, entry in data["datasets"].items()}
+
+
+def resolve_datasets(selection: str, prepared_dir: Path) -> list[Path]:
+    """The CityJSONSeq sources a `--datasets` selection names: `all`, or a
+    comma-separated list of manifest ids or source stems."""
+    corpus = _corpus()
+    names = list(corpus.values()) if selection == "all" else []
+    if selection != "all":
+        for token in (t.strip() for t in selection.split(",") if t.strip()):
+            if token in corpus:
+                names.append(corpus[token])
+            elif token in corpus.values():
+                names.append(token)
+            else:
+                raise SystemExit(f"unknown dataset {token!r}; known: {', '.join(corpus)}")
+    sources = [prepared_dir / f"{name}.city.jsonl" for name in names]
+    missing = [str(p) for p in sources if not p.exists()]
+    if missing:
+        raise SystemExit("prepared source(s) missing: " + ", ".join(missing))
+    return sources
+
+
+def srid_for(crs) -> tuple[int, bool]:
+    """``(srid, assumed)``: the package's EPSG code, or `CRSLESS_SRID`."""
+    code = params_mod.epsg_of(crs)
+    return (code, False) if code else (CRSLESS_SRID, True)
+
+
+def _dataset_crs(args):
+    """The `city.crs` PROJJSON of the run's CityParquet package."""
+    prepared = Path(args.prepared_dir) if getattr(args, "prepared_dir", None) else None
+    return params_mod.package_crs(_dataset(Path(args.dataset), prepared).cityparquet_dir)
+
+
 def cmd_bench(args) -> int:
+    if getattr(args, "datasets", None):
+        prepared = Path(args.prepared_dir) if args.prepared_dir else BENCHMARK_DIR / "runs" / "data" / "readbench"
+        status = 0
+        for source in resolve_datasets(args.datasets, prepared):
+            one = argparse.Namespace(**{**vars(args), "datasets": None,
+                                        "dataset": str(source), "ports": None})
+            status = max(status, cmd_bench(one))
+        return status
+    if not getattr(args, "ports", None):
+        args.crs = _dataset_crs(args)
+        args.srid, args.srid_assumed = srid_for(args.crs)
     systems = getattr(args, "systems", None)
     _require_extension(systems.split(",") if systems else list(DUCKDB_TAGS))
     record, gate = _isolation(args)
@@ -314,7 +374,12 @@ def cmd_bench(args) -> int:
         dataset.source, dataset.cityparquet_dir,
         append_dir=results_dir, dataset=dataset.name,
     )
+    sidecar = readbench_mod.format_params(
+        READBENCH_BIN, dataset.source, dataset.cityparquet_dir.parent,
+        results_dir / "format-params")
+    p = params_mod.adopt_format_params(p, json.loads(sidecar.read_text()))
     (results_dir / f"{dataset.name}.params.json").write_text(params_mod.to_json(p))
+    axis_order: dict[str, str] = {}
 
     ingest_times: dict[str, float] = {}
     index_build: dict[str, float | None] = {}
@@ -324,6 +389,10 @@ def cmd_bench(args) -> int:
         system.prepare()
         result = system.ingest(dataset)
         ingest_times[system.tag] = result.wall_clock_s
+        if hasattr(system, "orient_to"):
+            axis_order[system.tag] = (
+                "source order, x/y exchanged for windows" if system.orient_to(p.bbox_full)
+                else "package order")
         index_build[system.tag] = system.build_indexes(p)
         report = system.size()
         sizes[system.tag] = (
@@ -362,7 +431,7 @@ def cmd_bench(args) -> int:
 
     (results_dir / f"{dataset.name}.manifest.json").write_text(
         json.dumps(
-            manifest.collect(
+            {**manifest.collect(
                 dataset_name=dataset.name,
                 source=__import__("hashlib").sha256(dataset.source.read_bytes()).hexdigest(),
                 ingest=ingest_times,
@@ -400,7 +469,17 @@ def cmd_bench(args) -> int:
                         ),
                     },
                 },
-            ),
+            ), **{
+                "crs": {"declared": getattr(args, "crs", None),
+                        "srid": getattr(args, "srid", None),
+                        "assumed": getattr(args, "srid_assumed", None),
+                        "swap_xy": p.swap_xy},
+                "axis_order": axis_order,
+                "format_params": {
+                    "path": str(sidecar),
+                    "sha256": __import__("hashlib").sha256(sidecar.read_bytes()).hexdigest(),
+                },
+            }},
             indent=2,
             sort_keys=True,
         )
@@ -692,13 +771,15 @@ def main(argv: list[str] | None = None) -> int:
     p_prep.set_defaults(func=cmd_prep)
 
     p_bench = sub.add_parser("run")
-    p_bench.add_argument("--dataset", required=True)
+    selection = p_bench.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--dataset", help="one CityJSONSeq source path")
+    selection.add_argument("--datasets", help="`all`, or comma-separated manifest ids or "
+                           "source stems, resolved in --prepared-dir as <stem>.city.jsonl")
     p_bench.add_argument("--repeat", type=int, default=25)
     p_bench.add_argument("--systems", default=None,
                          help="comma-separated tags; default is DuckDB over CityParquet, cjdb, and 3DCityDB")
     p_bench.add_argument("--prepared-dir", default=None)
     p_bench.add_argument("--data-root", default=None)
-    p_bench.add_argument("--srid", type=int, default=7415)
     p_bench.add_argument("--count-tolerance", type=float,
                          default=DEFAULT_COUNT_TOLERANCE,
                          help="relative spread (max-min)/max below which a "
