@@ -38,6 +38,27 @@ def required_keys() -> tuple[str, ...]:
     )
 
 
+SIZE_DEFINITIONS = {
+    "policy": (
+        "Every queried predicate is indexed where the system supports it, "
+        "and index sizes are reported separately."
+    ),
+    "total_bytes": {
+        "postgresql": "pg_total_relation_size over every table of the system's schema: heap, TOAST and all indexes",
+        "cityparquet": "every file of the package directory",
+    },
+    "no_index_bytes": {
+        "postgresql": "pg_table_size over the same tables: heap and TOAST, no index",
+        "cityparquet": (
+            "the package without the Bloom filters and page indexes (column "
+            "and offset index) inside its Parquet files; the footer, which "
+            "holds the schema and the row-group min/max statistics, is kept, "
+            "since a reader cannot read the file without it"
+        ),
+    },
+}
+
+
 def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, float],
             sizes: dict[str, tuple[int, int]], versions: dict[str, str],
             pg_settings: dict[str, str],
@@ -45,7 +66,9 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
             srid: dict[str, int] | None = None,
             execution: dict[str, Any] | None = None,
             count_check: dict[str, Any] | None = None,
-            isolation: dict[str, Any] | None = None) -> dict[str, Any]:
+            isolation: dict[str, Any] | None = None,
+            index_build: dict[str, float | None] | None = None,
+            size_detail: dict[str, dict[str, int]] | None = None) -> dict[str, Any]:
     """``srid`` — the SRID each PostgreSQL-backed system actually landed on.
 
     Added for Task 14 (the heterogeneity corpus): 3DCityDB's SRID is baked
@@ -70,11 +93,23 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
         },
         "versions": versions,
         "pg_settings": pg_settings,
-        "ingest": {"wall_clock_s": ingest, "caveat": _INGEST_CAVEAT},
+        "ingest": {
+            "wall_clock_s": ingest,
+            # The per-dataset predicate indexes, built after the import and
+            # timed apart from it; null for a system that builds none.
+            "index_build_s": index_build or {},
+            "caveat": _INGEST_CAVEAT,
+        },
         "sizes": {
-            tag: {"total_bytes": total, "no_index_bytes": no_idx}
+            tag: {
+                "total_bytes": total,
+                "no_index_bytes": no_idx,
+                "index_bytes": total - no_idx,
+                **(size_detail or {}).get(tag, {}),
+            }
             for tag, (total, no_idx) in sizes.items()
         },
+        "size_definitions": SIZE_DEFINITIONS,
         "patches": patches or {},
         "srid": srid or {},
         # Both thread configurations of this run, and what each system's

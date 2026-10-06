@@ -252,7 +252,7 @@ the timed window on every system.
 | `geometry-scan` | ids + native binary geometry | every object's id and every geometry it carries | `SELECT id, <every geometry_lod* column>` fetched to Arrow as WKB | `SELECT object_id, geometry` (the geometry JSONB), binary wire format | `objectid` + an array of the object's geometries, one per LoD, gathered from it and its boundary parts (Caveat 17), binary wire format |
 | `count`                   | count                    | total CityObject count                                             | `SELECT count(*)` — answered from file metadata; caption it as such                                                                                   | `SELECT count(*) FROM cjdb.city_object`                                                                                                                                                                  | `count(*)` over `feature` with the CityObject predicate (Caveat 1)                                                                                                                                                                                |
 | `bbox-query` (1/5/25 %) | ids + highest-LoD geometry | objects whose bbox intersects the window, each with its most detailed geometry | `bbox` STRUCT comparisons — **x/y only**; `coalesce` over the per-LoD WKB columns, most detailed first | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3); the highest-LoD element of the geometry JSONB | envelope `&& ST_MakeEnvelope(...)`; the object's geometry at the highest `property.val_lod` (integer tier), gathered from it and its boundary parts (Caveat 17), via `LEFT JOIN LATERAL` |
-| `attr-filter`             | ids                      | objects matching the per-dataset attribute predicate               | `WHERE "<col>" = ?` — a typed, flattened top-level column                                                                                             | `WHERE attributes ->> '<col>' = %s` — **no index on `attributes`** (see "Index sets")                                                                                                                    | `property` join on `pr.name = %s AND pr.val_string = %s` (Caveat 13)                                                                                                                                                                              |
+| `attr-filter`             | ids                      | objects matching the per-dataset attribute predicate               | `WHERE "<col>" = ?` — a typed, flattened top-level column                                                                                             | `WHERE attributes ->> '<col>' = %s` — expression index on the attribute (see "Index sets")                                                                                                             | `property` join on `pr.name = %s AND pr.val_string = %s` (Caveat 13)                                                                                                                                                                              |
 | `attr-range`              | ids                      | objects whose numeric attribute exceeds the threshold              | `WHERE "<col>" > ?` — DOUBLE column with row-group statistics                                                                                         | `WHERE (attributes ->> '<col>')::float > %s`                                                                                                                                                             | `property` join with `coalesce(val_double, val_int) > %s`                                                                                                                                                                                         |
 | `attr-stats`              | `(min, max, sum, count)` | aggregate of `numeric_column`                                      | aggregates over the flattened top-level column                                                                                                        | aggregates over `(attributes ->> '<col>')::float8` — every row's JSONB unpacked and cast                                                                                                                  | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` (Caveat 13)                                                                                                                                            |
 | `id-lookup` (×4 probes)   | the object               | the row for one probe id, materialised                             | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index; bloom filters prune, the cost is the row-group decode (Caveats 21, 22)   | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB                                                                                                                      | one row: `f.*` of the `feature` row `WHERE objectid = %s` (btree), plus one array per `property` column (`name`, every `val_*`) and an array of its geometries, one per LoD, gathered from it and its boundary parts, aggregated in scalar subqueries (Caveat 17)                         |
@@ -688,9 +688,13 @@ re-exec, and are not done.
 
 ### Index sets
 
-Every scenario's index requirement is checked against what each system builds
-unasked, and only what is missing is added; a duplicate index has no query
-benefit but inflates `size_bytes`.
+Every queried predicate is indexed where the system supports it, and index
+sizes are reported separately. Each scenario's index requirement is checked
+against what each system builds unasked, and only what is missing is added; a
+duplicate index has no query benefit but inflates `size_bytes`. The
+attribute indexes depend on the dataset's predicates, so `build_indexes()`
+builds them after the import and before `VACUUM ANALYZE`; their build time is
+the manifest's `ingest.index_build_s`, apart from the import time.
 
 - **cjdb: one added index**, `ix_co_object_id` = btree(`object_id`)
   (`sql_cjdb.index_ddl`). cjdb's own unique index is the composite
@@ -700,7 +704,23 @@ benefit but inflates `size_bytes`.
   the default indexes that already cover the other scenarios: GIST on
   `ground_geometry` (cjdb creates two), btree(`type`), GIN(`geometry`), and
   the relationship btrees.
-- **3DCityDB: none added.** `citydb-tool import cityjson` creates
+- **cjdb: attribute expression indexes, per dataset**
+  (`sql_cjdb.attribute_index_ddl`). cjdb stores attributes as one JSONB
+  document and indexes none of it, so the harness adds btree indexes on the
+  exact expressions the queries evaluate: `(attributes ->> '<col>')` for an
+  equality `attr-filter`, and `((attributes ->> '<col>')::float8)` for a
+  numeric bound (`attr-filter`'s `>=` form and `attr-range`; one index when
+  both use the same attribute).
+- **3DCityDB: one attribute index added**, `property_name_numval_inx` =
+  btree(`name`, `COALESCE(val_double, val_int::float8)`)
+  (`sql_citydb.attribute_index_ddl`), built only when the dataset has a
+  numeric predicate. citydb-tool already builds btree(`name`) and partial
+  btrees on `val_string`, `val_double` and `val_int`, which serve the equality
+  `attr-filter` (`name = ? AND val_string = ?`); the numeric bound compares
+  `coalesce(val_double, val_int)`, which none of them covers.
+- **CityParquet: nothing added.** Selective access comes from the row-group
+  statistics in the footer and the Bloom filters inside the files.
+- **3DCityDB structural indexes: none added.** `citydb-tool import cityjson` creates
   3DCityDB's content indexes during import, and `citydb index create` is a
   no-op afterwards (`docs/3dcitydb-v5-schema.md`, "Index coverage";
   `sql_citydb.index_ddl` docstring). The CityObject predicate is resolved
@@ -711,7 +731,18 @@ benefit but inflates `size_bytes`.
 `<dataset>.indexes.sql` records both the DDL this harness added and a live
 `pg_indexes` dump of each PostgreSQL schema taken at run time (`pg.dump_indexes`),
 so the complete index set each system queried against is auditable. The
-committed 3DBAG file lists 15 cjdb indexes and 59 3DCityDB indexes.
+committed 3DBAG file lists 15 cjdb indexes and 59 3DCityDB indexes, from a run
+before the attribute indexes existed.
+
+`EXPLAIN` on the Rotterdam (Delfshaven) databases confirms the plans use the
+intended indexes. Rotterdam's `attr-filter` is the numeric bound
+`TerrainHeight >= 2.45`, so the equality forms were not exercised there:
+
+| Scenario | cjdb | 3DCityDB |
+|---|---|---|
+| `attr-filter`, `attr-range` | Bitmap Index Scan on `ix_co_attr_num_terrainheight_…` | Bitmap Index Scan on `property_name_numval_inx`, `Index Cond` on `name` and the `COALESCE` |
+| `id-lookup` | Index Scan using `ix_co_object_id` | Index Scan using `feature_objectid_inx` |
+| `bbox-query` | Index Scan using `city_object_ground_gix` (GiST) | Bitmap Index Scan on `feature_envelope_spx` (GiST) |
 
 ### `VACUUM ANALYZE`
 
@@ -839,10 +870,18 @@ too; the count decomposition stays in `notes` beside it.
 and are repeated on every row a system contributes. Both are published
 because the comparison with a file format changes depending on whether
 indexes are counted. For PostgreSQL they are the sums of
-`pg_total_relation_size` and `pg_table_size` over the schema's tables; for
-the CityParquet systems both are the total bytes of every file in the package
-directory, which has no separate index. The manifest's `sizes` block carries
-the same figures.
+`pg_total_relation_size` (heap, TOAST and every index) and `pg_table_size`
+(heap and TOAST, no index) over the schema's tables, after the attribute
+indexes are built. For the CityParquet systems `size_bytes` is every file in
+the package directory, and `size_bytes_no_index` is the same package without
+the Bloom filters and page indexes (column and offset index) inside its
+Parquet files (`parquet_sizes.py`). The footer, which holds the schema and the
+row-group min/max statistics, stays in both figures, since a reader cannot
+read the file without it. So the CityParquet difference is the in-file index
+structures a writer may omit, and the PostgreSQL difference is the separate
+index relations. The manifest's `sizes` block carries the same figures plus
+`index_bytes` and, for CityParquet, the Bloom-filter, page-index and footer
+bytes; `size_definitions` states these definitions and the index policy.
 
 ## Metrics and the CSV contract
 

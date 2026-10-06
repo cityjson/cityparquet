@@ -135,11 +135,8 @@ class CityDbSystem:
             cur.execute(f"SELECT srid FROM {self._schema}.database_srs LIMIT 1")
             row = cur.fetchone()
             self._srid = int(row[0]) if row and row[0] else 0
-            # index_ddl() is deliberately empty — see its docstring — but
-            # the loop stays so the interface matches cjdb's adapter and so
-            # a future genuinely-missing index (a different dataset, a
-            # different scenario) is picked up automatically rather than
-            # needing a second call site added here.
+            # index_ddl() is empty (citydb-tool builds the structural
+            # indexes); the attribute index comes from build_indexes().
             for ddl in sql_citydb.index_ddl():
                 cur.execute(ddl)
         pg.vacuum_analyze(self._conn, self._schema)
@@ -165,6 +162,22 @@ class CityDbSystem:
             building_class_id=self._building_class_id,
         )
         return pg.fetch_rows(self._conn, sql, args)
+
+    def build_indexes(self, params: Params) -> float | None:
+        """The index policy's per-dataset attribute indexes, then ANALYZE.
+
+        Timed apart from `ingest()`; ANALYZE re-runs so the planner has
+        statistics on the new index expressions.
+        """
+        assert self._conn is not None
+        ddl = sql_citydb.attribute_index_ddl(params)
+        start = time.perf_counter()
+        with self._conn.cursor() as cur:
+            for statement in ddl:
+                cur.execute(statement)
+        elapsed = time.perf_counter() - start
+        pg.vacuum_analyze(self._conn, self._schema)
+        return elapsed
 
     def run(self, scenario: str, params: Params, repeat: int,
             window=None, probe=None) -> Measurement:

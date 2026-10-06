@@ -179,17 +179,23 @@ def test_size_sums_every_file_under_the_ingested_package(tmp_path):
     dataset = _dataset(tmp_path)
     package = dataset.cityparquet_dir
     package.mkdir(parents=True)
-    (package / "building.parquet").write_bytes(b"x" * 100)
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    pq.write_table(pa.table({"id": ["a", "b"]}), package / "building.parquet",
+                   write_page_index=True)
     sidecars = package / "sidecars"
     sidecars.mkdir()
-    (sidecars / "materials.parquet").write_bytes(b"y" * 50)
+    (sidecars / "metadata.json").write_bytes(b"y" * 50)
+    total = (package / "building.parquet").stat().st_size + 50
 
     system = ReadbenchSystem(binary=tmp_path / "bin")
     system.ingest(dataset)
     report = system.size()
 
-    assert report.size_bytes == 150
-    assert report.size_bytes_no_index == 150
+    assert report.size_bytes == total
+    # "Without indexes" drops the page index inside the Parquet file.
+    assert report.size_bytes_no_index == total - report.detail["page_index_bytes"]
+    assert report.detail["page_index_bytes"] > 0
 
 
 class _FakeCompletedProcess:

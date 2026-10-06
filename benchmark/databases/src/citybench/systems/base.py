@@ -20,7 +20,14 @@ class System(Protocol):
         """Create schemas, start clients. Idempotent."""
 
     def ingest(self, dataset: Dataset) -> IngestResult:
-        """Load ``dataset``, build indexes, ANALYZE. Returns wall-clock."""
+        """Load ``dataset``, build the system's own indexes, ANALYZE. Returns wall-clock."""
+
+    def build_indexes(self, params: Params) -> float | None:
+        """Build the per-dataset predicate indexes after ingest.
+
+        Returns the build wall-clock in seconds (recorded apart from the
+        import), or ``None`` for a system that builds no index.
+        """
 
     def run(self, scenario: str, params: Params, repeat: int,
             window=None, probe=None) -> Measurement:

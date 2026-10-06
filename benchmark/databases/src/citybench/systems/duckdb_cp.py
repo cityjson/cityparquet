@@ -12,6 +12,7 @@ from pathlib import Path
 
 import duckdb
 
+from citybench.parquet_sizes import package_sizes
 from citybench.config import (
     Dataset, IngestResult, Measurement, Params, SizeReport, object_table_files,
 )
@@ -359,8 +360,13 @@ class DuckDBCityParquet:
 
     def size(self) -> SizeReport:
         assert self._package is not None
-        total = sum(f.stat().st_size for f in self._package.rglob("*") if f.is_file())
-        return SizeReport(size_bytes=total, size_bytes_no_index=total)
+        # "Without indexes" drops the Bloom filters and page indexes inside
+        # the files; nothing is built beside the package.
+        return package_sizes(self._package)
+
+    def build_indexes(self, params: Params) -> float | None:
+        """Nothing to build: statistics and Bloom filters are in the file."""
+        return None
 
     def teardown(self) -> None:
         if self._conn is not None:

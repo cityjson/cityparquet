@@ -282,3 +282,47 @@ def test_attr_stats_returns_min_max_sum_count_in_that_order():
     select = sql.split(" FROM ")[0]
     positions = [select.index(f"{agg}(") for agg in ("min", "max", "sum", "count")]
     assert positions == sorted(positions), select
+
+
+# --- Attribute indexes (index policy: every queried predicate indexed) ---
+
+from citybench.scenarios.sql_cjdb import attribute_index_ddl  # noqa: E402
+
+
+def test_attribute_index_ddl_indexes_the_eq_filter_text_expression():
+    ddl = attribute_index_ddl(_params())
+    text = [d for d in ddl if "::float8" not in d]
+    assert len(text) == 1
+    assert "((attributes ->> 'b3_dak_type'))" in text[0]
+    assert "cjdb.city_object" in text[0]
+
+
+def test_attribute_index_ddl_indexes_the_numeric_cast_of_the_range_column():
+    p = _params()
+    ddl = attribute_index_ddl(p)
+    assert any(
+        f"(((attributes ->> '{p.attr_range.column}'))::float8)" in d for d in ddl
+    )
+
+
+def test_attribute_index_ddl_ge_filter_and_range_on_one_column_build_one_index():
+    import dataclasses
+    base = _params()
+    p = _params(attr_filter=ge_attr_filter(column="TerrainHeight"),
+                attr_range=dataclasses.replace(base.attr_range, column="TerrainHeight"))
+    ddl = attribute_index_ddl(p)
+    assert len(ddl) == 1
+    assert "::float8" in ddl[0]
+
+
+def test_attribute_index_ddl_is_empty_without_attribute_predicates():
+    assert attribute_index_ddl(_params(attr_filter=None, attr_range=None)) == []
+
+
+def test_attribute_index_names_are_safe_identifiers():
+    p = _params(attr_filter=ge_attr_filter(column="Weird-Col Name'x"))
+    ddl = attribute_index_ddl(p)
+    for d in ddl:
+        name = d.split("IF NOT EXISTS ")[1].split(" ")[0]
+        assert name.replace("_", "").isalnum() and len(name) <= 63
+    assert any("'Weird-Col Name''x'" in d for d in ddl)

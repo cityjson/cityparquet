@@ -201,6 +201,22 @@ class CjdbSystem:
         pg.vacuum_analyze(self._conn, self._schema)
         return IngestResult(wall_clock_s=elapsed)
 
+    def build_indexes(self, params: Params) -> float | None:
+        """The index policy's per-dataset attribute indexes, then ANALYZE.
+
+        Timed apart from `ingest()`; ANALYZE re-runs so the planner has
+        statistics on the new index expressions.
+        """
+        assert self._conn is not None
+        ddl = sql_cjdb.attribute_index_ddl(params)
+        start = time.perf_counter()
+        with self._conn.cursor() as cur:
+            for statement in ddl:
+                cur.execute(statement)
+        elapsed = time.perf_counter() - start
+        pg.vacuum_analyze(self._conn, self._schema)
+        return elapsed
+
     def run(self, scenario: str, params: Params, repeat: int,
             window=None, probe=None) -> Measurement:
         assert self._conn is not None

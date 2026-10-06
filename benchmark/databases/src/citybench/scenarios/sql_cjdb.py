@@ -13,6 +13,9 @@ way.
 
 from __future__ import annotations
 
+import hashlib
+import re
+
 from citybench.config import BBox, BboxWindow, IdProbe, Params
 from citybench.scenarios import registry
 from citybench.scenarios.registry import ScenarioUnavailable
@@ -55,11 +58,8 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
 
     if scenario == "attr-filter":
         # The same per-dataset CityJSON attribute the format family filters
-        # on, reached through the JSONB document. cjdb builds no index on
-        # `attributes` and this harness adds none: a GIN(attributes) index
-        # would sit unused by every other scenario while inflating
-        # `size_bytes`, the storage figure CityParquet is compared against.
-        # Disclosed in the README rather than silently compensated.
+        # on, reached through the JSONB document; served by the expression
+        # index `attribute_index_ddl()` builds for this dataset's predicate.
         if p.attr_filter is None:
             raise ScenarioUnavailable("dataset has no attr-filter predicate")
         spec = p.attr_filter
@@ -301,17 +301,9 @@ def index_ddl() -> list[str]:
     benefit, but they DO inflate on-disk size — the very metric this
     project's own format is compared against.
 
-    `attributes` has NO index, and this harness adds none. Two scenarios do
-    now filter on it — `attr-filter` (`attributes ->> '<col>' = %s`) and
-    `attr-range` (`(attributes ->> '<col>')::float > %s`) — so unlike the
-    other columns this is a real, measurable disadvantage rather than a
-    redundancy. It is left alone because a useful index here is a
-    per-expression btree on the one attribute each dataset happens to be
-    filtered by, which is a query-specific object cjdb's own importer never
-    builds and a real cjdb deployment would not have; a blanket
-    GIN(attributes) would not serve `attr-range`'s inequality at all while
-    adding materially to `size_bytes`. The README states this beside both
-    scenarios' numbers.
+    `attributes` gets no index from cjdb's importer. The attribute
+    predicates are indexed separately, per dataset, by
+    `attribute_index_ddl()` — see there.
 
     Only what is genuinely missing is created here; this DDL is committed
     alongside the results.
@@ -320,3 +312,49 @@ def index_ddl() -> list[str]:
     return [
         f"CREATE INDEX IF NOT EXISTS ix_co_object_id ON {t} (object_id)",
     ]
+
+
+def _quote_literal(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def _index_name(prefix: str, column: str) -> str:
+    """A safe identifier (<= 63 bytes) derived from an attribute name."""
+    slug = re.sub(r"[^a-z0-9]+", "_", column.lower()).strip("_") or "attr"
+    digest = hashlib.sha1(column.encode()).hexdigest()[:8]
+    return f"{prefix}_{slug}"[: 63 - 9] + f"_{digest}"
+
+
+def attribute_index_ddl(p: Params) -> list[str]:
+    """Expression indexes on the attribute predicates this dataset queries.
+
+    Index policy: every queried predicate is indexed where the system
+    supports it. cjdb keeps attributes in one JSONB document, so the
+    attribute scenarios are served by btree expression indexes on exactly
+    the expressions the queries evaluate: the text value
+    `attributes ->> col` for an equality filter, and its `float8` cast for
+    a numeric bound (`attr-filter`'s `>=` form and `attr-range`). The
+    attribute names come from the run's parameters, so the indexes are
+    built per dataset after import; their build time is recorded apart
+    from the import time, and their bytes count towards `size_bytes` but
+    not `size_bytes_no_index`.
+    """
+    t = f"{SCHEMA}.city_object"
+    text_cols: list[str] = []
+    num_cols: list[str] = []
+    if p.attr_filter is not None:
+        (text_cols if p.attr_filter.op == "eq" else num_cols).append(p.attr_filter.column)
+    if p.attr_range is not None:
+        num_cols.append(p.attr_range.column)
+    ddl: list[str] = []
+    for col in dict.fromkeys(text_cols):
+        ddl.append(
+            f"CREATE INDEX IF NOT EXISTS {_index_name('ix_co_attr_txt', col)} "
+            f"ON {t} (((attributes ->> '{_quote_literal(col)}')))"
+        )
+    for col in dict.fromkeys(num_cols):
+        ddl.append(
+            f"CREATE INDEX IF NOT EXISTS {_index_name('ix_co_attr_num', col)} "
+            f"ON {t} ((((attributes ->> '{_quote_literal(col)}'))::float8))"
+        )
+    return ddl

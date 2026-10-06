@@ -743,3 +743,30 @@ def index_ddl() -> list[str]:
     fix for 3DCityDB is simpler still: add nothing.
     """
     return []
+
+
+def attribute_index_ddl(p: Params) -> list[str]:
+    """The one index the attribute queries still lack on `property`.
+
+    Index policy: every queried predicate is indexed where the system
+    supports it. citydb-tool already builds `property_name_inx`
+    (btree(name)) and partial btrees on `val_string`, `val_double` and
+    `val_int`, which serve the equality form of `attr-filter`
+    (`name = %s AND val_string = %s`). The numeric bound
+    (`attr-filter`'s `>=` form and `attr-range`) compares
+    `coalesce(val_double, val_int)`, an expression none of those indexes
+    covers, so the planner can only narrow by `name` and filter the value
+    row by row. A composite btree on `(name, coalesce(val_double, val_int))`
+    serves the name lookup and the value range in one index scan. It is
+    generic (not per attribute) but is built only when the dataset has a
+    numeric predicate; its build time is recorded apart from the import.
+    """
+    numeric = p.attr_range is not None or (
+        p.attr_filter is not None and p.attr_filter.op != "eq"
+    )
+    if not numeric:
+        return []
+    return [
+        "CREATE INDEX IF NOT EXISTS property_name_numval_inx ON "
+        f"{_P} (name, COALESCE(val_double, val_int::float8))"
+    ]

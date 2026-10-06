@@ -544,3 +544,21 @@ def test_id_lookup_returns_the_whole_object_in_one_row():
     assert "array_agg(og.geometry ORDER BY og.lod)" in sql and "geometry_data gd" in sql
     assert ") AS geometries " in sql
     assert args == (make_probes()[0].id,)
+
+
+# --- Attribute indexes (index policy: every queried predicate indexed) ---
+
+from citybench.scenarios.sql_citydb import attribute_index_ddl  # noqa: E402
+from conftest import make_params  # noqa: E402
+
+
+def test_attribute_index_ddl_adds_name_plus_numeric_value_index():
+    ddl = attribute_index_ddl(make_params())
+    assert len(ddl) == 1
+    assert "citydb.property" in ddl[0]
+    assert "(name, COALESCE(val_double, val_int::float8))" in ddl[0]
+
+
+def test_attribute_index_ddl_empty_without_a_numeric_predicate():
+    p = make_params(attr_range=None)
+    assert attribute_index_ddl(p) == []

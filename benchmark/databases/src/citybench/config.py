@@ -464,3 +464,5 @@ class IngestResult:
 class SizeReport:
     size_bytes: int
     size_bytes_no_index: int | None = None
+    # Per-system breakdown for the manifest (index bytes, footer bytes, ...).
+    detail: dict[str, int] | None = None

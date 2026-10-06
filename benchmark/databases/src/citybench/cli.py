@@ -176,7 +176,7 @@ def _format_ddl(statements: list[str]) -> str:
     return ";\n".join(statements) + ";\n"
 
 
-def _indexes_sql(systems: list) -> str:
+def _indexes_sql(systems: list, params=None) -> str:
     """The full ``results/<dataset>.indexes.sql`` artefact text.
 
     I7 (final whole-branch review): this used to write ONLY what each
@@ -203,6 +203,15 @@ def _indexes_sql(systems: list) -> str:
         "-- correct, verified answer, not an omission.\n"
         + _format_ddl(sql_citydb.index_ddl()),
     ]
+    if params is not None:
+        sections += [
+            "-- cjdb: per-dataset attribute indexes (index policy; built by\n"
+            "-- build_indexes() after the import, see sql_cjdb.attribute_index_ddl()):\n"
+            + _format_ddl(sql_cjdb.attribute_index_ddl(params)),
+            "-- 3dcitydb: per-dataset attribute index (index policy; see\n"
+            "-- sql_citydb.attribute_index_ddl()):\n"
+            + _format_ddl(sql_citydb.attribute_index_ddl(params)),
+        ]
 
     by_tag = {system.tag: system for system in systems}
     for tag, label in (("cjdb", "cjdb"), ("3dcitydb", "3dcitydb")):
@@ -328,16 +337,22 @@ def cmd_bench(args) -> int:
     (results_dir / f"{dataset.name}.params.json").write_text(params_mod.to_json(p))
 
     ingest_times: dict[str, float] = {}
+    index_build: dict[str, float | None] = {}
     sizes: dict[str, tuple[int, int]] = {}
+    size_detail: dict[str, dict[str, int]] = {}
     for system in systems:
         system.prepare()
         result = system.ingest(dataset)
         ingest_times[system.tag] = result.wall_clock_s
+        index_build[system.tag] = system.build_indexes(p)
         report = system.size()
         sizes[system.tag] = (
             report.size_bytes,
-            report.size_bytes_no_index or report.size_bytes,
+            report.size_bytes_no_index if report.size_bytes_no_index is not None
+            else report.size_bytes,
         )
+        if report.detail:
+            size_detail[system.tag] = report.detail
 
     tolerance = getattr(args, "count_tolerance", DEFAULT_COUNT_TOLERANCE)
     resolved: dict[str, dict] = {}
@@ -372,6 +387,8 @@ def cmd_bench(args) -> int:
                 source=__import__("hashlib").sha256(dataset.source.read_bytes()).hexdigest(),
                 ingest=ingest_times,
                 sizes=sizes,
+                index_build=index_build,
+                size_detail=size_detail,
                 versions=_versions(systems),
                 pg_settings=pg_settings,
                 patches=_patches(systems),
@@ -409,7 +426,7 @@ def cmd_bench(args) -> int:
     )
 
     (results_dir / f"{dataset.name}.indexes.sql").write_text(
-        _indexes_sql(systems)
+        _indexes_sql(systems, p)
     )
 
     for system in systems:
