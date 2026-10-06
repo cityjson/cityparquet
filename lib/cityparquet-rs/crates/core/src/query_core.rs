@@ -508,6 +508,25 @@ pub struct BBoxVisitResult {
     pub row_groups_touched: usize,
 }
 
+/// The string-equality predicate a lookup by `value` applies to the
+/// statistics.
+pub(crate) fn eq_str(value: &str) -> AttrPredicate {
+    AttrPredicate::Eq(serde_json::Value::String(value.to_string()))
+}
+
+/// Visits every batch of `batches` natively into one [`VisitTotals`],
+/// stopping after the first batch that holds a row when `first_only`.
+/// Shared by the sync and async visit queries, which differ only in how the
+/// batches arrive.
+pub(crate) fn visit_into(
+    totals: &mut crate::visit::VisitTotals,
+    batch: &RecordBatch,
+    first_only: bool,
+) -> Result<bool> {
+    crate::visit::visit_batch(batch, totals)?;
+    Ok(first_only && totals.objects > 0)
+}
+
 /// The row groups of `metadata` whose `column` statistics cannot rule out a
 /// row satisfying `pred` — a superset of the matching row groups, never a
 /// subset. The rules:

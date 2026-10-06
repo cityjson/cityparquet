@@ -90,15 +90,20 @@ pub fn full_read_visit(table_path: &Path) -> Result<VisitTotals> {
     Ok(totals)
 }
 
-/// Visits every row of a row-filtered reader natively.
+/// Visits every row of a row-filtered reader natively; see
+/// `query_core::visit_into`.
 fn visit_all(
     reader: impl Iterator<
         Item = std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>,
     >,
+    first_only: bool,
 ) -> Result<VisitTotals> {
     let mut totals = VisitTotals::default();
     for batch in reader {
-        crate::visit::visit_batch(&batch.map_err(CityParquetError::parquet_from)?, &mut totals)?;
+        let batch = batch.map_err(CityParquetError::parquet_from)?;
+        if query_core::visit_into(&mut totals, &batch, first_only)? {
+            break;
+        }
     }
     Ok(totals)
 }
@@ -120,7 +125,7 @@ pub fn bbox_query_visit(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxV
         .build()
         .map_err(CityParquetError::parquet_from)?;
     Ok(BBoxVisitResult {
-        totals: visit_all(reader)?,
+        totals: visit_all(reader, false)?,
         row_groups_total,
         row_groups_touched,
     })
@@ -153,11 +158,6 @@ fn prune_row_groups(
     ))
 }
 
-/// The string-equality predicate a lookup by `value` applies.
-fn eq_str(value: &str) -> AttrPredicate {
-    AttrPredicate::Eq(serde_json::Value::String(value.to_string()))
-}
-
 /// [`attr_filter_with_stats`] that VISITS every matching object natively;
 /// `totals.objects` is the count. Row groups are pruned exactly as in
 /// [`attr_filter_with_stats`].
@@ -177,7 +177,7 @@ pub fn attr_filter_visit(
         .with_row_groups(row_groups)
         .build()
         .map_err(CityParquetError::parquet_from)?;
-    Ok((visit_all(reader)?, stats))
+    Ok((visit_all(reader, false)?, stats))
 }
 
 /// [`id_lookup_with_stats`] that VISITS the matching object natively instead
@@ -188,22 +188,20 @@ pub fn id_lookup_visit(table_path: &Path, id: &str) -> Result<(VisitTotals, Look
     let file = File::open(table_path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
         .map_err(CityParquetError::parquet_from)?;
-    let (row_groups, stats) =
-        prune_row_groups(&file, builder.metadata(), "id", Some(id), &eq_str(id))?;
+    let (row_groups, stats) = prune_row_groups(
+        &file,
+        builder.metadata(),
+        "id",
+        Some(id),
+        &query_core::eq_str(id),
+    )?;
     let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id)?;
     let reader = builder
         .with_row_groups(row_groups)
         .with_row_filter(row_filter)
         .build()
         .map_err(CityParquetError::parquet_from)?;
-    let mut totals = VisitTotals::default();
-    for batch in reader {
-        crate::visit::visit_batch(&batch.map_err(CityParquetError::parquet_from)?, &mut totals)?;
-        if totals.objects > 0 {
-            break;
-        }
-    }
-    Ok((totals, stats))
+    Ok((visit_all(reader, true)?, stats))
 }
 
 /// [`feature_lookup_with_stats`] that VISITS every matching object natively;
@@ -222,7 +220,7 @@ pub fn feature_lookup_visit(
         builder.metadata(),
         "feature_id",
         Some(feature_id),
-        &eq_str(feature_id),
+        &query_core::eq_str(feature_id),
     )?;
     let row_filter =
         query_core::utf8_eq_row_filter(builder.parquet_schema(), "feature_id", feature_id)?;
@@ -231,7 +229,7 @@ pub fn feature_lookup_visit(
         .with_row_filter(row_filter)
         .build()
         .map_err(CityParquetError::parquet_from)?;
-    Ok((visit_all(reader)?, stats))
+    Ok((visit_all(reader, false)?, stats))
 }
 
 /// The table's row count straight from Parquet file metadata — O(1), no
@@ -435,8 +433,13 @@ pub fn id_lookup_with_stats(
     let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
         .map_err(CityParquetError::parquet_from)?;
     let schema = builder.cityparquet_arrow_schema()?;
-    let (row_groups, stats) =
-        prune_row_groups(&file, builder.metadata(), "id", Some(id), &eq_str(id))?;
+    let (row_groups, stats) = prune_row_groups(
+        &file,
+        builder.metadata(),
+        "id",
+        Some(id),
+        &query_core::eq_str(id),
+    )?;
 
     let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id)?;
     let parquet_reader = builder
@@ -483,7 +486,7 @@ pub fn feature_lookup_with_stats(
         builder.metadata(),
         "feature_id",
         Some(feature_id),
-        &eq_str(feature_id),
+        &query_core::eq_str(feature_id),
     )?;
 
     let row_filter =
