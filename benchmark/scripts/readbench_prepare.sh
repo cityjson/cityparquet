@@ -6,9 +6,9 @@
 # knows how to build:
 #
 #   citygml              OUTDIR/<x>.gml               CityGML 2.0 — copied from a CityGML INPUT, else synthesised
-#   cityjson             OUTDIR/<x>.city.json         one whole-document CityJSON
+#   cityjson             OUTDIR/<x>.city.json         one whole-document CityJSON, no optional whitespace (compact_json.py)
 #   cityjsonseq          OUTDIR/<x>.city.jsonl        CityJSONSeq
-#   cityparquet          OUTDIR/<x>.parquet/          core-profile CityParquet package, Hilbert-ordered rows
+#   cityparquet          OUTDIR/<x>.parquet/          core-profile CityParquet package, Hilbert-ordered rows, no LoD 0 synthesis
 #   flatcitybuf          OUTDIR/<x>.fcb               FlatCityBuf, spatial index + ALL-attribute B+Tree index
 #
 # EVERY ONE OF THOSE IS A REAL FILE IN OUTDIR, `cityjsonseq` included — from a
@@ -32,7 +32,7 @@
 #
 #   CityGML --citygml-tools to-cityjson--> CityJSON --cjseq cat--> CityJSONSeq
 #                                                 |           |--fcb ser -A------------------------> FlatCityBuf
-#                                                 |           |--cityparquet convert --ordering hilbert--> CityParquet
+#                                                 |           |--cityparquet convert --ordering hilbert --no-lod0--> CityParquet
 #                                                 |
 #                                                 |--citygml-tools from-cityjson -v 2.0--> CityGML
 #                                                    (only when INPUT is not itself CityGML)
@@ -483,6 +483,9 @@ fi
 # writes a well-formed but object-less document is worse than one that fails.
 if [[ "$NEED_CITYJSON" -eq 1 ]]; then
   require_tool jq "the CityJSON object-count check"
+  # python3 runs compact_json.py, which writes the CityJSON artefact without
+  # optional whitespace (step 2).
+  require_tool python3 "the CityJSON whitespace compaction"
 fi
 
 # --- is this CityGML input fit to prepare at all? --------------------------
@@ -623,11 +626,18 @@ same_file() {
 #      the corpus changed; every stage of every dataset is rebuilt.
 #   5  `<x>.parquet` is written in Hilbert order (`--ordering hilbert`), the
 #      benchmark's one CityParquet configuration.
-CHAIN_VERSION=5
+#   6  the CityJSON artefact is written without optional whitespace, and the
+#      package without LoD 0 synthesis (`--no-lod0`).
+CHAIN_VERSION=6
 # The chain version at which each STAGE last changed what it writes. An
 # artefact is stale when its stage changed after the version that built it,
 # so a bump that touches one stage does not force the hours-long stages it
 # left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#   6  the CityJSON and CityParquet stages: a CityJSON built before may carry
+#      the source's whitespace, and a package built before carries a
+#      synthesised LoD 0 footprint for every object without a source LoD 0.
+#      Everything downstream of the CityJSON stage parses it, so the
+#      CityJSONSeq, FlatCityBuf and CityGML artefacts are unchanged.
 #   5  the CityParquet stage: a package built before holds the same rows in
 #      source order, and every bbox row measured on it is a different
 #      artefact.
@@ -640,7 +650,7 @@ CHAIN_VERSION=5
 #      (the gzip case above); FlatCityBuf and CityGML derive from it.
 stage_version() {
   case "$1" in
-    "$PARQUET_OUT") echo 5 ;;
+    "$PARQUET_OUT" | "$CITYJSON_OUT") echo 6 ;;
     *) echo 4 ;;
   esac
 }
@@ -793,10 +803,13 @@ fi
 # of the chain); from a CityJSONSeq input via `cjseq collect` (up the chain,
 # but still from the source data — never out of a CityParquet package).
 if [[ "$NEED_CITYJSON" -eq 1 ]]; then
+  CITYJSON_WRITTEN=1
   if file_is_valid "$CITYJSON_OUT" && same_file "$INPUT" "$CITYJSON_OUT"; then
     echo "skip $CITYJSON_OUT (the input is already the artefact)"
+    CITYJSON_WRITTEN=0
   elif file_is_valid "$CITYJSON_OUT"; then
     echo "skip $CITYJSON_OUT (already present)"
+    CITYJSON_WRITTEN=0
   elif [[ "$INPUT_KIND" == "citygml" ]]; then
     echo "-- citygml-tools to-cityjson $INPUT -> $CITYJSON_OUT"
     # citygml-tools writes <basename>.json into an output DIRECTORY, not to a
@@ -826,8 +839,19 @@ if [[ "$NEED_CITYJSON" -eq 1 ]]; then
     mv "$CITYJSON_OUT.tmp" "$CITYJSON_OUT"
     trap - EXIT
   else
-    echo "-- copy $INPUT -> $CITYJSON_OUT"
+    echo "-- compact $INPUT -> $CITYJSON_OUT"
     cp "$INPUT" "$CITYJSON_OUT"
+  fi
+  # Whatever wrote it, the artefact is measured WITHOUT optional whitespace,
+  # like the CityGML artefact (`--no-pretty-print`): `compact_json.py` drops
+  # the whitespace outside strings and copies every other byte, number
+  # spellings included, so an already-compact document is unchanged. Only a
+  # document written by this run: the input itself is never rewritten.
+  if [[ "$CITYJSON_WRITTEN" -eq 1 ]]; then
+    trap 'rm -f "$CITYJSON_OUT.tmp"' EXIT
+    python3 -I "$BENCHMARK_DIR/scripts/compact_json.py" "$CITYJSON_OUT" "$CITYJSON_OUT.tmp"
+    mv "$CITYJSON_OUT.tmp" "$CITYJSON_OUT"
+    trap - EXIT
   fi
   if want cityjson; then
     BUILT+=("$CITYJSON_OUT")
@@ -946,7 +970,7 @@ if want cityparquet; then
   if dir_is_valid "$PARQUET_OUT"; then
     echo "skip $PARQUET_OUT (already present)"
   else
-    echo "-- convert --ordering hilbert $SEQ_INPUT -> $PARQUET_OUT"
+    echo "-- convert --ordering hilbert --no-lod0 $SEQ_INPUT -> $PARQUET_OUT"
     # By-type is the only, mandatory table layout (2026-07-21): one
     # `<snake>.parquet` table per 1st-level CityObject family. The
     # read-benchmark's CityParquetRunner only supports a package whose
@@ -954,7 +978,12 @@ if want cityparquet; then
     # single-family dataset (e.g. a Building-only 3D BAG tile) — a
     # multi-family INPUT prepares fine here but the read-benchmark itself
     # rejects it later with a clear error.
-    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --ordering hilbert --overwrite
+    # `--no-lod0`: the package holds the source's geometries and no others.
+    # The writer's default synthesises an LoD 0 footprint for every object
+    # without a source LoD 0, which no other format's artefact holds, so the
+    # package would be measured with more content than its competitors. A
+    # SOURCE LoD 0 (Tokyo, 3DBAG) is kept either way.
+    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --ordering hilbert --no-lod0 --overwrite
   fi
   BUILT+=("$PARQUET_OUT")
 fi

@@ -128,6 +128,7 @@ new_sandbox() {
   dir="$(mktemp -d "${TMPDIR:-/tmp}/readbench_prepare_test.XXXXXX")"
   mkdir -p "$dir/repo/benchmark/scripts" "$dir/repo/lib/cityparquet-rs" "$dir/bin" "$dir/data" "$dir/out"
   cp "$PREPARE" "$dir/repo/benchmark/scripts/readbench_prepare.sh"
+  cp "$(dirname "$PREPARE")/compact_json.py" "$dir/repo/benchmark/scripts/compact_json.py"
   # One CityJSONFeature line — enough for the script's feature count to be 1.
   printf '{"type":"CityJSONFeature","id":"tiny"}\n' >"$dir/data/tiny.city.jsonl"
   # A whole-document CityJSON input: the other shape the catalogue corpus
@@ -1207,6 +1208,10 @@ case_cityjson_input_builds_a_real_seq_artefact() {
 #                       later change of default from publishing, under the
 #                       same name, a package whose bbox rows prune far fewer
 #                       row groups.
+#   --no-lod0           without it every object lacking a source LoD 0
+#                       gains a synthesised footprint, so the package holds
+#                       geometries no other format holds and is published as
+#                       the same content.
 #   fcb ser -A          without it there is no B+-tree attribute index, so
 #                       FlatCityBuf falls back to a full scan on
 #                       attr-filter/id-lookup and the row is published as an
@@ -1215,7 +1220,7 @@ case_cityjson_input_builds_a_real_seq_artefact() {
 # Asserted from the stubs' own recorded argv, not from the script's echo.
 # --------------------------------------------------------------------------
 case_measurement_flags_are_passed() {
-  local name="--ordering hilbert and fcb -A both reach the tools"
+  local name="--ordering hilbert, --no-lod0 and fcb -A all reach the tools"
   local dir
   dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
   run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
@@ -1232,10 +1237,50 @@ case_measurement_flags_are_passed() {
     )"
     return
   fi
+  if ! grep -qFx -- "--no-lod0" "$dir/out/tiny.parquet/stub-argv.txt"; then
+    fail "$name" "the package was written with LoD 0 synthesis on: $(
+      tr '\n' ' ' <"$dir/out/tiny.parquet/stub-argv.txt"
+    )"
+    return
+  fi
   if ! grep -qFx -- "-A" "$dir/fcb-ser-argv.txt"; then
     fail "$name" "fcb ser was not given -A (no attribute index): $(
       tr '\n' ' ' <"$dir/fcb-ser-argv.txt"
     )"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 8b'': the CityJSON artefact is the source document WITHOUT optional
+# whitespace, like the CityGML artefact (`--no-pretty-print`). Only whitespace
+# outside strings goes: a space inside a string value, and every number's
+# spelling, survive byte for byte. An already-compact source is copied as is.
+# --------------------------------------------------------------------------
+case_cityjson_artefact_is_compact() {
+  local name="the CityJSON artefact is written without optional whitespace"
+  local dir
+  dir="$(new_sandbox)"
+  printf '{\n  "type": "CityJSON",\n  "version": "2.0",\n  "transform": {"scale": [1e-10, 1.0e-06, 1], "translate": [0, 0, 0]},\n  "CityObjects": {\n    "tiny0": {"type": "Building", "attributes": {"name": "a b"}, "geometry": []}\n  },\n  "vertices": [[9007199254740993, 2, 3]]\n}\n' \
+    >"$dir/data/tiny.city.json"
+  run_prepare "$dir" --formats cityjson "$dir/data/tiny.city.json" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  local want='{"type":"CityJSON","version":"2.0","transform":{"scale":[1e-10,1.0e-06,1],"translate":[0,0,0]},"CityObjects":{"tiny0":{"type":"Building","attributes":{"name":"a b"},"geometry":[]}},"vertices":[[9007199254740993,2,3]]}'
+  if [[ "$(cat "$dir/out/tiny.city.json")" != "$want" ]]; then
+    fail "$name" "artefact is '$(cat "$dir/out/tiny.city.json")'"
+    return
+  fi
+  # An already-compact source is the artefact byte for byte.
+  local dir2
+  dir2="$(new_sandbox)"
+  printf '%s' "$want" >"$dir2/data/tiny.city.json"
+  run_prepare "$dir2" --formats cityjson "$dir2/data/tiny.city.json" "$dir2/out"
+  if [[ $LAST_RC -ne 0 ]] || ! cmp -s "$dir2/data/tiny.city.json" "$dir2/out/tiny.city.json"; then
+    fail "$name" "a compact source was not copied byte for byte; log: $(cat "$LAST_LOG")"
     return
   fi
   pass "$name"
@@ -1394,8 +1439,9 @@ case_stale_chain_artefacts_are_refused() {
 # --------------------------------------------------------------------------
 # Case 8e': a bump that changed ONE stage refuses only that stage's artefact.
 #
-# Chain version 5 changed the CityParquet stage alone (Hilbert row order), so
-# a directory stamped 4 holds a stale package but a FlatCityBuf file this
+# Chain version 6 changed the CityJSON and CityParquet stages alone (compact
+# CityJSON, no LoD 0 synthesis), so a directory stamped 5 holds a stale
+# package but a FlatCityBuf file this
 # chain would write again byte for byte — and the hours-long stages must not
 # be rebuilt for nothing.
 # --------------------------------------------------------------------------
@@ -1408,7 +1454,7 @@ case_a_one_stage_bump_refuses_only_that_stage() {
     fail "$name" "first run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
     return
   fi
-  printf '4\n' >"$dir/out/.readbench-chain/tiny"
+  printf '5\n' >"$dir/out/.readbench-chain/tiny"
   run_prepare "$dir" --formats cityparquet,flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
   if ! expect_guard "$name" "built by an older derivation chain"; then
     return
@@ -1565,6 +1611,7 @@ case_chain_intermediates_are_reported
 case_second_run_skips
 case_cityjson_input_builds_a_real_seq_artefact
 case_measurement_flags_are_passed
+case_cityjson_artefact_is_compact
 case_fcb_info_count_is_reported
 case_stale_chain_artefacts_are_refused
 case_a_one_stage_bump_refuses_only_that_stage
