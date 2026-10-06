@@ -1072,20 +1072,18 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
    geometry, and all three materialise rows inside the timed window, each
    the object's identifier and that geometry: DuckDB the `geometry_lod2_2`
    WKB, cjdb the LoD 2.2 element of the `geometry` JSONB array, 3DCityDB the
-   tier-2 geometry in `geometry_data`. Three differences remain and are
+   tier-2 geometry gathered from `geometry_data`. Three differences remain and are
    not engineered away:
    - **Each system returns the geometry in its own representation** —
      WKB, cjdb's JSON geometry object, a PostGIS `geometry` — the same
      asymmetry Caveat 18 records for `geometry-scan` and `bbox-query`.
-   - **3DCityDB pays an ordering the others do not.** `DISTINCT ON
-(f.id) … ORDER BY f.id` keeps the row count CityObject-grained when
-     several `property` rows of one feature match, and is scoped to the
-     key rather than to the whole row so PostgreSQL never compares WKB
-     geometries for equality. The sort KEY is a bigint but the sorted
-     tuples carry the geometry, so at scale this may spill to disk rather
-     than fit `work_mem` — check the plan for a `Sort`/`Unique` node
-     before reading the row against the other two. Where each CityObject
-     owns exactly one tier-2 geometry, the de-duplication removes nothing.
+   - **3DCityDB pays a gathering the others do not.** Its object has no
+     single geometry column: per CityObject, a recursive walk follows the
+     parts it contains, keeps the shallowest level carrying tier-2 rows
+     and collects several rows into one geometry (Caveat 17). That keeps
+     the row count CityObject-grained by construction, at a per-object
+     cost DuckDB's single column and cjdb's JSONB element do not pay;
+     check the plan before reading the row against the other two.
    - **3DCityDB's "LoD 2" is wider than CityJSON's "2.2".** `citydb-tool`
      truncates the fractional tier on import, so `val_lod = '2'` covers
      2.0, 2.1, 2.2 and 2.3 alike (Caveat 17). The benchmark's 3DBAG slice
@@ -1140,28 +1138,24 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     fixes, and neither is patched: this follows from cjdb's own importer,
     and patching it would benchmark a cjdb that does not exist.
 
-    **Measured, not hypothesised.** On the committed 1M 3DBAG run the bbox
-    counts decompose exactly
-    (`notes/benchmark-fairness-review-2026-09-22.md` §5, which replays
-    cjdb's own patched `get_ground_geometry()` over the source and
-    reproduces all three counts):
-
-    | window | `duckdb-cityparquet` | `cjdb`  |                             | `3dcitydb` |                                     |
-    | ------ | -------------------- | ------- | --------------------------- | ---------- | ----------------------------------- |
-    | 1 %    | 4,903                | 4,901   | = 4,903 − 2 NULL footprints | 4,903      | + 0                                 |
-    | 5 %    | 63,745               | 63,729  | = 63,745 − 16               | 63,745     | + 0                                 |
-    | 25 %   | 221,005              | 220,949 | = 221,005 − 60 + 4 float4   | 221,008    | + 3 (the float4 model predicts + 4) |
+    **Measured, not hypothesised.** On the 1M 3DBAG slice, cjdb's own
+    patched `get_ground_geometry()` replayed over the source
+    (`notes/benchmark-fairness-review-2026-09-22.md` §5) leaves 2, 16 and
+    60 objects inside the 1 / 5 / 25 % windows (4,903, 63,745 and 221,005
+    objects by CityParquet's count) with a NULL footprint, which is exactly
+    what cjdb lacks there. The committed evidence also shows, at the 25 %
+    window, 4 objects that PostGIS's float4 `&&` admitted on cjdb and 3 on
+    3DCityDB; that evidence predates the double-precision recheck, which
+    removes such objects (Caveat 12), so the re-run's `notes` carry only
+    the NULL-footprint and outside-window decomposition (Caveat 10).
 
     Of the 60 NULL-footprint BuildingParts at the 25 % window, 39 have no
     lower horizontal face in the minimum-LoD geometry and 21 have one that
     shapely rejects as invalid, so only the roof survives and the split
-    discards it. Two competing explanations were **refuted**: "footprint
-    versus 3D extent" accounts for 0 objects at every window (the LoD1.2 /
-    1.3 / 2.2 solids are extrusions of the footprint), and Caveat 16 does
-    not operate either (0 of 1,000,001 CityParquet rows has a NULL `bbox`).
-    The 3DCityDB residual of 3 rather than the modelled 4 is explained in
-    class but not in count; settling it needs the four boundary rows'
-    `envelope` read on a live import.
+    discards it. "Footprint versus 3D extent" accounts for 0 objects at
+    every window (the LoD1.2 / 1.3 / 2.2 solids are extrusions of the
+    footprint), and Caveat 16 does not operate either (0 of 1,000,001
+    CityParquet rows has a NULL `bbox`).
 
 12. **PostGIS `&&` alone returns false positives, so both PostgreSQL
     systems recheck it.** Serialised PostGIS geometries cache a
