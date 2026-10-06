@@ -9,6 +9,7 @@
 //! [`params`], the query parameters every measurement is driven with.
 
 pub mod format;
+pub mod isolation;
 pub mod lod;
 pub mod naming;
 pub mod params;
