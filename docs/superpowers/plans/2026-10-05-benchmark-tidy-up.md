@@ -76,6 +76,12 @@ Run the format read benchmark over HTTP against object storage and report time, 
 
 The author supplies the URLs where the whole corpus is hosted when this task starts. To decide then: which formats take part.
 
+Status. The primary measurement runs against a local simulated network (`net-sim`; profiles `fast`, `typical`, `slow` in `benchmark/manifest.toml`), the secondary against the hosted corpus; see `benchmark/README.md` "The network family".
+
+- Done: the simulated server and its tests; the `network` family in `bench_suite.py` (`bench-run --families network`, `--network-profile`, a custom profile, `--network-target real`); the profile, target and the server's totals against the clients' in the params sidecar; each row's model time in `<dataset>.model.csv`; the README section and the `READ_BENCHMARK.md` caveat.
+- Open: the `network` figure and the bloom-over-network table in `benchviz` (with the "not measured" state in the committed summary); recording the resolved host and the `cf-cache-status`/`age` headers for the real target; which cells the `full` profile runs, given that a whole-file format downloads the whole file for every query (the author decides).
+- The host run: `just bench-run --families network --profile full --network-profile all` over the corpus and the slice, then the real snapshot.
+
 ## Afterwards
 
 A full re-run on the host with the final harness, then the figures and tables are regenerated and the paper's placeholders filled.
