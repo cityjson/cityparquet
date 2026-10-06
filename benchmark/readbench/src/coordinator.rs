@@ -1247,6 +1247,24 @@ fn excluded(format: Format, total: &str) -> bool {
         .any(|(f, t, _)| *f == format && *t == total)
 }
 
+/// The CityGML reader's own quantisation step: it decodes a document's
+/// vertices against a header transform of one millimetre per axis
+/// (`cityparquet::citygml`), whatever precision the source carried.
+const CITYGML_QUANTUM: [f64; 3] = [0.001, 0.001, 0.001];
+
+/// The extent tolerance for a pair of formats: the source's quantisation
+/// step, widened per axis to the CityGML reader's when either side is
+/// CityGML. A source finer than a millimetre (Montréal's `z` is quantised at
+/// 1e-6) is rounded to the millimetre by that reader, and the rounding is the
+/// reader's, not a difference in the content.
+fn pair_quantum(a: Format, b: Format, quantum: [f64; 3]) -> [f64; 3] {
+    if a == Format::CityGml || b == Format::CityGml {
+        std::array::from_fn(|k| quantum[k].max(CITYGML_QUANTUM[k]))
+    } else {
+        quantum
+    }
+}
+
 /// Checks what the formats RETURNED against each other, per scenario and
 /// query tag: the identifier-set digest of a spatial window and of the
 /// attribute filter; the returned-geometry count and visited extent of a
@@ -1287,6 +1305,13 @@ fn check_returned(
             None => groups.push((key, vec![i])),
         }
     }
+    let quantum_of = |a: usize, b: usize| {
+        pair_quantum(
+            formats[&rows[a].label],
+            formats[&rows[b].label],
+            resolved.quantum,
+        )
+    };
     let extent_of = |i: usize, e: [f64; 6]| {
         window_in_artefact_order(e, formats[&rows[i].label], resolved.swap_xy)
     };
@@ -1354,7 +1379,7 @@ fn check_returned(
                 (Some(x), Some(y)) => extents_agree(
                     &extent_of(a, x.extent),
                     &extent_of(b, y.extent),
-                    resolved.quantum,
+                    quantum_of(a, b),
                 ),
                 _ => false,
             },
@@ -1374,7 +1399,7 @@ fn check_returned(
                 (Some(x), Some(y)) => extents_agree(
                     &extent_of(a, x.extent),
                     &extent_of(b, y.extent),
-                    resolved.quantum,
+                    quantum_of(a, b),
                 ),
                 _ => false,
             },
@@ -2314,6 +2339,46 @@ mod tests {
             returning("cityjson", Scenario::FullRead, &[], Returned::default()),
         ];
         assert!(check_returned(&rows, &formats(), &tokyo_like()).is_empty());
+    }
+
+    #[test]
+    fn a_citygml_pair_is_compared_within_the_citygml_readers_millimetre() {
+        let source = [1e-5, 0.001, 1e-6];
+        assert_eq!(
+            pair_quantum(Format::CityJson, Format::CityParquet, source),
+            source
+        );
+        assert_eq!(
+            pair_quantum(Format::CityGml, Format::CityJson, source),
+            [0.001, 0.001, 0.001]
+        );
+        assert_eq!(
+            pair_quantum(Format::FlatCityBuf, Format::CityGml, [0.01, 0.01, 0.01]),
+            [0.01, 0.01, 0.01]
+        );
+        // Montréal's 1 % window: the CityGML z is the CityJSON z rounded to the millimetre.
+        let gml = [
+            294890.774,
+            5038795.062,
+            78.593,
+            296665.684,
+            5040800.653,
+            251.418,
+        ];
+        let cj = [
+            294890.774,
+            5038795.062,
+            78.593253,
+            296665.684,
+            5040800.653,
+            251.418253,
+        ];
+        assert!(!extents_agree(&gml, &cj, source));
+        assert!(extents_agree(
+            &gml,
+            &cj,
+            pair_quantum(Format::CityGml, Format::CityJson, source)
+        ));
     }
 
     #[test]
