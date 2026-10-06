@@ -95,7 +95,8 @@ from the pinned 7.6 GB FlatCityBuf source (`just fetch-3dbag`), prepares all
 required format artefacts (`readbench_prepare.sh`), builds the
 release CityParquet CLI, and prepares the database environment. It needs Rust
 and Cargo, Java 17 or later, `fcb`, `cjseq`, the pinned citygml-tools archive,
-Python with `uv`, and rootless Podman plus the database images for the database
+Python with `uv`, and a container engine (Apple `container`, `docker` or
+`podman`, picked in that order) plus the database images for the database
 family. The full run writes substantial prepared packages and result files
 under the data root and takes hours; the database family also needs its own
 container storage and available local ports. `bench-summary` only reads those
@@ -104,7 +105,8 @@ results.
 Use `--families` to run one family after preparing it. `--datasets` accepts
 manifest IDs, and `3dbag` for the slice (`[suite] slice_dataset` in
 `manifest.toml`). The database family's dataset is the slice under `full` and
-`quick` and Rotterdam under `short` and `smoke`. The selector rejects data roots outside
+`quick` and Rotterdam under `short` and `smoke`; `--database-datasets
+all|<ids>` selects its datasets explicitly. The selector rejects data roots outside
 `benchmark/runs/`.
 
 The `sizes` family also writes `compression.csv`, the breakdown of each
@@ -141,7 +143,7 @@ them in the run manifest. Sizes in this repository are decimal: the ceiling's
 64 GB is 64,000,000,000 bytes, and `--memory-max off` (`MEMORY_MAX=off` on the
 recipes) runs without one. The database family receives the ceiling and
 records it in its manifest, but does not apply it (see
-[`databases/README.md`](databases/README.md), "Memory cap").
+[`databases/README.md`](databases/README.md), "Host isolation").
 
 On Linux the page-cache pages a child reads are charged to its cgroup, so
 the ceiling must stay above the largest artefact a reader opens plus the
@@ -165,7 +167,7 @@ and `memory`).
 | `sizes`     | Corpus with the 3DBAG slice      | Complete file or package size; CityParquet bytes by column | None                                                                                    |
 | `formats`   | Same corpus                      | Read time and peak memory                                  | All format queries                                                                      |
 | `bloom`     | Same corpus                      | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
-| `databases` | The 3DBAG slice                  | Storage including indexes; mean query time and peak memory | Database query suite                                                                    |
+| `databases` | The 3DBAG slice                  | Storage with and without indexes; query time and peak working memory | Database query suite                                                                    |
 
 The corpus is Rotterdam, Ingolstadt, Vienna, New York, Zurich, Tokyo (Chiyoda)
 and Montréal, with the 3DBAG slice
