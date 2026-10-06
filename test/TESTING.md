@@ -76,7 +76,7 @@ cd cityparquet          # wherever you cloned github.com/cityjson/cityparquet
 > | **`implicit_geometries.id` divergence is settled**                                                                                      | spec `documents/` `d7b373c` region, duckdb-cityjson          | Closes former Known issue #2                                                                   |
 > | **Reserved object-table columns now emitted in the spec's normative order**, with `address`/`implicit_geometry` present but always NULL | duckdb-cityjson                                              | Re-run in 2.7                                                                                  |
 > | **CRS survives `cityparquet_read` → `cityparquet_write`** without passing `crs =>`                                                      | duckdb-cityjson                                              | The old §2.7 CRS note asserted the opposite; corrected below                                   |
-> | **A fresh read + ordering benchmark run, and the benchviz pipeline**                                                                    | cityparquet-rs `01b719d` (2026-08-17, Linux/EPYC), `c87aaa9` | Part 5 — `just plot-pretty` replaces the old direct script invocation                          |
+> | **A fresh read + ordering benchmark run, and the benchviz pipeline**                                                                    | cityparquet-rs `01b719d` (2026-08-17, Linux/EPYC), `c87aaa9` | Part 5 — `just bench-summary` renders the summary page, not a direct script invocation        |
 >
 > One divergence remains open and is **not** part of this closure: a
 > sidecar-bearing package still fails rs export on a degenerate ring that
@@ -1365,7 +1365,7 @@ its fairness caveats — the CSVs it describes are committed) and
 Two things worth knowing before a re-run, because neither is visible from a
 directory listing:
 
-- `benchmark/formats/data/readbench/` prepared artefacts carry the version of the conversion
+- `benchmark/runs/data/readbench/` prepared artefacts carry the version of the conversion
   chain that built them; a stale stamp makes `readbench_prepare.sh` refuse the
   dataset and print the exact `rm -rf` that clears it. Delete the tree if in
   doubt — nothing there is expensive to rebuild except the downloads.
@@ -1374,33 +1374,32 @@ directory listing:
 
 ### 5.1 Corpus eligibility — read this before running anything
 
-**The CRS filter is gone.** Until `0c9c917` a CRS-less dataset was a hard
-conversion error and 8 of the 15 could not be converted at all. They now all
-convert; a CRS-less one simply gets `city.crs: null` and a stderr warning. What
-remains is one blocker and one caveat:
+The corpus is the seven city datasets — `rotterdam_delfshaven`, `ingolstadt`,
+`vienna_102081`, `nyc_da13_buildings`, `zurich_building_lod2`, `tokyo`,
+`montreal` — and the 3DBAG slice `3dbag_n1000000`. `benchmark/manifest.toml`
+lists them, and `benchmark/formats/README.md` (§ The corpus) gives each one's
+source and query predicates. `just bench-prep` fetches the city datasets into
+`benchmark/runs/data/benchmark/` and cuts the slice into
+`benchmark/runs/data/3dbag/`.
 
-| Filter                                                                                                                                                          | Datasets affected                                                                                      |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| **Multi-module package** → the read-bench runner rejects it                                                                                                     | `Railway`, `lod3_railway`                                                                              |
-| _Caveat, not a blocker:_ **no declared CRS** → converts, but the package is not georeferenced (`city.crs: null`, no `proj:*` in its STAC Item, no WGS84 extent) | `3dbag_subset`, `Helsinki`, `Helsinki_tex`, `Montreal`, `NYC`, `Railway`, `Vienna`, `Zurich` (8 of 15) |
+Every one converts. A dataset that declares no `referenceSystem` still
+converts: it gets `city.crs: null` and a stderr warning, and its package is not
+georeferenced (no `proj:*` in its STAC Item, no WGS84 extent). Pass `--crs` per
+dataset if a run needs georeferenced output; no bench script passes it for you.
 
-The other 7 declare a `referenceSystem` and are georeferenced without help:
-`3DBAG` (EPSG:7415), `3DBV` (7415), `9-196-328` / `9-284-556` / `9-304-532`
-(7415), `Ingolstadt` (32632), `Rotterdam` (28992). (The `delft` fixture used
-throughout Parts 1–4 also declares 7415, but it lives in `tests/fixtures/`, not
-in the bench corpus.)
-
-Pass `--crs` per dataset if a benchmark run needs georeferenced output; no
-bench script passes it for you.
+The read-bench runner rejects a multi-module package (Known issues #8). Every
+corpus dataset is single-module, so this blocks only an input you add yourself
+— `lod3_railway`, for instance.
 
 Verify a source's declaration before blaming the writer:
 
 ```sh
 python3 - <<'EOF'
 import json, glob, os
-for f in sorted(glob.glob('benchmark/formats/data/*.jsonl') +
-                glob.glob('benchmark/formats/data/*.json')):
-    d = json.loads(open(f).readline())
+for f in sorted(glob.glob('benchmark/runs/data/benchmark/*.json') +
+                glob.glob('benchmark/runs/data/3dbag/*.jsonl')):
+    with open(f) as fh:
+        d = json.loads(fh.readline()) if f.endswith('.jsonl') else json.load(fh)
     print('%-28s %s' % (os.path.basename(f),
           d.get('metadata', {}).get('referenceSystem') or 'ABSENT'))
 EOF
@@ -1410,24 +1409,21 @@ EOF
 
 ```sh
 rm -rf out/cityparquet
-just convert-all benchmark/formats/data out/cityparquet
+just convert-all benchmark/runs/data/benchmark out/cityparquet
 ```
 
-One package directory per input. Includes `3dbag_subset.city.jsonl` (2.8 GB) —
-drop it from `benchmark/formats/data` for a quick pass. Since `0c9c917` a CRS-less dataset
-no longer aborts the loop (it warns and writes `city.crs: null`), so the whole
-corpus converts in one go except `Railway`: `just convert-all` runs a bare
-`convert` and does not pass `--tolerate-invalid-appearance`, so Railway's
-dangling material reference still aborts it under strict mode (Known issues,
-"Fixed in this pass" #7 — the fix is a flag, not a default, and this recipe
-does not opt in). The `benchmark/formats/data/_run` hard-link staging directory remains
-useful for skipping it.
+One package directory per input, each written in Hilbert order, the writer's
+default. Run it over `benchmark/runs/data/3dbag` as well for the 1M-object
+slice; Hilbert ordering holds every feature in memory before it writes the
+first row, so the slice needs tens of gigabytes. The whole corpus converts in
+one go.
 
 ### 5.3 Read benchmark
 
 ```sh
-rm -rf benchmark/formats/data/readbench          # only if you want a clean prepare
-just bench benchmark/runs/data/benchmark benchmark/runs/formats/results
+rm -rf benchmark/runs/data/readbench          # only if you want a clean prepare
+just bench-prep --families formats
+just bench-run --families formats
 ```
 
 `readbench_prepare.sh` **skips any package directory that already exists**, so
@@ -1440,8 +1436,8 @@ CSV columns (empty for every local row). Upload steps and methodology are in
 `benchmark/formats/READ_BENCHMARK.md`.
 
 > **Still blocked: multi-module datasets.** The `CityParquetRunner` supports
-> only single-table packages, so `Railway` and `lod3_railway` produce no read
-> numbers, and one test is `#[ignore]`d for it.
+> only single-table packages, so a multi-module input such as `lod3_railway`
+> produces no read numbers, and one test is `#[ignore]`d for it.
 
 ### 5.4 Aggregate results into one page
 
