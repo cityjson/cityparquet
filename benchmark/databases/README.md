@@ -229,12 +229,23 @@ Each system answers each scenario through its own natural mechanism — never a
 hand-tuned shortcut, never a shape contrived to match another system's plan
 (the design rule stated in `sql_citydb.py` and `sql_duckdb.py`).
 
-Where CJDB's own queries return rows, so do these: **ids**, or whole
-objects. The counts these rows once returned let a columnar reader answer
-from metadata or from Parquet definition levels alone, which is a real
-property worth measuring but not the same question a client asking for
-objects poses. Every row-returning scenario materialises its rows inside
-the timed window on every system.
+Where CJDB's own queries return rows, so do these. The return rule per
+scenario:
+
+- `bbox-query`: the count, the ids, and each match's highest-LoD geometry
+  in the system's native binary form;
+- `attr-filter` and `attr-range`: the count and the ids;
+- `attr-stats`: min, max, sum and count;
+- `id-lookup`: the whole object;
+- `lod-query`: the ids and the LoD 2.2 geometry (3DCityDB filters its
+  integer LoD tier 2), skipped where the dataset has no LoD 2.2 (Caveat 15);
+- `geometry-scan`: every object's id and geometry in native binary form.
+
+Every row-returning scenario materialises its rows inside the timed window
+on every system. The PostgreSQL systems fetch rows in PostgreSQL's binary
+wire format; DuckDB's geometry stays WKB and is fetched to Arrow (Caveat 18).
+3DCityDB's object geometry is gathered from the object's own geometry rows
+and the parts it contains, one geometry per LoD (Caveat 17).
 
 | scenario                  | returns                  | common target                                                      | `duckdb-cityparquet`                                                                                                                                  | `cjdb`                                                                                                                                                                                                   | `3dcitydb`                                                                                                                                                                                                                                        |
 | ------------------------- | ------------------------ | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
