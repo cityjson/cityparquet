@@ -29,6 +29,7 @@ from __future__ import annotations
 import re
 
 from citybench.config import AppendSpec, BBox, BboxWindow, IdProbe, Params
+from citybench.scenarios import registry
 from citybench.scenarios.registry import ScenarioUnavailable
 
 #: The CityObject type `parts-per-building` and the write tier restrict to,
@@ -174,43 +175,14 @@ def sql_for(scenario: str, params: Params, table: str,
         return f"SELECT * FROM {table} WHERE id = ?", (_probe(probe).id,)
 
     if scenario == "lod-query":
-        # "Retrieve all buildings having a specific LoD geometry"
-        # (`notes/benchmark-queries.md` B12, CJDB's Q5). WHOLE ROWS, not
-        # ids: `SELECT *` hands back the object — every column, every LoD
-        # geometry among them — which is what a client asking for "the
-        # buildings with an LoD1.2 geometry" receives. Returning ids alone
-        # would let a Parquet reader answer from one column's definition
-        # levels and measure almost nothing.
-        #
-        # The rows are fetched to Arrow INSIDE the timed window, as every
-        # other row-returning scenario here is (see `DuckDBCityParquet.run`)
-        # so no engine wins by handing back a lazy cursor.
-        #
-        # A dataset that never carries an LoD1.2 geometry at all (e.g.
-        # Montreal: geometry_lod0_0/geometry_lod2_0 only, no lod1_2
-        # column) has no `geometry_lod1_2` column to filter on in the first
-        # place. cjdb's/3dcitydb's own `lod-query` SQL is a FIXED question
-        # ("the objects carrying an LoD1.2 geometry", hardcoded "1.2"/"1"
-        # respectively — see sql_cjdb.py/sql_citydb.py) that still runs,
-        # correctly returning 0 rows, against such a dataset
-        # (schema-flexible JSONB/EAV storage tolerates a filter that
-        # matches nothing). The comparable DuckDB answer when the column
-        # is absent is therefore also 0 — real objects, zero of which
-        # carry a geometry in a column that does not exist — not an
-        # error and not a skip.
-        #
-        # I2 (final whole-branch review): `WHERE FALSE` is constant-folded
-        # by DuckDB at plan time -- this branch performs NO scan at all on
-        # a dataset that hits it, unlike cjdb's/3dcitydb's own unconditional
-        # SQL, which genuinely executes and happens to match zero rows. On
-        # this corpus that is 4 of 5 datasets (only `delft` carries
-        # `geometry_lod1_2`), so the published `duckdb-cityparquet`
-        # `lod-query` timing on those four rows is not a measurement of
-        # anything -- see README Caveat 15.
-        if columns is not None and "geometry_lod1_2" not in columns:
-            return f"SELECT * FROM {table} WHERE FALSE", ()
+        # Catalogue B12 / CJDB Q5, "the objects carrying an LoD 2.2
+        # geometry": each one's id and that geometry, still WKB, fetched to
+        # Arrow inside the timed window. A dataset without LoD 2.2 has no
+        # `geometry_lod2_2` column and the scenario is not applicable there.
+        registry.require_lod_query_target(p)
         return (
-            f"SELECT * FROM {table} WHERE geometry_lod1_2 IS NOT NULL",
+            f"SELECT id, geometry_lod2_2 FROM {table} "
+            "WHERE geometry_lod2_2 IS NOT NULL",
             (),
         )
 

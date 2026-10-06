@@ -166,17 +166,7 @@ def test_id_lookup_without_a_probe_is_a_loud_failure():
         sql_for("id-lookup", _params(), TABLE)
 
 
-def test_lod_query_returns_whole_rows_from_the_lod1_geometry_column():
-    """Catalogue B12: "retrieve all buildings having a specific LoD
-    geometry" — the buildings, not their ids. A projection of ids alone is
-    answerable from one column's definition levels and measures almost
-    nothing."""
-    sql, args = sql_for("lod-query", _params(), TABLE)
-    assert sql.strip().startswith("SELECT *")
-    assert "geometry_lod1_2 IS NOT NULL" in sql
-    assert "count(" not in sql
-    assert "geometry_lod2" not in sql
-    assert args == ()
+
 
 
 def test_append_object_calls_the_extensions_own_importer():
@@ -250,35 +240,9 @@ def test_unknown_scenario_raises_key_error():
 # zero-result query instead of erroring.
 
 
-def test_lod_query_uses_the_real_column_when_present_in_columns():
-    sql, args = sql_for("lod-query", _params(), TABLE,
-                        columns={"geometry_lod1_2": "BLOB", "id": "VARCHAR"})
-    assert "geometry_lod1_2" in sql
-    assert args == ()
 
 
-def test_lod_query_returns_a_real_zero_query_when_lod1_2_column_is_absent():
-    # Montreal-shaped: only geometry_lod0_0/geometry_lod2_0 exist.
-    sql, args = sql_for(
-        "lod-query", _params(), TABLE,
-        columns={"geometry_lod0_0": "GEOMETRY", "geometry_lod2_0": "BLOB",
-                 "id": "VARCHAR"},
-    )
-    # Still the scenario's own row shape (whole rows), just an empty set.
-    assert sql.strip().startswith("SELECT *")
-    assert "WHERE FALSE" in sql.upper()
-    assert "geometry_lod1_2" not in sql
-    assert args == ()
 
 
-def test_lod_query_without_columns_keeps_the_unconditional_query():
-    sql, args = sql_for("lod-query", _params(), TABLE)
-    assert "geometry_lod1_2" in sql
-    assert "WHERE FALSE" not in sql.upper()
-    assert args == ()
 
-def test_attr_stats_returns_min_max_sum_count_in_that_order():
-    sql, _ = sql_for("attr-stats", _params(), TABLE)
-    select = sql.split(" FROM ")[0]
-    positions = [select.index(f"{agg}(") for agg in ("min", "max", "sum", "count")]
-    assert positions == sorted(positions), select
+

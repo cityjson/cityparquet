@@ -12,6 +12,7 @@ captured from a real import rather than read from prose documentation.
 from __future__ import annotations
 
 from citybench.config import BBox, BboxWindow, IdProbe, Params
+from citybench.scenarios import registry
 from citybench.scenarios.registry import ScenarioUnavailable
 
 SCHEMA = "citydb"
@@ -180,15 +181,12 @@ def _static_predicate(cityobject_class_ids: tuple[int, ...],
     return f"{column} IN ({id_list})"
 
 
-# `property.val_lod` truncates CityJSON's fractional LoD notation to the
-# integer tier — "1.2"/"1.3" both become "1" on import (see
-# docs/3dcitydb-v5-schema.md's "LoD value format" section, a Task 9
-# finding). Querying the brief's literal "1.2" against this column matches
-# zero rows, silently, rather than erroring — the bad case the brief's own
-# `lod-query` comment warns about for a *different* substitution (the
-# geometry_data.lod column that doesn't exist at all). "1" is the closest
-# comparable tier to cjdb/CityParquet's LoD1.2/1.3.
-CAPTURED_LOD_TARGET = "1"
+# `property.val_lod` stores CityJSON's LoD as its integer tier only — "2.2"
+# becomes "2" on import (docs/3dcitydb-v5-schema.md, "LoD value format"), so
+# LoD 2.2 cannot be told from another LoD 2.x there. `lod-query` targets
+# tier 2, which is LoD 2.2 exactly on a dataset whose only LoD 2.x is 2.2
+# (the 3DBAG slice: LoD 0, 1.3 and 2.2) — README Caveat 17.
+CITYDB_LOD_TIER = "2"
 
 _F = f"{SCHEMA}.feature"
 _P = f"{SCHEMA}.property"
@@ -405,55 +403,24 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         )
 
     if scenario == "lod-query":
-        # Catalogue B12 / CJDB Q5: "retrieve all buildings having a
-        # specific LoD geometry", returning WHOLE ROWS rather than ids.
+        # Catalogue B12 / CJDB Q5, "the objects carrying an LoD 2.2
+        # geometry": each one's `objectid` and that geometry, PostGIS
+        # `geometry` fetched in binary. `geometry_data` has no `lod`
+        # column; the LoD is on the PROPERTY row pointing at the geometry,
+        # as the integer tier only (CITYDB_LOD_TIER, README Caveat 17).
         #
-        # NOTE: geometry_data has NO `lod` column — verified against a live
-        # instance in Task 5. In v5 the LoD is carried on the PROPERTY row
-        # that points at the geometry (`property.val_lod`, alongside
-        # `val_geometry_id`). Reaching for `geometry_data.lod` fails
-        # outright, which is the good case; the bad case would have been a
-        # column that exists but means something else.
-        #
-        # The target value is CAPTURED_LOD_TARGET ("1"), not the CityJSON
-        # notation "1.2" — see that constant's docstring and
-        # docs/3dcitydb-v5-schema.md's "LoD value format" section: v5's
-        # importer truncates the fractional LoD tag, so "1.2" matches zero
-        # rows, silently. That tier-collapsing is disclosed, not corrected:
-        # 3DCityDB's "LoD 1" covers CityJSON's 1.2 AND 1.3.
-        #
-        # The CityObject-granularity predicate matters here independently
-        # of `count`'s reason for it: without it, this also returns each
-        # LoD1 solid's *boundary surfaces'* own LoD1 geometry rows
-        # (`lod1MultiSurface`, one set per WallSurface/GroundSurface/
-        # RoofSurface), not just the CityObject's own LoD1 solid
-        # (`lod1Solid`) — 4929 rows unrestricted, 1116 restricted, on the
-        # delft fixture. Only the restricted set is comparable to the
-        # CityObject-level rows the other two systems return.
-        #
-        # `DISTINCT ON (f.id)` is this query's "SELECT DISTINCT f.*": the
-        # row count stays CityObject-grained — ONE row per feature even if
-        # several `property` rows of that feature match — without asking
-        # PostgreSQL to compare whole WKB geometries for equality, which a
-        # plain `SELECT DISTINCT` over a geometry column would. On the
-        # delft fixture it removes nothing (each CityObject owns exactly
-        # one `lod1Solid`); the sort it adds is an ordinary bigint sort and
-        # is disclosed in the README rather than hidden.
-        #
-        # `geometry_data` is JOINED deliberately: without it 3DCityDB would
-        # hand back a `feature` row carrying an identity and an envelope
-        # while the other two systems hand back the geometry, and the three
-        # rows would not be the same amount of object. It still returns
-        # less than they do — the attributes live in `property` and are not
-        # joined — which is README Caveat 17.
+        # The CityObject-granularity predicate keeps each solid's boundary
+        # surfaces' own tier-2 geometry rows out; `DISTINCT ON (f.id)`
+        # keeps one row per CityObject without comparing geometries.
+        registry.require_lod_query_target(p)
         return (
-            f"SELECT DISTINCT ON (f.id) f.*, gd.geometry FROM {_F} f "
+            f"SELECT DISTINCT ON (f.id) f.{CAPTURED_ID_COLUMN}, gd.geometry FROM {_F} f "
             f"JOIN {_P} pr ON pr.{CAPTURED_PROPERTY_FK} = f.id "
             f"JOIN {SCHEMA}.geometry_data gd ON gd.id = pr.val_geometry_id "
             f"WHERE {_static_predicate(cityobject_class_ids)} "
             f"AND pr.val_lod = %s AND pr.val_geometry_id IS NOT NULL "
             f"ORDER BY f.id",
-            (CAPTURED_LOD_TARGET,),
+            (CITYDB_LOD_TIER,),
         )
 
     if scenario == "parts-per-building":

@@ -14,6 +14,7 @@ way.
 from __future__ import annotations
 
 from citybench.config import BBox, BboxWindow, IdProbe, Params
+from citybench.scenarios import registry
 from citybench.scenarios.registry import ScenarioUnavailable
 
 SCHEMA = "cjdb"
@@ -106,39 +107,21 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         return f"SELECT * FROM {t} WHERE object_id = %s", (_probe(probe).id,)
 
     if scenario == "lod-query":
-        # Catalogue B12 / CJDB Q5: "retrieve all buildings having a specific
-        # LoD geometry". WHOLE ROWS, as the other two systems return — and
-        # on cjdb the row carries the whole `geometry` JSONB, so this
-        # materialises every matching object's full geometry document.
+        # Catalogue B12 / CJDB Q5, "the objects carrying an LoD 2.2
+        # geometry": each one's id and that geometry element of the
+        # `geometry` JSONB array, cjdb's native form, fetched in binary.
         #
-        # No per-LoD column exists: the LoD lives inside the geometry
-        # JSONB, so every row's geometry must be visited and filtered.
-        #
-        # The @? jsonpath-match OPERATOR is used deliberately instead of
-        # the jsonb_path_exists(...) FUNCTION. Confirmed by EXPLAIN against
-        # a live import: Postgres 16's planner does not recognise the
-        # function-call form as index-cooperating with cjdb's own `lod`
-        # GIN(geometry) index and falls back to a Seq Scan even with the
-        # index present and enable_seqscan forced off. The @? operator form
-        # reaches the same index via a Bitmap Index Scan, chosen under
-        # default planner settings. Using the function form here would
-        # silently defeat the index this task's fairness constraint depends
-        # on.
-        #
-        # NOT a drop-in equivalent, however: geometry @? path and
-        # jsonb_path_exists(geometry, path) differ on rows with irregular
-        # structure. @? (like @@) always suppresses structural errors
-        # during path evaluation (a missing key, a type mismatch) and
-        # returns false; jsonb_path_exists(...) without silent => true does
-        # not — it raises. delft's geometry is regular enough that neither
-        # form ever hits this, which is why the count check could not have
-        # detected a divergence either way. Datasets with less regular
-        # geometry (mixed CityGML modules, sparse/optional semantics)
-        # should be watched for this the first time this SQL runs against
-        # them.
+        # The WHERE keeps the @? jsonpath-match OPERATOR rather than
+        # jsonb_path_exists(...): PostgreSQL 16's planner reaches cjdb's
+        # `lod` GIN(geometry) index through the operator form only (a
+        # Bitmap Index Scan, confirmed by EXPLAIN on a live import); the
+        # function form falls back to a Seq Scan. @? also suppresses
+        # structural errors (a missing key) and returns false.
+        registry.require_lod_query_target(p)
         return (
-            f"SELECT * FROM {t} "
-            "WHERE geometry @? '$[*] ? (@.lod == \"1.2\")'",
+            "SELECT object_id, jsonb_path_query_first(geometry, "
+            "'$[*] ? (@.lod == \"2.2\")') "
+            f"FROM {t} WHERE geometry @? '$[*] ? (@.lod == \"2.2\")'",
             (),
         )
 

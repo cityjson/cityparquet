@@ -134,6 +134,10 @@ COUNT_FROM_ROWCOUNT: frozenset[str] = frozenset({
 COUNT_FROM_WRITE_ROWCOUNT: frozenset[str] = TIER3
 
 
+#: The LoD `lod-query` asks for on every system.
+LOD_QUERY_TARGET = "2.2"
+
+
 class ScenarioUnavailable(Exception):
     """Raised when a scenario cannot run against this dataset.
 
@@ -157,3 +161,12 @@ def count_mode(scenario: str) -> str:
     if scenario in COUNT_FROM_WRITE_ROWCOUNT:
         return "write-rowcount"
     raise KeyError(f"unknown scenario: {scenario}")
+
+
+def require_lod_query_target(params) -> None:
+    """`lod-query` on a dataset without LoD 2.2 is not applicable, never 0."""
+    if LOD_QUERY_TARGET not in params.lods:
+        raise ScenarioUnavailable(
+            f"dataset carries no LoD {LOD_QUERY_TARGET} geometry "
+            f"(LoDs: {', '.join(params.lods) or 'none'})"
+        )

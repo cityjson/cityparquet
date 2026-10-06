@@ -26,7 +26,6 @@ import pytest
 from citybench.config import BBox, Params
 from citybench.scenarios.registry import ScenarioUnavailable
 from citybench.scenarios.sql_citydb import (
-    CAPTURED_LOD_TARGET,
     _cityobject_predicate,
     _static_predicate,
     append_reset_sql,
@@ -351,15 +350,7 @@ def test_write_resets_undo_the_non_idempotent_insert():
     ]
 
 
-def test_lod_query_targets_the_truncated_integer_lod_not_the_cityjson_notation():
-    # v5's importer truncates "1.2"/"1.3" to "1" (docs/3dcitydb-v5-schema.md,
-    # "LoD value format") — querying the literal CityJSON tag "1.2" here
-    # would silently match zero rows. The tier-collapsing is disclosed in
-    # the README, not corrected: 3DCityDB's "LoD 1" covers 1.2 AND 1.3.
-    sql, args = sql_for("lod-query", _params(), cityobject_class_ids=IDS)
-    assert CAPTURED_LOD_TARGET == "1"
-    assert args == ("1",)
-    assert "1.2" not in sql
+
 
 
 def test_lod_query_filters_on_val_lod_and_val_geometry_id():
@@ -375,15 +366,7 @@ def test_lod_query_does_not_reach_for_a_geometry_data_lod_column():
     assert "geometry_data.lod" not in sql
 
 
-def test_lod_query_returns_the_whole_feature_row_and_its_lod1_geometry():
-    """The other two systems hand back the object WITH its geometry; a
-    `feature` row alone would be a different amount of object. The
-    attributes still are not joined — that asymmetry is README Caveat
-    16."""
-    sql, _ = sql_for("lod-query", _params(), cityobject_class_ids=IDS)
-    assert "f.*" in sql
-    assert "gd.geometry" in sql
-    assert "citydb.geometry_data gd ON gd.id = pr.val_geometry_id" in sql
+
 
 
 def test_lod_query_stays_one_row_per_cityobject():

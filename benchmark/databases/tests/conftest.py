@@ -47,6 +47,7 @@ def make_probes(first: str = "obj-1") -> tuple[IdProbe, ...]:
 def make_params(**overrides) -> Params:
     """The canonical test `Params`, with any field overridden by keyword."""
     defaults = dict(
+        lods=("0", "1.3", "2.2"),
         bbox_full=_EXTENT,
         windows=tuple(
             window_for_target(_BOXES, _EXTENT, target, tag)

@@ -155,15 +155,7 @@ def test_write_resets_restore_the_state_each_sample_expects():
     assert write_reset_sql("attr-delete") == [write_sql("attr-add")]
 
 
-def test_lod_query_returns_whole_rows_and_filters_inside_the_geometry_jsonb():
-    """Catalogue B12: the buildings, not their ids. On cjdb the row
-    carries the whole `geometry` JSONB, so every matching object's full
-    geometry document is materialised."""
-    sql, args = sql_for("lod-query", _params())
-    assert sql.strip().startswith("SELECT *")
-    assert "geometry @?" in sql
-    assert '"1.2"' in sql  # the LoD tag, not the LoD2 geometry
-    assert args == ()
+
 
 
 def test_lod_query_uses_the_operator_form_not_the_function_form():

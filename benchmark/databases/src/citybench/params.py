@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -664,7 +665,19 @@ def derive(source: Path, package: Path, *, append_dir: Path | None = None,
         total_city_objects=scan.total_objects,
         window_rows=window_rows,
         append=append,
+        lods=lods_from_columns(types),
     )
+
+
+def lods_from_columns(columns) -> tuple[str, ...]:
+    """The LoDs a package carries, from its `geometry_lod<major>_<minor>`
+    column names: `geometry_lod2_2` -> "2.2", `geometry_lod0_0` -> "0"."""
+    found = set()
+    for name in columns:
+        m = re.fullmatch(r"geometry_lod(\d)_(\d)", name)
+        if m:
+            found.add(m[1] if m[2] == "0" else f"{m[1]}.{m[2]}")
+    return tuple(sorted(found))
 
 
 def dataset_name_of(package: Path) -> str:
@@ -687,6 +700,7 @@ def to_json(p: Params) -> str:
         "point_xy": list(p.point_xy),
         "id_probes": [dataclasses.asdict(probe) for probe in p.id_probes],
         "append": dataclasses.asdict(p.append) if p.append else None,
+        "lods": list(p.lods),
         "total_city_objects": p.total_city_objects,
         "window_rows": p.window_rows,
         "windows": [
@@ -722,4 +736,5 @@ def from_json(text: str) -> Params:
         total_city_objects=d["total_city_objects"],
         window_rows=d["window_rows"],
         append=AppendSpec(**d["append"]) if d.get("append") else None,
+        lods=tuple(d.get("lods", ())),
     )

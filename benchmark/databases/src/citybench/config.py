@@ -421,6 +421,9 @@ class Params:
     #: the source is a plain CityJSON document, from which no feature can be
     #: cut without re-indexing its vertices.
     append: AppendSpec | None = None
+    #: The dataset's LoDs, read from the package's `geometry_lod<d>_<d>`
+    #: column names ("2.2"); `lod-query` is not applicable without its target.
+    lods: tuple[str, ...] = ()
 
     def window(self, tag: str) -> BboxWindow:
         for candidate in self.windows:
