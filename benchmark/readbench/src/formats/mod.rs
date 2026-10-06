@@ -7,6 +7,7 @@ pub mod cityjson;
 pub mod cityjsonseq;
 pub mod cityparquet;
 pub mod flatcitybuf;
+pub mod returned;
 
 use std::path::PathBuf;
 
@@ -47,6 +48,10 @@ pub struct RunOutcome {
     /// The four aggregates of an [`Scenario::AttrStats`] run; `None` for
     /// every other scenario.
     pub attr_stats: Option<AttrAggregates>,
+    /// What the run returned — identifier digest, comparable totals,
+    /// returned geometry — reported after the timed line (see
+    /// [`returned`]).
+    pub returned: returned::Returned,
 }
 
 /// `(min, max, sum, count)` of one numeric attribute over every CityObject
@@ -96,6 +101,7 @@ impl AttrAggregates {
 pub(crate) struct Answer {
     pub result_count: u64,
     pub attr_stats: Option<AttrAggregates>,
+    pub returned: returned::Returned,
 }
 
 impl From<u64> for Answer {
@@ -103,6 +109,7 @@ impl From<u64> for Answer {
         Self {
             result_count,
             attr_stats: None,
+            returned: returned::Returned::default(),
         }
     }
 }
@@ -112,6 +119,7 @@ impl From<AttrAggregates> for Answer {
         Self {
             result_count: stats.count,
             attr_stats: Some(stats),
+            returned: returned::Returned::default(),
         }
     }
 }
@@ -130,10 +138,14 @@ pub struct LookupCounters {
     pub bloom_pruned: u64,
     /// Bitset bytes of every filter examined (`LookupStats::filter_bytes`).
     pub filter_bytes: u64,
+    /// Row groups the statistics (min/max) pruned after the bloom filters
+    /// (`LookupStats::stats_pruned`).
+    pub stats_pruned: u64,
 }
 
 /// A child reports its [`LookupCounters`] on stderr, after its timed stdout
-/// line, as `<marker> <row_groups_total> <bloom_pruned> <filter_bytes>`, so
+/// line, as `<marker> <row_groups_total> <bloom_pruned> <filter_bytes>
+/// <stats_pruned>`, so
 /// the timed stdout protocol keeps its shape.
 pub const LOOKUP_STATS_MARKER: &str = "cityparquet-readbench: lookup-stats";
 

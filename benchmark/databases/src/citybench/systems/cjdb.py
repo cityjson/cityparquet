@@ -45,6 +45,9 @@ _BENCH_ROOT = Path(__file__).resolve().parents[3]
 _PATCH_FILE = _BENCH_ROOT / "vendor" / "cjdb" / "ground-surfaces-tie.patch"
 _POINTER_FILE = _BENCH_ROOT / ".cjdb-patched" / "current-path"
 CJDB_UPSTREAM_VERSION = "2.2.0"
+#: cjdb 2.2.0 declares SQLAlchemy without an upper bound and fails on 2.1
+#: ("ColumnCollection is an abstract base class"), so every cjdb run pins it.
+CJDB_WITH_PINS: tuple[str, ...] = ("--with", "sqlalchemy<2.1")
 
 
 def patched_cjdb_source() -> Path:
@@ -172,7 +175,7 @@ class CjdbSystem:
         cjdb_source = patched_cjdb_source()
         subprocess.run(
             [
-                "uv", "run", "--with", str(cjdb_source), "cjdb", "import",
+                "uv", "run", "--with", str(cjdb_source), *CJDB_WITH_PINS, "cjdb", "import",
                 "-H", _HOST, "-p", str(self._port),
                 "-U", _USER, "-d", _DATABASE, "-s", self._schema,
                 *(("--overwrite",) if overwrite else ()),
@@ -334,7 +337,7 @@ class CjdbSystem:
     def _warm_launcher(self) -> None:
         """Resolve the patched cjdb source once, UNTIMED and non-mutating."""
         subprocess.run(
-            ["uv", "run", "--with", str(patched_cjdb_source()), "cjdb",
+            ["uv", "run", "--with", str(patched_cjdb_source()), *CJDB_WITH_PINS, "cjdb",
              "--help"],
             check=False, stdin=subprocess.DEVNULL,
             capture_output=True,

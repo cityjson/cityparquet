@@ -368,12 +368,17 @@ fn run(cli: Cli) -> Result<()> {
     }
     if let Some(lookup) = outcome.lookup {
         eprintln!(
-            "{} {} {} {}",
+            "{} {} {} {} {}",
             formats::LOOKUP_STATS_MARKER,
             lookup.row_groups_total,
             lookup.bloom_pruned,
-            lookup.filter_bytes
+            lookup.filter_bytes,
+            lookup.stats_pruned
         );
+    }
+    // What the run returned, after the timed line like the other markers.
+    for line in outcome.returned.marker_lines() {
+        eprintln!("{line}");
     }
     // After the timed line, like the lookup counters: the aggregates are what
     // lets a test hold every format's `attr-stats` to the same four numbers.

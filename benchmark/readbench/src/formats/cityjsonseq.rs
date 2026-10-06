@@ -369,6 +369,7 @@ async fn run_http(
         }),
         lookup: None,
         attr_stats: answer.attr_stats,
+        returned: answer.returned,
     })
 }
 
@@ -388,6 +389,7 @@ impl FormatRunner for CityJsonSeqRunner {
                     io: None,
                     lookup: None,
                     attr_stats: answer.attr_stats,
+                    returned: answer.returned,
                 });
             }
             TransportSource::Http { base_url, key } => (base_url, key),

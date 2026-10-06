@@ -1139,6 +1139,7 @@ async fn run_http(
         io: Some(IoStats { bytes, requests }),
         lookup: None,
         attr_stats: aggregates,
+        returned: Default::default(),
     })
 }
 
@@ -1190,6 +1191,7 @@ impl FormatRunner for FlatCityBufRunner {
                     io: None,
                     lookup: None,
                     attr_stats: aggregates,
+                    returned: Default::default(),
                 });
             }
             Source::Http { base_url, key } => (base_url, key),

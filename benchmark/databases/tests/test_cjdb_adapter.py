@@ -293,6 +293,9 @@ def test_ingest_uses_the_patched_source_not_the_bare_pypi_name(tmp_path, monkeyp
     # The whole point: never the bare PyPI package name, which would
     # silently run stock (buggy) cjdb instead of the patched build.
     assert argv[3] != "cjdb"
+    # cjdb 2.2.0 breaks on SQLAlchemy 2.1 ("ColumnCollection is an abstract
+    # base class"), which an unpinned resolve picks up.
+    assert argv[4:6] == ["--with", "sqlalchemy<2.1"]
 
 
 def test_prepare_raises_when_the_patched_source_is_not_built(monkeypatch):

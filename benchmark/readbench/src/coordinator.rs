@@ -83,6 +83,7 @@ use cityparquet_readbench::naming::strip_known_extension;
 use cityparquet_readbench::sampling::SamplingPlan;
 use cityparquet_readbench::stats::TimingStats;
 
+use crate::formats::returned::{Returned, extents_agree};
 use crate::formats::{IoStats, LOOKUP_STATS_MARKER, LookupCounters, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 use cityparquet_readbench::params;
@@ -889,6 +890,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 notes: vec!["cold".to_string()],
                 io: line.io,
                 lookup: None,
+                returned: line.returned,
             };
             debug_assert!(
                 line.notes.is_empty(),
@@ -1139,10 +1141,164 @@ fn check_consistency(
         }
     }
 
+    for (members, failure) in check_returned(rows, formats, resolved) {
+        failures.push(failure);
+        for i in members {
+            tagged[i] = true;
+        }
+    }
+
     for (row, tag) in rows.iter_mut().zip(tagged) {
         if tag {
             row.notes.push(COUNT_MISMATCH.to_string());
         }
+    }
+    failures
+}
+
+/// A comparable total one format is excused from, and why. Each entry is a
+/// principled difference, never a tolerance: the total is simply not
+/// compared for that format. Empty while every format agrees on every total.
+const TOTAL_EXCLUSIONS: &[(Format, &str, &str)] = &[];
+
+fn excluded(format: Format, total: &str) -> bool {
+    TOTAL_EXCLUSIONS
+        .iter()
+        .any(|(f, t, _)| *f == format && *t == total)
+}
+
+/// Checks what the formats RETURNED against each other, per scenario and
+/// query tag: the identifier-set digest of a spatial window and of the
+/// attribute filter; the returned-geometry count and visited extent of a
+/// spatial window; `objects`, `geometries`, `semantic_faces` and the extent
+/// of read all and an identifier lookup. Extents are brought into the
+/// package's axis order and compared within one quantisation step per axis
+/// ([`params::ResolvedParams::quantum`]); every other value must be equal.
+///
+/// Only the rows that reported a part are compared on it: the reference is
+/// the first reporting row, and a row that reported nothing for a part is
+/// listed on stderr as not reporting, so a missing marker is visible, never
+/// silently passed. Returns each failure with the rows it names.
+fn check_returned(
+    rows: &[Row],
+    formats: &HashMap<String, Format>,
+    resolved: &params::ResolvedParams,
+) -> Vec<(Vec<usize>, String)> {
+    let mut failures = Vec::new();
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        if row.notes.iter().any(|n| n == "cold") || !formats.contains_key(&row.label) {
+            continue;
+        }
+        let key = match row.scenario {
+            Scenario::FullRead | Scenario::AttrFilter => row.scenario.as_str().to_string(),
+            Scenario::BBoxQuery | Scenario::IdLookup => format!(
+                "{}/{}",
+                row.scenario.as_str(),
+                row.notes
+                    .first()
+                    .map(|n| n.split(';').next().unwrap_or(""))
+                    .unwrap_or("")
+            ),
+            _ => continue,
+        };
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, members)) => members.push(i),
+            None => groups.push((key, vec![i])),
+        }
+    }
+    let extent_of = |i: usize, e: [f64; 6]| {
+        window_in_artefact_order(e, formats[&rows[i].label], resolved.swap_xy)
+    };
+    for (key, members) in groups {
+        let mut compare = |part: &str,
+                           value: &dyn Fn(usize) -> Option<String>,
+                           same: &dyn Fn(usize, usize) -> bool| {
+            let reporting: Vec<usize> = members
+                .iter()
+                .copied()
+                .filter(|&i| value(i).is_some() && !excluded(formats[&rows[i].label], part))
+                .collect();
+            let silent: Vec<&str> = members
+                .iter()
+                .filter(|i| !reporting.contains(i))
+                .map(|&i| rows[i].label.as_str())
+                .collect();
+            if !silent.is_empty() && !reporting.is_empty() {
+                eprintln!(
+                    "cityparquet-readbench: {key}: {part} not compared for {} (not reported or excluded)",
+                    silent.join(", ")
+                );
+            }
+            let Some(&first) = reporting.first() else {
+                return;
+            };
+            if reporting.iter().any(|&i| !same(first, i)) {
+                let values: Vec<String> = reporting
+                    .iter()
+                    .map(|&i| format!("{}={}", rows[i].label, value(i).unwrap_or_default()))
+                    .collect();
+                failures.push((
+                    reporting.clone(),
+                    format!("{key}: {part} disagrees: {}", values.join(", ")),
+                ));
+            }
+        };
+        let r = |i: usize| rows[i].returned;
+        compare(
+            "id-digest",
+            &|i| {
+                r(i).ids
+                    .map(|d| format!("{}/{:x}/{:x}", d.count, d.sum, d.xor))
+            },
+            &|a, b| r(a).ids == r(b).ids,
+        );
+        for (part, get) in [
+            (
+                "objects",
+                (|t: &crate::formats::returned::ComparableTotals| t.objects) as fn(&_) -> u64,
+            ),
+            ("geometries", |t| t.geometries),
+            ("semantic_faces", |t| t.semantic_faces),
+        ] {
+            compare(
+                part,
+                &|i| r(i).totals.map(|t| get(&t).to_string()),
+                &|a, b| r(a).totals.map(|t| get(&t)) == r(b).totals.map(|t| get(&t)),
+            );
+        }
+        compare(
+            "extent",
+            &|i| r(i).totals.map(|t| format!("{:?}", extent_of(i, t.extent))),
+            &|a, b| match (r(a).totals, r(b).totals) {
+                (Some(x), Some(y)) => extents_agree(
+                    &extent_of(a, x.extent),
+                    &extent_of(b, y.extent),
+                    resolved.quantum,
+                ),
+                _ => false,
+            },
+        );
+        compare(
+            "returned-geometries",
+            &|i| r(i).geometry.map(|g| g.geometries.to_string()),
+            &|a, b| r(a).geometry.map(|g| g.geometries) == r(b).geometry.map(|g| g.geometries),
+        );
+        compare(
+            "returned-extent",
+            &|i| {
+                r(i).geometry
+                    .map(|g| format!("{:?}", extent_of(i, g.extent)))
+            },
+            &|a, b| match (r(a).geometry, r(b).geometry) {
+                (Some(x), Some(y)) => extents_agree(
+                    &extent_of(a, x.extent),
+                    &extent_of(b, y.extent),
+                    resolved.quantum,
+                ),
+                _ => false,
+            },
+        );
     }
     failures
 }
@@ -1280,6 +1436,9 @@ struct ChildLine {
     notes: Vec<String>,
     /// The child's [`LookupCounters`], from its [`LOOKUP_STATS_MARKER`] line.
     lookup: Option<LookupCounters>,
+    /// What the child returned, from its [`crate::formats::returned`] marker
+    /// lines.
+    returned: Returned,
 }
 
 /// The disclosure tags `stderr` announces, in
@@ -1314,13 +1473,14 @@ fn child_lookup_counters(stderr: &str) -> Result<Option<LookupCounters>> {
                 .with_context(|| format!("parsing lookup counter '{field}'"))
         })
         .collect::<Result<_>>()?;
-    let [row_groups_total, bloom_pruned, filter_bytes] = fields[..] else {
-        bail!("expected three lookup counters after '{LOOKUP_STATS_MARKER}', got '{line}'");
+    let [row_groups_total, bloom_pruned, filter_bytes, stats_pruned] = fields[..] else {
+        bail!("expected four lookup counters after '{LOOKUP_STATS_MARKER}', got '{line}'");
     };
     Ok(Some(LookupCounters {
         row_groups_total,
         bloom_pruned,
         filter_bytes,
+        stats_pruned,
     }))
 }
 
@@ -1420,6 +1580,7 @@ fn spawn_child(
     let stderr = String::from_utf8_lossy(&output.stderr);
     let notes = child_disclosures(&stderr);
     let lookup = child_lookup_counters(&stderr)?;
+    let returned = Returned::parse(&stderr)?;
     let stdout = String::from_utf8(output.stdout).context("child stdout was not valid UTF-8")?;
     let line = protocol_line(&stdout);
     let fields: Vec<&str> = line.split_whitespace().collect();
@@ -1457,6 +1618,7 @@ fn spawn_child(
         io,
         notes,
         lookup,
+        returned,
     })
 }
 
@@ -1515,6 +1677,7 @@ fn run_measurement(
     // repeats (unlike timing) — no need to aggregate beyond "the first one".
     let mut io: Option<IoStats> = None;
     let mut lookup: Option<LookupCounters> = None;
+    let mut returned = Returned::default();
     // Likewise the first warm sample's own disclosures (see
     // [`ChildLine::notes`]): which mechanism a runner took is a property of
     // the artefact, identical in every repeat.
@@ -1561,6 +1724,7 @@ fn run_measurement(
             result_count = Some(line.result_count);
             io = line.io;
             lookup = line.lookup;
+            returned = line.returned;
             child_notes = line.notes;
         }
         if sampling.stop_after(times.len(), cell_start.elapsed()) {
@@ -1613,6 +1777,7 @@ fn run_measurement(
         notes: tags,
         io,
         lookup,
+        returned,
     });
 
     Ok(result_count)
@@ -1689,6 +1854,9 @@ struct Row {
     notes: Vec<String>,
     io: Option<IoStats>,
     lookup: Option<LookupCounters>,
+    /// What the first warm sample returned (deterministic across repeats,
+    /// like `result_count`); checked across formats, never written to the CSV.
+    returned: Returned,
 }
 
 impl Row {
@@ -1826,6 +1994,7 @@ mod tests {
             notes: notes.iter().map(|n| (*n).to_string()).collect(),
             io: None,
             lookup: None,
+            returned: Returned::default(),
         }
     }
 
@@ -1910,6 +2079,7 @@ mod tests {
             cp_object_total: 49_915,
             cp_feature_total: 38_743,
             swap_xy: true,
+            quantum: [1e-7, 1e-7, 0.001],
         }
     }
 
@@ -1918,6 +2088,133 @@ mod tests {
             .into_iter()
             .map(|f| (f.as_str().to_string(), f))
             .collect()
+    }
+
+    fn returning(label: &str, scenario: Scenario, notes: &[&str], returned: Returned) -> Row {
+        let mut r = labelled(label, scenario, notes, 0);
+        r.returned = returned;
+        r
+    }
+
+    fn totals(objects: u64, extent: [f64; 6]) -> Returned {
+        use crate::formats::returned::ComparableTotals;
+        Returned {
+            totals: Some(ComparableTotals {
+                objects,
+                geometries: objects,
+                semantic_faces: 7,
+                extent,
+            }),
+            ..Returned::default()
+        }
+    }
+
+    #[test]
+    fn equal_digests_pass_and_a_differing_one_fails_naming_the_formats() {
+        use crate::formats::returned::IdDigest;
+        let ids = |set: &[&str]| Returned {
+            ids: Some(IdDigest::of(set.iter().copied())),
+            ..Returned::default()
+        };
+        let rows = vec![
+            returning("cityparquet", Scenario::AttrFilter, &[], ids(&["a", "b"])),
+            returning("cityjson", Scenario::AttrFilter, &[], ids(&["b", "a"])),
+        ];
+        assert!(check_returned(&rows, &formats(), &tokyo_like()).is_empty());
+
+        let rows = vec![
+            returning("cityparquet", Scenario::AttrFilter, &[], ids(&["a", "b"])),
+            returning("cityjson", Scenario::AttrFilter, &[], ids(&["a", "c"])),
+        ];
+        let failures = check_returned(&rows, &formats(), &tokyo_like());
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].0, vec![0, 1]);
+        let message = &failures[0].1;
+        assert!(
+            message.starts_with("attr-filter: id-digest disagrees"),
+            "{message}"
+        );
+        assert!(
+            message.contains("cityparquet=") && message.contains("cityjson="),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_row_without_the_marker_is_not_compared() {
+        let rows = vec![
+            returning("cityparquet", Scenario::FullRead, &[], totals(3, [0.0; 6])),
+            returning("cityjson", Scenario::FullRead, &[], Returned::default()),
+        ];
+        assert!(check_returned(&rows, &formats(), &tokyo_like()).is_empty());
+    }
+
+    #[test]
+    fn extents_compare_in_package_order_within_one_quantum() {
+        // Tokyo is latitude-first: CityJSON keeps the source's (y, x) order,
+        // CityParquet stores longitude first.
+        let package = [139.7, 35.6, 1.0, 139.8, 35.7, 50.0];
+        let source = [35.6, 139.7, 1.0005, 35.7, 139.8, 50.0];
+        let rows = vec![
+            returning(
+                "cityparquet",
+                Scenario::IdLookup,
+                &["id-50pct"],
+                totals(1, package),
+            ),
+            returning(
+                "cityjson",
+                Scenario::IdLookup,
+                &["id-50pct"],
+                totals(1, source),
+            ),
+        ];
+        assert!(check_returned(&rows, &formats(), &tokyo_like()).is_empty());
+
+        let off = [35.6, 139.7, 1.002, 35.7, 139.8, 50.0];
+        let rows = vec![
+            returning(
+                "cityparquet",
+                Scenario::IdLookup,
+                &["id-50pct"],
+                totals(1, package),
+            ),
+            returning(
+                "cityjson",
+                Scenario::IdLookup,
+                &["id-50pct"],
+                totals(1, off),
+            ),
+        ];
+        let failures = check_returned(&rows, &formats(), &tokyo_like());
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].1.starts_with("id-lookup/id-50pct: extent"),
+            "{}",
+            failures[0].1
+        );
+    }
+
+    #[test]
+    fn a_differing_object_total_fails() {
+        let rows = vec![
+            returning("cityparquet", Scenario::FullRead, &[], totals(3, [0.0; 6])),
+            returning("cityjsonseq", Scenario::FullRead, &[], totals(4, [0.0; 6])),
+        ];
+        let failures = check_returned(&rows, &formats(), &tokyo_like());
+        let parts: Vec<&str> = failures.iter().map(|f| f.1.as_str()).collect();
+        assert!(
+            parts
+                .iter()
+                .any(|m| m.starts_with("full-read: objects disagrees")),
+            "{parts:?}"
+        );
+        assert!(
+            parts
+                .iter()
+                .any(|m| m.starts_with("full-read: geometries disagrees")),
+            "{parts:?}"
+        );
     }
 
     #[test]
@@ -2036,6 +2333,7 @@ mod tests {
             row_groups_total: 16,
             bloom_pruned: 15,
             filter_bytes: 4096,
+            stats_pruned: 0,
         });
         let rendered = counted.render();
         assert!(rendered.ends_with("id-miss,,,16,15,4096"), "{rendered}");
@@ -2044,17 +2342,19 @@ mod tests {
 
     #[test]
     fn a_childs_lookup_counters_are_read_from_its_marker_line() {
-        let stderr = format!("some log\n{LOOKUP_STATS_MARKER} 16 15 4096\n");
+        let stderr = format!("some log\n{LOOKUP_STATS_MARKER} 16 15 4096 1\n");
         assert_eq!(
             child_lookup_counters(&stderr).unwrap(),
             Some(LookupCounters {
                 row_groups_total: 16,
                 bloom_pruned: 15,
                 filter_bytes: 4096,
+                stats_pruned: 1,
             })
         );
         assert_eq!(child_lookup_counters("some log\n").unwrap(), None);
         assert!(child_lookup_counters(&format!("{LOOKUP_STATS_MARKER} 1 2\n")).is_err());
-        assert!(child_lookup_counters(&format!("{LOOKUP_STATS_MARKER} 1 2 3 4\n")).is_err());
+        assert!(child_lookup_counters(&format!("{LOOKUP_STATS_MARKER} 1 2 3\n")).is_err());
+        assert!(child_lookup_counters(&format!("{LOOKUP_STATS_MARKER} 1 2 3 4 5\n")).is_err());
     }
 }

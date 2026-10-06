@@ -1275,6 +1275,14 @@ pub struct ResolvedParams {
     /// so the windows — in the package's longitude-first order — are swapped
     /// in `x`/`y` for every artefact that keeps the source's order.
     pub swap_xy: bool,
+    /// One quantisation step per axis, in the package's (longitude-first)
+    /// order: the CityJSONSeq header's `transform.scale`, `x`/`y` swapped for
+    /// a latitude-first dataset; zero without a CityJSONSeq. Every format's
+    /// coordinates come from that one quantised source (CityJSON and
+    /// FlatCityBuf keep its integers and scale, CityParquet and CityGML the
+    /// decoded doubles), so two formats' extents of the same coordinates
+    /// differ by at most one step — the coordinator's extent tolerance.
+    pub quantum: [f64; 3],
 }
 
 /// Derives every query parameter for `dataset`.
@@ -1306,17 +1314,18 @@ pub fn resolve(
     // The quantisation of the package's x/y axes: the CityJSONSeq header's
     // `transform.scale`, in source order — so swapped for a latitude-first
     // dataset, whose package x is the source's second axis.
-    let quantum = match seq_path {
+    let quantum3 = match seq_path {
         Some(seq) => {
             let scale = seq_scale(seq)?;
             if swap_xy {
-                [scale[1], scale[0]]
+                [scale[1], scale[0], scale[2]]
             } else {
-                [scale[0], scale[1]]
+                scale
             }
         }
-        None => [0.0, 0.0],
+        None => [0.0; 3],
     };
+    let quantum = [quantum3[0], quantum3[1]];
     let windows = BBOX_TARGETS
         .iter()
         .map(|(target, tag)| {
@@ -1371,6 +1380,7 @@ pub fn resolve(
         cp_object_total,
         cp_feature_total: rows.root_total,
         swap_xy,
+        quantum: quantum3,
     })
 }
 
