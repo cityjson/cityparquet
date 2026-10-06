@@ -40,13 +40,31 @@ Two small fixes ride along: the specification site's benchmark page says timings
 
 The format comparison measures five formats: the gzipped CityJSONSeq and the `duckdb-parquet` baseline are gone, and CityParquet is one Hilbert-ordered package per dataset, named `cityparquet` (`<x>.parquet/`). The source-order package is gone from the format benchmark and from the database comparison, which keeps one DuckDB configuration. The scaling series is gone: 3DBAG is the one slice `3dbag_n1000000`, cut by `fcb-slice --drop-lod 1.2` (`just fetch-3dbag`), and the bloom axis runs on the corpus and that slice into `bloom_results/`. The committed evidence is relabelled and the removed rows and slices deleted, with no measured value changed (`9902be9`..`6547da0`).
 
-### 3. Interactive review of the benchmark code
+### 3. Interactive review of the benchmark code — done
 
-After tasks 1 and 2, the author reviews what remains, one stage at a time: corpus and preparation, the read harness and its queries, size measurement, aggregation, plots. The commander explains each stage, shows the evidence it produced and flags doubts; the author confirms or corrects before the next stage. Findings become small fixes or entries in this plan.
+The author reviewed the pipeline stage by stage; each finding became a change. What the review settled:
 
-Already noted for the review:
+- **Corpus.** Six city datasets (Rotterdam, Vienna, New York, Zurich, Tokyo, Montréal) and the 1,000,000-object 3DBAG slice. Every source is normalised to one geometry per LoD and object; the slice is cut without LoD 1.2; CityParquet packages are written in Hilbert order without LoD 0 synthesis. The corpus holds only content CityGML 2.0, the baseline, can express: Ingolstadt is excluded because its window and door faces cannot be written to CityGML 2.0 (`READ_BENCHMARK.md`, Caveat 43). Tokyo and Montréal are derived sources kept in the R2 bucket.
+- **Measurement.** Warm runs, one fresh process per sample, 25 repetitions (a `quick` profile runs 7), single-threaded readers. The CSVs carry mean, standard deviation, median, minimum, maximum and quartiles; summaries default to the median. Measured processes are pinned to one NUMA node under a 64 GB ceiling, and load is recorded per sample.
+- **Return rule.** Read all returns every record with all fields in the format's native form; the spatial window returns the count, the identifiers and each match's highest-LoD geometry, visited in place; the attribute filter returns the count and the identifiers; the identifier lookup returns the whole object. The spatial window matches city objects in all five formats.
+- **Cross-format check.** A run fails when the formats disagree on identifier sets, object, geometry and semantic-face totals, extents or returned-geometry counts.
+- **Sizes.** Each size includes what the format needs for the queries; compact text formats; decimal units; `just bench-compression` reports the share and compression ratio per column group.
+- **Bloom axis.** The slice only, on identifier, feature and attribute-equality lookups; the package without filters still prunes by row-group statistics, and both counts are recorded.
+- **Databases.** One container-engine layer (`container`, `docker`, `podman`); every corpus dataset by parameter, with the format benchmark's windows and predicates; native binary results; whole-object identifier lookup; indexes on every queried predicate, with sizes reported with and without them; working memory in place of process memory; counts and identifier sets compared across the three systems.
 
-- The handout's smaller items: the "1,000,001 objects" title, the repetition counts, the memory actually available on the host, the table of tool versions, the dataset list with URLs and attribute predicates, the geometry share from `parquet_metadata`.
+### 3a. Before the host run
+
+Nothing Linux-specific has run on Linux, and all committed evidence under `benchmark/runs/` predates the current harness. The first run on the host is a `quick` run and checks, in this order:
+
+1. `just bench-prep` rebuilds every artefact (chain version 7). The log shows `0 geometries dropped` for the 3DBAG slice and no LoD 1.2 in it.
+2. `MACHINE.md` and the manifests record the isolation actually applied: NUMA pinning, the memory ceiling, the load gate. A step the host refuses is recorded as not applied.
+3. Warm runs stay warm under the 64 GB ceiling: the CityGML and CityJSON cells of the slice show no cold outliers.
+4. Every format run prints `cross-format consistency OK`; Montréal, New York and Zurich have not been run through the current check.
+5. `just bloom-columns` on the slice's package confirms that the configured attribute columns carry a Bloom filter.
+6. The database run passes its count and identifier checks on the slice, including the LoD 2.2 query, which no local dataset can exercise, and on a dataset without a declared CRS.
+7. `just bench-compression` gives the geometry share and ratio for the slice.
+
+Then the full run, `just bench-summary`, and the paper's placeholders.
 
 ### 4. Add the benchmark over the network
 
