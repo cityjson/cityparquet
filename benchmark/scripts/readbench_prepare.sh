@@ -694,8 +694,8 @@ CHAIN_VERSION=7
 # artefact is stale when its stage changed after the version that built it,
 # so a bump that touches one stage does not force the hours-long stages it
 # left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
-#   7  every stage, for a dataset the normalisation changed (Vienna and
-#      Ingolstadt in the corpus); no stage for one it left byte-identical.
+#   7  every stage, for a dataset the normalisation changed (Vienna in the
+#      corpus); no stage for one it left byte-identical.
 #   6  the CityJSON and CityParquet stages: a CityJSON built before may carry
 #      the source's whitespace, and a package built before carries a
 #      synthesised LoD 0 footprint for every object without a source LoD 0.

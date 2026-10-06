@@ -977,7 +977,7 @@ enum Key {
 /// member of the CityJSON `attributes` map (so FlatCityBuf's `fcb ser -A`
 /// B+-tree indexes it) and that every format carries, and every predicate
 /// was verified to return the same `result_count` on every runner.
-const HAND_PICKED: [(Key, &str, Pick); 8] = [
+const HAND_PICKED: [(Key, &str, Pick); 7] = [
     // The natural roof-type query; 3DBAG carries it on the Building, one
     // per feature.
     (Key::Family("3dbag_"), "b3_dak_type", Pick::Eq("slanted")),
@@ -990,11 +990,6 @@ const HAND_PICKED: [(Key, &str, Pick); 8] = [
         Key::Dataset("vienna_102081"),
         "roofType",
         Pick::Eq("FLACHDACH"),
-    ),
-    (
-        Key::Dataset("ingolstadt"),
-        "klumMaterialClass",
-        Pick::Eq("Wood"),
     ),
     // NYC's only categorical attributes are identifiers; `1000000` is the
     // placeholder BIN, a legitimate low-selectivity equality.

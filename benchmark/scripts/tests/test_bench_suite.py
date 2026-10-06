@@ -9,7 +9,7 @@ class SelectionTests(unittest.TestCase):
     def setUpClass(cls): cls.manifest = bench_suite.load_manifest()
     def test_format_default_is_the_corpus_and_the_3dbag_slice(self):
         selected = bench_suite.dataset_selection(self.manifest, ["formats"], "", "full")
-        self.assertEqual(len(selected), 8)
+        self.assertEqual(len(selected), 7)
         self.assertEqual(selected[-1], "3dbag_n1000000")
         self.assertIn("tokyo", selected)
         self.assertIn("montreal", selected)
@@ -64,7 +64,7 @@ class SelectionTests(unittest.TestCase):
     def test_short_profile_drops_the_slice_and_measures_rotterdam_in_the_databases(self):
         formats = bench_suite.dataset_selection(self.manifest, ["formats"], "", "short")
         self.assertNotIn("3dbag_n1000000", formats)
-        self.assertEqual(len(formats), 7)
+        self.assertEqual(len(formats), 6)
         self.assertEqual(bench_suite.dataset_selection(self.manifest, ["databases"], "", "short"), ["rotterdam"])
     def test_short_profile_results_never_land_in_the_full_directories(self):
         locations = bench_suite.paths(bench_suite.DEFAULT_DATA_ROOT)

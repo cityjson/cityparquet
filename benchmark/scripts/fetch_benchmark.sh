@@ -102,7 +102,6 @@ BENCH_ROOT="${BENCH_ROOT:-$BENCHMARK_DIR/runs}"
 #
 #   dataset               objects   LoD
 #   rotterdam_delfshaven      853   2
-#   ingolstadt                379   3
 #   vienna_102081           1,322   2
 #   nyc_da13_buildings     23,777   2
 #   montreal               31,415   2
@@ -113,7 +112,6 @@ BENCH_ROOT="${BENCH_ROOT:-$BENCHMARK_DIR/runs}"
 # fetched here: `just fetch-3dbag` cuts it from its own pinned source.
 CORPUS=(
   "rotterdam_delfshaven.city.json|2731804|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json|958460c670b4cb85a9159d1e5e566905fba8812864f64b554ecad38333badcf6"
-  "ingolstadt.city.json|5051369|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Ingolstadt.city.json|91e45df269dec5a22f80af6c149dca0d64c85ce1796b8fefc6296ae6bfa5cfe5"
   "vienna_102081.city.json|5635634|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json|849a148b5fb91ebfa6e3efe7bd78be47cc5cdd2fb6699e0cb042f44dd702cc62"
   "nyc_da13_buildings.city.json|110083137|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json|c885bb6af297531c95b097aff5d38e694935ac22fe1b973cbad15948021f6cb8"
   "zurich_building_lod2.city.json|292500409|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json|a7dde7f306e69a4134b2bf30b8ead58fe11d3499f8b30d7596ba346aeae6f0f8"

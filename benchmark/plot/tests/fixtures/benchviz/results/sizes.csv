@@ -1,7 +1,7 @@
 dataset,format,bytes,mb_decimal
-Ingolstadt,cityjsonseq,4025892,4.025892
-Ingolstadt,cityparquet,962890,0.962890
-Ingolstadt,flatcitybuf,3277314,3.277314
+Vienna,cityjsonseq,4025892,4.025892
+Vienna,cityparquet,962890,0.962890
+Vienna,flatcitybuf,3277314,3.277314
 Zurich,cityjsonseq,259121439,259.121439
 Zurich,cityparquet,70988958,70.988958
 Zurich,flatcitybuf,205339726,205.339726

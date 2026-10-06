@@ -104,7 +104,7 @@ fn served_dir() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::copy(
         data_fixture("savenow_ingolstadt_lod2.gml"),
-        tmp.path().join("ingolstadt.gml"),
+        tmp.path().join("savenow.gml"),
     )
     .unwrap();
     std::fs::copy(fixture("b1_lod2_cs_w_sem.gml"), tmp.path().join("b1.gml")).unwrap();
@@ -119,7 +119,7 @@ fn served_dir() -> tempfile::TempDir {
 #[tokio::test(flavor = "multi_thread")]
 async fn http_matches_local_and_is_exactly_one_whole_object_get_per_scenario() {
     let tmp = served_dir();
-    let local_path = tmp.path().join("ingolstadt.gml");
+    let local_path = tmp.path().join("savenow.gml");
     let expected_bytes = std::fs::metadata(&local_path).unwrap().len();
 
     let addr = spawn_server(tmp.path().to_path_buf()).await;
@@ -149,7 +149,7 @@ async fn http_matches_local_and_is_exactly_one_whole_object_get_per_scenario() {
         assert_eq!(local_fields.len(), 4, "local line: {local_out}");
         let local_count: u64 = local_fields[3].parse().unwrap();
 
-        let (http_count, bytes, requests) = http_run(&base_url, "ingolstadt.gml", scenario, &extra);
+        let (http_count, bytes, requests) = http_run(&base_url, "savenow.gml", scenario, &extra);
         assert_eq!(
             http_count, local_count,
             "result_count must match between local and http transports ({scenario})"
@@ -177,7 +177,7 @@ async fn http_matches_local_and_is_exactly_one_whole_object_get_per_scenario() {
 #[tokio::test(flavor = "multi_thread")]
 async fn io_stats_track_each_documents_own_size_so_a_hardcoded_tally_cannot_pass() {
     let tmp = served_dir();
-    let big_bytes = std::fs::metadata(tmp.path().join("ingolstadt.gml"))
+    let big_bytes = std::fs::metadata(tmp.path().join("savenow.gml"))
         .unwrap()
         .len();
     let small_bytes = std::fs::metadata(tmp.path().join("b1.gml")).unwrap().len();
@@ -190,12 +190,12 @@ async fn io_stats_track_each_documents_own_size_so_a_hardcoded_tally_cannot_pass
     let addr = spawn_server(tmp.path().to_path_buf()).await;
     let base_url = format!("http://{addr}");
 
-    let (big_count, big_tally, big_requests) = http_run(&base_url, "ingolstadt.gml", "count", &[]);
+    let (big_count, big_tally, big_requests) = http_run(&base_url, "savenow.gml", "count", &[]);
     let (small_count, small_tally, small_requests) = http_run(&base_url, "b1.gml", "count", &[]);
 
     assert_eq!(
         big_tally, big_bytes,
-        "the Ingolstadt fragment's tally must be its own byte length"
+        "the SAVeNoW fragment's tally must be its own byte length"
     );
     assert_eq!(
         small_tally, small_bytes,
@@ -213,7 +213,7 @@ async fn io_stats_track_each_documents_own_size_so_a_hardcoded_tally_cannot_pass
     // document actually fetched, not a remembered one.
     assert_eq!(
         big_count, 3,
-        "the Ingolstadt fragment's three cityObjectMembers"
+        "the SAVeNoW fragment's three cityObjectMembers"
     );
     assert_eq!(small_count, 1, "the single-building document's one member");
 }

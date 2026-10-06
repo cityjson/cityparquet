@@ -14,8 +14,13 @@ datasets kept here span the range the views have to handle —
 
 - **Zurich** — 198,699 objects, the largest, so it must sort first;
 - **delft** — 2,231 objects: an ordinary, complete dataset in the middle;
-- **Ingolstadt** — 379 objects, the smallest, so it sorts last, and 18 of its
+- **Vienna** — 379 objects, the smallest, so it sorts last, and 18 of its
   53 read rows fall inside the citation floor.
+
+The smallest dataset's rows carry the label `Vienna` (file name and `dataset`
+column) because the dataset they were measured on has since left the corpus;
+only the label was changed, so its values, including the 379-object count, are
+those measured rows and do not describe the corpus's Vienna.
 
 `bloom_results/` is the one exception to "nothing is edited by hand": its
 `delft.csv`, `delft.csv.params.json` (the `cp_object_total` the axis takes its

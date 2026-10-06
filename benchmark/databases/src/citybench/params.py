@@ -46,7 +46,6 @@ HAND_PICKED: tuple[tuple[str, str, str, tuple[str, Any]], ...] = (
     ("family", "3dbag_", "b3_dak_type", ("eq", "slanted")),
     ("dataset", "zurich_building_lod2", "class", ("eq", "BB01")),
     ("dataset", "vienna_102081", "roofType", ("eq", "FLACHDACH")),
-    ("dataset", "ingolstadt", "klumMaterialClass", ("eq", "Wood")),
     # NYC's only categorical attributes are identifiers; `1000000` is the
     # placeholder BIN, a legitimate low-selectivity equality.
     ("dataset", "nyc_da13_buildings", "BIN", ("eq", "1000000")),

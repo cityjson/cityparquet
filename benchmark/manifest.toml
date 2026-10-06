@@ -17,11 +17,6 @@ source = "rotterdam_delfshaven.city.json"
 title = "Rotterdam"
 role = "corpus"
 
-[datasets.ingolstadt]
-source = "ingolstadt.city.json"
-title = "Ingolstadt"
-role = "corpus"
-
 [datasets.vienna]
 source = "vienna_102081.city.json"
 title = "Vienna"

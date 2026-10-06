@@ -667,7 +667,7 @@ def test_a_run_with_a_duckdb_system_refuses_to_start_without_a_build(
 
 def test_datasets_selects_every_corpus_dataset_or_a_named_subset(tmp_path):
     from citybench import cli
-    stems = ["rotterdam_delfshaven", "ingolstadt", "vienna_102081", "nyc_da13_buildings",
+    stems = ["rotterdam_delfshaven", "vienna_102081", "nyc_da13_buildings",
              "zurich_building_lod2", "tokyo", "montreal", "3dbag_n1000000"]
     for stem in stems:
         (tmp_path / f"{stem}.city.jsonl").write_text("{}\n")

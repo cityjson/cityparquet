@@ -1,13 +1,13 @@
 # CityParquet benchmark corpus — download URLs
 # ============================================
 #
-# Seven city datasets. Five are pinned from the CityJSON project's own dataset
+# Six city datasets. Four are pinned from the CityJSON project's own dataset
 # page, https://www.cityjson.org/datasets/ ("Major City Datasets", converted and
 # hosted by the TU Delft 3D geoinformation group), verified live on 2026-08-23
 # and unchanged since. Two — Tokyo (Chiyoda) and Montréal — are derived by this
 # project from published sources and hosted on its own mirror; their derivation
 # is recorded below so either can be rebuilt byte for byte. The format
-# comparison's eighth dataset, the 1,000,001-object 3DBAG slice, is cut by
+# comparison's seventh dataset, the 1,000,001-object 3DBAG slice, is cut by
 # `just fetch-3dbag` from its own pinned source.
 #
 # Usage — the usable list is exactly:
@@ -23,8 +23,8 @@
 # The mirror's CityJSON is byte-identical to the pinned file. Its CityGML is a
 # convenience copy: the benchmark keeps synthesising its own `.gml` with the
 # pinned citygml-tools, and the two are identical once the tool's per-run
-# random `ID_<uuid>` identifiers are masked — except for Vienna and Ingolstadt,
-# whose mirrored CityGML was synthesised from the published CityJSON and so
+# random `ID_<uuid>` identifiers are masked — except for Vienna, whose
+# mirrored CityGML was synthesised from the published CityJSON and so
 # still holds the geometries the normalisation below removes.
 #
 # NORMALISED BEFORE USE. The pinned files are the published ones, but the
@@ -34,7 +34,7 @@
 # from that normalised source. Five datasets need no change and are used byte
 # for byte. vienna_102081 loses 1,102 of 2,204 geometries (each LoD 2 object
 # carries a MultiSurface and a Solid; the MultiSurface comes first and is
-# kept) and ingolstadt 26 of 405 geometries and 25,262 of 87,972 vertices.
+# kept).
 #
 # WHY THIS CORPUS. The read benchmark compares FIVE formats — CityGML,
 # CityJSON, CityJSONSeq, FlatCityBuf and CityParquet — and a dataset that
@@ -67,7 +67,6 @@
 # Ordering: smallest first, so a truncated fetch still leaves a size ladder.
 
 https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json
-https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Ingolstadt.city.json
 https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json
 https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json
 https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json
@@ -82,14 +81,6 @@ https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/
 #   cityjson.org row "Rotterdam". 2,731,804 B. 853 CityObjects, all `Building`,
 #   all LoD2. Numeric attribute `TerrainHeight` on all 853. Published as 76%
 #   valid. The corpus's small anchor.
-#
-# ingolstadt.city.json            <- Ingolstadt.city.json
-#   cityjson.org row "Ingolstadt". 5,051,369 B. 379 CityObjects — 55 `Building`,
-#   1 `BuildingPart`, 323 `BuildingInstallation`, all Building module, so one
-#   object table. LoD3 throughout. Numeric attribute `measuredHeight` covers
-#   only the 55 `Building`s (`materialUncertainty` covers 201), so its
-#   `attr-stats` row is computed over a minority of rows — do not read it as a
-#   whole-dataset aggregate. Published as 70% valid.
 #
 # vienna_102081.city.json         <- Vienna_102081.city.json
 #   cityjson.org row "Vienna". 5,635,634 B. 1,322 CityObjects — 307 `Building`
@@ -170,7 +161,8 @@ https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/
 # EXCLUDED — offered by cityjson.org, not measurable here
 # --------------------------------------------------------------------------
 #
-# Both fail gate 2 of benchmark/scripts/fetch_benchmark.sh's verification: a dataset must
+# DenHaag_01 and LoD3_Railway fail gate 2 of benchmark/scripts/fetch_benchmark.sh's
+# verification: a dataset must
 # resolve to ONE CityParquet object table, because `cityparquet-readbench`'s
 # coordinator refuses a multi-table package outright
 # (`locate_cityparquet_table`). Not measured poorly — not measurable.
@@ -194,6 +186,18 @@ https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/
 #   so even single-table it would be degenerate for every selectivity-based
 #   scenario. Note this is the ONE cityjson.org dataset whose published `.gml`
 #   is CityGML 2.0 and would have needed no synthesis.
+#
+# Ingolstadt.city.json
+#   https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Ingolstadt.city.json
+#   Excluded by the corpus rule rather than a gate: the corpus holds only
+#   content that CityGML 2.0, the baseline, can express. Ingolstadt's 32,670
+#   Window and Door semantic surfaces name no parent surface, and CityGML 2.0
+#   can hold an opening only inside a wall or roof surface. `citygml-tools
+#   from-cityjson -v 2.0` writes the references but omits the polygons, and
+#   prints no warning, so the synthesised CityGML holds about a quarter of
+#   the dataset's faces and the five formats would not hold the same content.
+#   No pinned dataset carries Window/Door semantics, and none has a dangling
+#   reference.
 #
 # The cityjson.org Montréal entry (VM05_2009.city.json, 5,644,656 B, 294
 # `Building`, LoD2) passes every gate and is not pinned: it sits in Vienna's
