@@ -221,3 +221,120 @@ fn full_read_visit_reads_every_object_of_delft() {
     assert!(totals.attribute_values > 0);
     assert!(totals.polygons > 0 && totals.rings >= totals.polygons);
 }
+
+fn convert_delft_small_row_groups() -> tempfile::TempDir {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.recipe = cityparquet::recipe::WriterRecipe {
+        row_group_size: 256,
+        ..cityparquet::recipe::WriterRecipe::default()
+    };
+    convert(&opts).unwrap();
+    out
+}
+
+/// The visit-based bbox, attribute and id primitives visit exactly the rows
+/// the id/count primitives select, and report the same pruning counts.
+#[test]
+fn bbox_attr_and_id_visits_select_the_same_rows_as_the_id_paths() {
+    use cityparquet::query::{self, AttrPredicate};
+    let out = convert_delft_small_row_groups();
+    let table = out.path().join("building.parquet");
+    let e = query::full_read_visit(&table).unwrap().extent;
+    let window = [
+        e[0],
+        e[1],
+        e[2],
+        (e[0] + e[3]) / 2.0,
+        (e[1] + e[4]) / 2.0,
+        e[5],
+    ];
+
+    let ids = query::bbox_query(&table, window).unwrap();
+    let visited = query::bbox_query_visit(&table, window).unwrap();
+    assert!(!ids.ids.is_empty() && ids.ids.len() < 2231);
+    assert_eq!(visited.totals.objects, ids.ids.len() as u64);
+    assert!(visited.totals.geometries >= visited.totals.objects);
+    assert_eq!(visited.row_groups_total, ids.row_groups_total);
+    assert_eq!(visited.row_groups_touched, ids.row_groups_touched);
+
+    let pred = AttrPredicate::Eq(serde_json::Value::String("BuildingPart".into()));
+    let attr = query::attr_filter_visit(&table, "object_type", &pred).unwrap();
+    assert_eq!(attr.totals.objects, 1116);
+    assert_eq!(attr.count, 1116);
+
+    let (hit, stats) = query::id_lookup_visit(&table, &ids.ids[0]).unwrap();
+    assert_eq!(hit.objects, 1);
+    assert!(hit.geometries >= 1);
+    assert_eq!(stats.rows_matched, 1);
+    assert!(stats.row_groups_scanned <= stats.row_groups_total);
+    let (miss, stats) = query::id_lookup_visit(&table, "no-such-id").unwrap();
+    assert_eq!(miss.objects, 0);
+    assert_eq!(stats.rows_matched, 0);
+}
+
+/// Row-group statistics pruning never drops a matching row: across a sweep
+/// of thresholds over delft written with small row groups, the pruned count
+/// equals an unpruned scan, and some thresholds do prune.
+#[test]
+fn attr_filter_statistics_pruning_matches_the_unpruned_scan() {
+    use cityparquet::query::{self, AttrPredicate};
+    let out = convert_delft_small_row_groups();
+    let table = out.path().join("building.parquet");
+    let years: Vec<f64> = batches(&table)
+        .iter()
+        .flat_map(|b| {
+            let a = b
+                .column_by_name("oorspronkelijkbouwjaar")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .unwrap()
+                .clone();
+            a.iter().flatten().map(|v| v as f64).collect::<Vec<_>>()
+        })
+        .collect();
+    let mut pruned_any = false;
+    for t in (1200..=2030).step_by(10).map(f64::from) {
+        for (pred, want) in [
+            (
+                AttrPredicate::Ge(t),
+                years.iter().filter(|&&y| y >= t).count(),
+            ),
+            (
+                AttrPredicate::Le(t),
+                years.iter().filter(|&&y| y <= t).count(),
+            ),
+            (
+                AttrPredicate::Eq(t.into()),
+                years.iter().filter(|&&y| y == t).count(),
+            ),
+            (
+                AttrPredicate::Range(t, t + 25.0),
+                years.iter().filter(|&&y| y >= t && y <= t + 25.0).count(),
+            ),
+        ] {
+            let got =
+                query::attr_filter_with_stats(&table, "oorspronkelijkbouwjaar", &pred).unwrap();
+            assert_eq!(got.count, want as u64, "{pred:?}");
+            assert_eq!(
+                query::attr_filter(&table, "oorspronkelijkbouwjaar", &pred).unwrap(),
+                want as u64
+            );
+            assert!(got.row_groups_pruned <= got.row_groups_total);
+            pruned_any |= got.row_groups_pruned > 0;
+        }
+    }
+    assert!(pruned_any, "no threshold pruned a row group");
+    // String equality: a value outside every row group's [min, max] prunes
+    // them all; a present value keeps its rows.
+    let none = AttrPredicate::Eq("~~~~ not an id".into());
+    let got = query::attr_filter_with_stats(&table, "id", &none).unwrap();
+    assert_eq!(
+        (got.count, got.row_groups_pruned),
+        (0, got.row_groups_total)
+    );
+    let pred = AttrPredicate::Eq(serde_json::Value::String("BuildingPart".into()));
+    let got = query::attr_filter_with_stats(&table, "object_type", &pred).unwrap();
+    assert_eq!(got.count, 1116);
+}

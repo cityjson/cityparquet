@@ -29,6 +29,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use crate::query_core;
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 
+pub use crate::query_core::{AttrFilterStats, AttrVisitResult, BBoxVisitResult, LookupStats};
 pub use crate::query_core::{AttrPredicate, AttrStats, BBoxQueryResult, FullReadResult};
 pub use crate::visit::VisitTotals;
 
@@ -70,6 +71,100 @@ pub fn full_read_visit(table_path: &Path) -> Result<VisitTotals> {
         crate::visit::visit_batch(&batch.map_err(CityParquetError::parquet_from)?, &mut totals)?;
     }
     Ok(totals)
+}
+
+/// Visits every row of a row-filtered reader natively.
+fn visit_all(
+    reader: impl Iterator<
+        Item = std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>,
+    >,
+) -> Result<VisitTotals> {
+    let mut totals = VisitTotals::default();
+    for batch in reader {
+        crate::visit::visit_batch(&batch.map_err(CityParquetError::parquet_from)?, &mut totals)?;
+    }
+    Ok(totals)
+}
+
+/// [`bbox_query`] that VISITS every matching object natively rather than
+/// returning ids. Row groups are pruned as in [`bbox_query`]; within the
+/// survivors a `RowFilter` reads the `bbox` struct alone, so rows outside
+/// the window never have their geometry or attribute columns decoded.
+pub fn bbox_query_visit(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxVisitResult> {
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
+    let (row_groups_total, row_groups_touched) =
+        query_core::bbox_row_group_counts(builder.metadata(), &query_bbox);
+    let row_filter = query_core::bbox_row_filter(builder.parquet_schema(), query_bbox);
+    let reader = builder
+        .with_bbox_row_groups(query_bbox)?
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    Ok(BBoxVisitResult {
+        totals: visit_all(reader)?,
+        row_groups_total,
+        row_groups_touched,
+    })
+}
+
+/// [`attr_filter_with_stats`] that VISITS every matching object natively;
+/// `count` equals `totals.objects`.
+pub fn attr_filter_visit(
+    table_path: &Path,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<AttrVisitResult> {
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
+    query_core::require_column(builder.schema(), column)?;
+    let row_groups_total = builder.metadata().num_row_groups();
+    let row_groups = query_core::attr_row_groups(builder.metadata(), column, pred);
+    let row_groups_pruned = row_groups_total - row_groups.len();
+    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred);
+    let reader = builder
+        .with_row_groups(row_groups)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let totals = visit_all(reader)?;
+    Ok(AttrVisitResult {
+        totals,
+        count: totals.objects,
+        row_groups_total,
+        row_groups_pruned,
+    })
+}
+
+/// [`id_lookup`] that VISITS the matching object natively instead of
+/// decoding it. Row groups whose `id` statistics exclude `id` are skipped
+/// (see [`attr_filter_with_stats`]); the library writes no bloom filters, so
+/// none is probed.
+pub fn id_lookup_visit(table_path: &Path, id: &str) -> Result<(VisitTotals, LookupStats)> {
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
+    let row_groups_total = builder.metadata().num_row_groups();
+    let pred = AttrPredicate::Eq(serde_json::Value::String(id.to_string()));
+    let row_groups = query_core::attr_row_groups(builder.metadata(), "id", &pred);
+    let row_groups_scanned = row_groups.len();
+    let row_filter = query_core::id_row_filter(builder.parquet_schema(), id);
+    let reader = builder
+        .with_row_groups(row_groups)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let totals = visit_all(reader)?;
+    Ok((
+        totals,
+        LookupStats {
+            row_groups_total,
+            row_groups_scanned,
+            rows_matched: totals.objects,
+        },
+    ))
 }
 
 /// The table's row count straight from Parquet file metadata — O(1), no
@@ -134,6 +229,18 @@ pub fn bbox_query(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxQueryRe
 /// batches, so counting rows across the batches yielded IS the matching
 /// count.
 pub fn attr_filter(table_path: &Path, column: &str, pred: &AttrPredicate) -> Result<u64> {
+    Ok(attr_filter_with_stats(table_path, column, pred)?.count)
+}
+
+/// [`attr_filter`] with its row-group statistics pruning counts: row groups
+/// whose `column` statistics cannot satisfy `pred` are skipped before the
+/// scan (rules on `query_core::attr_row_groups`; page-index pruning is out
+/// of scope).
+pub fn attr_filter_with_stats(
+    table_path: &Path,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<AttrFilterStats> {
     let file = File::open(table_path)?;
     let builder =
         ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
@@ -149,11 +256,15 @@ pub fn attr_filter(table_path: &Path, column: &str, pred: &AttrPredicate) -> Res
     // projection (inside the row filter), once as the builder's overall
     // output projection — `column` is the only thing either the predicate or
     // the final count needs.
+    let row_groups_total = builder.metadata().num_row_groups();
+    let row_groups = query_core::attr_row_groups(builder.metadata(), column, pred);
+    let row_groups_pruned = row_groups_total - row_groups.len();
     let output_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
     let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred);
 
     let reader = builder
         .with_projection(output_mask)
+        .with_row_groups(row_groups)
         .with_row_filter(row_filter)
         .build()
         .map_err(CityParquetError::parquet_from)?;
@@ -162,7 +273,11 @@ pub fn attr_filter(table_path: &Path, column: &str, pred: &AttrPredicate) -> Res
     for batch in reader {
         count += batch.map_err(CityParquetError::parquet_from)?.num_rows() as u64;
     }
-    Ok(count)
+    Ok(AttrFilterStats {
+        count,
+        row_groups_total,
+        row_groups_pruned,
+    })
 }
 
 /// Opens `table_path` and computes [`AttrStats`] for the numeric (`Int64` or
