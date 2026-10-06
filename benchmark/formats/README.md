@@ -204,9 +204,30 @@ row-group min/max statistics, so the axis measures what the filters add on top
 of the statistics, and both pruning counts are recorded.
 
 The recipe builds two packages from the slice, untimed — `cityparquet`, which carries bloom filters, and
-`cityparquet+nobloom`, which carries none — and times `id-lookup` (`id-50pct`,
-`id-miss`) and `feature-lookup` (`feature-50pct`, `feature-miss`) against
-both. Package bytes go to `sizes.csv`. Every lookup row carries `row_groups_total`, `bloom_pruned`, `stats_pruned`
+`cityparquet+nobloom`, which carries none — and times three lookups against
+both, each as a hit and a miss: `id-lookup` (`id-50pct`, `id-miss`),
+`feature-lookup` (`feature-50pct`, `feature-miss`) and `attr-lookup`, an
+equality lookup on a text attribute returning the count and identifiers of
+the matching CityObjects (`attr-<column>-50pct`, `attr-<column>-miss`, per
+column). The attribute hit looks up the middle row's value, or the nearest
+non-null one, tagged `value-substituted`; the miss is a value verified absent
+and chosen inside the row groups' stored value ranges. The run's
+`.params.json` records every probe's value, the attribute ones under
+`attr_probes`. Package bytes go to `sizes.csv`.
+
+Which attribute columns can be probed is the writer's choice: it gives a Bloom
+filter to the text attributes whose distinct count is at least 20 % of their
+non-null count. `just bloom-columns PACKAGE` lists the columns of a package
+that carry a filter, with their exact non-null and distinct counts and filter
+bytes. The columns the family probes are `bloom_attributes` under the slice's
+entry in `benchmark/manifest.toml`, overridden by `ATTRIBUTES=` on
+`bloom-bench` and `bloom-bench-http` (or `--bloom-attributes`); a run fails,
+naming the column, when a configured column carries no filter in the
+`cityparquet` package, so it cannot silently measure nothing. On a 3DBAG tile
+and on the delft fixture the qualifying attributes are `identificatie`
+(distinct ratio 1.0) and `documentnummer` (about 0.26), which is what the
+manifest configures; because the ratio depends on the data, the slice's own
+list is to be confirmed with `just bloom-columns` on the host that runs it. Every lookup row carries `row_groups_total`, `bloom_pruned`, `stats_pruned`
 (the row groups min/max statistics ruled out among those the filters kept)
 and `filter_bytes` (the bitset bytes of the filters examined), the last four
 of the 22 columns the coordinator writes (the committed evidence predates

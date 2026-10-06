@@ -496,9 +496,10 @@ bloom-columns PACKAGE:
     cargo run --release --quiet {{READBENCH_CARGO}} -- bloom-columns "{{PACKAGE}}"
 
 # The BLOOM axis: the default package, which carries bloom filters, against
-# the same package without them. Identifier lookups only — what the filters
-# exist for — by `id` and by `feature_id`, each at the middle position and a
-# verified miss. Every variant at the default codec and row-group size.
+# the same package without them. The lookups the filters exist for — by `id`,
+# by `feature_id` and by equality on each `bloom_attributes` text column
+# (ATTRIBUTES overrides the manifest's list) — each as a hit and a verified
+# miss. Every variant at the default codec and row-group size.
 # FOLDER holds the 1M 3DBAG slice alone (the suite stages it so): a filter
 # rules out whole row groups, and at 65,536 rows per group every corpus
 # dataset but Zurich is a single group, so a hit there can skip nothing.

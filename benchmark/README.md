@@ -44,6 +44,15 @@ selection, the suite includes all four. Use each command's `--help` for its
 selection and output options. Smoke runs validate the pipeline with small
 inputs and fewer repetitions; their results are not publication runs.
 
+The bloom family's attribute lookups probe the text columns listed as
+`bloom_attributes` under the slice's entry in `manifest.toml`; `just bench-run
+--bloom-attributes COLUMNS` and the `ATTRIBUTES=` parameter of the
+`bloom-bench` and `bloom-bench-http` recipes override the list, and a run
+fails, naming the column, when one carries no Bloom filter. `just
+bloom-columns PACKAGE` lists the columns of a package that do, with their
+non-null and distinct counts and filter bytes ("The bloom family" in
+`formats/README.md`).
+
 Four run profiles decide which datasets are measured, how many repetitions
 and where results land, so a test run can never overwrite the paper's
 evidence: `--profile full` (the default; the six corpus datasets and the
@@ -166,7 +175,7 @@ and `memory`).
 | ----------- | -------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `sizes`     | Corpus with the 3DBAG slice      | Complete file or package size; CityParquet bytes by column | None                                                                                    |
 | `formats`   | Same corpus                      | Read time and peak memory                                  | All format queries                                                                      |
-| `bloom`     | The 3DBAG slice alone            | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
+| `bloom`     | The 3DBAG slice alone            | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss`; `attr-lookup` at `attr-<column>-50pct`/`attr-<column>-miss` per `bloom_attributes` column |
 | `databases` | The 3DBAG slice                  | Storage with and without indexes; query time and peak working memory | Database query suite                                                                    |
 
 The corpus is Rotterdam, Vienna, New York, Zurich, Tokyo (Chiyoda) and
@@ -232,7 +241,7 @@ renderer and the scripts.
 | `formats/size_factors.csv`, `formats/size_extremes.csv` | Bytes and size factors against CityGML per dataset; the best and worst dataset by CityParquet's factor                                                                     |
 | `formats/query_factors.csv`                             | Time and peak memory per dataset, query and format, with both factors against CityGML                                                                                      |
 | `formats/compression.csv`                               | CityParquet bytes per dataset by column group, column and non-column part, copied from the `sizes` family's results ([breakdown](formats/README.md#the-compression-breakdown)) |
-| `bloom`                                                 | Package size and the two read heatmaps for the 3DBAG slice                                                                                                                 |
+| `bloom`                                                 | Package size, the two read heatmaps and the row groups each lookup pruned for the 3DBAG slice; a configured lookup the run lacks reads "not measured"                    |
 | `databases`                                             | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |
 
 Every results CSV carries the same seven-column timing block,

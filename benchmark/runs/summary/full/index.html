@@ -675,22 +675,29 @@ which a hit can skip nothing and which says nothing
 about how pruning scales. The 3DBAG slice&#x27;s 1,000,001 rows span 16 row groups and
 Zurich&#x27;s 198,699 span 4; every other corpus dataset holds fewer than
 65 536 CityObjects and is a single row group. The family therefore runs
-on the slice only. Even there a hit still reads one whole row group,
-because a filter cannot narrow the search inside a group, and a miss can
-still read a group through a false positive at the 1 % target rate. The
-benefit depends on the row-group size, which the benchmark does not vary
-(65 536 rows per group, the writer&#x27;s default). `cityparquet+nobloom`
-still carries row-group statistics, so the axis measures what the
-filters add on top of statistics.
+on the slice only. Its probes are three lookups, each as a hit and a
+miss: `id-lookup`, `feature-lookup` and `attr-lookup`, an equality
+lookup on each configured text attribute (`bloom_attributes`; the
+committed slice evidence predates `attr-lookup` and has no attribute
+rows, which the summary shows as not measured). A hit still costs the
+row groups that hold the value, because a filter cannot narrow the
+search inside a group: on a 3DBAG tile written with 9 row groups,
+`documentnummer`&#x27;s hit returned 23 rows and its filters pruned 6 of the
+9 groups, so the reader still scanned 3. A miss can still read a group
+through a false positive at the 1 % target rate. The benefit depends on
+the row-group size, which the benchmark does not vary (65 536 rows per
+group, the writer&#x27;s default). `cityparquet+nobloom` still carries
+row-group statistics, so the axis measures what the filters add on top
+of statistics, and every lookup row records both pruning counts.
 
 Row groups are pruned in two steps: the Bloom filter first, then the
 column chunk&#x27;s min/max statistics. `bloom_pruned` counts the row groups
 the filters rejected and `stats_pruned` those the statistics rejected
 among the rest, so the two never count one row group twice. Each miss
-probe is chosen INSIDE the row groups&#x27; stored identifier ranges (a
-stored identifier with `-readbench-absent` appended), so min/max
-statistics alone cannot reject it and a miss row measures the filters,
-not the statistics.</li><li>**In the `bloom` family, a filter&#x27;s positive is not a match.** At FPP 0.01
+probe is chosen INSIDE the row groups&#x27; stored value ranges (a stored
+identifier or attribute value with `-readbench-absent` appended), so
+min/max statistics alone cannot reject it and a miss row measures the
+filters, not the statistics.</li><li>**In the `bloom` family, a filter&#x27;s positive is not a match.** At FPP 0.01
 a miss can still keep a row group; `row_groups_total − bloom_pruned −
 stats_pruned` on the `*-miss` rows is how many the reader still
 scanned.</li><li>**The `bloom` family reads the footer twice per lookup** — once for the
