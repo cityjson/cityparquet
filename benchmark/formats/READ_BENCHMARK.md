@@ -41,10 +41,10 @@ left-to-right from "what the data ships as today" to "what we propose":
 | format tag            | what it is                                                                                                                                                                                                                                                                                         | index available                                                                                                                                      |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `citygml`             | CityGML 2.0 XML (`.gml`) — the format most national datasets are published in, read through **this repository's own reader** (`cityparquet::citygml`). On the current corpus, the 3DBAG slice included, this artefact is **synthesised** from the CityJSON source (Caveat 14)                              | **none** — no offsets, no object directory, no spatial or attribute tree; every scenario is a full XML parse and an in-memory filter (see Caveat 12) |
-| `cityjson`            | plain, whole-document CityJSON (`.city.json`): one JSON document, one `CityObjects` map, one shared document-level `vertices` array                                                                                                                                                                | **none** — the document must be parsed in one piece before any object is readable, so every scenario is a full parse (see Caveat 13)                 |
+| `cityjson`            | plain, whole-document CityJSON (`.city.json`): one JSON document, one `CityObjects` map, one shared document-level `vertices` array; written without optional whitespace (Caveat 40)                                                                                                                                                                | **none** — the document must be parsed in one piece before any object is readable, so every scenario is a full parse (see Caveat 13)                 |
 | `cityjsonseq`         | CityJSONSeq, one self-contained JSON feature per line, feature-local vertices. Read from the PREPARED `<base>.city.jsonl` — `readbench_prepare.sh` always materialises one (copied from a `.city.jsonl` input, `cjseq cat` from anything else), and the runner refuses a CityGML document outright | **none** — every scenario is a full parse                                                                                                            |
 | `flatcitybuf`         | FlatCityBuf, written `fcb ser -A` and NOTHING else — every other index knob at its `fcb ser` default (attribute B+-tree branching factor 256, R-tree node size 16). One configuration, measured once, not a swept axis; see Caveat 33                                                              | R-tree spatial index (**2D only**, see Caveat 4) + B+-tree index over **every** attribute (`-A`)                                                     |
-| `cityparquet` | our CityParquet package, one per dataset (`<x>.parquet/`), its rows written in Hilbert-curve order (`cityparquet convert --ordering hilbert`); displayed as **CityParquet** | Parquet row-group min/max statistics, tightened by the spatial clustering of Hilbert order, + column projection |
+| `cityparquet` | our CityParquet package, one per dataset (`<x>.parquet/`), its rows written in Hilbert-curve order (`cityparquet convert --ordering hilbert --no-lod0`; Caveat 37); displayed as **CityParquet** | Parquet row-group min/max statistics, tightened by the spatial clustering of Hilbert order, + column projection |
 
 The first three are **unindexed by construction**: a published `.gml`,
 `.city.json` or `.city.jsonl` carries no way to answer any question without
@@ -720,7 +720,7 @@ each cold number stands alone, one per format, one `full-read` only.
     ```
     CityGML --citygml-tools 2.5.0 to-cityjson--> CityJSON --cjseq 0.3.1 cat--> CityJSONSeq
                                                      |                    |--fcb ser -A---------> FlatCityBuf
-                                                     |                    |--cityparquet convert-> CityParquet
+                                                     |                    |--cityparquet convert --no-lod0-> CityParquet
                                                      |
                                                      |--citygml-tools from-cityjson -v 2.0--> CityGML
                                                         (only when the source is not itself CityGML)
@@ -732,7 +732,8 @@ each cold number stands alone, one per format, one `full-read` only.
     artefacts and it would be convenient, but **deriving a competitor's input
     from the format under test would favour that format**, so it is never
     done. **CityGML is the one artefact derived backwards**, and the next
-    caveat is entirely about what that costs.
+    caveat is entirely about what that costs. The `cityjson` artefact is the
+    CityJSON stage without its optional whitespace (Caveat 40).
 
     **One corpus source derives from CityParquet: Montréal.** By the
     author's decision, the Montréal CityJSON was exported from this project's
@@ -1203,14 +1204,22 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     figure compares a FlatCityBuf file without addresses against files with
     them.
 
-37. **`cityparquet convert` synthesises an LoD0 footprint for an object that
-    has none.** `readbench_prepare.sh` converts with the default, so the
-    package carries a footprint for each of Tokyo's 11,172
-    `BuildingInstallation`s and for the 12 Montréal buildings without LoD0,
-    which no other artefact has. It changes no `result_count` (verified on
-    Tokyo, with and without it), but it adds bytes: on Tokyo the package is
-    80,249,026 B with it and 80,184,081 B without (`--no-lod0`), 64,945 B or
-    0.08 %.
+37. **The package is written without LoD 0 synthesis (`--no-lod0`), so it
+    holds the same geometries as every other artefact.** By default
+    `cityparquet convert` synthesises an LoD 0 footprint for every object
+    without a source LoD 0, which no other format's artefact holds.
+    `readbench_prepare.sh` and the coordinator's variant packages turn it
+    off; the library default is unchanged. A source LoD 0 is kept: Tokyo's
+    38,743 `Building`s keep theirs, and its 11,172 `BuildingInstallation`s
+    (LoD 2 or 3 in the source) gain none. With synthesis on, the package
+    gained a footprint for 788 of those installations and for the 12
+    Montréal buildings without LoD 0, and on Rotterdam, Vienna, New York and
+    Zurich, which are LoD 2 only, for every object. Synthesis changes no
+    `result_count` (verified on Tokyo, with and without it), but it adds
+    bytes: on Tokyo the package is 80,249,026 B with it and 80,184,081 B
+    without, 64,945 B or 0.08 %; on Rotterdam it is 780,544 B with it and
+    714,076 B without, 66,468 B or 8.5 %, a footprint for each of its 853
+    buildings.
 
 38. **On Tokyo the two counting levels are far apart: 49,915 CityObjects in
     38,743 features.** Each feature is a `Building` with its
@@ -1238,6 +1247,22 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     cited without its spread. The samples of one cell run back to back, with
     no interleaving across formats, so slow drift in co-tenant load lands on
     whole cells rather than averaging out across formats.
+
+40. **The `cityjson` artefact is measured without optional whitespace, like
+    the `citygml` artefact (`--no-pretty-print`, Caveat 14).**
+    `benchmark/scripts/compact_json.py` writes it: it removes the whitespace
+    outside strings and copies every other byte, so string contents and
+    number spellings are the published ones and an already-compact document
+    is unchanged. A JSON parser and serialiser would not do: `jq -c` (1.7.1)
+    respells numbers (Tokyo's `1e-10` scale becomes `1E-10`, which shrinks
+    Tokyo by 986 B and grows Ingolstadt by 104 B), though every value
+    survives. All seven corpus sources are compact as published, so on the
+    current corpus the step is a no-op: each `cityjson` artefact is byte
+    identical to its source (ingolstadt 5,051,369 B, montreal 498,371,022 B,
+    nyc_da13_buildings 110,083,137 B, rotterdam_delfshaven 2,731,804 B, tokyo
+    315,968,009 B, vienna_102081 5,635,634 B, zurich_building_lod2
+    292,500,409 B). A size or parse-time gap against CityJSON therefore
+    cannot be dismissed as whitespace.
 
 ## Environment
 
