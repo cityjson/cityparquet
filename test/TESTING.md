@@ -1431,9 +1431,7 @@ just bench benchmark/runs/data/benchmark benchmark/runs/formats/results
 ```
 
 `readbench_prepare.sh` **skips any package directory that already exists**, so
-delete first whenever the format has moved. Table lookups go through
-`benchmark/scripts/package_tables.py`, which mirrors the Rust `PackageTables::open`
-(object tables = assets with the `cityparquet-objects` role).
+delete first whenever the format has moved.
 
 New since the last pass: an **HTTP transport**. `--transport local|http`
 (default `local`) plus `--base-url` makes every format read over HTTP instead of
