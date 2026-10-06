@@ -9,16 +9,18 @@ disclosed rather than hidden overheads) and adds what a cross-**system**
 comparison must also control: server tuning, resource limits, index parity,
 and the client-server boundary the two PostgreSQL systems sit behind.
 
-The container runtime is rootless **Podman**.
+The two PostgreSQL systems run in containers through one engine module,
+which picks Apple `container`, then `docker`, then `podman` (see "Container
+engine").
 
 ## Purpose and claim
 
-The harness measures **steady-state performance** — client-side
-wall-clock time (`time_*`: from the harness issuing the query until it has
-every row), peak resident memory of the executing process and, for
-PostgreSQL read scenarios, the server-reported execution time recorded
-separately (`server_time_*`, from `EXPLAIN (ANALYZE)`) — against a dataset already
-loaded into each system. Ten **read** scenarios run under two disclosed
+The harness measures **steady-state performance** against a dataset already
+loaded into each system: client-side wall-clock time (`time_*`: from the
+harness issuing the query until it has every row), peak working memory
+(`peak_working_mem_bytes`, Caveat 6) and, for PostgreSQL read scenarios, the
+server-reported execution time recorded separately (`server_time_*`, from
+`EXPLAIN (ANALYZE)`, Caveat 4). Ten **read** scenarios run under two disclosed
 thread configurations; four **write** scenarios then run once, under
 `threads=single`, reported as the write-tier rows below the reads in the
 `databases` figure, under their own caveat (Caveat 19). The scenario set is the
@@ -41,41 +43,32 @@ measurement gap.
 ## Committed evidence
 
 The committed database results are one run over the 1,000,001-object 3DBAG
-slice (`3dbag_n1000000`), measured on 23 September 2026 on this
-scenario set, in both thread configurations, with the write tier:
+slice (`3dbag_n1000000`), in both thread configurations, with the write
+tier. That run **predates the current harness**: it reports process RSS in a
+column named `peak_rss_bytes` rather than working memory, uses seven samples
+per row, and predates the bbox recheck, the attribute resolution and the
+3DCityDB object-geometry gathering described below. Its numbers belong to
+that evidence and are to be re-measured with the current harness before
+they are cited.
 
 | File                                                                | Contents                                                                                                                                                        |
 | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `benchmark/runs/databases/results/3dbag_n1000000.csv`               | 108 rows: the read scenarios for every system under `threads=single` and `threads=parallel`, then the write tier; `repeat` = 7                                  |
+| `benchmark/runs/databases/results/3dbag_n1000000.csv`               | 102 rows: the read scenarios for every system under `threads=single` and `threads=parallel`, then the write tier; `repeat` = 7                                  |
 | `benchmark/runs/databases/results/3dbag_n1000000.manifest.json`     | source SHA-256, host, versions, `pg_settings` per configuration, ingest times, sizes, the cjdb patch disclosure, SRIDs, memory scope, the count tolerance       |
-| `benchmark/runs/databases/results/3dbag_n1000000.params.json`       | the query parameters derived from the source and the package: windows with achieved fractions, the attribute predicates, the four id probes, the append feature |
+| `benchmark/runs/databases/results/3dbag_n1000000.params.json`       | the query parameters: windows with achieved fractions, the attribute predicates, the four id probes, the append feature                                         |
 | `benchmark/runs/databases/results/3dbag_n1000000.indexes.sql`       | the DDL this harness added, plus a live `pg_indexes` dump for both PostgreSQL schemas                                                                           |
 | `benchmark/runs/databases/results/3dbag_n1000000.append.city.jsonl` | the one-feature CityJSONSeq file the `append-object` scenario imports                                                                                           |
 
-Every row is `ok` or `ok-deviation` (the nine spatial rows per configuration
-differ across systems by at most 0.02 %, with the decomposition in `notes`)
-except the two CityParquet `append-object` rows, which error because the
-DuckDB CityJSON extension build that run loaded by name refuses
-`PRAGMA insert_cityjsonseq` into a `cityparquet_read` package (see the
-write tier below). The package the DuckDB systems read carries bloom filters
-(Caveat 21).
-
-`benchmark/runs/RESULTS.md` describes the run and its limitations; read it
-before citing a number. In brief:
-
-- **Scope.** One dataset, the three default systems (`duckdb-cityparquet`,
-  `cjdb`, `3dcitydb`), seven timed samples per row. The native-reader
-  systems were not part of the run, so `peak_heap_bytes` is empty on every
-  row.
-- **Provenance.** The manifest records no Git revision and no timestamp.
-- **Count mismatches — now explained.** All nine `bbox-query` rows carry
-  `status=mismatch`, and the run therefore exited non-zero. The mechanism
-  has since been established object by object (Caveats 11 and 12): cjdb's
-  importer drops 2/16/60 BuildingPart footprints, and PostGIS's float4 `&&`
-  admits 4 extra objects at the 25 % window on both PostgreSQL systems. A
-  re-run under the current harness will publish these as
-  `status=ok-deviation` with that decomposition in `notes`, because the
-  relative spread (0.03-0.04 %) is inside the stated tolerance.
+Of its 102 rows, 82 are `ok`, 18 are `ok-deviation` (the spatial rows, with
+the decomposition in `notes`) and two are `error`: the CityParquet
+`append-object` rows, because the DuckDB CityJSON extension build that run
+loaded by name refuses `PRAGMA insert_cityjsonseq` into a
+`cityparquet_read` package (see the write tier below). The current harness
+loads an explicitly chosen build instead ("Which build of the DuckDB
+CityJSON extension"). `benchmark/runs/RESULTS.md` describes the run and its
+limitations; read it before citing a number. The native-reader systems were
+not part of it, so `peak_heap_bytes` is empty on every row, and its manifest
+records no Git revision and no timestamp.
 
 ## Systems
 
