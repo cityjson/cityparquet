@@ -52,7 +52,10 @@ class RangeHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    agents: list[str] = []
+
     def do_GET(self):
+        RangeHandler.agents.append(self.headers.get("User-Agent", ""))
         header = self.headers.get("Range")
         path = Path(self.translate_path(self.path))
         if not header or not path.is_file():
@@ -176,6 +179,7 @@ class CorpusBucketTest(unittest.TestCase):
         RangeHandler.ranges.clear()
         cb.download_dataset(self.cfg, 7, manifest, "rdam", ["cityjsonseq"], fresh)
         self.assertEqual(RangeHandler.ranges, ["bytes=8-"])
+        self.assertTrue(RangeHandler.agents and all(agent == cb.USER_AGENT for agent in RangeHandler.agents))
         self.assertEqual((fresh / "rdam.city.jsonl").read_text(), '{"type":"CityJSON"}\n')
 
     def test_altered_local_file_is_detected_and_fetched_again(self):

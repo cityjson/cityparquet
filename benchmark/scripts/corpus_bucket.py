@@ -62,6 +62,8 @@ ARTEFACTS = {
     "cityparquet": ("cityparquet", ".parquet", ".parquet"),
     "cityparquet-nobloom": ("cityparquet-nobloom", ".parquet", ".cityparquet+nobloom.parquet"),
 }
+# Cloudflare answers 403 to urllib's default User-Agent, so every request names itself.
+USER_AGENT = "cityparquet-bench-prep/1"
 DIRECTORY_ARTEFACTS = frozenset({"cityparquet", "cityparquet-nobloom"})
 REBUILD_HINT = "rebuild it with `just bench-prep --no-cache` or `--rebuild-sources` (needs the upload credentials), or prepare locally with `--local`"
 
@@ -185,7 +187,7 @@ def fetch_manifest(cfg: dict[str, str], chain: int) -> tuple[dict, str, str]:
     """(manifest, its URL, its sha256); refuses when v<chain>/ has none."""
     url = public_url(cfg, chain, MANIFEST_NAME)
     try:
-        with urllib.request.urlopen(url, timeout=60) as response:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": USER_AGENT}), timeout=60) as response:
             body = response.read()
     except urllib.error.HTTPError as error:
         raise CorpusError(f"no hosted corpus for chain version {chain} ({url}: HTTP {error.code}); {REBUILD_HINT}") from error
@@ -212,7 +214,7 @@ def download(url: str, target: Path, size: int, digest: str) -> bool:
             partial.unlink()
             offset = 0
         if offset < size:
-            request = urllib.request.Request(url, headers={"Range": f"bytes={offset}-"} if offset else {})
+            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **({"Range": f"bytes={offset}-"} if offset else {})})
             with urllib.request.urlopen(request, timeout=120) as response:
                 if offset and response.status != 206:
                     offset = 0  # the server ignored the range: start again

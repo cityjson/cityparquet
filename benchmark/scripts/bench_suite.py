@@ -299,13 +299,15 @@ def published_source_url(name: str) -> str | None:
 
 def build_identity() -> dict:
     readbench = (REPO / "benchmark" / "readbench" / "Cargo.toml").read_text()
-    fcb_core = next((line.split("=", 1)[1].strip() for line in readbench.splitlines() if line.startswith("fcb_core")), "unknown")
+    fcb_core = next((line.split("=", 1)[1].strip().strip('"') for line in readbench.splitlines() if line.startswith("fcb_core")), "unknown")
+    binary = REPO / "lib" / "cityparquet-rs" / "target" / "release" / "cityparquet"
+    first = lambda *a: version(*a).splitlines()[0]
     return {
         "created_at": corpus_bucket.now(),
         "monorepo_commit": version("git", "rev-parse", "HEAD"),
         "monorepo_tree_dirty": bool(version("git", "status", "--porcelain", "--untracked-files=no")),
         "cityparquet_rs_commit": version("git", "log", "-1", "--format=%H", "--", "lib/cityparquet-rs"),
-        "tools": {"citygml_tools": version("citygml-tools", "--version"), "cjseq": version("cjseq", "--version"), "fcb": version("fcb", "--version"), "fcb_core": fcb_core, "cityparquet": version("lib/cityparquet-rs/target/release/cityparquet", "--version")},
+        "tools": {"citygml_tools": first("citygml-tools", "--version"), "cjseq": first("cjseq", "--version"), "fcb": first("fcb", "--version"), "fcb_core": fcb_core, "cityparquet_binary_sha256": sha256(binary) if binary.is_file() else "unavailable"},
     }
 
 
