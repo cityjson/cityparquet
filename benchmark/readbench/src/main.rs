@@ -151,6 +151,30 @@ struct RunArgs {
     #[arg(long, default_value_t = 7)]
     min_repeat: usize,
 
+    /// NUMA node for the measured children: a node id, `auto` (the node with
+    /// the most free memory at start) or `off`. Pinned with `numactl` (CPU
+    /// and memory), else `taskset` (CPU only); the coordinator takes the
+    /// node's first core. Off Linux it is recorded as not applied.
+    #[arg(long, env = "BENCH_NUMA_NODE", default_value = "auto")]
+    numa_node: cityparquet_readbench::isolation::NumaRequest,
+
+    /// Optional memory ceiling for the children, in bytes, applied through
+    /// `systemd-run --user --scope -p MemoryMax=`; recorded as not applied
+    /// (never fatal) when the user scope is unavailable.
+    #[arg(long)]
+    memory_max: Option<u64>,
+
+    /// Load gate before every sample: the pinned node's share of the load,
+    /// `load1 * node_cores / total_cores`, against a threshold; `auto` is
+    /// half the node's cores, `off` disables it.
+    #[arg(long, default_value = "auto")]
+    max_load: cityparquet_readbench::isolation::MaxLoadRequest,
+
+    /// The longest a sample waits (in 10 s steps) for the load to drop; a
+    /// cell that proceeds above the threshold carries `busy` in `notes`.
+    #[arg(long, default_value_t = 600)]
+    max_load_wait_s: u64,
+
     /// Comma-separated format names — one of `Format::ALL`'s canonical
     /// names each, validated by `Format::from_str` (an unknown name is
     /// rejected here, never silently skipped); omit for every format,
@@ -235,6 +259,12 @@ fn run(cli: Cli) -> Result<()> {
             cold: run_args.cold,
             transport,
             base_url: run_args.base_url,
+            isolation: coordinator::IsolationOptions {
+                numa_node: run_args.numa_node,
+                memory_max: run_args.memory_max,
+                max_load: run_args.max_load,
+                max_load_wait_s: run_args.max_load_wait_s,
+            },
         });
     }
 

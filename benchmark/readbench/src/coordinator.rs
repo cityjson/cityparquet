@@ -71,12 +71,14 @@ use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use cityparquet::package::RowOrder;
 use cityparquet::variant::Variant;
 use cityparquet_readbench::format::Format;
+use cityparquet_readbench::isolation::{self, LoadDecision, MaxLoadRequest, NumaRequest};
 use cityparquet_readbench::naming::strip_known_extension;
 use cityparquet_readbench::sampling::SamplingPlan;
 use cityparquet_readbench::stats::TimingStats;
@@ -129,6 +131,158 @@ pub struct RunOptions {
     pub transport: Transport,
     /// HTTP base URL; required when `transport` is [`Transport::Http`].
     pub base_url: Option<String>,
+    /// Pinning, memory ceiling and load gate for the measured children.
+    pub isolation: IsolationOptions,
+}
+
+/// The shared-host isolation the CLI requested (see [`isolation`]).
+#[derive(Debug, Clone)]
+pub struct IsolationOptions {
+    pub numa_node: NumaRequest,
+    /// `MemoryMax` of the children's `systemd-run --user --scope`, in bytes.
+    pub memory_max: Option<u64>,
+    pub max_load: MaxLoadRequest,
+    /// The longest a sample waits for the load to drop before it proceeds
+    /// and its cell is tagged `busy`.
+    pub max_load_wait_s: u64,
+}
+
+/// The argv prefix every child is spawned under (`systemd-run`, then
+/// `numactl`/`taskset`), resolved once per run by [`setup_isolation`].
+static CHILD_PREFIX: OnceLock<Vec<String>> = OnceLock::new();
+
+/// The load gate before every sample, and what it saw.
+struct Gate {
+    threshold: Option<f64>,
+    max_wait: Duration,
+    node_cores: usize,
+    total_cores: usize,
+    waits: Vec<serde_json::Value>,
+    cells: Vec<serde_json::Value>,
+}
+
+impl Gate {
+    /// Reads the load, waits in [`isolation::WAIT_STEP`]s while the node's
+    /// share is above the threshold, and returns the reading and whether the
+    /// sample proceeded despite the load (`busy`).
+    fn before_sample(&mut self, cell: &str) -> (Option<isolation::LoadSample>, bool) {
+        let mut waited = Duration::ZERO;
+        loop {
+            let reading = isolation::read_load();
+            let share =
+                reading.map(|r| isolation::node_share(r.load1, self.node_cores, self.total_cores));
+            let decision = isolation::load_decision(share, self.threshold, waited, self.max_wait);
+            if decision == LoadDecision::Wait {
+                eprintln!(
+                    "cityparquet-readbench: {cell}: node load share {:.2} above --max-load {:.2}; \
+                     waiting {}s ({}s so far)",
+                    share.unwrap_or_default(),
+                    self.threshold.unwrap_or_default(),
+                    isolation::WAIT_STEP.as_secs(),
+                    waited.as_secs()
+                );
+                std::thread::sleep(isolation::WAIT_STEP);
+                waited += isolation::WAIT_STEP;
+                continue;
+            }
+            let busy = decision == LoadDecision::Busy;
+            if waited > Duration::ZERO || busy {
+                self.waits.push(serde_json::json!({
+                    "cell": cell,
+                    "waited_s": waited.as_secs(),
+                    "share": share,
+                    "outcome": if busy { "busy" } else { "proceeded" },
+                }));
+            }
+            return (reading, busy);
+        }
+    }
+}
+
+/// Resolves the isolation once: pins the coordinator, fixes the children's
+/// argv prefix, and returns the `isolation` record and the load gate.
+fn setup_isolation(opts: &IsolationOptions) -> (serde_json::Value, Gate) {
+    let is_linux = cfg!(target_os = "linux");
+    let tools = isolation::probe_tools();
+    let nodes = if is_linux {
+        isolation::read_nodes()
+    } else {
+        Vec::new()
+    };
+    let (pin_prefix, pin) = isolation::build_pinning(is_linux, opts.numa_node, &nodes, tools);
+    let coordinator_pinning = match pin.coordinator_core {
+        Some(core) => isolation::pin_self(is_linux, tools, core),
+        None => pin.status.clone(),
+    };
+    let (memory_prefix, memory_status) = match opts.memory_max {
+        None => (Vec::new(), "not requested".to_string()),
+        Some(bytes) => match isolation::probe_memory_scope(is_linux, tools, bytes) {
+            Ok(()) => (isolation::memory_prefix(bytes), "applied".to_string()),
+            Err(reason) => (Vec::new(), format!("not applied: {reason}")),
+        },
+    };
+    let prefix = isolation::compose(&memory_prefix, &pin_prefix, &[]);
+    let _ = CHILD_PREFIX.set(prefix.clone());
+
+    let total_cores = match nodes.iter().map(|n| n.cpus.len()).sum::<usize>() {
+        0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+        n => n,
+    };
+    let node_cores = pin
+        .node
+        .and_then(|id| nodes.iter().find(|n| n.id == id))
+        .map_or(total_cores, |n| n.cpus.len());
+    let memory = isolation::read_memory();
+    let has_proc = isolation::read_load().is_some();
+    let threshold = if has_proc {
+        isolation::resolve_max_load(opts.max_load, node_cores)
+    } else {
+        None
+    };
+    let no_proc = "not applied: no /proc";
+    let record = serde_json::json!({
+        "command_prefix": prefix,
+        "pinning": pin,
+        "coordinator_pinning": coordinator_pinning,
+        "memory_max": {"requested_bytes": opts.memory_max, "status": memory_status},
+        "memory": {
+            "mem_total_bytes": memory.and_then(|m| m.0),
+            "mem_available_bytes_at_start": memory.and_then(|m| m.1),
+            "status": if memory.is_some() { "recorded" } else { no_proc },
+        },
+        "max_load": {
+            "requested": opts.max_load.to_string(),
+            "threshold": threshold,
+            "node_cores": node_cores,
+            "total_cores": total_cores,
+            "wait_s": opts.max_load_wait_s,
+            "status": if !has_proc { no_proc.to_string() }
+                else if threshold.is_none() { "not applied: --max-load off".to_string() }
+                else { "applied".to_string() },
+        },
+        "load": {
+            "status": if has_proc { "recorded per sample" } else { no_proc },
+            "waits": [],
+            "cells": [],
+        },
+    });
+    let gate = Gate {
+        threshold,
+        max_wait: Duration::from_secs(opts.max_load_wait_s),
+        node_cores,
+        total_cores,
+        waits: Vec::new(),
+        cells: Vec::new(),
+    };
+    (record, gate)
+}
+
+fn write_params(sidecar: &Path, json: &serde_json::Value) -> Result<()> {
+    fs::write(
+        sidecar,
+        serde_json::to_string_pretty(json).context("serialising the resolved query parameters")?,
+    )
+    .with_context(|| format!("writing {}", sidecar.display()))
 }
 
 /// `run`'s own transport selector — the CLI-facing mirror of
@@ -183,6 +337,11 @@ struct Sample {
     /// budgeted, and its effective `--min-repeat` floor.
     cell_budget_s: Option<f64>,
     min_repeat: usize,
+    /// `/proc/loadavg` and `MemAvailable` just before the sample; `null`
+    /// without `/proc` (the `isolation` record says so once).
+    load1: Option<f64>,
+    runnable: Option<u32>,
+    mem_available_bytes: Option<u64>,
 }
 
 fn samples_sidecar_path(out: &Path) -> PathBuf {
@@ -421,12 +580,14 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 "min_repeat": opts.sampling.min_repeat,
             }),
         );
-    fs::write(
-        &sidecar,
-        serde_json::to_string_pretty(&sidecar_json)
-            .context("serialising the resolved query parameters")?,
-    )
-    .with_context(|| format!("writing {}", sidecar.display()))?;
+    // `isolation` records what was requested and applied; it is written now
+    // and again after the matrix with the waits and per-cell load filled in.
+    let (isolation_record, mut gate) = setup_isolation(&opts.isolation);
+    sidecar_json
+        .as_object_mut()
+        .context("the resolved query parameters serialise to a JSON object")?
+        .insert("isolation".to_string(), isolation_record);
+    write_params(&sidecar, &sidecar_json)?;
     let mut csv = OpenOptions::new()
         .create(true)
         .write(true)
@@ -514,6 +675,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                     run_measurement(
                         &mut rows,
                         &mut samples,
+                        &mut gate,
                         &dataset,
                         format,
                         label,
@@ -547,6 +709,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         run_measurement(
                             &mut rows,
                             &mut samples,
+                            &mut gate,
                             &dataset,
                             format,
                             label,
@@ -575,6 +738,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         run_measurement(
                             &mut rows,
                             &mut samples,
+                            &mut gate,
                             &dataset,
                             format,
                             label,
@@ -602,6 +766,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         run_measurement(
                             &mut rows,
                             &mut samples,
+                            &mut gate,
                             &dataset,
                             format,
                             label,
@@ -648,6 +813,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         run_measurement(
                             &mut rows,
                             &mut samples,
+                            &mut gate,
                             &dataset,
                             format,
                             label,
@@ -678,6 +844,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         run_measurement(
                             &mut rows,
                             &mut samples,
+                            &mut gate,
                             &dataset,
                             format,
                             label,
@@ -762,6 +929,9 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     }
 
     write_samples(&opts.out, &samples)?;
+    sidecar_json["isolation"]["load"]["waits"] = serde_json::Value::Array(gate.waits);
+    sidecar_json["isolation"]["load"]["cells"] = serde_json::Value::Array(gate.cells);
+    write_params(&sidecar, &sidecar_json)?;
 
     if variants.is_some() && opts.transport == Transport::Local {
         let seq = variant_seq
@@ -1172,7 +1342,17 @@ fn spawn_child(
 ) -> Result<ChildLine> {
     let self_exe = std::env::current_exe().context("cannot determine own executable path")?;
 
-    let mut cmd = Command::new(&self_exe);
+    // Under the run's isolation prefix: `systemd-run` outermost, then
+    // `numactl`/`taskset`, then this executable.
+    let prefix = CHILD_PREFIX.get().map_or(&[][..], Vec::as_slice);
+    let mut cmd = match prefix.split_first() {
+        Some((tool, rest)) => {
+            let mut cmd = Command::new(tool);
+            cmd.args(rest).arg(&self_exe);
+            cmd
+        }
+        None => Command::new(&self_exe),
+    };
     cmd.arg("--child")
         .arg("--format")
         .arg(format.as_str())
@@ -1317,6 +1497,7 @@ fn total_count_for(format: Format, source: &Source) -> Result<u64> {
 fn run_measurement(
     rows: &mut Vec<Row>,
     samples: &mut Vec<Sample>,
+    gate: &mut Gate,
     dataset: &str,
     format: Format,
     label: &str,
@@ -1344,7 +1525,15 @@ fn run_measurement(
 
     // The cell's wall time, warm-up included, for the budget stop rule.
     let cell_start = Instant::now();
+    let cell = format!("{dataset}/{label}/{scenario}/{notes}");
+    let mut cell_load = isolation::CellLoad::default();
+    let mut busy = false;
     for i in 0..=sampling.repeat {
+        let (load, sample_busy) = gate.before_sample(&cell);
+        busy |= sample_busy;
+        if let Some(load) = &load {
+            cell_load.add(load);
+        }
         let line = spawn_child(format, scenario, source, params)?;
         samples.push(Sample {
             dataset: dataset.to_string(),
@@ -1359,6 +1548,9 @@ fn run_measurement(
             result_count: line.result_count,
             cell_budget_s: sampling.cell_budget_s(),
             min_repeat: sampling.min_repeat,
+            load1: load.map(|l| l.load1),
+            runnable: load.map(|l| l.runnable),
+            mem_available_bytes: load.and_then(|l| l.mem_available_bytes),
         });
         if i == 0 {
             // Warmup: discarded entirely (never contributes to the mean,
@@ -1397,6 +1589,19 @@ fn run_measurement(
     if sampling.stopped_early(taken) {
         tags.push("budget".to_string());
     }
+    if busy {
+        tags.push("busy".to_string());
+    }
+    gate.cells.push(serde_json::json!({
+        "dataset": dataset,
+        "format": label,
+        "scenario": scenario.to_string(),
+        "query_tag": notes,
+        "load1_max": cell_load.load1_max,
+        "runnable_max": cell_load.runnable_max,
+        "mem_available_min_bytes": cell_load.mem_available_min_bytes,
+        "busy": busy,
+    }));
 
     rows.push(Row {
         dataset: dataset.to_string(),

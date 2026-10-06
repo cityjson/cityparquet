@@ -1189,3 +1189,64 @@ fn without_a_cell_budget_every_cell_takes_repeat_samples() {
         "the default floor of 7, clamped to repeat"
     );
 }
+
+#[test]
+fn the_params_sidecar_records_the_isolation_requested_and_applied() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let out_csv = prepared.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "2",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet",
+        "--numa-node",
+        "auto",
+        "--memory-max",
+        "8000000000",
+        "--max-load",
+        "auto",
+        "--max-load-wait-s",
+        "30",
+    ]);
+
+    let params: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.params.json")).unwrap(),
+    )
+    .unwrap();
+    let iso = &params["isolation"];
+    assert_eq!(iso["pinning"]["requested"], "auto");
+    assert_eq!(iso["memory_max"]["requested_bytes"], 8_000_000_000u64);
+    assert_eq!(iso["max_load"]["requested"], "auto");
+    assert_eq!(iso["max_load"]["wait_s"], 30);
+    let cells = iso["load"]["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 1, "one summary per measured cell: {iso}");
+    assert_eq!(cells[0]["busy"], false);
+
+    let samples: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.samples.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(samples[0].as_object().unwrap().contains_key("load1"));
+
+    if cfg!(not(target_os = "linux")) {
+        assert_eq!(iso["pinning"]["status"], "not applied: not Linux");
+        assert_eq!(iso["memory_max"]["status"], "not applied: not Linux");
+        assert_eq!(iso["max_load"]["status"], "not applied: no /proc");
+        assert_eq!(iso["load"]["status"], "not applied: no /proc");
+        assert!(iso["command_prefix"].as_array().unwrap().is_empty());
+        assert!(samples[0]["load1"].is_null());
+    }
+}
