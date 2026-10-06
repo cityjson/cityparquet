@@ -38,17 +38,19 @@ PARAMS = make_params(numeric_column="h")
 # --- _dataset -----------------------------------------------------------
 
 
-def test_dataset_derives_name_and_package_dir_under_root_data():
+def test_dataset_reads_the_format_benchmarks_prepared_package_by_default():
+    # The package `readbench_prepare.sh` wrote with `--no-lod0`, under the
+    # suite's data root: the same bytes the format family measured.
     d = _dataset(Path("/somewhere/delft.city.jsonl"))
     assert d.name == "delft"
     assert d.source == Path("/somewhere/delft.city.jsonl")
-    assert d.cityparquet_dir == ROOT.parent / "formats" / "data" / "readbench" / "delft.parquet"
+    assert d.cityparquet_dir == ROOT.parent / "runs" / "data" / "readbench" / "delft.parquet"
 
 
 def test_dataset_strips_city_jsonl_suffix_not_just_the_extension():
     d = _dataset(Path("/x/Montreal.city.jsonl"))
     assert d.name == "Montreal"
-    assert d.cityparquet_dir == ROOT.parent / "formats" / "data" / "readbench" / "Montreal.parquet"
+    assert d.cityparquet_dir == ROOT.parent / "runs" / "data" / "readbench" / "Montreal.parquet"
 
 
 # --- _build_systems -------------------------------------------------------

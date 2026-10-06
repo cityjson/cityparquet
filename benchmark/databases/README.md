@@ -417,6 +417,21 @@ import` pays a container start and a JVM start, which for a one-feature
   footprint where DuckDB's spatial extension and the column are available,
   and the `bbox` rectangle's area otherwise; which one was used is stamped
   into `notes`.
+- **The LoD 0 footprint is the source's own.** The package is the format
+  benchmark's, written with `--no-lod0`, so `geometry_lod0_0` holds only
+  LoD 0 geometry the source carries. On the 3DBAG slice every `Building`
+  has a source LoD 0 footprint and no `BuildingPart` has one; the
+  statement's `object_type = 'Building'` touches exactly the Buildings,
+  and their areas are the ones a package with LoD 0 synthesis gives
+  (checked on 3DBAG tile 9-284-556: 1,110 Buildings, the same area sum
+  either way; synthesis adds LoD 0 only to the 1,111 BuildingParts). A
+  Building without LoD 0 in a dataset that has the column would get a NULL
+  area, where cjdb's Q6 sets the whole `attributes` document NULL for a
+  NULL `ground_geometry` (bullet below) and 3DCityDB uses the importer's
+  `envelope`. A dataset with no LoD 0 at all, such as
+  Rotterdam under `short` and `smoke`, has no `geometry_lod0_0` and takes
+  the `bbox`-rectangle branch. All three systems still touch every
+  Building row.
 - **cjdb's Q6 is strict.** `jsonb_set` returns NULL for a NULL argument, so
   a Building whose `ground_geometry` is NULL has its whole `attributes`
   document set to NULL. On 3DBAG the NULL footprints are all BuildingParts
@@ -601,7 +616,11 @@ could not be applied (`src/citybench/isolation.py`):
   `isolation.host_memory`.
 - **Memory cap.** `--memory-max` is recorded but not applied to this family:
   the client is not re-executed under `systemd-run`, and the containers keep
-  their podman `--memory` limit above.
+  their podman `--memory` limit above. `bench-run` passes the suite's ceiling
+  (64,000,000,000 decimal bytes under the `full`, `quick` and `short`
+  profiles, none under `smoke` or with `--memory-max off`), so the manifest's
+  `isolation.requested.memory_max` holds what the read families applied and
+  `isolation.memory_max` says that this family did not apply it.
 
 Samples of one cell run back to back, and cells of different systems are
 never interleaved. On a host that is not Linux (a development laptop) every
@@ -1180,12 +1199,14 @@ just bench-run  --families databases   # isolated databases, one run
 which runs `just build-citydb` and `just patch-cjdb`. `bench-run` calls
 `citybench run --data-root benchmark/runs --prepared-dir
 benchmark/runs/data/readbench --dataset <slice> --output-dir
-benchmark/runs/databases/results`. Under `--profile short` and
+benchmark/runs/databases/results --repeat 25`. `--profile quick` measures
+the same slice with `--repeat 7` into `benchmark/runs/databases/quick/`; the
+CSV's `repeat` column and the manifest carry the 7. Under `--profile short` and
 `--profile smoke` (or `--smoke`), the database family measures the
 manifest's `small_database_dataset`, Rotterdam, through its prepared
 `rotterdam_delfshaven.city.jsonl`, and writes to
 `benchmark/runs/databases/short/` or `benchmark/runs/databases/smoke/`.
-Only the `full` profile measures the slice. Figures come from
+Only the `full` and `quick` profiles measure the slice. Figures come from
 `just bench-summary`, which only reads results.
 
 ### A single run with the CLI
@@ -1263,8 +1284,8 @@ just down
 ```
 
 `just bench` passes no `--prepared-dir`, so packages are read from
-`benchmark/formats/data/readbench/`, a directory the suite does not
-populate; place or link the packages there first. `just smoke` has no `--dataset`
+`benchmark/runs/data/readbench/`, where `just bench-prep` leaves the format
+benchmark's packages (written with `--no-lod0`). `just smoke` has no `--dataset`
 argument and therefore needs `benchmark/databases/data/delft.city.jsonl`.
 `just capture-schema <dataset>` reads both schemas from these fixed ports and
 overwrites `docs/cjdb-schema.md` and `docs/3dcitydb-v5-schema.md` with fresh
