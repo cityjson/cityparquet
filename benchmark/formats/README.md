@@ -227,7 +227,9 @@ naming the column, when a configured column carries no filter in the
 and on the delft fixture the qualifying attributes are `identificatie`
 (distinct ratio 1.0) and `documentnummer` (about 0.26), which is what the
 manifest configures; because the ratio depends on the data, the slice's own
-list is to be confirmed with `just bloom-columns` on the host that runs it. Every lookup row carries `row_groups_total`, `bloom_pruned`, `stats_pruned`
+list is to be confirmed with `just bloom-columns` on the host that runs it.
+
+Every lookup row carries `row_groups_total`, `bloom_pruned`, `stats_pruned`
 (the row groups min/max statistics ruled out among those the filters kept)
 and `filter_bytes` (the bitset bytes of the filters examined), the last four
 of the 22 columns the coordinator writes (the committed evidence predates
