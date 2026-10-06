@@ -1081,3 +1081,111 @@ fn feature_lookup_measures_cityparquet_only_with_lookup_counters() {
         "the `feature_id` filter rules out delft's single row group"
     );
 }
+
+/// A cell time budget stops sampling at the `--min-repeat` floor once it is
+/// spent: a budget of one microsecond is spent by the warm-up alone, so every
+/// cell takes exactly the floor, records it in `repeat`, carries the `budget`
+/// tag, and both sidecars record the sampling parameters.
+#[test]
+fn a_spent_cell_budget_stops_sampling_at_the_floor() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let out_csv = prepared.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "4",
+        "--cell-budget-s",
+        "0.000001",
+        "--min-repeat",
+        "2",
+        "--scenarios",
+        "count,bbox",
+        "--formats",
+        "cityparquet",
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(rows.len(), 4);
+    for row in &rows {
+        assert_eq!(row.field("repeat"), "2");
+        let notes = row.field("notes");
+        assert!(
+            notes.split(';').next_back() == Some("budget"),
+            "expected the budget tag last, got {notes:?}"
+        );
+    }
+
+    let samples: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.samples.json")).unwrap(),
+    )
+    .unwrap();
+    let samples = samples.as_array().unwrap();
+    assert_eq!(samples.len(), 12, "4 cells x warmup + 2 samples");
+    assert!(
+        samples
+            .iter()
+            .all(|s| s["cell_budget_s"] == 0.000001 && s["min_repeat"] == 2)
+    );
+
+    let params: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.params.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(params["sampling"]["repeat"], 4);
+    assert_eq!(params["sampling"]["cell_budget_s"], 0.000001);
+    assert_eq!(params["sampling"]["min_repeat"], 2);
+}
+
+/// Without a budget a cell takes exactly `--repeat` samples and carries no
+/// `budget` tag; the sidecars record the budget as null.
+#[test]
+fn without_a_cell_budget_every_cell_takes_repeat_samples() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let out_csv = prepared.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "3",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet",
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].field("repeat"), "3");
+    assert!(!rows[0].field("notes").split(';').any(|tag| tag == "budget"));
+
+    let params: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.params.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(params["sampling"]["cell_budget_s"].is_null());
+    assert_eq!(
+        params["sampling"]["min_repeat"], 3,
+        "the default floor of 7, clamped to repeat"
+    );
+}

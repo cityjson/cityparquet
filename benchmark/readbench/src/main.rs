@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use cityparquet_readbench::format::Format;
+use cityparquet_readbench::sampling::SamplingPlan;
 use clap::{Args, Parser, Subcommand};
 
 use scenario::{AttrPred, QueryParams, Scenario};
@@ -134,9 +135,21 @@ struct RunArgs {
     out: PathBuf,
 
     /// Warm repeats per measurement; a further, discarded warmup precedes
-    /// every one. Must be >= 1.
+    /// every one. Must be >= 1. With `--cell-budget-s` it is the ceiling.
     #[arg(long, default_value_t = 7)]
     repeat: usize,
+
+    /// Optional time budget per measurement, in seconds (off by default):
+    /// sampling stops once the measurement's runs, warm-up included, have
+    /// taken this long and at least `--min-repeat` warm samples exist. A
+    /// measurement that stops early carries the `budget` tag in `notes`.
+    #[arg(long)]
+    cell_budget_s: Option<f64>,
+
+    /// The fewest warm samples a budgeted measurement takes; clamped to
+    /// `--repeat`. Must be >= 1.
+    #[arg(long, default_value_t = 7)]
+    min_repeat: usize,
 
     /// Comma-separated format names — one of `Format::ALL`'s canonical
     /// names each, validated by `Format::from_str` (an unknown name is
@@ -209,7 +222,11 @@ fn run(cli: Cli) -> Result<()> {
             input: run_args.input,
             prepared_dir: run_args.prepared_dir,
             out: run_args.out,
-            repeat: run_args.repeat,
+            sampling: SamplingPlan::new(
+                run_args.repeat,
+                run_args.cell_budget_s,
+                run_args.min_repeat,
+            )?,
             formats: run_args.formats,
             variants: run_args.variants,
             scenarios: run_args.scenarios,

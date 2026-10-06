@@ -12,5 +12,6 @@ pub mod format;
 pub mod lod;
 pub mod naming;
 pub mod params;
+pub mod sampling;
 pub mod slice;
 pub mod stats;

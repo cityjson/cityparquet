@@ -61,6 +61,19 @@ class Readbench(unittest.TestCase):
         with self.assertRaisesRegex(m.MigrationError, "row 2: time_q3_s"):
             m.verify_file(self.csv)
 
+    def test_verify_accepts_a_row_the_cell_budget_cut_short(self):
+        # A budgeted run with a ceiling of 25 stopped this cell after 4 warm
+        # samples: `repeat` records the samples taken and `notes` ends in
+        # `budget`, so the sidecar's warm-sample count still matches it.
+        (self.dir / "d.csv.samples.json").write_text(json.dumps([
+            {**sample(i, t, "bbox-5pct"), "cell_budget_s": 30.0, "min_repeat": 3}
+            for i, t in enumerate([9.0, 1.0, 2.0, 3.0, 4.0])
+        ]))
+        self.row = "d,cityparquet,bbox-query,0.5,3,{mean},{std},1,1,4,bbox-5pct;budget,,,,,"
+        self.write()
+        self.assertEqual(m.migrate_file(self.csv), 1)
+        self.assertEqual(m.verify_file(self.csv), 1)
+
 
 class Databases(unittest.TestCase):
     def test_both_blocks_recomputed_with_crlf_kept(self):

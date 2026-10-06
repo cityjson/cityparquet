@@ -5,7 +5,8 @@
 //! is the piece that actually drives a whole benchmark matrix: for every
 //! requested (format, scenario) pair it derives real [`QueryParams`] from the
 //! data itself (never a hardcoded id/attribute/bbox), spawns the `--child`
-//! process `repeat` times (plus one discarded warmup) via
+//! process up to `repeat` times, back to back (plus one discarded warmup;
+//! an optional cell time budget can stop it earlier, see [`SamplingPlan`]) via
 //! [`std::env::current_exe`], means the timings (+ the population standard
 //! deviation), takes the MAX
 //! peak heap/RSS across the repeats, computes `selectivity`, and holds one
@@ -70,12 +71,14 @@ use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use cityparquet::package::RowOrder;
 use cityparquet::variant::Variant;
 use cityparquet_readbench::format::Format;
 use cityparquet_readbench::naming::strip_known_extension;
+use cityparquet_readbench::sampling::SamplingPlan;
 use cityparquet_readbench::stats::TimingStats;
 
 use crate::formats::{IoStats, LOOKUP_STATS_MARKER, LookupCounters, Source};
@@ -97,9 +100,10 @@ pub struct RunOptions {
     pub prepared_dir: PathBuf,
     /// Result CSV path; this run OWNS the file (fresh truncate + write).
     pub out: PathBuf,
-    /// Warm repeats per measurement (a further, discarded warmup precedes
-    /// every one). Must be >= 1.
-    pub repeat: usize,
+    /// How many warm samples a measurement takes: up to `sampling.repeat`
+    /// (a further, discarded warmup precedes every one), stopping early on
+    /// the optional cell time budget; see [`SamplingPlan`].
+    pub sampling: SamplingPlan,
     /// Requested formats; `None`/empty selects [`Format::ALL`], the
     /// format comparison.
     pub formats: Option<Vec<Format>>,
@@ -175,6 +179,10 @@ struct Sample {
     peak_rss_bytes: u64,
     peak_heap_bytes: u64,
     result_count: u64,
+    /// The run's cell time budget in seconds, `null` when sampling was not
+    /// budgeted, and its effective `--min-repeat` floor.
+    cell_budget_s: Option<f64>,
+    min_repeat: usize,
 }
 
 fn samples_sidecar_path(out: &Path) -> PathBuf {
@@ -198,9 +206,6 @@ fn write_samples(out: &Path, samples: &[Sample]) -> Result<()> {
 
 /// Runs `opts`'s whole (format x scenario) matrix, writing `opts.out` fresh.
 pub fn run(opts: &RunOptions) -> Result<()> {
-    if opts.repeat == 0 {
-        bail!("--repeat must be >= 1");
-    }
     if opts.transport == Transport::Http && opts.base_url.is_none() {
         bail!("--transport http requires --base-url");
     }
@@ -400,10 +405,25 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // The resolved parameters, beside the CSV this run owns. It is the ONE
     // description of which windows, ids and attributes this run measured,
     // read back by the renderer and hashed into the run manifest.
+    // `sampling` records how many samples a cell takes (the ceiling, the
+    // cell time budget and its effective floor) beside the query parameters.
     let sidecar = params_sidecar_path(&opts.out);
+    let mut sidecar_json =
+        serde_json::to_value(&resolved).context("serialising the resolved query parameters")?;
+    sidecar_json
+        .as_object_mut()
+        .context("the resolved query parameters serialise to a JSON object")?
+        .insert(
+            "sampling".to_string(),
+            serde_json::json!({
+                "repeat": opts.sampling.repeat,
+                "cell_budget_s": opts.sampling.cell_budget_s(),
+                "min_repeat": opts.sampling.min_repeat,
+            }),
+        );
     fs::write(
         &sidecar,
-        serde_json::to_string_pretty(&resolved)
+        serde_json::to_string_pretty(&sidecar_json)
             .context("serialising the resolved query parameters")?,
     )
     .with_context(|| format!("writing {}", sidecar.display()))?;
@@ -500,7 +520,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         source,
                         *scenario,
                         &QueryParams::default(),
-                        opts.repeat,
+                        &opts.sampling,
                         None,
                         "",
                     )?;
@@ -533,7 +553,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             source,
                             *scenario,
                             &params,
-                            opts.repeat,
+                            &opts.sampling,
                             Some(total),
                             &notes,
                         )?;
@@ -561,7 +581,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             source,
                             *scenario,
                             &params,
-                            opts.repeat,
+                            &opts.sampling,
                             Some(resolved.cp_object_total),
                             &notes,
                         )?;
@@ -588,7 +608,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             source,
                             *scenario,
                             &params,
-                            opts.repeat,
+                            &opts.sampling,
                             Some(resolved.cp_object_total),
                             &notes,
                         )?;
@@ -634,7 +654,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             source,
                             *scenario,
                             &params,
-                            opts.repeat,
+                            &opts.sampling,
                             Some(resolved.cp_object_total),
                             &notes,
                         )?;
@@ -664,7 +684,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             source,
                             *scenario,
                             &params,
-                            opts.repeat,
+                            &opts.sampling,
                             Some(resolved.cp_object_total),
                             &notes,
                         )?;
@@ -1281,11 +1301,13 @@ fn total_count_for(format: Format, source: &Source) -> Result<u64> {
     Ok(line.result_count)
 }
 
-/// Runs one (format, scenario, params) measurement: `repeat + 1` fresh child
-/// processes (the first discarded as a warmup), then every [`TimingStats`]
-/// statistic of the warm samples' times, the MAX `peak_heap_bytes`/`ru_maxrss_bytes`
-/// across the `repeat` warm
-/// samples, and `result_count` from the first warm sample (every warm sample
+/// Runs one (format, scenario, params) measurement: up to `repeat + 1` fresh
+/// child processes, back to back (the first discarded as a warmup; fewer
+/// warm samples only when the cell time budget stops sampling, see
+/// [`SamplingPlan`], which also tags the row `budget`), then every
+/// [`TimingStats`] statistic of the warm samples' times, the MAX
+/// `peak_heap_bytes`/`ru_maxrss_bytes` across the warm samples, the number
+/// of warm samples taken in `repeat`, and `result_count` from the first warm sample (every warm sample
 /// measures the identical scenario against the identical unmodified input,
 /// so they always agree on `result_count`; only the timing/memory varies).
 /// Buffers one CSV row (see [`run`] on why rows are held to the end) and
@@ -1301,11 +1323,11 @@ fn run_measurement(
     source: &Source,
     scenario: Scenario,
     params: &QueryParams,
-    repeat: usize,
+    sampling: &SamplingPlan,
     total_for_selectivity: Option<u64>,
     notes: &str,
 ) -> Result<u64> {
-    let mut times = Vec::with_capacity(repeat);
+    let mut times = Vec::with_capacity(sampling.repeat);
     let mut peak_heap_max = 0u64;
     let mut peak_rss_max = 0u64;
     let mut result_count: Option<u64> = None;
@@ -1320,7 +1342,9 @@ fn run_measurement(
     // the artefact, identical in every repeat.
     let mut child_notes: Vec<String> = Vec::new();
 
-    for i in 0..=repeat {
+    // The cell's wall time, warm-up included, for the budget stop rule.
+    let cell_start = Instant::now();
+    for i in 0..=sampling.repeat {
         let line = spawn_child(format, scenario, source, params)?;
         samples.push(Sample {
             dataset: dataset.to_string(),
@@ -1333,6 +1357,8 @@ fn run_measurement(
             peak_rss_bytes: line.ru_maxrss_bytes,
             peak_heap_bytes: line.peak_heap_bytes,
             result_count: line.result_count,
+            cell_budget_s: sampling.cell_budget_s(),
+            min_repeat: sampling.min_repeat,
         });
         if i == 0 {
             // Warmup: discarded entirely (never contributes to the mean,
@@ -1348,7 +1374,11 @@ fn run_measurement(
             lookup = line.lookup;
             child_notes = line.notes;
         }
+        if sampling.stop_after(times.len(), cell_start.elapsed()) {
+            break;
+        }
     }
+    let taken = times.len();
 
     let result_count = result_count.expect("repeat >= 1 guarantees at least one warm sample");
     let timing = TimingStats::of(&times);
@@ -1364,6 +1394,9 @@ fn run_measurement(
         tags.push(notes.to_string());
     }
     tags.extend(child_notes);
+    if sampling.stopped_early(taken) {
+        tags.push("budget".to_string());
+    }
 
     rows.push(Row {
         dataset: dataset.to_string(),
@@ -1374,7 +1407,7 @@ fn run_measurement(
         timing,
         peak_heap_bytes: peak_heap_max,
         peak_rss_bytes: peak_rss_max,
-        repeat,
+        repeat: taken,
         notes: tags,
         io,
         lookup,
