@@ -993,8 +993,9 @@ each cold number stands alone, one per format, one `full-read` only.
     which of the two a given row measured.
 
 20. **A probe's POSITION is only nominal outside the CityJSONSeq stream.**
-    The deciles are cut from the seq order, and the FlatCityBuf and
-    CityParquet artefacts are cut from that same file — but none of the
+    The deciles are cut from the seq order, which is the source CityJSON
+    document's own object order, so the CityJSON artefact shares it. The
+    FlatCityBuf and CityParquet artefacts are cut from that same file — but none of the
     CityGML, FlatCityBuf and CityParquet artefacts preserves it. The CityGML
     is synthesised independently by `citygml-tools`; the `.fcb` is ordered by
     its own R-tree; the CityParquet package's rows are in Hilbert-curve
