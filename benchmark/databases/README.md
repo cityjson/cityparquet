@@ -545,8 +545,9 @@ records that on containers started from `compose.yml` podman-compose applied
 symmetrically. No equivalent measurement is recorded for the isolated
 containers.
 
-`nproc` inside the containers reports the host's full core count, because it
-reflects CPU affinity rather than the bandwidth quota. `citydb-tool import
+`nproc` inside the containers reports the host's full core count, or the
+pinned node's (see "Host isolation"), because it reflects CPU affinity rather
+than the bandwidth quota. `citydb-tool import
 cityjson` sizes its thread pool from `nproc`, and each thread opens a
 connection, so the adapter passes `--threads=4` to stay within
 `max_connections`.
@@ -573,7 +574,8 @@ could not be applied (`src/citybench/isolation.py`):
   (`--data-root`), each `podman run` receives `--cpuset-cpus=<node cores>
   --cpuset-mems=<node>`, but only if the user's cgroup v2 delegation
   (`/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service/cgroup.controllers`)
-  includes `cpuset`. Otherwise the flags are omitted and the record says
+  includes `cpuset`; if podman still rejects them, the containers are
+  started without them and the record says so. Otherwise the flags are omitted and the record says
   `not applied: cpuset controller not delegated to the user`; podman is
   still launched from the pinned client, so the container processes are
   expected to inherit its affinity, which no cgroup enforces. The

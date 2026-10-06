@@ -309,13 +309,16 @@ class LoadGate:
         self._current: dict | None = None
 
     def _sample(self) -> tuple[float, int, int | None] | None:
-        text = self._loadavg()
-        if text is None:
+        try:  # an unreadable sample records nothing and never waits
+            text = self._loadavg()
+            if text is None:
+                return None
+            load1, runnable, _ = parse_loadavg(text)
+            mem = self._meminfo()
+            available = parse_meminfo(mem).get("MemAvailable") if mem else None
+            return load1, runnable, available
+        except Exception:
             return None
-        load1, runnable, _ = parse_loadavg(text)
-        mem = self._meminfo()
-        available = parse_meminfo(mem).get("MemAvailable") if mem else None
-        return load1, runnable, available
 
     def _share(self, load1: float) -> float:
         return node_load_share(load1, self.node_cores, self.total_cores)

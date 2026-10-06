@@ -226,3 +226,14 @@ def test_gate_without_threshold_records_but_never_waits():
     gate = _gate(host, max_load=None)
     assert gate.before_cell("c") is False
     assert host.slept == []
+
+
+def test_gate_treats_an_unparsable_loadavg_as_no_sample():
+    gate = iso.LoadGate(
+        max_load=1.0, node_cores=64, total_cores=128, wait_s=30,
+        read_loadavg=lambda: "garbage", read_meminfo=lambda: MEMINFO,
+        sleep=lambda s: pytest.fail("must not sleep"), log=lambda m: None,
+    )
+    assert gate.before_cell("c") is False
+    gate.after_cell()
+    assert gate.cells == []

@@ -271,6 +271,11 @@ def cmd_bench(args) -> int:
             os.environ["CITYBENCH_CITYDB_CONTAINER"] = context["containers"]["3dcitydb"]
             os.environ["CITYBENCH_CJDB_PORT"] = str(context["ports"]["cjdb"])
             os.environ["CITYBENCH_CITYDB_PORT"] = str(context["ports"]["3dcitydb"])
+            if record["containers"]["args"] and not context.get("container_args_applied"):
+                record["containers"]["cpuset"] = (
+                    "not applied: podman rejected the cpuset flags; started without them"
+                )
+                record["containers"]["args"] = []
             return cmd_bench(args)
     source = Path(args.dataset)
     dataset = _dataset(source, Path(args.prepared_dir) if getattr(args, "prepared_dir", None) else None)

@@ -116,19 +116,31 @@ def isolated_databases(data_root: Path, srid: int, *, container_args: list[str] 
     previous_temp_environment = {name: os.environ.get(name) for name in temp_environment}
     os.environ.update(temp_environment)
     names = {"cjdb": f"citybench-cjdb-{run_id}", "3dcitydb": f"citybench-citydb-{run_id}"}
-    common = ["-d", "--rm", "--cpus", CPU_LIMIT, "--memory", MEMORY_LIMIT, "--shm-size", SHM_SIZE, "-p", "127.0.0.1::5432"] + list(container_args or [])
+    common = ["-d", "--rm", "--cpus", CPU_LIMIT, "--memory", MEMORY_LIMIT, "--shm-size", SHM_SIZE, "-p", "127.0.0.1::5432"]
+    extra = list(container_args or [])
     created: list[str] = []
     try:
         for key, image in (("cjdb", CJDB_IMAGE), ("3dcitydb", CITYDB_IMAGE)):
             data = run_root / key
             data.mkdir()
-            args = ["podman", "run", *common, "-v", f"{data}:/var/lib/postgresql/data", "-v", f"{temp_dirs[key]}:/tmp", "--name", names[key], "-e", "POSTGRES_USER=bench", "-e", "POSTGRES_PASSWORD=bench", "-e", "POSTGRES_DB=bench"]
+            args = ["podman", "run", *common, *extra, "-v", f"{data}:/var/lib/postgresql/data", "-v", f"{temp_dirs[key]}:/tmp", "--name", names[key], "-e", "POSTGRES_USER=bench", "-e", "POSTGRES_PASSWORD=bench", "-e", "POSTGRES_DB=bench"]
             if key == "3dcitydb": args += ["-e", f"SRID={srid}"]
             args += ["-v", f"{POSTGRES_CONF}:/etc/postgresql/postgresql.conf:ro", image, "postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
-            _run(*args); created.append(names[key])
+            try:
+                _run(*args)
+            except subprocess.CalledProcessError:
+                if not extra:
+                    raise
+                # An isolation failure never aborts the run: podman rejected
+                # the cpuset flags, so start every container without them.
+                subprocess.run(["podman", "rm", "-f", names[key]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                args = [arg for arg in args if arg not in extra]
+                extra = []
+                _run(*args)
+            created.append(names[key])
         ports = {key: _port(name) for key, name in names.items()}
         _wait(ports["cjdb"]); _wait(ports["3dcitydb"], citydb=True)
-        yield {"ports": ports, "containers": names, "run_root": run_root, "temp_root": temp_root, "temp_dirs": temp_dirs}
+        yield {"ports": ports, "containers": names, "run_root": run_root, "temp_root": temp_root, "temp_dirs": temp_dirs, "container_args_applied": bool(container_args) and extra == list(container_args)}
     finally:
         for name in reversed(created):
             subprocess.run(["podman", "stop", name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
