@@ -211,8 +211,7 @@ own. `append-object` is then recorded as `skipped:`.
 `attr-filter` filters a real **CityJSON attribute**, picked per dataset by
 the same rule the format family uses (`citybench.params.HAND_PICKED`, a
 port of `params.rs`): 3DBAG `b3_dak_type = 'slanted'`, Zurich
-`class = 'BB01'`, Vienna `roofType = 'FLACHDACH'`, Ingolstadt
-`klumMaterialClass = 'Wood'`, NYC `BIN = '1000000'`, Rotterdam
+`class = 'BB01'`, Vienna `roofType = 'FLACHDACH'`, NYC `BIN = '1000000'`, Rotterdam
 `TerrainHeight >= q0.75`. A dataset with no hand-picked entry falls back to
 the string attribute whose most frequent value's share lands closest to
 25 %, then to the alphabetically first numeric attribute at its 0.75

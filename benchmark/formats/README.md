@@ -29,7 +29,7 @@ reader of the figures.
 
 ## The corpus
 
-Seven city datasets and one 3DBAG slice. Each CityJSON source is pinned
+Six city datasets and one 3DBAG slice. Each CityJSON source is pinned
 by byte size and sha256 in `benchmark/scripts/fetch_benchmark.sh`, and
 `corpus_urls.txt` records its provenance; every one is also mirrored at
 `https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/<id>.city.json`,
@@ -40,7 +40,6 @@ citygml-tools, identical once the tool's random `ID_<uuid>`s are masked).
 | id                     | Dataset             | Source                                                                                                                    | `attr-filter`                                  | `attr-stats`                                   |
 | ---------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |
 | `rotterdam_delfshaven` | Rotterdam           | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json>                                      | `TerrainHeight >=` its 0.75 quantile (2.45)    | `TerrainHeight`                                |
-| `ingolstadt`           | Ingolstadt          | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Ingolstadt.city.json>                                           | `klumMaterialClass == "Wood"`                  | `materialUncertainty`                          |
 | `vienna_102081`        | Vienna              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json>                                        | `roofType == "FLACHDACH"`                      | `measuredHeight`                               |
 | `nyc_da13_buildings`   | New York            | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json>                             | `BIN == "1000000"`                             | none (no numeric attribute)                    |
 | `zurich_building_lod2` | Zurich              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json>                             | `class == "BB01"`                              | `GebaeudeStatus`                               |
@@ -51,9 +50,9 @@ citygml-tools, identical once the tool's random `ID_<uuid>`s are masked).
 Every CityJSON/CityJSONSeq source is normalised before any artefact is built,
 so that each CityObject holds at most one geometry per LoD (the first in source
 order) and all five formats hold the same geometries (`READ_BENCHMARK.md`,
-Caveat 41). Two datasets change: `vienna_102081` loses 1,102 of its 2,204
-geometries (each LoD 2 object carries a MultiSurface and a Solid) and
-`ingolstadt` 26 of its 405. The other five are used byte for byte, and the 3DBAG
+Caveat 41). One dataset changes: `vienna_102081` loses 1,102 of its 2,204
+geometries (each LoD 2 object carries a MultiSurface and a Solid). The other
+five are used byte for byte, and the 3DBAG
 slice, already cut without LoD 1.2, needs no change either. A CityGML source
 would not be normalised; none is in the corpus.
 

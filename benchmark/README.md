@@ -46,7 +46,7 @@ inputs and fewer repetitions; their results are not publication runs.
 
 Four run profiles decide which datasets are measured, how many repetitions
 and where results land, so a test run can never overwrite the paper's
-evidence: `--profile full` (the default; the seven corpus datasets and the
+evidence: `--profile full` (the default; the six corpus datasets and the
 3DBAG slice, 25 read repetitions, each family's own results directory, and
 the database family measures the slice), `--profile quick` (the same
 datasets as `full`, the database family's slice included, at 7 repetitions,
@@ -90,7 +90,7 @@ just bench-run --data-root benchmark/runs
 just bench-summary --data-root benchmark/runs
 ```
 
-Preparation fetches the seven-file corpus (about 1.2 GB), cuts the 3DBAG slice
+Preparation fetches the six-file corpus (about 1.2 GB), cuts the 3DBAG slice
 from the pinned 7.6 GB FlatCityBuf source (`just fetch-3dbag`), prepares all
 required format artefacts (`readbench_prepare.sh`), builds the
 release CityParquet CLI, and prepares the database environment. It needs Rust
@@ -169,8 +169,8 @@ and `memory`).
 | `bloom`     | The 3DBAG slice alone            | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
 | `databases` | The 3DBAG slice                  | Storage with and without indexes; query time and peak working memory | Database query suite                                                                    |
 
-The corpus is Rotterdam, Ingolstadt, Vienna, New York, Zurich, Tokyo (Chiyoda)
-and Montréal, with the 3DBAG slice
+The corpus is Rotterdam, Vienna, New York, Zurich, Tokyo (Chiyoda) and
+Montréal, with the 3DBAG slice
 ([`formats/README.md`](formats/README.md) lists each with its source and query
 predicates; Tokyo and Montréal are derived by this project, and Montréal is
 exported from CityParquet). Dataset IDs identify artefacts;
@@ -184,13 +184,16 @@ format comparison, the size table and the bloom axis, and it is the database
 family's dataset. It is cut without LoD 1.2: CityGML 2.0 has integer LoDs only and
 cannot carry LoD 1.2 beside LoD 1.3, so removing it at the source gives all
 five formats the same geometry, LoD 0, 1.3 and 2.2
-([`formats/READ_BENCHMARK.md`](formats/READ_BENCHMARK.md), Caveat 14).
+([`formats/READ_BENCHMARK.md`](formats/READ_BENCHMARK.md), Caveat 14). The
+corpus as a whole holds only content CityGML 2.0 can express (Caveat 43), so
+it has no LoD 3 dataset with openings; Tokyo keeps 21 LoD 3 solids and 103
+LoD 3 installation geometries.
 For the same reason, preparation first normalises every CityJSON and
 CityJSONSeq source so that each CityObject holds at most one geometry per LoD,
 keeping the first in source order. CityParquet stores one geometry column per
 LoD, so this is a property of the corpus, and all five artefacts derive from
-the normalised source. Of the seven corpus sources it changes Vienna and
-Ingolstadt only, and the other five pass through byte for byte; the 3DBAG
+the normalised source. Of the six corpus sources it changes Vienna only, and
+the other five pass through byte for byte; the 3DBAG
 slice is normalised the same way, and its preparation log reports how many
 geometries were dropped (Caveat 41).
 

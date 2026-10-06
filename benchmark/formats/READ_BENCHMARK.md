@@ -158,8 +158,8 @@ coordinator.rs`'s own module doc). This means an http-transport run still
 
 ## The corpus
 
-The format, size and bloom families use seven city datasets — Rotterdam,
-Ingolstadt, Vienna, New York, Zurich, Tokyo (Chiyoda) and Montréal — and one
+The format, size and bloom families use six city datasets — Rotterdam,
+Vienna, New York, Zurich, Tokyo (Chiyoda) and Montréal — and one
 3DBAG slice, `3dbag_n1000000`, which every family treats as one more dataset.
 Every CityJSON input is listed with its provenance, byte size and sha256 in
 `corpus_urls.txt`; Tokyo and Montréal are derived by this project, and that
@@ -174,8 +174,10 @@ family's dataset, and every family that reads it uses the same source bytes
 and derived query parameters.
 
 The corpus is building-focused and does not establish coverage of all CityGML
-modules. Ingolstadt provides LoD3 data; 3DBAG and Tokyo provide several LoDs
-per building; Tokyo and Montréal are textured. Synthesised CityGML must be
+modules. It holds only content that CityGML 2.0, the baseline, can express
+(Caveat 43), so it has no LoD 3 dataset with openings: the only LoD 3 content
+is Tokyo's 21 LoD 3 solids and 103 LoD 3 installation geometries. 3DBAG and
+Tokyo provide several LoDs per building; Tokyo and Montréal are textured. Synthesised CityGML must be
 checked for information loss, including collapse of fractional LoDs
 (Caveat 14); a successful conversion alone does not prove equivalent content.
 
@@ -246,7 +248,6 @@ of the prepared packages; the share is of all CityObject rows:
 | `3dbag_*` (the slice, and any smaller prefix `fcb-slice` cuts) | `b3_dak_type == "slanted"`    | ~35%  |
 | `zurich_building_lod2`          | `class == "BB01"`             | 19.4% |
 | `vienna_102081`                 | `roofType == "FLACHDACH"`     | 45.4% |
-| `ingolstadt`                    | `klumMaterialClass == "Wood"` | 6.9%  |
 | `nyc_da13_buildings`            | `BIN == "1000000"`            | 0.7%  |
 | `rotterdam_delfshaven`          | `TerrainHeight >= 2.45`       | 25.4% |
 
@@ -935,7 +936,6 @@ each cold number stands alone, one per format, one `full-read` only.
     | dataset                | column                | CityObjects carrying it |
     | ---------------------- | --------------------- | ----------------------- |
     | `rotterdam_delfshaven` | `TerrainHeight`       | 853 of 853              |
-    | `ingolstadt`           | `materialUncertainty` | 201 of 379              |
     | `vienna_102081`        | `measuredHeight`      | 1,102 of 1,322          |
     | `zurich_building_lod2` | `GebaeudeStatus`      | 52,834 of 198,699       |
     | `tokyo`                | `measuredHeight`      | 38,743 of 49,915        |
@@ -1000,15 +1000,14 @@ each cold number stands alone, one per format, one `full-read` only.
     its own R-tree; the CityParquet package's rows are in Hilbert-curve
     order, so a probe sits wherever its object's Hilbert key puts it. The
     CityGML and FlatCityBuf rows show **non-monotonic** times across
-    `id-10pct`/`id-50pct`/`id-90pct`, and on `ingolstadt` FlatCityBuf's
-    `id-90pct` is roughly 40x faster than its `id-10pct`. Presence is
+    `id-10pct`/`id-50pct`/`id-90pct`. Presence is
     verified for every probe; position is not. Read the three hit rows for
     any of those three formats as three samples of the distribution, never
     as a position curve.
 
 21. **A bbox row's target and its achieved selectivity can differ, and
     `approx` says where.** Row counts are discrete, so a target is not always
-    reachable: 1% of `ingolstadt`'s 379 rows is 3.79 rows. The search accepts
+    reachable: 1% of `vienna_102081`'s 1,322 rows is 13.22 rows. The search accepts
     a relative tolerance of ±10% and, when it cannot converge inside that,
     takes the nearest achievable window and appends `approx` to the row's
     `notes`. A missed target is disclosed in the artefact, never silent.
@@ -1031,7 +1030,7 @@ each cold number stands alone, one per format, one `full-read` only.
     achieved selectivity is the one that lands on the target. Feature-grained
     formats (`citygml`, `cityjsonseq`, `flatcitybuf`) count a different unit
     and therefore report a different achieved fraction for the **identical**
-    window — on `ingolstadt`, 0.055 against CityParquet's 0.011 for
+    window — on `vienna_102081`, 0.026 against CityParquet's 0.0098 for
     `bbox-1pct`. The window is the same for every format, which is what makes
     the timings comparable; the `selectivity` column is not comparable across
     grains. See Caveat 1 on counting grain.
@@ -1274,8 +1273,7 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     the `full-read` `result_count`, while every format returns CityObjects
     for each `bbox-*` window; Caveat 1 states which is which, and the
     coordinator checks each level against its own reference (Caveat 2).
-    Ingolstadt (379 in 55), Vienna (1,322 in 307) and Zurich (198,699 in
-    52,834) are nested too; Rotterdam, New York and Montréal hold one
+    Vienna (1,322 in 307) and Zurich (198,699 in 52,834) are nested too; Rotterdam, New York and Montréal hold one
     CityObject per feature.
 
 39. **Isolation on a shared host is best effort, and recorded rather than
@@ -1301,21 +1299,20 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     number spellings are the published ones and an already-compact document
     is unchanged. A JSON parser and serialiser would not do: `jq -c` (1.7.1)
     respells numbers (Tokyo's `1e-10` scale becomes `1E-10`, which shrinks
-    Tokyo by 986 B and grows Ingolstadt by 104 B), though every value
-    survives. All seven corpus sources are compact as published (ingolstadt
-    5,051,369 B, montreal 498,371,022 B, nyc_da13_buildings 110,083,137 B,
+    Tokyo by 986 B), though every value survives. All six corpus sources
+    are compact as published (montreal 498,371,022 B, nyc_da13_buildings 110,083,137 B,
     rotterdam_delfshaven 2,731,804 B, tokyo 315,968,009 B, vienna_102081
     5,635,634 B, zurich_building_lod2 292,500,409 B), and so is the
-    normalised source Caveat 41 derives from two of them, so on the current
+    normalised source Caveat 41 derives from one of them, so on the current
     corpus the step is a no-op: each `cityjson` artefact is byte identical
     to the source the chain builds from — the published one for five
-    datasets, and for vienna_102081 (4,731,370 B) and ingolstadt
-    (3,922,339 B) the normalised one. The normalised source is written by
-    `serde_json`, so its number spellings are the shortest round-trip
-    spellings rather than the published ones: every value survives, but
-    ingolstadt's exponent floats are respelled (`-1.1e-06` becomes
-    `-1.1e-6`), while vienna_102081's spellings are unchanged. The published
-    spellings hold for the five pass-through datasets only. A size or
+    datasets, and for vienna_102081 (4,731,370 B) the normalised one. The
+    normalised source is written by `serde_json`, which writes the shortest
+    round-trip spelling of each number: every value survives, and
+    vienna_102081's spellings are the published ones, but a source that
+    spells a float otherwise (`-1.1e-06` for `-1.1e-6`) would be respelled,
+    so the published spellings are guaranteed for the five pass-through
+    datasets only. A size or
     parse-time gap against CityJSON therefore cannot be dismissed as
     whitespace.
 
@@ -1341,8 +1338,7 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     that the writer skipped nothing, and fails the dataset otherwise. On the
     corpus, vienna_102081 loses 1,102 of its 2,204 geometries (each LoD 2
     object carries a MultiSurface, kept, and a Solid, dropped; no vertex is
-    orphaned) and ingolstadt 26 of 405 geometries and 25,262 of 87,972
-    vertices; the other five sources and the 3DBAG slice are unchanged. A
+    orphaned); the other five sources and the 3DBAG slice are unchanged. A
     CityGML source is not normalised; none is in the corpus.
 
 42. **Cross-format consistency covers what is returned, not only how
@@ -1370,6 +1366,20 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     1e-6 m), the CityGML extent lies up to half a millimetre from the other
     four formats', beyond the one-step tolerance. Its spatial windows'
     returned extent, and every count, digest and total, are still compared.
+
+43. **The corpus holds only content that CityGML 2.0, the baseline, can
+    express.** Every artefact derives from one source, and the comparison
+    is fair only if all five formats hold the same content, so a dataset
+    whose CityGML 2.0 synthesis loses content is excluded. Ingolstadt is
+    excluded on this rule. Its 32,670 Window and Door semantic surfaces
+    name no parent surface, and CityGML 2.0 can hold an opening only inside
+    a wall or roof surface; `citygml-tools from-cityjson -v 2.0` writes the
+    references but omits the polygons, and prints no warning, so its
+    synthesised CityGML holds about a quarter of the dataset's faces. No
+    corpus dataset carries Window or Door semantics, and none has a
+    dangling reference; as a consequence the corpus has no LoD 3 dataset
+    with openings, and its only LoD 3 content is Tokyo's 21 LoD 3 solids
+    and 103 LoD 3 installation geometries.
 
 ## Environment
 

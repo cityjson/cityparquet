@@ -1374,7 +1374,7 @@ directory listing:
 
 ### 5.1 Corpus eligibility — read this before running anything
 
-The corpus is the seven city datasets — `rotterdam_delfshaven`, `ingolstadt`,
+The corpus is the six city datasets — `rotterdam_delfshaven`,
 `vienna_102081`, `nyc_da13_buildings`, `zurich_building_lod2`, `tokyo`,
 `montreal` — and the 3DBAG slice `3dbag_n1000000`. `benchmark/manifest.toml`
 lists them, and `benchmark/formats/README.md` (§ The corpus) gives each one's
