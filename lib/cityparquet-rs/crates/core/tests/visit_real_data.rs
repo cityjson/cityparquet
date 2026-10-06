@@ -162,3 +162,62 @@ fn visitor_rejects_truncated_and_corrupted_wkb() {
     trailing.push(0);
     assert!(visit_wkb(&trailing, &mut Trace::default()).is_err());
 }
+
+/// Independent tally of the geometry and semantics the visit must read,
+/// taken from plain Arrow access and the visitor property-tested above.
+fn independent_tally(table: &Path) -> (u64, u64, u64, u64, [f64; 6]) {
+    use arrow_array::{ListArray, StructArray};
+    let (mut objects, mut geoms, mut coords, mut sem_faces) = (0u64, 0u64, 0u64, 0u64);
+    let mut ext = [f64::INFINITY; 6];
+    ext[3..].fill(f64::NEG_INFINITY);
+    for batch in batches(table) {
+        objects += batch.num_rows() as u64;
+        for (field, col) in batch.schema().fields().iter().zip(batch.columns()) {
+            if field.name().starts_with("geometry_lod") {
+                let wkb = col.as_any().downcast_ref::<BinaryArray>().unwrap();
+                for row in (0..wkb.len()).filter(|&r| !wkb.is_null(r)) {
+                    geoms += 1;
+                    let mut t = Trace::default();
+                    visit_wkb(wkb.value(row), &mut t).unwrap();
+                    coords += t.coords.len() as u64;
+                    for c in &t.coords {
+                        for k in 0..3 {
+                            let v = f64::from_bits(c[k]);
+                            ext[k] = ext[k].min(v);
+                            ext[k + 3] = ext[k + 3].max(v);
+                        }
+                    }
+                }
+            } else if field.name().starts_with("geometry_properties_lod") {
+                let props = col.as_any().downcast_ref::<StructArray>().unwrap();
+                let fs = props.column_by_name("face_semantics").unwrap();
+                let list = fs.as_any().downcast_ref::<ListArray>().unwrap();
+                for row in (0..list.len()).filter(|&r| !list.is_null(r)) {
+                    let items = list.value(row);
+                    sem_faces += (items.len() - items.null_count()) as u64;
+                }
+            }
+        }
+    }
+    (objects, geoms, coords, sem_faces, ext)
+}
+
+/// `full_read_visit` reads every object natively: its comparable totals
+/// equal an independent tally over the same delft table, it parses the
+/// semantic-surface objects, and it reads the attribute values.
+#[test]
+fn full_read_visit_reads_every_object_of_delft() {
+    let out = convert_fixture("delft.city.jsonl");
+    let table = out.path().join("building.parquet");
+    let totals = cityparquet::query::full_read_visit(&table).unwrap();
+    let (objects, geoms, coords, sem_faces, ext) = independent_tally(&table);
+    assert_eq!(totals.objects, 2231);
+    assert_eq!(totals.objects, objects);
+    assert_eq!(totals.geometries, geoms);
+    assert_eq!(totals.coordinates, coords);
+    assert_eq!(totals.semantic_faces, sem_faces);
+    assert_eq!(totals.extent, ext);
+    assert!(totals.semantic_surface_objects > 0);
+    assert!(totals.attribute_values > 0);
+    assert!(totals.polygons > 0 && totals.rings >= totals.polygons);
+}

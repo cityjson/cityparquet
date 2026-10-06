@@ -30,6 +30,7 @@ use crate::query_core;
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 
 pub use crate::query_core::{AttrPredicate, AttrStats, BBoxQueryResult, FullReadResult};
+pub use crate::visit::VisitTotals;
 
 /// Opens `table_path`, scans every row group single-threaded (the
 /// `parquet` crate's synchronous [`ParquetRecordBatchReaderBuilder`] path
@@ -51,6 +52,24 @@ pub fn full_read(table_path: &Path, meta: &CityMetadata) -> Result<FullReadResul
         query_core::accumulate_full_read(&mut acc, &batch?, meta)?;
     }
     Ok(acc)
+}
+
+/// Scans every row group of `table_path` single-threaded and visits every
+/// object natively ([`crate::visit::visit_batch`]): every WKB vertex, every
+/// semantic reference and semantic-surface object, and every attribute value,
+/// read in place from Arrow and WKB rather than decoded into CityJSON-shaped
+/// objects. Appearance is not read.
+pub fn full_read_visit(table_path: &Path) -> Result<VisitTotals> {
+    let file = File::open(table_path)?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(CityParquetError::parquet_from)?
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let mut totals = VisitTotals::default();
+    for batch in reader {
+        crate::visit::visit_batch(&batch.map_err(CityParquetError::parquet_from)?, &mut totals)?;
+    }
+    Ok(totals)
 }
 
 /// The table's row count straight from Parquet file metadata — O(1), no
