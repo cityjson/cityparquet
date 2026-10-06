@@ -29,7 +29,7 @@ class FakeSystem:
             result_count=self._count,
             times_s=[0.1] * repeat,
             server_times_s=[],
-            peak_rss_bytes=None,
+            peak_working_mem_bytes=None,
         )
 
 
@@ -272,18 +272,18 @@ def test_selectivity_divides_result_count_by_total():
 
 
 def test_add_note_returns_measurement_unchanged_when_note_is_empty():
-    m = Measurement(result_count=1, times_s=[0.1], server_times_s=[], peak_rss_bytes=None)
+    m = Measurement(result_count=1, times_s=[0.1], server_times_s=[], peak_working_mem_bytes=None)
     assert _add_note(m, "") is m
 
 
 def test_add_note_sets_notes_when_previously_blank():
-    m = Measurement(result_count=1, times_s=[0.1], server_times_s=[], peak_rss_bytes=None)
+    m = Measurement(result_count=1, times_s=[0.1], server_times_s=[], peak_working_mem_bytes=None)
     assert _add_note(m, "bbox-1pct").notes == "bbox-1pct"
 
 
 def test_add_note_appends_with_a_single_separating_space():
     m = Measurement(
-        result_count=1, times_s=[0.1], server_times_s=[], peak_rss_bytes=None,
+        result_count=1, times_s=[0.1], server_times_s=[], peak_working_mem_bytes=None,
         notes="skipped: no hierarchy",
     )
     assert _add_note(m, "bbox-1pct").notes == "skipped: no hierarchy bbox-1pct"
@@ -294,7 +294,7 @@ def test_failed_produces_a_measurement_with_no_result_and_the_given_note():
     assert m.result_count is None
     assert m.times_s == []
     assert m.server_times_s == []
-    assert m.peak_rss_bytes is None
+    assert m.peak_working_mem_bytes is None
     assert m.notes == "error: RuntimeError"
 
 

@@ -183,3 +183,24 @@ def test_index_build_and_size_definitions_are_recorded():
     assert m["sizes"]["cjdb"]["index_bytes"] == 20
     assert "bloom" in m["size_definitions"]["no_index_bytes"]["cityparquet"].lower()
     assert "index" in m["size_definitions"]["policy"].lower()
+
+
+def test_memory_measurement_names_working_memory_and_provisioned_limits():
+    m = collect(
+        dataset_name="rotterdam", ingest={}, sizes={}, versions={},
+        pg_settings={"shared_buffers": "8GB", "work_mem": "4MB"},
+        memory_read={"postgresql": "container exec"},
+    )
+    mm = m["memory_measurement"]
+    assert mm["metric"] == "peak_working_mem_bytes"
+    assert "RssAnon" in mm["postgresql"] and "worker" in mm["postgresql"]
+    assert mm["read_path"] == {"postgresql": "container exec"}
+    prov = mm["provisioned"]
+    assert prov["shared_buffers"] == "8GB" and prov["work_mem"] == "4MB"
+    assert prov["container_memory_limit"] == "32g"
+    assert prov["duckdb_memory_limit"] == "32GB"
+
+
+def test_memory_read_path_defaults_to_not_applied_never_blank():
+    m = collect(dataset_name="d", ingest={}, sizes={}, versions={}, pg_settings={})
+    assert m["memory_measurement"]["read_path"]["postgresql"].startswith("not applied")

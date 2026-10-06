@@ -33,7 +33,7 @@ COLUMNS: tuple[str, ...] = (
     "result_count",
     *TIME_BLOCK,
     "peak_heap_bytes",
-    "peak_rss_bytes",
+    "peak_working_mem_bytes",
     "repeat",
     "notes",
     "bytes_read",
@@ -100,7 +100,7 @@ def row_from_measurement(
         "result_count": _int(measurement.result_count),
         **_block("time", times),
         "peak_heap_bytes": _int(measurement.peak_heap_bytes),
-        "peak_rss_bytes": _int(measurement.peak_rss_bytes),
+        "peak_working_mem_bytes": _int(measurement.peak_working_mem_bytes),
         "repeat": str(len(times)),
         "notes": measurement.notes,
         # Always empty: this harness measures local transport only.

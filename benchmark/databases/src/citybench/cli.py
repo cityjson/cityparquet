@@ -389,6 +389,7 @@ def cmd_bench(args) -> int:
                 sizes=sizes,
                 index_build=index_build,
                 size_detail=size_detail,
+                memory_read=dict(pg.MEMORY_READ),
                 versions=_versions(systems),
                 pg_settings=pg_settings,
                 patches=_patches(systems),

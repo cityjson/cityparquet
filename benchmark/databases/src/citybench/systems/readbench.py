@@ -33,7 +33,7 @@ def parse_child_stdout(stdout: str) -> tuple[int, float, int, int]:
     error — so this parser stays correct even if a future task starts
     driving the http transport too.
 
-    Returns ``(result_count, time_s, peak_heap_bytes, peak_rss_bytes)``.
+    Returns ``(result_count, time_s, peak_heap_bytes, peak_working_mem_bytes)``.
 
     Note the child reports its OWN elapsed time. Using it rather than
     timing the subprocess keeps process startup and Python's own overhead
@@ -170,7 +170,7 @@ class ReadbenchSystem:
             times_s=[s[1] for s in samples],
             server_times_s=[],
             peak_heap_bytes=max(s[2] for s in samples),
-            peak_rss_bytes=max(s[3] for s in samples),
+            peak_working_mem_bytes=max(s[2] for s in samples),  # allocator peak of the fresh child
         )
 
     def size(self) -> SizeReport:

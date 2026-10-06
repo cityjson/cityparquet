@@ -203,9 +203,9 @@ class CityDbSystem:
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[s[2] for s in samples],
-            peak_rss_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
+            peak_working_mem_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
             peak_heap_bytes=None,
-            notes="memory-scope: postgresql-backend-rss fetch: binary",
+            notes="memory-scope: postgresql-backend-rssanon fetch: binary",
         )
 
     def _run_write(self, scenario: str, repeat: int) -> Measurement:
@@ -232,9 +232,9 @@ class CityDbSystem:
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[],
-            peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
+            peak_working_mem_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
             peak_heap_bytes=None,
-            notes="memory-scope: postgresql-backend-rss write-tier: no-explain",
+            notes="memory-scope: postgresql-backend-rssanon write-tier: no-explain",
         )
 
     def _watermarks(self) -> dict[str, int]:
@@ -294,7 +294,7 @@ class CityDbSystem:
             result_count=append.object_count,
             times_s=times,
             server_times_s=[],
-            peak_rss_bytes=None,
+            peak_working_mem_bytes=None,
             peak_heap_bytes=None,
             notes=("write-tier: external-importer importer: citydb-tool "
                    f"objects: {append.object_count} "

@@ -35,6 +35,8 @@ import time
 import os
 
 import psycopg
+
+from citybench import memory
 import psycopg.types.string
 
 from citybench.config import SizeReport
@@ -128,14 +130,7 @@ def time_query(conn: psycopg.Connection, sql: str, args: tuple = (),
             rows = cur.fetchall() if cur.description is not None else []
             return rows, time.perf_counter() - start
 
-    host_pid = host_pid_of(conn, pid)
-    if host_pid is None:
-        # A container PID is not safe to interpret as a host PID. Preserve an
-        # unavailable measurement as blank rather than sampling another process.
-        rows, wall = execute()
-        peak_rss = None
-    else:
-        (rows, wall), peak_rss = peak_resident_bytes(execute, pid=host_pid)
+    (rows, wall), peak_rss = working_memory(conn, pid, execute)
 
     count = extract_count(rows, count_mode)
 
@@ -151,6 +146,63 @@ def backend_pid(conn: psycopg.Connection) -> int:
     with conn.cursor() as cur:
         cur.execute("SELECT pg_backend_pid()")
         return int(cur.fetchone()[0])
+
+
+def container_of(conn: psycopg.Connection) -> str | None:
+    """The container serving ``conn``, identified by its port."""
+    port = getattr(getattr(conn, "info", None), "port", None)
+    return {
+        int(os.environ.get("CITYBENCH_CJDB_PORT", "55432")):
+            os.environ.get("CITYBENCH_CJDB_CONTAINER", "citybench-cjdb"),
+        int(os.environ.get("CITYBENCH_CITYDB_PORT", "55433")):
+            os.environ.get("CITYBENCH_CITYDB_CONTAINER", "citybench-citydb"),
+    }.get(port)
+
+
+# How the last PostgreSQL measurement read memory ("host /proc", "<engine>
+# exec" or "not applied: <reason>"), copied into the manifest by the CLI.
+MEMORY_READ: dict[str, str] = {}
+
+
+def working_memory(conn: psycopg.Connection, pid: int, call):
+    """Run ``call`` while sampling the peak summed ``RssAnon`` of the backend
+    ``pid`` and its parallel workers (see `citybench.memory`).
+
+    Workers are found from a SECOND connection (`memory.WORKER_SQL`), so the
+    timed session runs no extra statement. Returns ``(result, peak_bytes)``;
+    the peak is ``None`` when no reading succeeded, never zero.
+    """
+    container = container_of(conn)
+    mapped: dict[int, int | None] = {}
+
+    def to_host(p: int) -> int | None:
+        if p not in mapped:
+            mapped[p] = host_pid_of(conn, p)
+        return mapped[p]
+
+    source, how = memory.choose_pg_source(container=container, to_host=to_host)
+    MEMORY_READ["postgresql"] = how
+    if source is None:
+        return call(), None
+    info = conn.info
+    try:
+        monitor = psycopg.connect(host=info.host, port=info.port, dbname=info.dbname,
+                                  user=info.user, password=info.password, autocommit=True)
+    except psycopg.Error as exc:
+        MEMORY_READ["postgresql"] = f"not applied: monitor connection failed ({exc})"
+        return call(), None
+
+    def pids() -> list[int]:
+        with monitor.cursor() as cur:
+            cur.execute(memory.WORKER_SQL, (pid,))
+            return [pid, *(r[0] for r in cur.fetchall())]
+
+    interval = memory.HOST_INTERVAL_S if how == "host /proc" else memory.EXEC_INTERVAL_S
+    try:
+        result, peak = memory.sample(call, pids, source, interval_s=interval)
+    finally:
+        monitor.close()
+    return result, peak.anon
 
 
 def host_pid_of(conn: psycopg.Connection, pid: int) -> int | None:
@@ -207,11 +259,7 @@ def time_write(conn: psycopg.Connection, sql: str, args: tuple = (),
             touched = cur.rowcount
             return touched, time.perf_counter() - start
 
-    host_pid = host_pid_of(conn, pid)
-    if host_pid is None:
-        (touched, wall), peak_rss = execute(), None
-    else:
-        (touched, wall), peak_rss = peak_resident_bytes(execute, pid=host_pid)
+    (touched, wall), peak_rss = working_memory(conn, pid, execute)
     return int(touched), wall, peak_rss
 
 

@@ -381,7 +381,7 @@ import` pays a container start and a JVM start, which for a one-feature
   non-mutating `--help`/`--version` invocation runs **untimed** before the
   first sample so a cold image or resolve does not land on sample 1 —
   that warms the launcher, never the mutation. Those two rows also carry
-  **no `peak_rss_bytes`**: the work happens in a process this harness
+  **no `peak_working_mem_bytes`**: the work happens in a process this harness
   starts and waits on, not in the PostgreSQL backend the other rows
   sample.
 - **`VACUUM ANALYZE` runs after the last sample of each PostgreSQL write
@@ -889,7 +889,7 @@ bytes; `size_definitions` states these definitions and the index policy.
 and nineteen columns:
 
 ```
-dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,server_time_mean_s,server_time_std_s,server_time_median_s,server_time_min_s,server_time_max_s,server_time_q1_s,server_time_q3_s,size_bytes,size_bytes_no_index,status,raw_time_samples_s,raw_server_time_samples_s
+dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_working_mem_bytes,repeat,notes,bytes_read,http_requests,server_time_mean_s,server_time_std_s,server_time_median_s,server_time_min_s,server_time_max_s,server_time_q1_s,server_time_q3_s,size_bytes,size_bytes_no_index,status,raw_time_samples_s,raw_server_time_samples_s
 ```
 
 Sizes and memory are recorded in bytes. The summary's figures show them in
@@ -908,11 +908,14 @@ there) and are separate experiments.
 - **`time_mean_s` … `time_q3_s`** — the timing block; see "The warm protocol".
 - **`peak_heap_bytes`** — populated only for the native reader (the child's
   allocator high-water mark); empty for every SQL system.
-- **`peak_rss_bytes`** — peak resident set size of the process executing the
-  query, in bytes, the maximum over the timed samples (Caveat 6). The
-  `notes` column states the scope (`memory-scope: duckdb-process-rss` or
-  `memory-scope: postgresql-backend-rss`), and the manifest's
-  `memory_measurement` block describes it.
+- **`peak_working_mem_bytes`** — peak working memory of the process(es)
+  executing the query, in bytes, the maximum over the timed samples (Caveat 6;
+  formerly `peak_rss_bytes`). The `notes` column states the scope
+  (`memory-scope: duckdb-fresh-process` or
+  `memory-scope: postgresql-backend-rssanon`), and the manifest's
+  `memory_measurement` block describes it, with the read path and the
+  provisioned memory (`shared_buffers`, `work_mem`, container limit, DuckDB
+  `memory_limit`).
 - **`repeat`** — the number of timed samples in that row.
 - **`notes`** — `threads=single`/`threads=parallel`, memory scope, fetch
   mode, the window tag and achieved fraction or the id-probe tag
@@ -1006,28 +1009,34 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
    rows rather than spreading evenly
    (`notes/benchmark-fairness-review-2026-09-22.md` §4.3).
 
-6. **`peak_rss_bytes` has a different process scope per system and is not a
-   like-for-like comparison.**
-   - PostgreSQL rows sample the query's backend process, located on the host
-     through `podman top` or a verified PID-namespace mapping, every 5 ms
-     from `/proc/<pid>/status`. The value excludes other backends,
-     background workers and the idle server, but mapped shared pages
-     (including touched `shared_buffers`) can contribute. It is blank when
-     the PID cannot be mapped safely. **Under `parallel` only the LEADER
-     backend is sampled**, so any parallel worker's resident memory is
-     excluded and the figure understates the query's true footprint by an
-     unmeasured amount.
-   - `duckdb-cityparquet` rows sample the harness's own Python process, which
-     embeds DuckDB and runs the 5 ms sampler thread, so the value includes the
-     interpreter and the engine's idle baseline and cached state. Every
-     scenario runs on one shared connection, so the value is cumulative across
-     the scenario sequence: a light scenario inherits the memory retained by a
-     heavier one before it (in the committed 3DBAG CSV, `count`, which reads
-     only file metadata, follows the whole-table scan and reports a similar
-     peak).
-   - Native-reader rows report the child process's `getrusage` high-water
-     mark, converted to bytes on every platform (`rss_to_bytes` in
-     `benchmark/readbench/src/main.rs`), including its idle baseline.
+6. **`peak_working_mem_bytes` is working memory, with a different process scope
+   per system; it is not a like-for-like comparison.**
+   - PostgreSQL rows report the peak, over sampling instants, of the summed
+     `RssAnon` (`/proc/<pid>/status`) of the query's backend and, under
+     `parallel`, its parallel workers (found from a second connection through
+     `pg_stat_activity.leader_pid`). `RssAnon` is the backend's own heap,
+     sort and hash memory; it leaves out `RssShmem`, where the 8 GB
+     `shared_buffers` land (the ~8.2–8.6 GiB earlier reported for 3DCityDB
+     as `peak_rss_bytes` was essentially that buffer pool), and also `RssFile`,
+     the OS page cache, other backends, background processes and the client
+     process. The status files are read from the host `/proc` every 5 ms
+     where containers share the host kernel (rootless podman on Linux), or by
+     one `exec` into the container per reading, 50 ms apart plus the exec
+     round trip, on a VM-based engine (Apple `container`, docker on macOS);
+     the manifest's `memory_measurement.read_path` names the path, or
+     "not applied: <reason>" with a blank column. Readings come from a
+     separate thread and connection, so the timed session runs no extra
+     statement. One reading before and one after the query are included, so
+     a query shorter than the interval records the backend at its edges: a
+     lower bound, not a zero.
+   - `duckdb-cityparquet` read scenarios each run in a fresh spawned process,
+     so a light scenario no longer inherits a heavier one's peak. With procfs
+     the value is that process's peak `RssAnon`, including the interpreter's
+     and DuckDB's idle baseline; without procfs (macOS) the process's peak RSS
+     from `getrusage` stands in. Write scenarios stay in the long-lived
+     process.
+   - Native-reader rows report the reader child's allocator peak (the same
+     figure as `peak_heap_bytes`), excluding its idle baseline.
 
 7. **The native reader answers only five of the fourteen scenarios.**
    `cityparquet-readbench --child` implements `count`, `bbox-query`,

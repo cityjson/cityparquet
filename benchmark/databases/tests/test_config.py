@@ -89,7 +89,7 @@ def test_params_and_measurement_are_frozen():
     with pytest.raises(dataclasses.FrozenInstanceError):
         p.numeric_column = "other"
 
-    m = Measurement(result_count=1, times_s=[0.1], server_times_s=[], peak_rss_bytes=None)
+    m = Measurement(result_count=1, times_s=[0.1], server_times_s=[], peak_working_mem_bytes=None)
     with pytest.raises(dataclasses.FrozenInstanceError):
         m.result_count = 2
 

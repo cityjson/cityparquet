@@ -96,7 +96,7 @@ def _add_note(measurement: Measurement, note: str) -> Measurement:
 def _failed(note: str) -> Measurement:
     return Measurement(
         result_count=None, times_s=[], server_times_s=[],
-        peak_rss_bytes=None, notes=note,
+        peak_working_mem_bytes=None, notes=note,
     )
 
 

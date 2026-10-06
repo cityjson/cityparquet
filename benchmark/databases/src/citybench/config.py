@@ -449,7 +449,7 @@ class Measurement:
     result_count: int | None
     times_s: list[float]
     server_times_s: list[float]      # empty for in-process systems
-    peak_rss_bytes: int | None
+    peak_working_mem_bytes: int | None
     peak_heap_bytes: int | None = None
     notes: str = ""
 

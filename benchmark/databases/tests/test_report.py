@@ -8,7 +8,7 @@ def test_columns_match_the_inherited_contract_exactly():
     assert COLUMNS == (
         "dataset", "format", "scenario", "selectivity", "result_count",
         "time_mean_s", "time_std_s", "time_median_s", "time_min_s",
-        "time_max_s", "time_q1_s", "time_q3_s", "peak_heap_bytes", "peak_rss_bytes",
+        "time_max_s", "time_q1_s", "time_q3_s", "peak_heap_bytes", "peak_working_mem_bytes",
         "repeat", "notes", "bytes_read", "http_requests",
         "server_time_mean_s", "server_time_std_s", "server_time_median_s",
         "server_time_min_s", "server_time_max_s", "server_time_q1_s",
@@ -18,7 +18,7 @@ def test_columns_match_the_inherited_contract_exactly():
 
 
 def test_size_columns_are_stamped_onto_the_row():
-    m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_rss_bytes=None)
+    m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_working_mem_bytes=None)
     row = row_from_measurement(
         dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
         size_bytes=5000, size_bytes_no_index=4000,
@@ -28,7 +28,7 @@ def test_size_columns_are_stamped_onto_the_row():
 
 
 def test_size_columns_blank_when_unknown():
-    m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_rss_bytes=None)
+    m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_working_mem_bytes=None)
     row = row_from_measurement(
         dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
     )
@@ -43,7 +43,7 @@ def test_row_reports_the_mean_and_population_std_dev_at_six_decimals():
         result_count=42,
         times_s=[0.1, 0.1, 0.4],
         server_times_s=[],
-        peak_rss_bytes=None,
+        peak_working_mem_bytes=None,
     )
     row = row_from_measurement(
         dataset="delft", fmt="cjdb", scenario="count",
@@ -62,7 +62,7 @@ def test_row_reports_median_quartiles_and_range_by_linear_interpolation():
         result_count=1,
         times_s=[0.4, 0.1, 0.3, 0.2],
         server_times_s=[0.8, 0.2, 0.6, 0.4],
-        peak_rss_bytes=None,
+        peak_working_mem_bytes=None,
     )
     row = row_from_measurement(
         dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
@@ -78,7 +78,7 @@ def test_row_reports_median_quartiles_and_range_by_linear_interpolation():
 
 
 def test_local_transport_columns_are_always_empty():
-    m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_rss_bytes=None)
+    m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_working_mem_bytes=None)
     row = row_from_measurement(
         dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
     )
@@ -88,7 +88,7 @@ def test_local_transport_columns_are_always_empty():
 
 def test_server_time_reported_when_present():
     m = Measurement(
-        result_count=1, times_s=[1.0], server_times_s=[0.4, 0.6], peak_rss_bytes=None,
+        result_count=1, times_s=[1.0], server_times_s=[0.4, 0.6], peak_working_mem_bytes=None,
     )
     row = row_from_measurement(
         dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
@@ -97,7 +97,7 @@ def test_server_time_reported_when_present():
 
 
 def test_selectivity_formatted_or_blank():
-    m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_rss_bytes=None)
+    m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_working_mem_bytes=None)
     with_sel = row_from_measurement(
         dataset="d", fmt="cjdb", scenario="bbox-query", measurement=m, selectivity=0.25,
     )
@@ -109,7 +109,7 @@ def test_selectivity_formatted_or_blank():
 
 
 def test_write_csv_roundtrips(tmp_path):
-    m = Measurement(result_count=7, times_s=[0.5], server_times_s=[], peak_rss_bytes=None)
+    m = Measurement(result_count=7, times_s=[0.5], server_times_s=[], peak_working_mem_bytes=None)
     row = row_from_measurement(
         dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
     )
@@ -132,7 +132,7 @@ def test_write_csv_roundtrips(tmp_path):
 
 def _measurement(notes: str = "") -> Measurement:
     return Measurement(
-        result_count=1, times_s=[0.1], server_times_s=[], peak_rss_bytes=None,
+        result_count=1, times_s=[0.1], server_times_s=[], peak_working_mem_bytes=None,
         notes=notes,
     )
 

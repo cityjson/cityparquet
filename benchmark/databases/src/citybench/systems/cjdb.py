@@ -238,9 +238,9 @@ class CjdbSystem:
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[s[2] for s in samples],
-            peak_rss_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
+            peak_working_mem_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
             peak_heap_bytes=None,
-            notes="memory-scope: postgresql-backend-rss fetch: binary",
+            notes="memory-scope: postgresql-backend-rssanon fetch: binary",
         )
 
     def verify_rows(self, scenario: str, params: Params, window=None,
@@ -274,9 +274,9 @@ class CjdbSystem:
             # Write rows carry no server_time_* block: obtaining it would mean a
             # second EXPLAIN ANALYZE execution of the mutation itself.
             server_times_s=[],
-            peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
+            peak_working_mem_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
             peak_heap_bytes=None,
-            notes="memory-scope: postgresql-backend-rss write-tier: no-explain",
+            notes="memory-scope: postgresql-backend-rssanon write-tier: no-explain",
         )
 
     def _watermarks(self) -> dict[str, int]:
@@ -333,7 +333,7 @@ class CjdbSystem:
             # waits on; it is not the PostgreSQL backend the other rows
             # sample, and sampling the backend would report only the part of
             # the work that reached it.
-            peak_rss_bytes=None,
+            peak_working_mem_bytes=None,
             peak_heap_bytes=None,
             notes=("write-tier: external-importer importer: cjdb-import "
                    f"objects: {append.object_count} "

@@ -12,6 +12,11 @@ from pathlib import Path
 
 import duckdb
 
+import dataclasses
+import multiprocessing
+import resource
+
+from citybench import memory
 from citybench.parquet_sizes import package_sizes
 from citybench.config import (
     Dataset, IngestResult, Measurement, Params, SizeReport, object_table_files,
@@ -76,6 +81,10 @@ class DuckDBCityParquet:
         self._schema_loaded = False
         self._spatial = False
         self._building_rows: int | None = None
+
+    def _fresh_config(self) -> dict:
+        return {"threads": self._threads, "memory_limit": self._memory_limit,
+                "writeback": self._writeback, "package": str(self._package)}
 
     def prepare(self) -> None:
         # Allowed to load the unsigned local extension build the write tier
@@ -160,6 +169,11 @@ class DuckDBCityParquet:
         mode = registry.count_mode(scenario)
         if mode == "write-rowcount":
             return self._run_write(scenario, params, repeat)
+        if not _IN_FRESH_PROCESS:
+            # A read scenario runs in a FRESH process, so its memory figure
+            # is its own and not the peak a previous scenario left behind.
+            return run_in_fresh_process(self._fresh_config(), scenario, params,
+                                        repeat, window, probe)
 
         sql, args = sql_duckdb.sql_for(
             scenario, params, self._table(), window, probe=probe,
@@ -182,8 +196,12 @@ class DuckDBCityParquet:
                     count = pg.extract_count(result.fetchall(), mode)
                 return count, time.perf_counter() - start
 
-            (count, elapsed), peak = peak_resident_bytes(execute)
-            return count, elapsed, peak
+            source = memory.self_source()
+            if source is None:
+                count, elapsed = execute()
+                return count, elapsed, None
+            (count, elapsed), peak = memory.sample(execute, lambda: [0], source)
+            return count, elapsed, peak.anon
 
         once()  # discarded warm-up
         samples = [once() for _ in range(repeat)]
@@ -191,9 +209,9 @@ class DuckDBCityParquet:
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[],   # in-process: no client-server split to report
-            peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
+            peak_working_mem_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
             peak_heap_bytes=None,
-            notes="memory-scope: duckdb-process-rss fetch: arrow",
+            notes="memory-scope: duckdb-fresh-process fetch: arrow",
         )
 
     def verify_rows(self, scenario: str, params: Params, window=None,
@@ -353,9 +371,9 @@ class DuckDBCityParquet:
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[],
-            peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
+            peak_working_mem_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
             peak_heap_bytes=None,
-            notes=f"memory-scope: duckdb-process-rss write-tier: {scope} {detail}",
+            notes=f"memory-scope: duckdb-fresh-process write-tier: {scope} {detail}",
         )
 
     def size(self) -> SizeReport:
@@ -372,3 +390,32 @@ class DuckDBCityParquet:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+
+
+_IN_FRESH_PROCESS = False
+
+
+def _fresh_child(config: dict, scenario: str, params: Params, repeat: int,
+                 window, probe) -> Measurement:
+    """The body of the fresh per-scenario process (spawned, never forked)."""
+    global _IN_FRESH_PROCESS
+    _IN_FRESH_PROCESS = True
+    package = Path(config.pop("package"))
+    system = DuckDBCityParquet(**config)
+    system.prepare()
+    system._package = package
+    m = system.run(scenario, params, repeat, window=window, probe=probe)
+    if m.peak_working_mem_bytes is None and memory.self_source() is None:
+        # No procfs (macOS): the peak RSS of this fresh process, from
+        # getrusage (bytes on macOS), stands in; the manifest names it.
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        m = dataclasses.replace(m, peak_working_mem_bytes=int(peak))
+    system.teardown()
+    return m
+
+
+def run_in_fresh_process(config: dict, scenario: str, params: Params, repeat: int,
+                         window, probe) -> Measurement:
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(1) as pool:
+        return pool.apply(_fresh_child, (config, scenario, params, repeat, window, probe))

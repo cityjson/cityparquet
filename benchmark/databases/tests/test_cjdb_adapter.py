@@ -228,7 +228,7 @@ def test_run_discards_the_warmup_and_reports_repeat_samples(monkeypatch):
     assert measurement.result_count == 5
     assert measurement.times_s == [0.1, 0.2, 0.05]
     assert measurement.server_times_s == [0.05, 0.08, 0.02]
-    assert measurement.peak_rss_bytes is None
+    assert measurement.peak_working_mem_bytes is None
     assert measurement.peak_heap_bytes is None
 
 

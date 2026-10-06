@@ -18,6 +18,11 @@ though `_versions()` also stamps a terse marker for at-a-glance visibility.
 from __future__ import annotations
 
 import os
+
+from citybench.lifecycle import MEMORY_LIMIT
+
+# DuckDBCityParquet's default `memory_limit` (systems/duckdb_cp.py).
+DUCKDB_MEMORY_LIMIT = "32GB"
 import platform
 import hashlib
 from typing import Any
@@ -59,6 +64,13 @@ SIZE_DEFINITIONS = {
 }
 
 
+def _setting(pg_settings: dict, key: str):
+    """A setting from a flat or a per-system (``{tag: {...}}``) mapping."""
+    if key in pg_settings:
+        return pg_settings[key]
+    return {tag: v.get(key) for tag, v in pg_settings.items() if isinstance(v, dict)} or None
+
+
 def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, float],
             sizes: dict[str, tuple[int, int]], versions: dict[str, str],
             pg_settings: dict[str, str],
@@ -68,7 +80,8 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
             count_check: dict[str, Any] | None = None,
             isolation: dict[str, Any] | None = None,
             index_build: dict[str, float | None] | None = None,
-            size_detail: dict[str, dict[str, int]] | None = None) -> dict[str, Any]:
+            size_detail: dict[str, dict[str, int]] | None = None,
+            memory_read: dict[str, str] | None = None) -> dict[str, Any]:
     """``srid`` — the SRID each PostgreSQL-backed system actually landed on.
 
     Added for Task 14 (the heterogeneity corpus): 3DCityDB's SRID is baked
@@ -125,12 +138,35 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
         # load record: what was requested, what was applied, and why not.
         "isolation": isolation or {},
         "memory_measurement": {
-            "metric": "peak_rss_bytes",
-            "scope": "execution process only",
-            "postgresql": "query backend PID; excludes other backend, background-worker, and idle-server processes; mapped shared pages can contribute to RSS; blank if procfs namespace mapping cannot be verified. Under the `parallel` configuration only the LEADER backend is sampled, so any worker's resident memory is excluded",
-            "duckdb": "process executing the embedded engine; includes its idle baseline",
-            "cityparquet": "fresh reader child process; includes its idle baseline",
-            "sampling_interval_ms": 5,
+            "metric": "peak_working_mem_bytes",
+            "postgresql": (
+                "peak over sampling instants of the summed RssAnon (/proc/<pid>/status) of "
+                "the query's backend and, under the parallel configuration, its parallel "
+                "worker processes (pg_stat_activity.leader_pid, read from a second "
+                "connection). Excludes RssShmem (shared_buffers), RssFile and the OS page "
+                "cache, other backends, background processes and the client. One reading "
+                "before and one after the query are included, so a query shorter than the "
+                "interval records the backend at its edges (a lower bound)"
+            ),
+            "duckdb": (
+                "each read scenario runs in a fresh spawned process; with procfs, the peak "
+                "RssAnon of that process (includes DuckDB's idle baseline); without procfs "
+                "(macOS) the process's peak RSS from getrusage ru_maxrss stands in. Write "
+                "scenarios stay in the long-lived process"
+            ),
+            "cityparquet": "allocator peak (peak_heap_bytes) of the fresh reader child process",
+            "sampling_interval_ms": {
+                "host_proc": 5,
+                "engine_exec": "50 between readings, plus the exec round trip itself",
+            },
+            "read_path": {"postgresql": "not applied: no PostgreSQL query was measured",
+                          **(memory_read or {})},
+            "provisioned": {
+                "shared_buffers": _setting(pg_settings, "shared_buffers"),
+                "work_mem": _setting(pg_settings, "work_mem"),
+                "container_memory_limit": MEMORY_LIMIT,
+                "duckdb_memory_limit": DUCKDB_MEMORY_LIMIT,
+            },
         },
         "temporary_storage": {
             "host_tmpdir": os.environ.get("TMPDIR"),

@@ -256,5 +256,6 @@ def test_run_discards_the_warmup_and_reports_the_repeats_own_peak(tmp_path, monk
     assert measurement.result_count == 5
     assert measurement.times_s == [0.1, 0.2, 0.05]
     assert measurement.peak_heap_bytes == 150  # max(100, 150, 120), never 9000
-    assert measurement.peak_rss_bytes == 220   # max(200, 180, 220), never 9000
+    # The allocator peak of the fresh child, its working memory; warm-up excluded.
+    assert measurement.peak_working_mem_bytes == measurement.peak_heap_bytes == 150
     assert measurement.server_times_s == []

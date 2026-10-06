@@ -145,7 +145,7 @@ class TierAwareFakeSystem:
             result_count=self._count,
             times_s=[0.01] * repeat,
             server_times_s=[],
-            peak_rss_bytes=None,
+            peak_working_mem_bytes=None,
         )
 
 
