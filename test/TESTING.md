@@ -1439,8 +1439,7 @@ New since the last pass: an **HTTP transport**. `--transport local|http`
 (default `local`) plus `--base-url` makes every format read over HTTP instead of
 from a local file, and populates the trailing `bytes_read` / `http_requests`
 CSV columns (empty for every local row). Upload steps and methodology are in
-`benchmark/formats/READ_BENCHMARK.md`; `duckdb-parquet` has no HTTP row — it is a local-only
-SQL baseline.
+`benchmark/formats/READ_BENCHMARK.md`.
 
 > **Still blocked: multi-module datasets.** The `CityParquetRunner` supports
 > only single-table packages, so `Railway` and `lod3_railway` produce no read

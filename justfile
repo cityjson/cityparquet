@@ -489,14 +489,15 @@ plot-test:
 # the variant lists and positional arguments the bloom recipes pass out of
 # THIS file. The Python unit tests cover `bench_suite.py`'s dataset and
 # profile selection against the real manifest, and `cityjson_merge.py` on a
-# real fixture (`just fixtures` in lib/cityparquet-rs). Needs `jq`,
-# `zip`/`unzip` and `uv`.
+# real fixture (`just fixtures` in lib/cityparquet-rs); they run in
+# benchmark/plot's uv environment, as `bench-run` does, for its Python 3.11+
+# (`tomllib`). Needs `jq`, `zip`/`unzip` and `uv`.
 [doc("The benchmark scripts' own suites (needs jq and uv)")]
 scripts-test:
     ./{{BENCH_SCRIPTS}}/tests/readbench_prepare_test.sh
     ./{{BENCH_SCRIPTS}}/tests/fetch_benchmark_test.sh
     ./{{BENCH_SCRIPTS}}/tests/bench_recipe_test.sh
-    uv run --no-project python -m unittest discover -s {{BENCH_SCRIPTS}}/tests -p 'test_*.py'
+    uv run --project {{PLOT}} python -m unittest discover -s {{BENCH_SCRIPTS}}/tests -p 'test_*.py'
 
 # ---------------------------------------------------------------------------
 # Database benchmark (benchmark/databases) — its own uv project and justfile
