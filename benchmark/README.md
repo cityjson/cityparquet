@@ -187,8 +187,10 @@ For the same reason, preparation first normalises every CityJSON and
 CityJSONSeq source so that each CityObject holds at most one geometry per LoD,
 keeping the first in source order. CityParquet stores one geometry column per
 LoD, so this is a property of the corpus, and all five artefacts derive from
-the normalised source. It changes Vienna and Ingolstadt only; the other
-datasets pass through byte for byte (Caveat 41).
+the normalised source. Of the seven corpus sources it changes Vienna and
+Ingolstadt only, and the other five pass through byte for byte; the 3DBAG
+slice is normalised the same way, and its preparation log reports how many
+geometries were dropped (Caveat 41).
 
 The format comparison measures five formats: `citygml`, `cityjson`,
 `cityjsonseq`, `flatcitybuf` and `cityparquet`. CityParquet is one package per

@@ -1266,8 +1266,14 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     corpus the step is a no-op: each `cityjson` artefact is byte identical
     to the source the chain builds from — the published one for five
     datasets, and for vienna_102081 (4,731,370 B) and ingolstadt
-    (3,922,339 B) the normalised one. A size or parse-time gap against CityJSON therefore
-    cannot be dismissed as whitespace.
+    (3,922,339 B) the normalised one. The normalised source is written by
+    `serde_json`, so its number spellings are the shortest round-trip
+    spellings rather than the published ones: every value survives, but
+    ingolstadt's exponent floats are respelled (`-1.1e-06` becomes
+    `-1.1e-6`), while vienna_102081's spellings are unchanged. The published
+    spellings hold for the five pass-through datasets only. A size or
+    parse-time gap against CityJSON therefore cannot be dismissed as
+    whitespace.
 
 41. **The corpus holds at most one geometry per LoD and object.** Before any
     artefact is built, `readbench_prepare.sh` normalises a CityJSON or
