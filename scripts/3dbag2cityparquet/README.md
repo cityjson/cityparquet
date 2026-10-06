@@ -107,15 +107,14 @@ python3 3dbag2cityparquet.py all \
   --manifest /path/to/3dbag_urls.txt \
   --work    /scratch/3dbag-work \
   --dest    ../cityparquet_data/3dbag \
-  --jobs    64 \
-  --convert-arg=--ordering --convert-arg=source
+  --jobs    64
 ```
 
-`--convert-arg=--ordering --convert-arg=source` is required: the `convert`
-stage passes no `--ordering` of its own, and `cityparquet convert` sorts in
-Hilbert order by default, buffering the whole dataset. Each `--convert-arg`
-carries one word, and the `=` spelling is what lets a value that starts with
-`--` through.
+The `convert` stage passes `--ordering source` itself: `cityparquet convert`
+sorts in Hilbert order by default, which buffers the whole dataset. Further
+writer flags go through `--convert-arg`, one word each; the `=` spelling
+(`--convert-arg=--row-group-size`) is what lets a value that starts with `--`
+through.
 
 Needs `duckdb` (the `verify` stage only) and both binaries built:
 `lib/cityparquet-rs/target/release/cityparquet` and
