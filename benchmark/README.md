@@ -154,9 +154,10 @@ five formats the same geometry, LoD 0, 1.3 and 2.2
 The format comparison measures five formats: `citygml`, `cityjson`,
 `cityjsonseq`, `flatcitybuf` and `cityparquet`. CityParquet is one package per
 dataset, its rows written in Hilbert-curve order and without LoD 0 synthesis
-(`cityparquet convert --ordering hilbert --no-lod0`: both the writer's
-defaults, pinned explicitly so the benchmark states its configuration and every
-format holds the same geometries), displayed as **CityParquet**. The CityJSON
+(`cityparquet convert --ordering hilbert --no-lod0`: Hilbert order is the
+writer's default, pinned explicitly so the benchmark states its configuration,
+and `--no-lod0` turns off the CLI's default LoD 0 synthesis so every format
+holds the same geometries), displayed as **CityParquet**. The CityJSON
 artefact is written without optional whitespace, like the CityGML one. The bloom experiment compares `cityparquet` with
 `cityparquet+nobloom`, both Hilbert-ordered, and holds ordering, codec and
 row-group size fixed.
