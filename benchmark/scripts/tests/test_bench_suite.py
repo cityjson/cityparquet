@@ -33,9 +33,27 @@ class SelectionTests(unittest.TestCase):
         root = bench_suite.DEFAULT_DATA_ROOT
         self.assertEqual(bench_suite.paths(root)["prepared"], root / "data/readbench")
         self.assertEqual(bench_suite.paths(root)["3dbag"], root / "data/3dbag")
-    def test_bloom_default_is_the_corpus_and_the_slice(self):
-        selected = bench_suite.dataset_selection(self.manifest, ["bloom"], "", "full")
-        self.assertEqual(selected, bench_suite.dataset_selection(self.manifest, ["formats"], "", "full"))
+    def test_bloom_default_is_the_slice_alone(self):
+        # A filter rules out whole row groups; only the slice has enough of them.
+        for profile in ("full", "quick"):
+            self.assertEqual(bench_suite.dataset_selection(self.manifest, ["bloom"], "", profile), ["3dbag_n1000000"])
+    def test_profiles_without_the_slice_select_no_bloom_input(self):
+        self.assertEqual(bench_suite.dataset_selection(self.manifest, ["bloom"], "", "short"), [])
+    def test_bloom_runs_on_the_slice_and_skips_corpus_inputs(self):
+        from unittest import mock
+        calls = []
+        with mock.patch.object(bench_suite, "just", lambda *a: calls.append(a)), \
+             mock.patch.object(bench_suite, "require_prepared", lambda *a: None), \
+             mock.patch.object(bench_suite, "source", lambda entry, locations: Path(entry["file"])), \
+             mock.patch.object(bench_suite, "stage", lambda locations, name, inputs: Path("+".join(str(i) for i in inputs))), \
+             mock.patch.object(bench_suite, "result_dir", lambda *a: Path("out")), \
+             mock.patch.object(bench_suite, "write_run_manifest", lambda *a, **k: None):
+            manifest = {"datasets": {"c": {"role": "corpus", "file": "c.city.json"}, "s": {"role": "slice", "file": "s.city.jsonl"}}}
+            bench_suite.run_suite(manifest, {"prepared": Path("p"), "data": Path("d")}, ["bloom"], ["c", "s"], "full")
+            self.assertEqual([call[1] for call in calls if call[0] == "bloom-bench"], ["s.city.jsonl"])
+            calls.clear()
+            bench_suite.run_suite(manifest, {"prepared": Path("p"), "data": Path("d")}, ["bloom"], ["c"], "smoke")
+            self.assertEqual([call for call in calls if call[0] == "bloom-bench"], [])
     def test_bloom_results_have_their_own_directory(self):
         locations = bench_suite.paths(bench_suite.DEFAULT_DATA_ROOT)
         self.assertEqual(bench_suite.result_dir(locations, "bloom", "full").name, "bloom_results")

@@ -480,8 +480,11 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_
 # the same package without them. Identifier lookups only — what the filters
 # exist for — by `id` and by `feature_id`, each at the middle position and a
 # verified miss. Every variant at the default codec and row-group size.
+# FOLDER holds the 1M 3DBAG slice alone (the suite stages it so): a filter
+# rules out whole row groups, and at 65,536 rows per group every corpus
+# dataset but Zurich is a single group, so a hit there can skip nothing.
 [private]
-[doc("Bloom axis over every input under FOLDER: cityparquet vs cityparquet+nobloom")]
+[doc("Bloom axis over the 3DBAG slice staged in FOLDER: cityparquet vs cityparquet+nobloom")]
 bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7' NUMA_NODE=env('BENCH_NUMA_NODE', 'auto') MEMORY_MAX='64000000000' MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
     just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "{{NUMA_NODE}}" "{{MEMORY_MAX}}" "{{MAX_LOAD}}" "{{MAX_LOAD_WAIT_S}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"
 

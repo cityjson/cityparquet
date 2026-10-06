@@ -35,7 +35,8 @@ FAMILIES = ("sizes", "formats", "bloom", "databases")
 #   smoke  Rotterdam alone, 1 repetition, `<family>/smoke/`; a pipeline check,
 #          never a measurement.
 # Under `short` and `smoke` the database family measures the manifest's
-# `small_database_dataset` (Rotterdam) in the slice's place.
+# `small_database_dataset` (Rotterdam) in the slice's place. The bloom family
+# measures the slice alone, so it runs under `full` and `quick` only.
 PROFILES = ("full", "quick", "short", "smoke")
 # The dataset roles that are format, size and bloom inputs.
 INPUT_ROLES = frozenset({"corpus", "slice"})
@@ -94,12 +95,18 @@ def dataset_selection(manifest: dict, families: list[str], requested: str, profi
         result = ["rotterdam"]
     else:
         result = []
-        if any(family in {"sizes", "formats", "bloom"} for family in families):
+        if any(family in {"sizes", "formats"} for family in families):
             result.extend(
                 key for key, entry in datasets.items()
                 if entry["role"] in INPUT_ROLES
                 and (profile != "short" or entry["role"] != "slice")
             )
+        # The bloom family measures the slice alone, and only under the
+        # profiles that include it: a filter rules out whole row groups, and at
+        # the writer's default 65,536 rows per group only the slice has enough
+        # of them for a hit to skip any.
+        if "bloom" in families and profile in {"full", "quick"}:
+            result.append(slice_dataset(manifest))
         if "databases" in families:
             result.append(database_dataset(manifest, profile))
     unknown = sorted(set(result) - set(datasets))
@@ -358,10 +365,16 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         # Where each package's bytes go, by column group and column; it reads
         # the same prepared packages the size rows above measured.
         command(*compression_command(inputs, locations["prepared"], output.parent))
-    if "bloom" in families:
+    # Bloom inputs are the slice alone (see dataset_selection); a selection
+    # without it runs no bloom cell rather than a corpus dataset whose single
+    # row group no filter can skip.
+    bloom_inputs = [source(entry, locations) for entry in selected.values() if entry["role"] == "slice"]
+    if "bloom" in families and not bloom_inputs:
+        print("bloom: skipped; the bloom family measures the 3DBAG slice alone, which this selection does not include", file=sys.stderr, flush=True)
+    if "bloom" in families and bloom_inputs:
         output = result_dir(locations, "bloom", profile)
-        just("bloom-bench", str(stage(locations, "bloom", inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args)
-        for input_path in inputs:
+        just("bloom-bench", str(stage(locations, "bloom", bloom_inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args)
+        for input_path in bloom_inputs:
             write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile, **sampling)
     if "databases" in families:
         # --database-datasets: `all`, or manifest ids (`3dbag` = the slice);
