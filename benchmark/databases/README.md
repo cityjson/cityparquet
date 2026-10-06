@@ -893,7 +893,7 @@ bytes; `size_definitions` states these definitions and the index policy.
 ## Metrics and the CSV contract
 
 `<dataset>.csv` has one row per (system, scenario[, window | id probe])
-and nineteen columns:
+and thirty columns:
 
 ```
 dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_working_mem_bytes,repeat,notes,bytes_read,http_requests,server_time_mean_s,server_time_std_s,server_time_median_s,server_time_min_s,server_time_max_s,server_time_q1_s,server_time_q3_s,size_bytes,size_bytes_no_index,status,raw_time_samples_s,raw_server_time_samples_s
@@ -902,12 +902,16 @@ dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_med
 Sizes and memory are recorded in bytes. The summary's figures show them in
 decimal units, 1 MB = 10^6 bytes and 1 GB = 10^9 bytes (`benchviz.units`).
 
-The first eighteen columns match, in name and order, the header of the format
-harness's CSVs (`benchmark/runs/formats/results/<dataset>.csv`; `sizes.csv`
-has another shape). Appending those rows to this
-harness's rows needs six empty fields per row. The two harnesses use
-different `dataset` identifiers (`3dbag_n1000000` here, the source file name
-there) and are separate experiments.
+The first eighteen columns follow, in order, the header of the format
+harness's read CSVs (`benchmark/runs/formats/results/<dataset>.csv`;
+`sizes.csv` has another shape), with one deliberate difference: the
+fourteenth column is `peak_working_mem_bytes` here and `peak_rss_bytes`
+there, because the two harnesses measure different memory figures. From
+the nineteenth column on, the two headers diverge (the format harness's
+pruning and filter columns against this harness's server-time block,
+sizes, status and raw samples). The two harnesses use different `dataset`
+identifiers (`3dbag_n1000000` here, the source file name there) and are
+separate experiments.
 
 - **`selectivity`** — `result_count / total_city_objects`; empty for
   `count`, `geometry-scan` and the write tier (a mutation's rows-touched is
@@ -916,8 +920,8 @@ there) and are separate experiments.
 - **`peak_heap_bytes`** — populated only for the native reader (the child's
   allocator high-water mark); empty for every SQL system.
 - **`peak_working_mem_bytes`** — peak working memory of the process(es)
-  executing the query, in bytes, the maximum over the timed samples (Caveat 6;
-  formerly `peak_rss_bytes`). The `notes` column states the scope
+  executing the query, in bytes, the maximum over the timed samples
+  (Caveat 6). The `notes` column states the scope
   (`memory-scope: duckdb-fresh-process` or
   `memory-scope: postgresql-backend-rssanon`), and the manifest's
   `memory_measurement` block describes it, with the read path and the
