@@ -6293,6 +6293,7 @@
         "rss_ratio": 1.0,
         "status": "",
         "notes": "id-50pct",
+        "probe_value": "NL.IMBAG.Pand.0268100000030371",
         "row_groups_total": 16,
         "bloom_pruned": 15,
         "stats_pruned": null,
@@ -6319,6 +6320,7 @@
         "rss_ratio": 1.0144165790659259,
         "status": "",
         "notes": "id-50pct",
+        "probe_value": "NL.IMBAG.Pand.0268100000030371",
         "row_groups_total": 16,
         "bloom_pruned": 0,
         "stats_pruned": null,
@@ -6345,6 +6347,7 @@
         "rss_ratio": 1.0,
         "status": "",
         "notes": "id-miss",
+        "probe_value": "NL.IMBAG.Pand.0268100000030371-readbench-absent",
         "row_groups_total": 16,
         "bloom_pruned": 15,
         "stats_pruned": null,
@@ -6371,6 +6374,7 @@
         "rss_ratio": 1.012757320962598,
         "status": "",
         "notes": "id-miss",
+        "probe_value": "NL.IMBAG.Pand.0268100000030371-readbench-absent",
         "row_groups_total": 16,
         "bloom_pruned": 0,
         "stats_pruned": null,
@@ -6397,6 +6401,7 @@
         "rss_ratio": 1.0,
         "status": "",
         "notes": "feature-50pct",
+        "probe_value": "NL.IMBAG.Pand.0268100000030371",
         "row_groups_total": 16,
         "bloom_pruned": 15,
         "stats_pruned": null,
@@ -6423,6 +6428,7 @@
         "rss_ratio": 1.0242758829312562,
         "status": "",
         "notes": "feature-50pct",
+        "probe_value": "NL.IMBAG.Pand.0268100000030371",
         "row_groups_total": 16,
         "bloom_pruned": 0,
         "stats_pruned": null,
@@ -6449,6 +6455,7 @@
         "rss_ratio": 1.0,
         "status": "",
         "notes": "feature-miss",
+        "probe_value": "NL.IMBAG.Pand.0268100000030371-readbench-absent",
         "row_groups_total": 16,
         "bloom_pruned": 16,
         "stats_pruned": null,
@@ -6475,6 +6482,7 @@
         "rss_ratio": 1.063960639606396,
         "status": "",
         "notes": "feature-miss",
+        "probe_value": "NL.IMBAG.Pand.0268100000030371-readbench-absent",
         "row_groups_total": 16,
         "bloom_pruned": 0,
         "stats_pruned": null,
@@ -6501,6 +6509,22 @@
     "variants": [
       "cityparquet",
       "cityparquet+nobloom"
+    ],
+    "measures": [
+      "id-50pct",
+      "id-miss",
+      "feature-50pct",
+      "feature-miss",
+      "attr-identificatie-50pct",
+      "attr-identificatie-miss",
+      "attr-documentnummer-50pct",
+      "attr-documentnummer-miss"
+    ],
+    "not_measured": [
+      "attr-identificatie-50pct",
+      "attr-identificatie-miss",
+      "attr-documentnummer-50pct",
+      "attr-documentnummer-miss"
     ]
   },
   "databases": {
