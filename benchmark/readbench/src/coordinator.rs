@@ -141,6 +141,20 @@ pub struct RunOptions {
     pub key_layout: cityparquet_readbench::format::KeyLayout,
     /// Pinning, memory ceiling and load gate for the measured children.
     pub isolation: IsolationOptions,
+    /// The `network` family's profile and target (see [`run`]); `None` for
+    /// every other run.
+    pub network: Option<NetworkOptions>,
+}
+
+/// Where a `network` run reads from, and under which profile.
+#[derive(Debug, Clone)]
+pub struct NetworkOptions {
+    /// The profile's name (`fast`, `typical`, `slow`, or `custom`).
+    pub name: String,
+    /// `Some`: the coordinator serves `prepared_dir` itself through a
+    /// simulated network with this profile (`target = simulated`). `None`:
+    /// the run reads the real `base_url` (`target = real`).
+    pub simulated: Option<cityparquet_readbench::netsim::NetProfile>,
 }
 
 /// The shared-host isolation the CLI requested (see [`isolation`]).
@@ -352,6 +366,9 @@ struct Sample {
     load1: Option<f64>,
     runnable: Option<u32>,
     mem_available_bytes: Option<u64>,
+    /// The sample's client-side HTTP tallies; `None` over the local transport.
+    bytes_read: Option<u64>,
+    http_requests: Option<u64>,
 }
 
 fn samples_sidecar_path(out: &Path) -> PathBuf {
@@ -375,6 +392,63 @@ fn write_samples(out: &Path, samples: &[Sample]) -> Result<()> {
 
 /// Runs `opts`'s whole (format x scenario) matrix, writing `opts.out` fresh.
 pub fn run(opts: &RunOptions) -> Result<()> {
+    let Some(network) = &opts.network else {
+        return run_matrix(opts);
+    };
+    if opts.transport != Transport::Http {
+        bail!("a network run needs --transport http");
+    }
+    let mut record = serde_json::json!({ "profile": network.name });
+    let server = match network.simulated {
+        Some(profile) => {
+            if opts.base_url.is_some() {
+                bail!("a simulated network serves --prepared-dir itself; drop --base-url");
+            }
+            let sim = cityparquet_readbench::netsim::NetSim::start(&opts.prepared_dir, profile)?;
+            let mut inner = opts.clone();
+            inner.base_url = Some(sim.base_url());
+            inner.key_layout = cityparquet_readbench::format::KeyLayout::Flat;
+            run_matrix(&inner)?;
+            record["target"] = "simulated".into();
+            record["bandwidth_mbps"] = profile.bandwidth_mbps.into();
+            record["latency_ms"] = profile.latency_ms.into();
+            record["burst_ms"] = sim.burst_ms().into();
+            Some(sim.totals())
+        }
+        None => {
+            run_matrix(opts)?;
+            record["target"] = "real".into();
+            record["base_url"] = opts.base_url.clone().into();
+            None
+        }
+    };
+    // The clients' own tallies, over every sample the run took (warm-ups
+    // included): what the server's totals must equal.
+    let samples: Vec<serde_json::Value> = serde_json::from_str(
+        &std::fs::read_to_string(samples_sidecar_path(&opts.out))
+            .context("reading the samples sidecar")?,
+    )?;
+    let sum = |key: &str| -> u64 { samples.iter().filter_map(|s| s[key].as_u64()).sum() };
+    record["clients"] = serde_json::json!({
+        "requests": sum("http_requests"),
+        "bytes_read": sum("bytes_read"),
+    });
+    if let Some(t) = server {
+        record["server"] = serde_json::json!({
+            "requests": t.requests,
+            "body_bytes": t.body_bytes,
+            "connections": t.connections,
+        });
+    }
+    let sidecar = params_sidecar_path(&opts.out);
+    let mut json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&sidecar).context("reading the params sidecar")?,
+    )?;
+    json["network"] = record;
+    write_params(&sidecar, &json)
+}
+
+fn run_matrix(opts: &RunOptions) -> Result<()> {
     if opts.transport == Transport::Http && opts.base_url.is_none() {
         bail!("--transport http requires --base-url");
     }
@@ -1801,6 +1875,8 @@ fn run_measurement(
             load1: load.map(|l| l.load1),
             runnable: load.map(|l| l.runnable),
             mem_available_bytes: load.and_then(|l| l.mem_available_bytes),
+            bytes_read: line.io.map(|io| io.bytes),
+            http_requests: line.io.map(|io| io.requests),
         });
         if i == 0 {
             // Warmup: discarded entirely (never contributes to the mean,

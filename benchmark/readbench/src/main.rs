@@ -243,6 +243,17 @@ struct RunArgs {
     /// `<format>/<base>.<ext>` under `v<chain>/`).
     #[arg(long, default_value = "flat")]
     key_layout: cityparquet_readbench::format::KeyLayout,
+    /// The `network` family: the profile's name, recorded in the params
+    /// sidecar. With `--network-bandwidth-mbps` and `--network-latency-ms` the
+    /// coordinator serves `--prepared-dir` through a simulated network itself
+    /// (`target = simulated`); without them it reads the real `--base-url`
+    /// (`target = real`).
+    #[arg(long)]
+    network_profile: Option<String>,
+    #[arg(long, requires = "network_latency_ms")]
+    network_bandwidth_mbps: Option<f64>,
+    #[arg(long, requires = "network_bandwidth_mbps")]
+    network_latency_ms: Option<f64>,
 }
 
 fn main() {
@@ -291,6 +302,26 @@ fn run(cli: Cli) -> Result<()> {
                 memory_max: run_args.memory_max,
                 max_load: run_args.max_load,
                 max_load_wait_s: run_args.max_load_wait_s,
+            },
+            network: match (
+                run_args.network_profile,
+                run_args.network_bandwidth_mbps,
+                run_args.network_latency_ms,
+            ) {
+                (name, Some(bandwidth_mbps), Some(latency_ms)) => {
+                    Some(coordinator::NetworkOptions {
+                        name: name.unwrap_or_else(|| "custom".to_string()),
+                        simulated: Some(cityparquet_readbench::netsim::NetProfile {
+                            bandwidth_mbps,
+                            latency_ms,
+                        }),
+                    })
+                }
+                (Some(name), _, _) => Some(coordinator::NetworkOptions {
+                    name,
+                    simulated: None,
+                }),
+                _ => None,
             },
         });
     }

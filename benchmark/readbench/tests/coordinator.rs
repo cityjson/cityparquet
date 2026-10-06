@@ -1251,3 +1251,62 @@ fn the_params_sidecar_records_the_isolation_requested_and_applied() {
         assert!(samples[0]["load1"].is_null());
     }
 }
+
+/// `--network-bandwidth-mbps`/`--network-latency-ms`: the coordinator serves
+/// the prepared directory through its own simulated network, records the
+/// profile in the params sidecar, and the server's request/byte totals equal
+/// the sum of every sample's (warm-up included) client-side tallies.
+#[test]
+fn a_simulated_network_run_records_the_profile_and_server_totals_match_the_clients() {
+    let parent = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    convert(&ConvertOptions::new(
+        input.clone(),
+        parent.path().join("delft.parquet"),
+    ))
+    .unwrap();
+    let out_csv = parent.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        parent.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "2",
+        "--scenarios",
+        "count,full-read",
+        "--formats",
+        "cityparquet",
+        "--transport",
+        "http",
+        "--network-profile",
+        "test",
+        "--network-bandwidth-mbps",
+        "500",
+        "--network-latency-ms",
+        "1",
+    ]);
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(rows.len(), 2, "{csv_text}");
+    let sidecar: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(cityparquet_readbench_params_path(&out_csv)).unwrap(),
+    )
+    .unwrap();
+    let net = &sidecar["network"];
+    assert_eq!(net["target"], "simulated");
+    assert_eq!(net["profile"], "test");
+    assert_eq!(net["bandwidth_mbps"], 500.0);
+    assert_eq!(net["latency_ms"], 1.0);
+    assert_eq!(net["server"]["requests"], net["clients"]["requests"]);
+    assert_eq!(net["server"]["body_bytes"], net["clients"]["bytes_read"]);
+    assert!(net["server"]["requests"].as_u64().unwrap() > 0);
+}
+
+fn cityparquet_readbench_params_path(out: &Path) -> PathBuf {
+    let mut name = out.as_os_str().to_os_string();
+    name.push(".params.json");
+    PathBuf::from(name)
+}
