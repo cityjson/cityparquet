@@ -26,6 +26,9 @@ FAMILIES = ("sizes", "formats", "bloom", "databases")
 # evidence:
 #   full   the corpus and the 3DBAG slice, 25 read repetitions, results in each
 #          family's own directory; the database family measures the slice;
+#   quick  the same datasets as `full` at 7 repetitions, results under
+#          `<family>/quick/`; a complete run in about a third of the time,
+#          never the paper's evidence;
 #   short  the corpus without the slice, the same repetitions, results under
 #          `<family>/short/`; for iterating on the harness in an hour instead
 #          of a day;
@@ -33,7 +36,7 @@ FAMILIES = ("sizes", "formats", "bloom", "databases")
 #          never a measurement.
 # Under `short` and `smoke` the database family measures the manifest's
 # `small_database_dataset` (Rotterdam) in the slice's place.
-PROFILES = ("full", "short", "smoke")
+PROFILES = ("full", "quick", "short", "smoke")
 # The dataset roles that are format, size and bloom inputs.
 INPUT_ROLES = frozenset({"corpus", "slice"})
 # The read recipes' shared-host isolation (benchmark/README.md, "Running on
@@ -48,7 +51,7 @@ def slice_dataset(manifest: dict) -> str:
 
 def database_dataset(manifest: dict, profile: str) -> str:
     """The manifest key of the dataset the database family measures."""
-    if profile == "full":
+    if profile in {"full", "quick"}:
         return slice_dataset(manifest)
     return manifest["suite"]["small_database_dataset"]
 
@@ -303,16 +306,34 @@ def require_prepared(inputs: list[Path], locations: dict[str, Path]) -> None:
 
 def read_repeat(profile: str) -> int:
     """Timed read repetitions per cell (each after one discarded warm-up)."""
-    return 1 if profile == "smoke" else 25
+    return {"smoke": 1, "quick": 7}.get(profile, 25)
+
+
+#: The read families' default memory ceiling for the measured children, in
+#: DECIMAL bytes (64 GB = 64,000,000,000 B), like every size in this
+#: repository. Smoke runs default to no ceiling.
+DEFAULT_MEMORY_MAX = 64_000_000_000
+
+
+def memory_ceiling(requested: str | None, profile: str) -> int | None:
+    """The memory ceiling a run applies: the profile's default when nothing
+    was requested, ``None`` for ``off``, otherwise a byte count."""
+    if requested is None:
+        return None if profile == "smoke" else DEFAULT_MEMORY_MAX
+    if requested == "off":
+        return None
+    if not requested.isdigit():
+        raise SystemExit(f"--memory-max takes a byte count or off, not {requested!r}")
+    return int(requested)
 
 
 def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None) -> None:
     smoke = profile == "smoke"
     repeat = read_repeat(profile)
     budget = "" if cell_budget_s is None else str(cell_budget_s)
-    isolation = isolation or DEFAULT_ISOLATION
+    isolation = isolation or {**DEFAULT_ISOLATION, "memory_max": memory_ceiling(None, profile)}
     sampling = {"cell_budget_s": cell_budget_s, "min_repeat": min_repeat, "isolation": isolation}
-    isolation_args = (str(isolation["numa_node"]), "" if isolation["memory_max"] is None else str(isolation["memory_max"]), str(isolation["max_load"]), str(isolation["max_load_wait_s"]))
+    isolation_args = (str(isolation["numa_node"]), "off" if isolation["memory_max"] is None else str(isolation["memory_max"]), str(isolation["max_load"]), str(isolation["max_load_wait_s"]))
     selected = {key: manifest["datasets"][key] for key in datasets}
     inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in INPUT_ROLES]
     require_prepared(inputs, locations)
@@ -363,7 +384,11 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         # The count tolerance is passed explicitly rather than left to the
         # CLI default so the suite's own choice is visible here and in the
         # run manifest.
-        command("uv", "run", "--project", "benchmark/databases", "python", "-m", "citybench.cli", "smoke" if smoke else "run", "--data-root", str(root), "--prepared-dir", str(locations["prepared"]), "--dataset", str(database_input), "--output-dir", str(output), "--count-tolerance", str(DATABASE_COUNT_TOLERANCE))
+        command("uv", "run", "--project", "benchmark/databases", "python", "-m", "citybench.cli", "smoke" if smoke else "run", "--data-root", str(root), "--prepared-dir", str(locations["prepared"]), "--dataset", str(database_input), "--output-dir", str(output), "--count-tolerance", str(DATABASE_COUNT_TOLERANCE),
+                *([] if smoke else ["--repeat", str(repeat)]),
+                # Recorded in the database manifest, not applied: see
+                # benchmark/databases/README.md "Host isolation".
+                *([] if isolation["memory_max"] is None else ["--memory-max", str(isolation["memory_max"])]))
 
 
 def parser() -> argparse.ArgumentParser:
@@ -371,12 +396,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("command", choices=("prep", "run", "summary"))
     result.add_argument("--families", default="all", help=f"comma-separated families from {','.join(FAMILIES)}, or all")
     result.add_argument("--datasets", default="")
-    result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 25 read repetitions, the families' own result directories (the paper's evidence); short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Rotterdam alone, 1 repetition, under <family>/smoke/. Under short and smoke the database family measures Rotterdam")
+    result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 25 read repetitions, the families' own result directories (the paper's evidence); quick: the same datasets at 7 repetitions, under <family>/quick/, a faster complete run that is not the paper's evidence; short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Rotterdam alone, 1 repetition, under <family>/smoke/. Under full and quick the database family measures the 3DBAG slice, under short and smoke Rotterdam")
     result.add_argument("--smoke", action="store_true", help="the same as --profile smoke")
     result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")
     result.add_argument("--cell-budget-s", type=float, default=None, help="run only: optional per-cell time budget in seconds for the formats and bloom families (default: off); a cell stops sampling once its runs, warm-up included, took this long and at least --min-repeat samples exist")
     result.add_argument("--numa-node", default=DEFAULT_ISOLATION["numa_node"], help="run only: NUMA node for the read families' measured processes: an id, auto (most free memory; default, or $BENCH_NUMA_NODE) or off")
-    result.add_argument("--memory-max", type=int, default=None, help="run only: memory ceiling in bytes for the read families' measured processes, via systemd-run --user (default: off)")
+    result.add_argument("--memory-max", default=None, help="run only: memory ceiling in decimal bytes for the read families' measured processes, via systemd-run --user, or off (default: 64000000000 = 64 GB under full, quick and short; off under smoke). The database family records it but does not apply it")
     result.add_argument("--max-load", default="auto", help="run only: load gate before every read sample: the pinned node's load share against this threshold; auto = half the node's cores, off disables")
     result.add_argument("--max-load-wait-s", type=int, default=600, help="run only: the longest a read sample waits for the load to drop before it proceeds and its cell is tagged busy (default 600)")
     result.add_argument("--min-repeat", type=int, default=7, help="run only: the fewest timed samples a budgeted cell takes (default 7, clamped to the repetitions)")
@@ -403,7 +428,7 @@ def main() -> None:
     if args.command == "prep":
         prepare(data, locations, families, datasets, profile)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": args.memory_max, "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s})
+        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s})
     else:
         output = (args.out or locations["summary"] / profile).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None

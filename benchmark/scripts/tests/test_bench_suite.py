@@ -52,6 +52,25 @@ class SelectionTests(unittest.TestCase):
         locations = bench_suite.paths(bench_suite.DEFAULT_DATA_ROOT)
         self.assertEqual(bench_suite.result_dir(locations, "formats", "short"), locations["formats"] / "short" / "results")
         self.assertEqual(bench_suite.result_dir(locations, "formats", "full"), locations["formats"] / "results")
+    def test_quick_profile_measures_the_full_dataset_set_at_7_repetitions(self):
+        for families in (["formats"], ["bloom"], ["databases"]):
+            self.assertEqual(bench_suite.dataset_selection(self.manifest, families, "", "quick"),
+                             bench_suite.dataset_selection(self.manifest, families, "", "full"))
+        self.assertEqual(bench_suite.read_repeat("quick"), 7)
+    def test_quick_profile_results_have_their_own_directories(self):
+        locations = bench_suite.paths(bench_suite.DEFAULT_DATA_ROOT)
+        self.assertEqual(bench_suite.result_dir(locations, "formats", "quick"), locations["formats"] / "quick" / "results")
+        self.assertEqual(bench_suite.result_dir(locations, "bloom", "quick"), locations["formats"] / "quick" / "bloom_results")
+
+class MemoryCeilingTests(unittest.TestCase):
+    def test_the_default_ceiling_is_64_decimal_gigabytes_except_under_smoke(self):
+        for profile in ("full", "quick", "short"):
+            self.assertEqual(bench_suite.memory_ceiling(None, profile), 64_000_000_000)
+        self.assertIsNone(bench_suite.memory_ceiling(None, "smoke"))
+    def test_the_ceiling_can_be_overridden_or_switched_off(self):
+        self.assertEqual(bench_suite.memory_ceiling("8000000000", "full"), 8_000_000_000)
+        self.assertIsNone(bench_suite.memory_ceiling("off", "full"))
+        with self.assertRaises(SystemExit): bench_suite.memory_ceiling("64G", "full")
 
 class ProvenanceTests(unittest.TestCase):
     def test_the_run_manifest_hashes_the_result_and_its_sidecars(self):
@@ -83,6 +102,44 @@ class ProvenanceTests(unittest.TestCase):
             bench_suite.run_suite(manifest, {"prepared": Path("p"), "data": Path("d")}, ["formats", "bloom"], ["d"], "full", isolation=isolation)
         for call in calls:
             self.assertEqual(call[-4:], ("1", "8000000000", "off", "60"), call)
+
+    def _database_command(self, profile, memory_max):
+        from unittest import mock
+        commands = []
+        isolation = {"numa_node": "auto", "memory_max": memory_max, "max_load": "auto", "max_load_wait_s": 600}
+        root = Path("/runs")
+        with mock.patch.object(bench_suite, "command", lambda *a: commands.append(list(a))), \
+             mock.patch.object(bench_suite, "require_prepared", lambda *a: None), \
+             mock.patch.object(bench_suite, "source", lambda entry, locations: Path(__file__)):
+            manifest = {"datasets": {"s": {"role": "slice"}}, "suite": {"slice_dataset": "s", "small_database_dataset": "r"}}
+            locations = {"prepared": root / "data/readbench", "formats": root / "formats", "databases": root / "databases"}
+            bench_suite.run_suite(manifest, locations, ["databases"], ["s"], profile, isolation=isolation)
+        (cmd,) = commands
+        return cmd
+
+    def test_the_database_family_runs_the_profiles_repetitions_into_its_own_directory(self):
+        cmd = self._database_command("quick", 64_000_000_000)
+        self.assertEqual(cmd[cmd.index("--repeat") + 1], "7")
+        self.assertEqual(cmd[cmd.index("--output-dir") + 1], "/runs/databases/quick")
+        self.assertEqual(self._database_command("full", None)[self._database_command("full", None).index("--repeat") + 1], "25")
+
+    def test_the_database_family_records_the_memory_ceiling(self):
+        cmd = self._database_command("full", 64_000_000_000)
+        self.assertEqual(cmd[cmd.index("--memory-max") + 1], "64000000000")
+        self.assertNotIn("--memory-max", self._database_command("full", None))
+
+    def test_an_off_ceiling_reaches_the_read_recipes_as_off(self):
+        from unittest import mock
+        calls = []
+        with mock.patch.object(bench_suite, "just", lambda *a: calls.append(a)), \
+             mock.patch.object(bench_suite, "require_prepared", lambda *a: None), \
+             mock.patch.object(bench_suite, "source", lambda entry, locations: Path("x.city.jsonl")), \
+             mock.patch.object(bench_suite, "stage", lambda *a: Path("stage")), \
+             mock.patch.object(bench_suite, "result_dir", lambda *a: Path("out")), \
+             mock.patch.object(bench_suite, "write_run_manifest", lambda *a, **k: None):
+            bench_suite.run_suite({"datasets": {"d": {"role": "corpus"}}}, {"prepared": Path("p")}, ["formats"], ["d"], "full",
+                                  isolation={"numa_node": "auto", "memory_max": None, "max_load": "auto", "max_load_wait_s": 600})
+        self.assertEqual(calls[0][-3], "off")
 
 
 if __name__ == "__main__":

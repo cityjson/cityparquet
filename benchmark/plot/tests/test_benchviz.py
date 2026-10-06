@@ -195,6 +195,19 @@ def test_database_loader_uses_explicit_smoke_mode(tmp_path: Path):
     assert prep.load_databases(prep.Inputs(root / "formats" / "smoke"))["dataset"] == "smoke"
 
 
+def test_database_loader_reads_the_quick_profiles_own_directory(tmp_path: Path):
+    root = tmp_path / "benchmark"
+    base = {key: "" for key in DB_COLUMNS}
+    for profile, directory in (("full", root / "databases" / "results"), ("quick", root / "databases" / "quick")):
+        directory.mkdir(parents=True)
+        _db_csv(
+            directory / f"{profile}.csv",
+            [{**base, "dataset": profile, "format": "3dcitydb", "scenario": "count", "status": "ok"}],
+        )
+        (directory / f"{profile}.params.json").write_text(json.dumps({"total_city_objects": 20}))
+    assert prep.load_databases(prep.Inputs(root / "formats" / "quick"))["dataset"] == "quick"
+
+
 def test_bloom_axis_keys_the_lookup_probes_and_carries_the_counters(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     data, _ = prep.build(prep.Inputs(bench))
