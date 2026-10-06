@@ -108,7 +108,11 @@ See [`../README.md`](../README.md) for the experimental matrix and figure list.
 - **Sizes are on-disk bytes.** A file's size is its length; a CityParquet
   package's is the sum of every file in its directory
   (`benchmark/scripts/measure_sizes.py` for the format comparison, the
-  coordinator's `sizes.csv` for the bloom family).
+  coordinator's `sizes.csv` for the bloom family). Both write one
+  `sizes.csv` schema, `dataset,format,bytes,mb_decimal`: the byte column is
+  the measurement and `mb_decimal` is bytes / 10^6 (1 MB = 10^6 bytes), for
+  reading the file by eye. Ratios between formats are derived from the bytes
+  by the renderer, in one place.
 - **Seven timing statistics over `repeat` read samples** — default 25, run back to back after one discarded warm-up; see `READ_BENCHMARK.md` "Sampling" for the optional cell time budget —
   reported at 6-decimal precision: `time_mean_s`, the **population standard
   deviation** `time_std_s` (the warm repeats are the whole measured set, not

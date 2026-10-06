@@ -63,7 +63,10 @@ wrote it; its count equals `duckdb-cityparquet`'s, so the recorded spread
 holds without it. The format CSVs, their samples and `sizes.csv` carried the
 Hilbert-ordered package as `cityparquet-hilbert`; it is relabelled
 `cityparquet`, the benchmark's one CityParquet format, with no value
-changed.
+changed. Both `sizes.csv` files hold `dataset,format,bytes,mb_decimal`. The runs
+wrote an `mb` column in units of 2^20 bytes and ratio columns against
+CityJSONSeq; the ratio columns are dropped and `mb_decimal` is recomputed as
+bytes / 10^6, with every byte value as the run wrote it.
 
 The `*.run.json` manifests and the database `3dbag_n1000000.manifest.json`
 record the run as it was made, and stay as that record: the run manifests'
