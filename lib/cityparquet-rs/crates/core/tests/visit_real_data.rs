@@ -352,3 +352,39 @@ fn attr_filter_statistics_pruning_matches_the_unpruned_scan() {
     let (count, _) = query::attr_filter_with_stats(&table, "object_type", &pred).unwrap();
     assert_eq!(count, 1116);
 }
+
+/// `feature_lookup_visit` visits exactly the rows `feature_lookup` decodes —
+/// a building and all its parts — with the same pruning counts.
+#[test]
+fn feature_lookup_visit_visits_every_row_of_the_feature() {
+    use cityparquet::query;
+    use cityparquet::reader::CityParquetReaderBuilder;
+    let out = convert_delft_small_row_groups();
+    let table = out.path().join("building.parquet");
+    let meta = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&table).unwrap())
+        .unwrap()
+        .cityparquet_metadata()
+        .unwrap();
+    let ids = query::bbox_query(
+        &table,
+        [f64::MIN, f64::MIN, f64::MIN, f64::MAX, f64::MAX, f64::MAX],
+    )
+    .unwrap()
+    .ids;
+    let part = ids
+        .iter()
+        .find(|id| id.contains('-'))
+        .expect("delft has parts");
+    let feature = part.split('-').next().unwrap();
+    let (objects, want) = query::feature_lookup_with_stats(&table, &meta, feature).unwrap();
+    assert!(objects.len() >= 2, "a building with a part");
+    let (totals, stats) = query::feature_lookup_visit(&table, feature).unwrap();
+    assert_eq!(totals.objects, objects.len() as u64);
+    assert_eq!(stats, want);
+    let (miss, stats) = query::feature_lookup_visit(&table, "NL.IMBAG.Pand.absent").unwrap();
+    assert_eq!(miss.objects, 0);
+    assert_eq!(
+        stats.bloom_pruned + stats.stats_pruned,
+        stats.row_groups_total
+    );
+}
