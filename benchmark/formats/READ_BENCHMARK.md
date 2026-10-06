@@ -1409,6 +1409,31 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     `http-range-client`'s buffered client, one ranged `GET` at a time, for
     the header, the spatial or attribute index and then the features.
 
+- **FlatCityBuf's indexed attribute filter over HTTP reads many times its
+    file, and the cause is the pinned library, not the format.** On
+    Rotterdam (a 2.95 MB `.fcb`) the `attr-filter` query
+    (`TerrainHeight >= 2.45`, 217 matching CityObjects) issues 144 ranged
+    `GET`s and reads 113.5 MB, about 38 times the file, while `full-read`
+    takes 4 requests and 2.95 MB and the 1 % window 4 requests and 85 kB.
+    The runner opens the file once and reads each hit once; the bytes come
+    from `fcb_core` 0.7.6 and `http-range-client` 0.9.1. The B+-tree node
+    fetch (`static_btree/stree.rs`) sets the buffered client's minimum
+    request size to 1 MiB and nothing resets it, and the hit list comes
+    back in key order, not file order, so a hit that falls before the
+    buffer, or past its end, clears the buffer and fetches 1 MiB (or up
+    to the end of the file) from that feature's offset; the next hit
+    usually falls outside that buffer again. The spatial window does not
+    show this because its iterator sets its own request size and visits
+    the features in file order. A text equality filter does not reach
+    this path on this corpus: Vienna's `roofType = FLACHDACH` names 600
+    CityObjects in a 307-feature file, so its hit list is longer than the
+    feature count and the row falls back to a `select_all` walk (tagged
+    `attr-index-failed`; 9 requests, 4.6 MB for a 3.6 MB file). The
+    attribute filter's bytes, requests and time over HTTP are therefore a
+    property of this client, and a reader should not cite them as the
+    cost of FlatCityBuf's attribute index; the local arm reads a file
+    handle and is not affected.
+
 ## Environment
 
 **Two halves, and both must be recorded for a run to be reproducible**: the
