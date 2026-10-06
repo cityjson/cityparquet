@@ -576,3 +576,59 @@ def test_bbox_query_rechecks_the_probe_in_double_precision():
     for bound in ("ST_XMax(f.envelope) >= %s", "ST_XMin(f.envelope) <= %s",
                   "ST_YMax(f.envelope) >= %s", "ST_YMin(f.envelope) <= %s"):
         assert bound in sql
+
+
+# --- attributes citydb-tool stores as structured CityGML 3.0 datatypes ---
+
+from citybench.scenarios.sql_citydb import (  # noqa: E402
+    AttributePath, resolve_attribute_path,
+)
+
+HEIGHT = AttributePath(name="value", parent="height", parent_status="measured")
+
+
+@pytest.mark.parametrize("scenario", ["attr-range", "attr-stats"])
+def test_a_structured_attribute_is_read_from_its_child_value_row(scenario):
+    """citydb-tool stores CityJSON's `measuredHeight` as a `height`
+    property (CityGML 3.0 `Height`) whose scalar is the child row `value`
+    and whose child `status` is `measured` — no row is named
+    `measuredHeight` (Tokyo: 3DCityDB returned 0 rows)."""
+    params = _params(numeric_column="measuredHeight")
+    sql, args = sql_for(scenario, params, cityobject_class_ids=IDS,
+                        attribute_paths={"measuredHeight": HEIGHT,
+                                         params.attr_range.column: HEIGHT})
+    assert "JOIN citydb.property h ON h.id = pr.parent_id" in sql
+    assert "s.parent_id = h.id AND s.name = 'status' AND s.val_string = %s" in sql
+    assert args[:3] == ("value", "height", "measured")
+
+
+def test_a_generic_attribute_keeps_the_direct_name_lookup():
+    sql, args = sql_for("attr-range", PARAMS, cityobject_class_ids=IDS,
+                        attribute_paths={PARAMS.attr_range.column:
+                                         AttributePath(PARAMS.attr_range.column)})
+    assert "parent_id" not in sql
+    assert args[0] == PARAMS.attr_range.column
+
+
+class _Catalogue:
+    """A stand-in connection answering the resolver's existence probes."""
+    def __init__(self, top_level: set[str], structured: set[tuple[str, str, str]]):
+        self.top_level, self.structured = top_level, structured
+
+    def execute(self, sql, args):
+        hit = (args[0] in self.top_level if len(args) == 1
+               else tuple(args) in self.structured)
+        return type("C", (), {"fetchone": lambda _self: (1,) if hit else None})()
+
+
+def test_the_resolver_prefers_a_top_level_row_of_the_attribute_name():
+    conn = _Catalogue({"b3_h_dak_max", "measuredHeight"}, {("value", "height", "measured")})
+    assert resolve_attribute_path(conn, "b3_h_dak_max") == AttributePath("b3_h_dak_max")
+    assert resolve_attribute_path(conn, "measuredHeight") == AttributePath("measuredHeight")
+
+
+def test_the_resolver_falls_back_to_citydb_tools_structured_mapping_when_present():
+    conn = _Catalogue(set(), {("value", "height", "measured")})
+    assert resolve_attribute_path(conn, "measuredHeight") == HEIGHT
+    assert resolve_attribute_path(_Catalogue(set(), set()), "measuredHeight") is None
+    assert resolve_attribute_path(conn, "unknownAttribute") is None

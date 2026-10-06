@@ -11,6 +11,8 @@ captured from a real import rather than read from prose documentation.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from citybench.config import BBox, BboxWindow, IdProbe, Params
 from citybench.scenarios import registry
 from citybench.scenarios.registry import ScenarioUnavailable
@@ -289,6 +291,70 @@ def resolve_datatype_id(conn, typename: str = DOUBLE_TYPENAME) -> int:
     return int(row[0])
 
 
+@dataclass(frozen=True)
+class AttributePath:
+    """Where `citydb-tool` put one CityJSON attribute's scalar.
+
+    A generic attribute is a top-level `property` row carrying the
+    attribute's own name (`parent` None). An attribute CityGML 3.0 models
+    as a structured datatype is a top-level row of the datatype's property
+    (`parent`) whose scalar sits on a child row (`name`), identified among
+    the property's other uses by its child `status` row (`parent_status`).
+    """
+    name: str
+    parent: str | None = None
+    parent_status: str | None = None
+
+
+#: The CityJSON attributes `citydb-tool` converts to a structured CityGML
+#: 3.0 datatype rather than a generic attribute: CityGML 3.0 drops
+#: `bldg:measuredHeight` for `con:height` (type `Height`), and the importer
+#: writes the value as `height`/`value` with `status = measured`. This is the
+#: importer's mapping, not a per-dataset choice; `resolve_attribute_path`
+#: uses an entry only after finding it in the loaded catalogue. CityJSON
+#: attributes that keep their CityGML name (`usage`, `storeysAboveGround`,
+#: ...) are top-level rows of that name and need no entry.
+CITYJSON_STRUCTURED_ATTRIBUTES = {
+    "measuredHeight": AttributePath(name="value", parent="height", parent_status="measured"),
+}
+
+
+def resolve_attribute_path(conn, column: str) -> AttributePath | None:
+    """How a 3DCityDB user finds `column`: a top-level row of that name if
+    the import wrote one, else the importer's structured form of it if that
+    is present; None if neither is."""
+    if conn.execute(
+            f"SELECT 1 FROM {_P} WHERE name = %s AND parent_id IS NULL LIMIT 1",
+            (column,)).fetchone():
+        return AttributePath(column)
+    mapped = CITYJSON_STRUCTURED_ATTRIBUTES.get(column)
+    if mapped and conn.execute(
+            f"SELECT 1 FROM {_P} pr JOIN {_P} h ON h.id = pr.parent_id "
+            f"JOIN {_P} s ON s.parent_id = h.id AND s.name = 'status' "
+            "WHERE pr.name = %s AND h.name = %s AND s.val_string = %s LIMIT 1",
+            (mapped.name, mapped.parent, mapped.parent_status)).fetchone():
+        return mapped
+    return None
+
+
+def _attribute_rows(column: str, paths: dict[str, AttributePath] | None,
+                    cityobject_class_ids: tuple[int, ...]) -> tuple[str, tuple]:
+    """`FROM ... WHERE ...` selecting the `property` rows (alias `pr`,
+    feature `f`) that carry `column`'s scalar, and its arguments."""
+    path = (paths or {}).get(column) or AttributePath(column)
+    head = (f"FROM {_P} pr JOIN {_F} f ON f.id = pr.{CAPTURED_PROPERTY_FK} "
+            f"WHERE {_static_predicate(cityobject_class_ids)} "
+            f"AND pr.{CAPTURED_PROPERTY_NAME_COLUMN} = %s")
+    if path.parent is None:
+        return head, (path.name,)
+    return (
+        head.replace("WHERE", f"JOIN {_P} h ON h.id = pr.parent_id WHERE", 1)
+        + " AND h.name = %s AND EXISTS (SELECT 1 FROM "
+        f"{_P} s WHERE s.parent_id = h.id AND s.name = 'status' AND s.val_string = %s)",
+        (path.name, path.parent, path.parent_status),
+    )
+
+
 def exact_box_predicate(column: str) -> str:
     """The window test on a stored box: the GiST probe, then the exact one.
 
@@ -315,7 +381,8 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
             srid: int = 0, *,
             probe: IdProbe | None = None,
             cityobject_class_ids: tuple[int, ...],
-            building_class_id: int | None = None) -> tuple[str, tuple]:
+            building_class_id: int | None = None,
+            attribute_paths: dict[str, AttributePath] | None = None) -> tuple[str, tuple]:
     """`cityobject_class_ids` is keyword-only and has no default,
     deliberately: every scenario branch except `id-lookup` needs the
     CityObject-granularity predicate, and a silent default (e.g. an empty
@@ -378,36 +445,21 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
             raise ScenarioUnavailable("dataset has no attr-filter predicate")
         spec = p.attr_filter
         if spec.op == "eq":
-            return (
-                f"SELECT f.{CAPTURED_ID_COLUMN} FROM {_P} pr "
-                f"JOIN {_F} f ON f.id = pr.{CAPTURED_PROPERTY_FK} "
-                f"WHERE {_static_predicate(cityobject_class_ids)} "
-                f"AND pr.{CAPTURED_PROPERTY_NAME_COLUMN} = %s "
-                "AND pr.val_string = %s",
-                (spec.column, spec.eq_value),
-            )
-        return (
-            f"SELECT f.{CAPTURED_ID_COLUMN} FROM {_P} pr "
-            f"JOIN {_F} f ON f.id = pr.{CAPTURED_PROPERTY_FK} "
-            f"WHERE {_static_predicate(cityobject_class_ids)} "
-            f"AND pr.{CAPTURED_PROPERTY_NAME_COLUMN} = %s "
-            "AND coalesce(pr.val_double, pr.val_int) >= %s",
-            (spec.column, spec.ge_bound),
-        )
+            rows, rargs = _attribute_rows(spec.column, attribute_paths, cityobject_class_ids)
+            return (f"SELECT f.{CAPTURED_ID_COLUMN} {rows} AND pr.val_string = %s",
+                    (*rargs, spec.eq_value))
+        rows, rargs = _attribute_rows(spec.column, attribute_paths, cityobject_class_ids)
+        return (f"SELECT f.{CAPTURED_ID_COLUMN} {rows} "
+                "AND coalesce(pr.val_double, pr.val_int) >= %s", (*rargs, spec.ge_bound))
 
     if scenario == "attr-range":
         # CJDB Q1 on v5's EAV schema. `coalesce(val_double, val_int)` for
         # the same reason `attr-stats` uses it.
         if p.attr_range is None:
             raise ScenarioUnavailable("dataset has no numeric attribute")
-        return (
-            f"SELECT f.{CAPTURED_ID_COLUMN} FROM {_P} pr "
-            f"JOIN {_F} f ON f.id = pr.{CAPTURED_PROPERTY_FK} "
-            f"WHERE {_static_predicate(cityobject_class_ids)} "
-            f"AND pr.{CAPTURED_PROPERTY_NAME_COLUMN} = %s "
-            "AND coalesce(pr.val_double, pr.val_int) > %s",
-            (p.attr_range.column, p.attr_range.threshold),
-        )
+        rows, rargs = _attribute_rows(p.attr_range.column, attribute_paths, cityobject_class_ids)
+        return (f"SELECT f.{CAPTURED_ID_COLUMN} {rows} "
+                "AND coalesce(pr.val_double, pr.val_int) > %s", (*rargs, p.attr_range.threshold))
 
     if scenario == "attr-stats":
         # Mirrors the guards the other two modules apply: a
@@ -446,12 +498,11 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         # coalesce over sibling val_* columns of the SAME row can reach it;
         # that one stays a genuine, undoctored architectural difference.
         col = "coalesce(pr.val_double, pr.val_int)"
+        rows, rargs = _attribute_rows(p.numeric_column, attribute_paths, cityobject_class_ids)
         return (
             f"SELECT min({col}), max({col}), "
-            f"sum({col}), count({col}) "
-            f"FROM {_P} pr JOIN {_F} f ON f.id = pr.{CAPTURED_PROPERTY_FK} "
-            f"WHERE {_static_predicate(cityobject_class_ids)} AND pr.{CAPTURED_PROPERTY_NAME_COLUMN} = %s",
-            (p.numeric_column,),
+            f"sum({col}), count({col}) {rows}",
+            rargs,
         )
 
     if scenario == "id-lookup":

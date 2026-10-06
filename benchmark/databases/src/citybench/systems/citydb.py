@@ -64,6 +64,7 @@ class CityDbSystem:
         # Resolved once per ingest, live, rather than hard-coded: the
         # `objectclass`/`datatype` catalogues are schema-version facts.
         self._building_class_id: int | None = None
+        self._attribute_paths: dict[str, sql_citydb.AttributePath] = {}
         self._datatype_id: int | None = None
         # Resolved ONCE per `ingest()` by `sql_citydb.resolve_cityobject_class_ids`
         # (C1 fix) — a plain `objectclass_id IN (...)` over this set replaces
@@ -188,6 +189,7 @@ class CityDbSystem:
             scenario, params, pg.oriented(window, self._swap_xy), self._srid, probe=probe,
             cityobject_class_ids=self._cityobject_class_ids,
             building_class_id=self._building_class_id,
+            attribute_paths=self._attribute_paths,
         )
         return pg.fetch_rows(self._conn, sql, args)
 
@@ -198,6 +200,14 @@ class CityDbSystem:
         statistics on the new index expressions.
         """
         assert self._conn is not None
+        # Where the import put each queried attribute (a generic attribute
+        # row, or citydb-tool's structured CityGML 3.0 form of it), resolved
+        # once against the loaded catalogue, untimed.
+        columns = {params.numeric_column, params.attr_range and params.attr_range.column,
+                   params.attr_filter and params.attr_filter.column} - {None}
+        self._attribute_paths = {
+            column: path for column in columns
+            if (path := sql_citydb.resolve_attribute_path(self._conn, column)) is not None}
         ddl = sql_citydb.attribute_index_ddl(params)
         start = time.perf_counter()
         with self._conn.cursor() as cur:
@@ -220,6 +230,7 @@ class CityDbSystem:
             scenario, params, pg.oriented(window, self._swap_xy), self._srid, probe=probe,
             cityobject_class_ids=self._cityobject_class_ids,
             building_class_id=self._building_class_id,
+            attribute_paths=self._attribute_paths,
         )
 
         pg.time_query(self._conn, sql, args, count_mode=mode)  # discarded warm-up
