@@ -1366,7 +1366,7 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
 
 ## Running the benchmark
 
-### Through the suite (the path that produced the committed run)
+### Through the suite
 
 From the repository root, the database family runs through
 `benchmark/scripts/bench_suite.py`:
@@ -1381,9 +1381,11 @@ just bench-run  --families databases   # isolated databases, one run
 `3dbag_n1000000`) into `benchmark/runs/data/`, and runs `citybench prep`,
 which runs `just build-citydb` and `just patch-cjdb`. `bench-run` calls
 `citybench run --data-root benchmark/runs --prepared-dir
-benchmark/runs/data/readbench --dataset <slice> --output-dir
-benchmark/runs/databases/results --repeat 25`. `--profile quick` measures
-the same slice with `--repeat 7` into `benchmark/runs/databases/quick/`; the
+benchmark/runs/data/readbench --dataset <input> --output-dir
+benchmark/runs/databases/results --repeat 25` once per dataset the family
+measures; `--database-datasets all|<ids>` selects them (default: the
+slice under `full` and `quick`). `--profile quick` measures the same
+datasets with `--repeat 7` into `benchmark/runs/databases/quick/`; the
 CSV's `repeat` column and the manifest carry the 7. Under `--profile short` and
 `--profile smoke` (or `--smoke`), the database family measures the
 manifest's `small_database_dataset`, Rotterdam, through its prepared
@@ -1397,12 +1399,15 @@ Only the `full` and `quick` profiles measure the slice. Figures come from
 From `benchmark/databases/`:
 
 ```sh
-uv run python -m citybench.cli run \
+uv run python -m citybench.cli \
+  [--container-engine container|docker|podman] \
+  [--duckdb-cityjson-extension <path>] \
+  run \
   --data-root ../runs \
   --prepared-dir ../runs/data/readbench \
-  --dataset <path/to/dataset>.city.jsonl \
+  (--dataset <path/to/dataset>.city.jsonl | --datasets all|<id>,...) \
   [--systems duckdb-cityparquet,duckdb-cityparquet-writeback,cjdb,3dcitydb] \
-  [--repeat 25] [--srid 7415] [--count-tolerance 0.001] \
+  [--repeat 25] [--count-tolerance 0.001] \
   [--numa-node auto|off|<N>] [--max-load auto|off|<x>] \
   [--max-load-wait-s 600] [--memory-max <bytes>] \
   [--output-dir <dir>]
@@ -1427,7 +1432,9 @@ With `--data-root` (which must lie below `benchmark/runs/`),
   `temp_directory`;
 - waits until both servers accept connections and 3DCityDB's v5 schema
   exists;
-- passes `--srid` to the 3DCityDB container as `SRID` (default 7415);
+- passes the package's SRID to the 3DCityDB container as `SRID`: the EPSG
+  code of the package's CRS, or EPSG:7415 as a placeholder for a CRS-less
+  dataset, marked `assumed` in the manifest's `crs` block;
 - stops (and thereby removes) the containers and deletes the temporary
   directory when the run ends. The data directories under
   `<data-root>/databases/<uuid>/` remain on disk.
@@ -1436,7 +1443,10 @@ With `--data-root` (which must lie below `benchmark/runs/`),
 changed afterwards; a wrong SRID does not raise an error but silently
 mislabels spatial results. The manifest's `srid` block records the SRID each
 PostgreSQL system reports after import (`cj_metadata` and `database_srs`),
-not the requested value.
+not the requested value. Each system also declares the axis order it
+answers in (`orient_to`), and the manifest's `axis_order` block records it:
+`package order`, or `source order, x/y exchanged for windows` for a system
+that stores the source's axis order where the package's differs.
 
 The CityParquet package must already exist as
 `<prepared-dir>/<dataset>.parquet`, for example from
@@ -1500,7 +1510,15 @@ just test-all   # includes integration tests, which need running databases
 
 ## Environment
 
-From the committed manifest (`3dbag_n1000000.manifest.json`):
+Every run's manifest records the platform, the Python and DuckDB versions,
+the cjdb version with its patch disclosure, and the live provenance of the
+database servers: each PostgreSQL system's server and PostGIS versions, for
+3DCityDB its schema version and `citydb-tool --version`, and the container
+engine's digest of every image the run used. The images are pinned in
+`src/citybench/lifecycle.py` (PostgreSQL 16.4, PostGIS 3.4.3, 3DCityDB
+5.1.2) and `docker/citydb.Dockerfile` (`citydb-tool` 1.3.2 on
+`eclipse-temurin:21-jre`). The committed manifest predates the live
+provenance block; it records:
 
 ```
 platform:  Linux-6.8.0-136-generic-x86_64-with-glibc2.39
@@ -1510,10 +1528,3 @@ duckdb (Python client): 1.5.5
 cjdb:      2.2.0+ground-surfaces-tie-patch (patch SHA-256 a54a9fd1909a…, identical to the committed patch file)
 SRID:      7415 (cjdb and 3dcitydb)
 ```
-
-Pinned in code rather than recorded in the manifest: the PostgreSQL images
-(`src/citybench/lifecycle.py`), 3DCityDB 5.1.2 through the 3DCityDB image tag,
-and `citydb-tool` 1.3.2 on `eclipse-temurin:21-jre`
-(`docker/citydb.Dockerfile`). PostgreSQL 16.4 and PostGIS 3.4 are the values
-captured in `docs/*-schema.md`. The manifest records no CPU model, core
-count or memory size.
