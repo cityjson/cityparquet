@@ -11,6 +11,8 @@ import statistics
 import os
 import threading
 import subprocess
+
+from citybench import engine
 from collections.abc import Callable
 from typing import TypeVar
 
@@ -29,11 +31,15 @@ def resident_bytes(pid: int) -> int | None:
     return None
 
 
-def host_pid_from_podman(container: str, container_pid: int) -> int | None:
-    """Return one PostgreSQL host PID from Podman's container-scoped table."""
+def host_pid_from_engine_top(container: str, container_pid: int) -> int | None:
+    """Return one PostgreSQL host PID from Podman's container-scoped ``top``
+    table (``hpid`` is Podman's spelling; other engines return ``None``)."""
+    active = engine.active()
+    if active.name != "podman" or active.host_proc_gap():
+        return None
     try:
         rows = subprocess.check_output(
-            ["podman", "top", container, "hpid", "pid", "comm"],
+            active.cmd("top", container, "hpid", "pid", "comm"),
             text=True, stderr=subprocess.DEVNULL,
         ).splitlines()[1:]
         matches = [line.split()[0] for line in rows if len(line.split()) >= 3
@@ -45,10 +51,14 @@ def host_pid_from_podman(container: str, container_pid: int) -> int | None:
 
 
 def container_init_host_pid(container: str) -> int | None:
-    """Host PID of a verified Podman container init, or ``None``."""
+    """Host PID of a verified container init, or ``None`` (always ``None``
+    when the engine runs a virtual machine: its PIDs are not host PIDs)."""
+    active = engine.active()
+    if active.host_proc_gap():
+        return None
     try:
         output = subprocess.check_output(
-            ["podman", "inspect", "--format", "{{.State.Pid}}", container],
+            active.cmd("inspect", "--format", "{{.State.Pid}}", container),
             text=True, stderr=subprocess.DEVNULL,
         ).strip()
         return int(output) if int(output) > 0 else None

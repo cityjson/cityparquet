@@ -13,6 +13,8 @@ fixture's windows carry a real `achieved` fraction and `approx` flag.
 
 from __future__ import annotations
 
+import pytest
+
 from citybench.config import (
     BBOX_TARGETS, AppendSpec, AttrFilter, AttrRange, BBox, IdProbe, Params,
     window_for_target,
@@ -78,3 +80,15 @@ def ge_attr_filter(column: str = "TerrainHeight", bound: float = 2.45) -> AttrFi
         column=column, op="ge", eq_value=None, ge_bound=bound,
         matched=25, share=0.25, hand_picked=True,
     )
+
+
+@pytest.fixture(autouse=True)
+def fake_engine(monkeypatch):
+    from citybench import engine
+    """A probed-looking podman on Linux, so no engine needs to be installed."""
+    fake = engine.Engine(name="podman", binary="podman", version="podman version 5",
+                         run_flags=frozenset({"--cpus", "--memory", "--shm-size", "--network", "--cpuset-cpus"}),
+                         platform="linux")
+    monkeypatch.setattr(engine, "_ACTIVE", fake)
+    monkeypatch.setattr(engine, "free_host_port", lambda: 40123)
+    return fake

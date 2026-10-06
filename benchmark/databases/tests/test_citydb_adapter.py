@@ -103,24 +103,34 @@ def test_tag_is_3dcitydb():
     assert CityDbSystem.tag == "3dcitydb"
 
 
-def test_ingest_invokes_podman_not_docker(tmp_path, monkeypatch):
-    # GLOBAL CONSTRAINT: the container runtime is rootless podman, not
-    # docker — the `docker` binary happens to exist on this host too
-    # (a separate, unrelated rootful daemon), but the harness's stack is
-    # brought up by `just up` -> podman-compose, so the CLI invocation
-    # must agree.
+def test_ingest_invokes_the_active_engine_over_the_host_network(tmp_path, monkeypatch):
     captured = {}
-
-    def fake_run(argv, **kwargs):
-        captured["argv"] = argv
-
-    monkeypatch.setattr(citydb_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(citydb_module.subprocess, "run", lambda argv, **kw: captured.update(argv=argv))
     system, _ = _system_with_fake_conn(monkeypatch)
 
     system.ingest(_dataset(tmp_path))
 
-    assert captured["argv"][0] == "podman"
-    assert "docker" not in captured["argv"]
+    argv = captured["argv"]
+    assert argv[:2] == ["podman", "run"] and "--network" in argv
+    assert argv[argv.index("-H") + 1] == "localhost"
+
+
+def test_ingest_on_a_vm_engine_reaches_the_database_container_address(tmp_path, monkeypatch):
+    from citybench import engine
+    apple = engine.Engine(name="container", binary="container", version="1.0.0",
+                          run_flags=frozenset({"--cpus", "--memory", "--network"}), platform="darwin")
+    monkeypatch.setattr(engine, "_ACTIVE", apple)
+    monkeypatch.setattr(engine.Engine, "container_address", lambda self, name, runner=None: "192.168.64.9")
+    captured = {}
+    monkeypatch.setattr(citydb_module.subprocess, "run", lambda argv, **kw: captured.update(argv=argv))
+    system, _ = _system_with_fake_conn(monkeypatch)
+
+    system.ingest(_dataset(tmp_path))
+
+    argv = captured["argv"]
+    assert argv[:2] == ["container", "run"] and "--network" not in argv
+    assert argv[argv.index("-H") + 1] == "192.168.64.9"
+    assert argv[argv.index("-P") + 1] == "5432"
 
 
 def test_ingest_passes_threads_flag_to_avoid_exhausting_max_connections(tmp_path, monkeypatch):

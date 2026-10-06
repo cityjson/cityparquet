@@ -2,15 +2,18 @@
 
 The tool itself is a Java CLI, run from a pinned container image
 (`docker/citydb.Dockerfile`) rather than needing a specific JRE on the
-host. The container runtime is rootless podman (`just up`/`just down`
-drive `podman-compose`; see `benchmark/databases/justfile`), not docker — the
+host. Container calls go through `citybench.engine` (Apple `container`,
+`docker` or `podman`; see `benchmark/databases/justfile`) — the
 `docker` binary happens to exist on this host too, but is not the
 runtime this harness's containers run under.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
+
+from citybench import engine as container_engine
 import time
 
 from pathlib import Path
@@ -74,19 +77,32 @@ class CityDbSystem:
         extra: list[str] = []
         for host_path, container_path in mounts:
             extra += ["-v", f"{host_path}:{container_path}"]
+        engine = container_engine.active()
+        host, port = self._tool_database_address(engine)
         subprocess.run(
             [
-                "podman", "run", "--rm", "--network", "host",
-                "-v", f"{self._mount}:/work",
-                "-v", f"{citydb_tool_temp_directory()}:/tmp",
-                *extra,
-                _IMAGE, *args,
-                "-H", "localhost", "-P", str(self._port),
+                *engine.run_args(name=None, image=_IMAGE, host_network=True, extra=(
+                    "-v", f"{self._mount}:/work",
+                    "-v", f"{citydb_tool_temp_directory()}:/tmp", *extra)),
+                *args,
+                "-H", host, "-P", str(port),
                 "-d", "bench", "-u", "bench", "-p", "bench",
                 "-S", self._schema,
             ],
             check=True,
         )
+
+    def _tool_database_address(self, engine: container_engine.Engine) -> tuple[str, int]:
+        """Where the citydb-tool container reaches PostgreSQL: the published
+        host port over the host network, or else the database container's own
+        address (Apple `container` and VM engines have no host network)."""
+        if not engine.host_network_gap():
+            return "localhost", self._port
+        name = os.environ.get("CITYBENCH_CITYDB_CONTAINER", "citybench-citydb")
+        address = engine.container_address(name)
+        if address is None:
+            raise RuntimeError(f"cannot resolve the address of container {name!r} through {engine.name}")
+        return address, 5432
 
     def prepare(self) -> None:
         self._conn = pg.connect(self._port)
@@ -282,7 +298,7 @@ class CityDbSystem:
     def _warm_launcher(self) -> None:
         """Start the container and the JVM once, UNTIMED and non-mutating."""
         subprocess.run(
-            ["podman", "run", "--rm", "--network", "host", _IMAGE, "--version"],
+            container_engine.active().run_args(name=None, image=_IMAGE, host_network=True, command=("--version",)),
             check=False, capture_output=True,
         )
 

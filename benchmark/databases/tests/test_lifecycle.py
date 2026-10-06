@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from citybench import lifecycle
+from citybench import engine, lifecycle
+
+
 
 
 def test_rejects_a_data_root_outside_the_benchmark_root():
@@ -30,6 +32,7 @@ def test_context_uses_unique_run_directories_and_cleans_created_containers(tmp_p
         starts = [call for call in calls if len(call) > 2 and call[1] == 'run']
         assert f"{first['temp_dirs']['cjdb']}:/tmp" in starts[0]
         assert f"{first['temp_dirs']['3dcitydb']}:/tmp" in starts[1]
+        assert "127.0.0.1:40123:5432" in starts[0]
     assert not first_temp.exists()
     with lifecycle.isolated_databases(tmp_path, 7415) as second:
         assert second['run_root'] != first_root

@@ -38,7 +38,7 @@ import psycopg
 import psycopg.types.string
 
 from citybench.config import SizeReport
-from citybench.stats import container_init_host_pid, host_pid_for_namespace_pid, host_pid_from_podman, peak_resident_bytes
+from citybench.stats import container_init_host_pid, host_pid_for_namespace_pid, host_pid_from_engine_top, peak_resident_bytes
 
 
 def connect(port: int, *, dbname: str = "bench", user: str = "bench",
@@ -164,7 +164,7 @@ def host_pid_of(conn: psycopg.Connection, pid: int) -> int | None:
             os.environ.get("CITYBENCH_CITYDB_CONTAINER", "citybench-citydb"),
     }
     container = container_by_port.get(port)
-    host_pid = host_pid_from_podman(container, pid) if container else None
+    host_pid = host_pid_from_engine_top(container, pid) if container else None
     if host_pid is None:
         host_pid = host_pid_for_namespace_pid(
             pid,

@@ -535,6 +535,59 @@ def test_cmd_bench_plans_isolation_once_and_hands_the_cpuset_to_the_containers(m
     assert record["containers"]["started_by_run"] is True
 
 
+
+def test_cmd_bench_records_the_engine_and_drops_cpuset_an_engine_lacks(monkeypatch, tmp_path):
+    from argparse import Namespace
+    from contextlib import contextmanager
+    from citybench import cli, engine, isolation
+
+    record = isolation.plan(
+        numa_node="auto", max_load="auto", max_load_wait_s=600, memory_max=None,
+        is_linux=True, has_setaffinity=True, node_cpus={0: "0-3", 1: "4-7"},
+        node_meminfo={0: "Node 0 MemFree: 1 kB", 1: "Node 1 MemFree: 2 kB"},
+        meminfo="MemTotal: 8 kB\nMemAvailable: 4 kB\n",
+        controllers="cpuset cpu memory", all_cpus=list(range(8)),
+    )
+    monkeypatch.setattr(cli.isolation_mod, "setup", lambda **kw: (record, object()))
+    monkeypatch.setattr(engine, "_ACTIVE", engine.Engine(
+        name="container", binary="container", version="container CLI version 1.0.0",
+        run_flags=frozenset({"--cpus", "--memory"}), platform="darwin"))
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    @contextmanager
+    def fake_databases(data_root, srid, *, container_args=None):
+        seen["container_args"] = container_args
+        raise Stop
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(cli, "isolated_databases", fake_databases)
+    args = Namespace(dataset="x", data_root=str(tmp_path), ports=None, srid=7415,
+                     numa_node="auto", max_load="auto", max_load_wait_s=600.0, memory_max=None)
+    try:
+        cli.cmd_bench(args)
+    except Stop:
+        pass
+    assert seen["container_args"] == []
+    assert record["containers"]["cpuset"].startswith("not applied: container run has no --cpuset-cpus")
+    assert record["containers"]["engine"]["name"] == "container"
+    assert record["containers"]["engine"]["version"] == "container CLI version 1.0.0"
+    assert record["containers"]["engine"]["capabilities"]["host_proc"].startswith("not applied:")
+
+
+def test_container_engine_flag_sets_the_override(monkeypatch):
+    from citybench import cli, engine
+    monkeypatch.delenv(engine.ENV_VAR, raising=False)
+    monkeypatch.setattr(cli, "cmd_bench", lambda args: 0)
+    try:
+        cli.main(["--container-engine", "docker", "run", "--dataset", "x"])
+    except SystemExit:
+        pass
+    import os
+    assert os.environ.pop(engine.ENV_VAR, None) == "docker"
+
 def test_the_execution_block_records_the_timed_repetitions():
     # A quick (7-repetition) run must not read as the 25-repetition one.
     assert _execution({}, repeat=7)["repeat"] == 7

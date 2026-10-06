@@ -548,12 +548,40 @@ The write tier runs **once**, under `single`, after every read row.
 `track_io_timing = on` makes buffer timing available to
 `EXPLAIN (ANALYZE, BUFFERS)`. `max_connections = 20`.
 
+### Container engine
+
+Every container call goes through `src/citybench/engine.py`. The engine is
+chosen at run time by a cascade: Apple `container` first, then `docker`, then
+`podman`, taking the first that is installed and responding (`container
+system status`, `docker info`, `podman info`). `CITYBENCH_CONTAINER_ENGINE`
+or `citybench --container-engine <name>` overrides the cascade; an override
+that does not respond fails the run. The priority list is one tuple
+(`ENGINE_PRIORITY`). `uv run python -m citybench.engine manifest` prints what
+the cascade picks on the current host.
+
+Capabilities are probed per engine, from its `run --help` and the host
+platform, not assumed: CPU and memory limits, `/dev/shm` size, the cpuset
+flags, a host network for the `citydb-tool` container, and whether a
+container process's `/proc/<pid>/status` is visible on the host. The run
+manifest records the engine's name, version and every capability under
+`isolation.containers.engine`, each as `applied` or `not applied: <reason>`.
+On Apple `container`, the cpuset flags, the host network and host-visible
+`/proc` are not applied: `citydb-tool` then reaches PostgreSQL at the
+database container's own address. Each database is published on a free
+`127.0.0.1` port chosen by the harness and passed explicitly
+(`-p 127.0.0.1:<port>:5432`), because Apple `container` has no random-port
+form.
+
+On macOS both Apple `container` and `docker` run Linux in a virtual machine,
+so numbers measured there test the harness and are not citable. The
+benchmark host runs rootless `podman` on Linux.
+
 ### Resource limits
 
 Each PostgreSQL container is limited to 16 CPUs and 32 GiB of memory
 (34.4 GB), with a 2 GiB (2.1 GB) `/dev/shm`: podman's `g` suffix is binary,
 so these limits are spelt in its unit and converted to decimal GB in brackets. The isolated lifecycle (`lifecycle.isolated_databases`)
-passes these as `podman run --cpus 16 --memory 32g --shm-size 2g`;
+passes these as `run --cpus 16 --memory 32g --shm-size 2g` to the chosen engine;
 `docker/compose.yml` declares the same limits in `deploy.resources.limits`.
 `docs/3dcitydb-v5-schema.md` ("Resource limits — measured, not assumed")
 records that on containers started from `compose.yml` podman-compose applied
@@ -588,7 +616,7 @@ could not be applied (`src/citybench/isolation.py`):
   re-exec, which the harness does not do, so Linux's first-touch allocation
   favours the node's memory without enforcing it.
 - **PostgreSQL containers.** When the run starts the containers
-  (`--data-root`), each `podman run` receives `--cpuset-cpus=<node cores>
+  (`--data-root`), each container `run` receives `--cpuset-cpus=<node cores>
   --cpuset-mems=<node>`, but only if the user's cgroup v2 delegation
   (`/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service/cgroup.controllers`)
   includes `cpuset`; if podman still rejects them, the containers are
@@ -1234,7 +1262,7 @@ With `--data-root` (which must lie below `benchmark/runs/`),
 
 - creates two fresh containers named `citybench-cjdb-<uuid>` and
   `citybench-citydb-<uuid>`, each with the resource limits above, published
-  on a free `127.0.0.1` port and discovered with `podman port`;
+  on a free `127.0.0.1` port chosen by the harness;
 - binds each PostgreSQL data directory to
   `<data-root>/databases/<uuid>/{cjdb,3dcitydb}`;
 - creates a per-run temporary directory under `$TMPDIR` (or
@@ -1291,7 +1319,8 @@ argument and therefore needs `benchmark/databases/data/delft.city.jsonl`.
 overwrites `docs/cjdb-schema.md` and `docs/3dcitydb-v5-schema.md` with fresh
 table, column and index listings, discarding their hand-written sections.
 
-`just down` runs `podman-compose down -v`, which removes the containers but
+`just down` runs the engine's compose front end (`podman-compose`, or
+`docker compose`; Apple `container` has none) with `down -v`, which removes the containers but
 not the bind-mounted data under `$CITYBENCH_DB_ROOT`. `citydb-tool import
 cityjson` has no replace mode, so importing again into an existing 3DCityDB
 database duplicates every object. Before a new import, or before changing

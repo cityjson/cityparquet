@@ -1,4 +1,7 @@
-"""Isolated, disposable Podman databases for one benchmark run."""
+"""Isolated, disposable PostgreSQL containers for one benchmark run.
+
+Every container call goes through ``citybench.engine`` (Apple ``container``,
+``docker`` or ``podman``, chosen by its cascade)."""
 from __future__ import annotations
 
 import os
@@ -9,6 +12,8 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+
+from citybench import engine as container_engine
 
 DATABASES_DIR = Path(__file__).resolve().parents[2]
 ROOT = (DATABASES_DIR.parent / "runs").resolve()
@@ -64,11 +69,6 @@ def _run(*args: str, capture: bool = False) -> str:
     return subprocess.run(args, check=True, text=True, capture_output=capture).stdout if capture else (subprocess.run(args, check=True), "")[1]
 
 
-def _port(name: str) -> int:
-    value = _run("podman", "port", name, "5432/tcp", capture=True).strip()
-    return int(value.rsplit(":", 1)[1])
-
-
 def _wait(port: int, *, citydb: bool = False) -> None:
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
@@ -94,7 +94,7 @@ def _wait(port: int, *, citydb: bool = False) -> None:
 def isolated_databases(data_root: Path, srid: int, *, container_args: list[str] | None = None):
     """Start both PostgreSQL containers; ``container_args`` (the run's
     ``--cpuset-cpus``/``--cpuset-mems`` flags, when the cpuset controller is
-    delegated) are added to each ``podman run``."""
+    delegated) are added to each container ``run``."""
     root = data_root.resolve()
     if root != ROOT and ROOT not in root.parents:
         raise ValueError(f"data root must be below {ROOT}")
@@ -116,34 +116,39 @@ def isolated_databases(data_root: Path, srid: int, *, container_args: list[str] 
     previous_temp_environment = {name: os.environ.get(name) for name in temp_environment}
     os.environ.update(temp_environment)
     names = {"cjdb": f"citybench-cjdb-{run_id}", "3dcitydb": f"citybench-citydb-{run_id}"}
-    common = ["-d", "--rm", "--cpus", CPU_LIMIT, "--memory", MEMORY_LIMIT, "--shm-size", SHM_SIZE, "-p", "127.0.0.1::5432"]
+    engine = container_engine.active()
     extra = list(container_args or [])
+    ports = {key: container_engine.free_host_port() for key in names}
     created: list[str] = []
     try:
         for key, image in (("cjdb", CJDB_IMAGE), ("3dcitydb", CITYDB_IMAGE)):
             data = run_root / key
             data.mkdir()
-            args = ["podman", "run", *common, *extra, "-v", f"{data}:/var/lib/postgresql/data", "-v", f"{temp_dirs[key]}:/tmp", "--name", names[key], "-e", "POSTGRES_USER=bench", "-e", "POSTGRES_PASSWORD=bench", "-e", "POSTGRES_DB=bench"]
-            if key == "3dcitydb": args += ["-e", f"SRID={srid}"]
-            args += ["-v", f"{POSTGRES_CONF}:/etc/postgresql/postgresql.conf:ro", image, "postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+            env = {"POSTGRES_USER": "bench", "POSTGRES_PASSWORD": "bench", "POSTGRES_DB": "bench"}
+            if key == "3dcitydb": env["SRID"] = str(srid)
+            def run_args(flags: list[str]) -> list[str]:
+                return engine.run_args(
+                    name=names[key], image=image, detach=True, cpus=CPU_LIMIT, memory=MEMORY_LIMIT,
+                    shm_size=SHM_SIZE, publish=(5432, ports[key]), env=env, extra=tuple(flags),
+                    volumes=((str(data), "/var/lib/postgresql/data"), (str(temp_dirs[key]), "/tmp"),
+                             (str(POSTGRES_CONF), "/etc/postgresql/postgresql.conf:ro")),
+                    command=("postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"))
             try:
-                _run(*args)
+                _run(*run_args(extra))
             except subprocess.CalledProcessError:
                 if not extra:
                     raise
-                # An isolation failure never aborts the run: podman rejected
-                # the cpuset flags, so start every container without them.
-                subprocess.run(["podman", "rm", "-f", names[key]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                args = [arg for arg in args if arg not in extra]
+                # An isolation failure never aborts the run: the engine
+                # rejected the cpuset flags, so start every container without them.
+                subprocess.run(engine.rm_args(names[key]), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 extra = []
-                _run(*args)
+                _run(*run_args(extra))
             created.append(names[key])
-        ports = {key: _port(name) for key, name in names.items()}
         _wait(ports["cjdb"]); _wait(ports["3dcitydb"], citydb=True)
         yield {"ports": ports, "containers": names, "run_root": run_root, "temp_root": temp_root, "temp_dirs": temp_dirs, "container_args_applied": bool(container_args) and extra == list(container_args)}
     finally:
         for name in reversed(created):
-            subprocess.run(["podman", "stop", name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(engine.stop_args(name), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for name, previous_value in previous_temp_environment.items():
             if previous_value is None:
                 os.environ.pop(name, None)

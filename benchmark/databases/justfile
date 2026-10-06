@@ -1,4 +1,7 @@
-compose := "podman-compose -f docker/compose.yml"
+# Every container call goes through the engine cascade (Apple `container` >
+# docker > podman; override with CITYBENCH_CONTAINER_ENGINE). See src/citybench/engine.py.
+engine := `uv run --quiet python -m citybench.engine binary 2>/dev/null || echo podman`
+compose := "`uv run --quiet python -m citybench.engine compose` -f docker/compose.yml"
 
 # All mutable database state is an explicit bind mount below the shared
 # benchmark data root, never a named Podman volume.
@@ -57,7 +60,7 @@ down:
 
 # Build the pinned citydb-tool image.
 build-citydb:
-    podman build -t citybench/citydb-tool -f docker/citydb.Dockerfile docker/
+    {{engine}} build -t citybench/citydb-tool -f docker/citydb.Dockerfile docker/
 
 # Build the patched cjdb CjdbSystem drives (see vendor/cjdb/README.md).
 # Must be run once before any cjdb ingest (`just smoke`/`just bench`).

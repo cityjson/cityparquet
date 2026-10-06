@@ -7,6 +7,8 @@ import csv
 import json
 import sys
 import os
+
+from citybench import engine as container_engine
 from citybench.lifecycle import CPU_LIMIT, MEMORY_LIMIT, isolated_databases
 from citybench import isolation as isolation_mod
 from pathlib import Path
@@ -267,6 +269,11 @@ def cmd_bench(args) -> int:
     # is supplied. Recursive entry carries only discovered ports.
     if getattr(args, "data_root", None) and not getattr(args, "ports", None):
         record["containers"]["started_by_run"] = True
+        engine = container_engine.active()
+        record["containers"]["engine"] = engine.manifest()
+        if record["containers"]["args"] and engine.cpuset_gap():
+            record["containers"]["cpuset"] = engine.cpuset_gap()
+            record["containers"]["args"] = []
         with isolated_databases(Path(args.data_root), args.srid,
                                 container_args=record["containers"]["args"]) as context:
             args.ports = context["ports"]
@@ -276,7 +283,7 @@ def cmd_bench(args) -> int:
             os.environ["CITYBENCH_CITYDB_PORT"] = str(context["ports"]["3dcitydb"])
             if record["containers"]["args"] and not context.get("container_args_applied"):
                 record["containers"]["cpuset"] = (
-                    "not applied: podman rejected the cpuset flags; started without them"
+                    f"not applied: {container_engine.active().name} rejected the cpuset flags; started without them"
                 )
                 record["containers"]["args"] = []
             return cmd_bench(args)
@@ -329,7 +336,7 @@ def cmd_bench(args) -> int:
         record["containers"]["args"] = []
     elif record["containers"]["cpuset"] != "applied" and record["client"]["cpu"].startswith("applied"):
         record["containers"]["inherited_affinity"] = (
-            "podman was launched from the pinned client, so the container "
+            "the container engine was launched from the pinned client, so the container "
             "processes are expected to inherit its CPU affinity; no cgroup "
             "enforces it"
         )
@@ -606,6 +613,10 @@ def _pg_settings(ports: dict[str, int] | None = None) -> dict[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="citybench")
+    parser.add_argument(
+        "--container-engine", choices=container_engine.ENGINE_PRIORITY, default=None,
+        help="override the engine cascade (" + " > ".join(container_engine.ENGINE_PRIORITY)
+             + f"); also ${container_engine.ENV_VAR}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_prep = sub.add_parser("prep")
@@ -668,6 +679,9 @@ def main(argv: list[str] | None = None) -> int:
     p_smoke.set_defaults(func=cmd_smoke)
 
     args = parser.parse_args(argv)
+    if args.container_engine:
+        # The environment carries the choice into recursive and child runs.
+        os.environ[container_engine.ENV_VAR] = args.container_engine
     return args.func(args)
 
 
