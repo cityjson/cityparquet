@@ -23,6 +23,10 @@ CITYDB_IMAGE = "docker.io/3dcitydb/3dcitydb-pg:16-3.4-5.1.2-alpine"
 #: on an arm64 host the engine then runs them under emulation instead of
 #: failing to find an arm64 variant.
 DB_PLATFORM = "linux/amd64"
+#: Where PostgreSQL keeps its data directory when the engine's bind mounts
+#: refuse the entrypoint's chown/chmod (`Engine.bind_mount_ownership_gap`):
+#: inside the container's own filesystem, removed with the container.
+CONTAINER_PGDATA = "/var/lib/postgresql/pgdata"
 POSTGRES_CONF = Path(__file__).resolve().parents[2] / "docker" / "postgresql.conf"
 CPU_LIMIT = "16"
 MEMORY_LIMIT = "32g"
@@ -139,12 +143,17 @@ def isolated_databases(data_root: Path, srid: int, *, container_args: list[str] 
             data.mkdir()
             env = {"POSTGRES_USER": "bench", "POSTGRES_PASSWORD": "bench", "POSTGRES_DB": "bench"}
             if key == "3dcitydb": env["SRID"] = str(srid)
+            mounts = ((str(temp_dirs[key]), "/tmp"),
+                      (str(POSTGRES_CONF), "/etc/postgresql/postgresql.conf:ro"))
+            if engine.bind_mount_ownership_gap():
+                env["PGDATA"] = CONTAINER_PGDATA
+            else:
+                mounts = ((str(data), "/var/lib/postgresql/data"), *mounts)
             def run_args(flags: list[str]) -> list[str]:
                 return engine.run_args(
                     name=names[key], image=image, detach=True, cpus=CPU_LIMIT, memory=MEMORY_LIMIT,
                     shm_size=SHM_SIZE, publish=(5432, ports[key]), env=env, extra=tuple(flags),
-                    volumes=((str(data), "/var/lib/postgresql/data"), (str(temp_dirs[key]), "/tmp"),
-                             (str(POSTGRES_CONF), "/etc/postgresql/postgresql.conf:ro")),
+                    volumes=mounts,
                     command=("postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"),
                     platform=DB_PLATFORM)
             try:

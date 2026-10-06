@@ -128,3 +128,10 @@ def test_run_args_pins_the_image_platform(name):
     argv = _engine(name, "darwin").run_args(name="x", image="img", platform="linux/amd64")
     assert argv[argv.index("--platform") + 1] == "linux/amd64"
     assert argv.index("--platform") < argv.index("img")
+
+
+def test_only_apple_container_refuses_ownership_changes_on_bind_mounts():
+    # Its virtiofs bind mounts reject chown/chmod, which the PostgreSQL
+    # entrypoint runs on its data directory.
+    assert _engine("container", "darwin").bind_mount_ownership_gap()
+    assert _engine("docker", "linux").bind_mount_ownership_gap() is None

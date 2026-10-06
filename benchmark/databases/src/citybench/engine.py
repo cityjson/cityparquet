@@ -82,6 +82,10 @@ class Engine:
             return f"not applied: {self.name} run has no --cpuset-cpus/--cpuset-mems"
         return self._gap(self.native_linux, f"{self.name} on {self.platform} runs a virtual machine; host cores are not addressable")
 
+    def bind_mount_ownership_gap(self) -> str | None:
+        return self._gap(self.name != "container",
+                         f"{self.name} bind mounts refuse chown/chmod; PostgreSQL keeps its data directory inside the container")
+
     def host_network_gap(self) -> str | None:
         return self._gap(self.native_linux and "--network" in self.run_flags,
                          f"{self.name} on {self.platform} has no host network; tools reach the database at its container address")
@@ -97,6 +101,7 @@ class Engine:
             "cpu_limit": self.cpu_limit_gap(), "memory_limit": self.memory_limit_gap(),
             "shm_size": self.shm_size_gap(), "cpuset": self.cpuset_gap(),
             "host_network": self.host_network_gap(), "host_proc": self.host_proc_gap(),
+            "bind_mount_ownership": self.bind_mount_ownership_gap(),
         }
         return {key: gap or "applied" for key, gap in gaps.items()}
 

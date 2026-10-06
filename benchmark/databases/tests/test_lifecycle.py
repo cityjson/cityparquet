@@ -117,3 +117,22 @@ def test_database_containers_name_the_amd64_platform(tmp_path, monkeypatch):
     assert len(runs) == 2
     for argv in runs:
         assert argv[argv.index('--platform') + 1] == lifecycle.DB_PLATFORM == 'linux/amd64'
+
+
+def test_apple_container_keeps_pgdata_inside_the_container(tmp_path, monkeypatch):
+    from citybench import engine as eng
+    monkeypatch.setattr(lifecycle, 'ROOT', tmp_path)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
+    calls = []
+    monkeypatch.setattr(lifecycle, '_run', lambda *args, **kwargs: calls.append(args) or '')
+    monkeypatch.setattr(lifecycle, '_wait', lambda *args, **kwargs: None)
+    monkeypatch.setattr(lifecycle.subprocess, 'run', lambda args, **kwargs: None)
+    eng.set_active(eng.Engine(name="container", binary="container", version="1.0.0", run_flags=frozenset(), platform="darwin"))
+    try:
+        with lifecycle.isolated_databases(tmp_path, 7415):
+            pass
+    finally:
+        eng.set_active(None)
+    for argv in [c for c in calls if 'run' in c[:2]]:
+        assert f"PGDATA={lifecycle.CONTAINER_PGDATA}" in argv
+        assert not any(a.endswith(":/var/lib/postgresql/data") for a in argv)
