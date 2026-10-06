@@ -6,25 +6,15 @@ EXPLAIN (ANALYZE) captures the server's own execution time, excluding
 transfer. Publishing both means the client-server tax is visible and
 attributable rather than silently folded into the headline number.
 
-I3 (final whole-branch review) corrected a framing error in how the two
-were compared: `server_time_*` is not a clean "engine-only" baseline to
-subtract `time_*` against. `EXPLAIN (ANALYZE, BUFFERS)` itself adds real
-instrumentation overhead (per-node timing/buffer-counting instrumentation,
-plus `track_io_timing = on`'s own clock calls) on top of the query's own
-execution — so `server_time_*` is an UPPER BOUND on the engine's true,
-uninstrumented execution time, not a lower one. Seventeen committed rows
-have `server_time_* > time_*` (the instrumented re-run outweighing the
-plain, uninstrumented `time_*` measurement it is compared against) —
-impossible if `server_time_*` were a clean subset of `time_*` the way a
-naive "client-server tax = time_* - server_time_*" framing assumes. This
-count is re-derived from the currently committed `results/*.csv` files,
-not a number to copy forward by hand — it moved from 18 to 17 between
-when this note was first written and a later Zurich re-run landing on
-this branch, which is exactly the failure mode this note itself warns
-about; re-count rather than trust either figure if this branch changes
-again. See `time_query`'s own note below and README Caveat 4 for the
-corrected framing: the two numbers are still both worth publishing, just
-not subtracted from one another.
+`server_time_*` is not a clean "engine-only" baseline to subtract from
+`time_*`. `EXPLAIN (ANALYZE, BUFFERS)` adds real instrumentation overhead
+(per-node timing and buffer counting, plus `track_io_timing = on`'s own
+clock calls) on top of the query's own execution, so `server_time_*` is an
+UPPER BOUND on the engine's uninstrumented execution time, and a row can
+show `server_time_* > time_*` — impossible if it were a clean subset of
+`time_*`. Count such rows in the results CSV under study rather than
+quoting a figure. See `time_query`'s own note below and README Caveat 4:
+both numbers are worth publishing, just not subtracted from one another.
 """
 
 from __future__ import annotations
