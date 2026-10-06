@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import os
+
 import pytest
+
+from citybench.systems.duckdb_cp import DuckDBCityParquet
 
 from citybench.cli import (
     ROOT,
@@ -239,7 +243,10 @@ def test_versions_includes_duckdb_unconditionally():
     assert "duckdb" in versions
 
 
-def test_versions_omits_cjdb_when_cjdb_is_not_in_the_run():
+def test_versions_omits_cjdb_when_cjdb_is_not_in_the_run(monkeypatch):
+    from citybench import cli
+
+    monkeypatch.setattr(cli, "_extension_reported_version", lambda path: "test")
     versions = _versions([_TaggedFake("duckdb-cityparquet")])
     assert "cjdb" not in versions
 
@@ -591,3 +598,47 @@ def test_container_engine_flag_sets_the_override(monkeypatch):
 def test_the_execution_block_records_the_timed_repetitions():
     # A quick (7-repetition) run must not read as the 25-repetition one.
     assert _execution({}, repeat=7)["repeat"] == 7
+
+
+# --- the DuckDB CityJSON extension build -----------------------------------
+
+
+def test_versions_record_the_extension_build_the_duckdb_systems_load(tmp_path, monkeypatch):
+    from citybench import cli, extension
+
+    build = tmp_path / "cityjson.duckdb_extension"
+    build.write_bytes(b"abc")
+    monkeypatch.setenv(extension.ENV_VAR, str(build))
+    monkeypatch.setattr(cli, "_extension_reported_version", lambda path: "6937c06")
+    versions = _versions([DuckDBCityParquet()])
+    assert versions["duckdb-cityjson-path"] == str(build)
+    assert versions["duckdb-cityjson"] == "6937c06"
+    assert "duckdb-cityjson-sha256" in versions
+    assert "duckdb-cityjson-commit" in versions
+
+
+def test_versions_skip_the_extension_without_a_duckdb_system():
+    assert "duckdb-cityjson-path" not in _versions([])
+
+
+def test_extension_flag_is_carried_to_the_systems_through_the_environment(
+        tmp_path, monkeypatch):
+    from citybench import cli, extension
+
+    build = tmp_path / "cityjson.duckdb_extension"
+    build.write_bytes(b"abc")
+    monkeypatch.delenv(extension.ENV_VAR, raising=False)
+    monkeypatch.setattr(cli, "cmd_derive_params", lambda args: 0)
+    cli.main(["--duckdb-cityjson-extension", str(build),
+              "derive-params", "--dataset", "x.city.json"])
+    assert os.environ[extension.ENV_VAR] == str(build)
+
+
+def test_a_run_with_a_duckdb_system_refuses_to_start_without_a_build(
+        tmp_path, monkeypatch):
+    from citybench import cli, extension
+
+    monkeypatch.setenv(extension.ENV_VAR, str(tmp_path / "missing"))
+    with pytest.raises(extension.ExtensionNotFound):
+        cli._require_extension(["duckdb-cityparquet", "cjdb"])
+    cli._require_extension(["cjdb", "3dcitydb"])  # no DuckDB system: no build needed

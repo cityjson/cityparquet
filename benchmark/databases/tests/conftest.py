@@ -93,3 +93,19 @@ def fake_engine(monkeypatch):
     monkeypatch.setattr(engine, "_ACTIVE", fake)
     monkeypatch.setattr(engine, "free_host_port", lambda: 40123)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def _placeholder_extension_build(request, tmp_path_factory, monkeypatch):
+    """Unit tests never depend on a local DuckDB CityJSON extension build.
+
+    `cmd_bench` refuses to start without one (`citybench.extension`); a
+    placeholder file satisfies that check in unit tests, which never load
+    it. Integration tests resolve the real build.
+    """
+    if request.node.get_closest_marker("integration") is None:
+        from citybench import extension
+
+        build = tmp_path_factory.mktemp("ext") / "cityjson.duckdb_extension"
+        build.write_bytes(b"placeholder")
+        monkeypatch.setenv(extension.ENV_VAR, str(build))

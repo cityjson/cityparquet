@@ -10,6 +10,7 @@ import os
 
 from citybench import engine as container_engine
 from citybench.lifecycle import CPU_LIMIT, MEMORY_LIMIT, isolated_databases
+from citybench import extension
 from citybench import isolation as isolation_mod
 from pathlib import Path
 
@@ -264,6 +265,8 @@ def _isolation(args) -> tuple[dict, isolation_mod.LoadGate]:
 
 
 def cmd_bench(args) -> int:
+    systems = getattr(args, "systems", None)
+    _require_extension(systems.split(",") if systems else list(DUCKDB_TAGS))
     record, gate = _isolation(args)
     # The public runner creates fresh, UUID-scoped databases when a data root
     # is supplied. Recursive entry carries only discovered ports.
@@ -494,25 +497,41 @@ def _execution(resolved: dict[str, dict], repeat: int) -> dict:
     }
 
 
+#: The tags that load the DuckDB CityJSON extension.
+DUCKDB_TAGS = ("duckdb-cityparquet", "duckdb-cityparquet-writeback")
+
+
+def _require_extension(tags: list[str]) -> None:
+    """Refuse to start a run with a DuckDB system and no extension build.
+
+    Checked before any database is started, so a missing build costs
+    nothing rather than failing the write tier hours into the run.
+    """
+    if any(tag in DUCKDB_TAGS for tag in tags):
+        extension.resolve()
+
+
+def _extension_reported_version(path: Path) -> str | None:
+    conn = extension.connect()
+    try:
+        extension.load(conn, path)
+        return extension.reported_version(conn)
+    finally:
+        conn.close()
+
+
 def _versions(systems: list) -> dict[str, str]:
     import duckdb
 
     versions = {"duckdb": duckdb.__version__}
     # The write tier runs through the DuckDB CityJSON extension's package
     # model, so which build of that extension answered is part of the
-    # result, not an environment detail.
-    try:
-        conn = duckdb.connect()
-        conn.execute("LOAD cityjson")
-        row = conn.execute(
-            "SELECT extension_version, install_mode FROM duckdb_extensions() "
-            "WHERE extension_name = 'cityjson'"
-        ).fetchone()
-        conn.close()
-        if row is not None:
-            versions["duckdb-cityjson"] = f"{row[0]} ({row[1]})"
-    except Exception as exc:
-        versions["duckdb-cityjson"] = f"unavailable: {exc}"
+    # result, not an environment detail: its path, the submodule commit,
+    # the file's SHA-256 and the version it reports (`citybench.extension`).
+    if any(s.tag in DUCKDB_TAGS for s in systems):
+        path = extension.resolve()
+        versions.update(extension.provenance(
+            path, reported=_extension_reported_version(path)))
     if any(s.tag == "cjdb" for s in systems):
         from citybench.systems.cjdb import CJDB_UPSTREAM_VERSION
 
@@ -617,6 +636,11 @@ def main(argv: list[str] | None = None) -> int:
         "--container-engine", choices=container_engine.ENGINE_PRIORITY, default=None,
         help="override the engine cascade (" + " > ".join(container_engine.ENGINE_PRIORITY)
              + f"); also ${container_engine.ENV_VAR}")
+    parser.add_argument(
+        "--duckdb-cityjson-extension", default=None,
+        help="the DuckDB CityJSON extension build the DuckDB systems load "
+             "(default: lib/duckdb-cityjson's local release build); also "
+             f"${extension.ENV_VAR}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_prep = sub.add_parser("prep")
@@ -682,6 +706,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.container_engine:
         # The environment carries the choice into recursive and child runs.
         os.environ[container_engine.ENV_VAR] = args.container_engine
+    if args.duckdb_cityjson_extension:
+        # Likewise: the systems resolve the build from the environment.
+        os.environ[extension.ENV_VAR] = args.duckdb_cityjson_extension
     return args.func(args)
 
 

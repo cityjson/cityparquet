@@ -15,6 +15,7 @@ import duckdb
 from citybench.config import (
     Dataset, IngestResult, Measurement, Params, SizeReport, object_table_files,
 )
+from citybench import extension
 from citybench.lifecycle import duckdb_temp_directory
 from citybench.scenarios import registry, sql_duckdb
 from citybench.systems import pg
@@ -76,7 +77,9 @@ class DuckDBCityParquet:
         self._building_rows: int | None = None
 
     def prepare(self) -> None:
-        self._conn = duckdb.connect()
+        # Allowed to load the unsigned local extension build the write tier
+        # needs (`citybench.extension`).
+        self._conn = extension.connect()
         # Matched to the PostgreSQL containers' limits so no engine is
         # given more of the machine than another.
         self._conn.execute(f"SET threads TO {self._threads}")
@@ -212,7 +215,9 @@ class DuckDBCityParquet:
         """
         assert self._conn is not None and self._package is not None
         if not self._schema_loaded:
-            self._conn.execute("LOAD cityjson")
+            # An explicitly chosen build, never whatever a bare
+            # `LOAD cityjson` finds installed (`citybench.extension`).
+            extension.load(self._conn, extension.resolve())
             package = str(self._package).replace("'", "''")
             self._conn.execute(
                 f"PRAGMA cityparquet_read('{package}', '{PACKAGE_SCHEMA}')"

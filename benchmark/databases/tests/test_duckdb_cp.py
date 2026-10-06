@@ -156,7 +156,7 @@ def test_prepare_sets_duckdb_temporary_directory_explicitly(tmp_path, monkeypatc
             commands.append(sql)
 
     monkeypatch.setenv("CITYBENCH_DUCKDB_TMPDIR", str(tmp_path))
-    monkeypatch.setattr(duckdb_cp.duckdb, "connect", lambda: Connection())
+    monkeypatch.setattr(duckdb_cp.duckdb, "connect", lambda **_: Connection())
 
     DuckDBCityParquet().prepare()
 
@@ -200,7 +200,7 @@ def test_prepare_turns_off_the_geoparquet_footer_conversion(tmp_path, monkeypatc
         def execute(self, sql):
             commands.append(sql)
 
-    monkeypatch.setattr(duckdb_cp.duckdb, "connect", lambda: Connection())
+    monkeypatch.setattr(duckdb_cp.duckdb, "connect", lambda **_: Connection())
     DuckDBCityParquet().prepare()
     assert "SET enable_geoparquet_conversion = false" in commands
 
@@ -216,7 +216,7 @@ def test_the_primary_thread_configuration_is_one_thread(tmp_path, monkeypatch):
         def execute(self, sql):
             commands.append(sql)
 
-    monkeypatch.setattr(duckdb_cp.duckdb, "connect", lambda: Connection())
+    monkeypatch.setattr(duckdb_cp.duckdb, "connect", lambda **_: Connection())
     system = DuckDBCityParquet()
     system.prepare()
     assert "SET threads TO 1" in commands
@@ -322,3 +322,23 @@ def test_both_parts_per_building_forms_return_identical_row_sets():
     # and by the `coalesce`/`LEFT JOIN`/`count(child.id)` shapes they pin,
     # not by this data.
     assert {count for _, count in ((r[0], int(r[1])) for r in natural)} == {1}
+
+
+def test_write_tier_loads_the_chosen_extension_build_by_path(tmp_path, monkeypatch):
+    """Never a bare `LOAD cityjson`, which answers with an installed build."""
+    build = tmp_path / "cityjson.duckdb_extension"
+    build.write_bytes(b"x")
+    monkeypatch.setenv("CITYBENCH_DUCKDB_CITYJSON_EXTENSION", str(build))
+    executed = []
+
+    class Conn:
+        def execute(self, sql, *args):
+            executed.append(sql)
+            return self
+
+    system = DuckDBCityParquet()
+    system._conn = Conn()
+    system._package = tmp_path / "pkg.parquet"
+    system._ensure_package()
+    assert executed[0] == f"LOAD '{build}'"
+    assert "LOAD cityjson" not in executed

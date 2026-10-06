@@ -306,24 +306,13 @@ def write_statements(scenario: str, schema: str, footprint_area: str,
         # file") — exactly the index/derived-state maintenance the other two
         # systems' importers also do, differently, and the point of the row.
         #
-        # MEASURED AND CURRENTLY BROKEN, upstream of this harness: against a
-        # package loaded by `cityparquet_read` from an APPEARANCE-FREE
-        # corpus (3DBAG), this call is refused —
-        #
-        #   Binder Error: insert_cityjson: column 'material_lod0_0' cannot
-        #   be widened -- the destination is MAP(VARCHAR, BIGINT[]) and the
-        #   incoming type is VARCHAR
-        #
-        # — because `cityparquet convert` writes the material/texture
-        # columns with their full nested type whether or not the dataset
-        # uses appearances, while the extension's own CityJSON reader types
-        # them VARCHAR for a file with no appearance section (`DESCRIBE
-        # SELECT * FROM read_cityjsonseq(...)` says so for the whole 3DBAG
-        # source, not just for the one-feature slice derived from it). The
-        # row is left to fail loudly as `error: BinderException` rather
-        # than worked around: the disagreement is between this project's
-        # own writer and its own extension, and hiding it here would hide
-        # it everywhere. See README, "The write tier".
+        # It needs a build of the extension that accepts an insert into a
+        # package loaded by `cityparquet_read`: the community builds
+        # refuse it with a `BinderException` (a column of the loaded
+        # package that the incoming file types differently "cannot be
+        # widened"). The harness therefore loads an explicitly chosen
+        # build, by default the submodule's local one
+        # (`citybench.extension`; README, "The write tier").
         path = _append(append).path.replace("'", "''")
         return [(f"PRAGMA insert_cityjsonseq('{schema}', '{path}')", ())]
     raise KeyError(f"unknown write scenario: {scenario}")
