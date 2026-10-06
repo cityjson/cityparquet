@@ -36,6 +36,10 @@ Every relative value answers "CityParquet is x times faster, or smaller, than Ci
 
 Two small fixes ride along: the specification site's benchmark page says timings are medians where the evidence reports means, and `just bench-summary` calls bare `python3`, which fails on Python older than 3.11, so it runs through `uv`.
 
+### 2a. Five formats, one CityParquet, one 3DBAG slice — done
+
+The format comparison measures five formats: the gzipped CityJSONSeq and the `duckdb-parquet` baseline are gone, and CityParquet is one Hilbert-ordered package per dataset, named `cityparquet` (`<x>.parquet/`). The source-order package is gone from the format benchmark and from the database comparison, which keeps one DuckDB configuration. The scaling series is gone: 3DBAG is the one slice `3dbag_n1000000`, cut by `fcb-slice --drop-lod 1.2` (`just fetch-3dbag`), and the bloom axis runs on the corpus and that slice into `bloom_results/`. The committed evidence is relabelled and the removed rows and slices deleted, with no measured value changed (`9902be9`..`6547da0`).
+
 ### 3. Interactive review of the benchmark code
 
 After tasks 1 and 2, the author reviews what remains, one stage at a time: corpus and preparation, the read harness and its queries, size measurement, aggregation, plots. The commander explains each stage, shows the evidence it produced and flags doubts; the author confirms or corrects before the next stage. Findings become small fixes or entries in this plan.
