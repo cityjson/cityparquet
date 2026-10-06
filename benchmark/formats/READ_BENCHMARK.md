@@ -182,16 +182,31 @@ checked for information loss, including collapse of fractional LoDs
 ## The six scenarios
 
 Every format implements every scenario via its own natural mechanism —
-never a hand-tuned shortcut, never an artificial common code path:
+never a hand-tuned shortcut, never an artificial common code path — and every
+format returns the same thing for a scenario (the "return rule" in the
+`returned` column). Each cell says what the format READS, what it VISITS and
+what it RETURNS.
 
-| scenario                         | common target                                                                                                                | `citygml` mechanism                                                                                                                                                                                                     | `cityjson` mechanism                                                                                                                                                 | `cityjsonseq` mechanism                                | `flatcitybuf` mechanism                                                                                                                                                                                                  | `cityparquet` mechanism                                                               |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `full-read`                      | decode every feature's geometry; `(feature_count, boundary_count)`                                                           | stream every `cityObjectMember` (quick-xml), decoding every `gml:pos`/`posList`, resolving every `xlink:href` surface reference and rebuilding a feature-local vertex pool, then walk each geometry's `boundaries` tree | parse the whole document, then **resolve every boundary leaf** through the shared `vertices` + `transform` — _not_ the same operation as `cityjsonseq`'s (Caveat 13) | parse every line, walk each feature's own `boundaries` tree | `select_all` + a RAW `CityFeature` walk (`cur_feature`): every geometry's five flattened index arrays and its semantics indices, every template instance's boundaries, every vertex — no CityJSON conversion (Caveat 32) | scan all row groups, decode WKB                                                                    |
-| `count`                          | total feature/object count                                                                                                   | count `cityObjectMember`s (full parse)                                                                                                                                                                                  | size of the `CityObjects` map (full parse)                                                                                                                           | count parsed lines (full parse)                             | `features_count()` header field (O(1))                                                                                                                                                                                   | Parquet file metadata `num_rows` (O(1), no scan)                                                   |
-| `bbox-query` (1%/5%/25% of rows) | ids/count of objects whose bbox intersects a query window                                                                    | parse all, test each member's own unioned bbox                                                                                                                                                                          | parse all, test each CityObject's bbox (min/max over the vertices its geometries reference, resolved through `transform`)                                            | parse all, test each feature's own unioned bbox             | `select_query(Query::BBox)` — R-tree, **2D only** (see Caveat 4); the R-tree's hit count is returned and no feature is read or decoded, which is what its index affords                                                  | row-group prune (`with_bbox_row_groups`) + row-level bbox test — **exact**                         |
-| `attr-filter`                    | count of objects matching an ATTRIBUTE predicate — `attr == v`, or `attr >= q` (see "Which attribute the predicate runs on") | parse all, test each CityObject's `attributes`                                                                                                                                                                          | parse all, test each CityObject's `attributes`                                                                                                                       | parse all, test each CityObject's `attributes`              | B+-tree attribute index (`select_attr_query`) when the column is in the CityJSON `attributes` map; otherwise a raw `select_all` walk that decodes only that one column (Caveats 11, 19, 32)                              | `RowFilter` (`ArrowPredicateFn`) + row-group statistics prune                                      |
-| `attr-stats`                     | `(min, max, sum, count)` of a numeric attribute                                                                              | parse all, fold `(min, max, sum, count)` over every numeric value (Caveat 35)                                                                                                                                           | parse all, fold `(min, max, sum, count)` over every numeric value (Caveat 35)                                                                                        | parse all, fold `(min, max, sum, count)` (Caveat 35)        | full walk decoding only that one attribute column, no geometry, folding `(min, max, sum, count)` (no numeric-range index; Caveat 35)                                                                                     | min/max from Parquet column-chunk statistics (near-free); sum/count from a 1-column projected scan |
-| `id-lookup` (x4)                 | the single object with a given id, materialised                                                                              | parse until found (early exit); a miss drains to EOF                                                                                                                                                                    | parse the whole document, then one map lookup                                                                                                                        | parse until found (early exit)                              | the B+-tree is tried and never has the field, so in practice a raw `select_all` walk comparing each CityObject's borrowed `id()`, exiting at the hit (Caveats 19, 32)                                                    | `RowFilter` on `id` + decode of the one surviving row                                              |
+| scenario                         | returned (every format)                                                                                                         | `citygml`                                                                                                                                                                                                              | `cityjson`                                                                                                                                                                                                          | `cityjsonseq`                                                                                                                                                        | `flatcitybuf`                                                                                                                                                                                                                                                                                                                                    | `cityparquet`                                                                                                                                                                                                                                             |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `full-read`                      | every record, all fields, in the format's native form                                                                           | reads the stream of `cityObjectMember`s, each converted in full by the library's CityGML reader (appearance excluded); then visits as `cityjsonseq` does                                                                | parses the whole document; visits every CityObject's every field, every geometry's coordinates resolved through the shared `vertices` and `transform`, its semantic values and surfaces                              | parses every line; visits every CityObject as `cityjson` does, with the feature's own `vertices` and the header `transform`; `result_count` is the FEATURE count       | `select_all` over every feature; the stored integer vertices are converted to real coordinates and visited, and semantic values, semantic-surface objects, attribute bytes and each template instance's anchor and transform are read (raw accessors, no CityJSON conversion; Caveat 32)                                                         | `full_read_visit`: every row group, every column; Arrow arrays and WKB walked in place, no CityJSON-shaped object built                                                                                                                                  |
+| `count`                          | the number of objects                                                                                                           | converts every member in full (as `full-read` does), then counts them — not a tag count                                                                                                                                | parses the whole document; size of the `CityObjects` map                                                                                                                                                            | parses every line; counts the features                                                                                                                               | header feature count (O(1))                                                                                                                                                                                                                                                                                                                      | footer `num_rows` (O(1), no scan)                                                                                                                                                                                                                         |
+| `bbox-query` (1%/5%/25% of rows) | count and identifiers of the matching CityObjects, plus each match's highest-LoD geometry with its coordinates visited in place | converts every member; then as `cityjsonseq`                                                                                                                                                                           | parses the whole document; tests each CityObject's box over its `children` subtree (coordinates resolved through `transform`); visits each match's highest-LoD geometry                                             | parses every line; tests each CityObject of the feature against its subtree box with feature-local vertices; visits each match's highest-LoD geometry                 | hits from its 2D per-FEATURE R-tree (z dropped; Caveat 4); each hit feature read once, every CityObject in it tested against its subtree box, and each match's highest-LoD geometry walked                                                                                                                                                       | row groups pruned by `bbox` statistics; only `id`, `bbox` and the geometry columns read; a row filter on `bbox` runs first, so a rejected row decodes no geometry; the highest non-null LoD column of each kept row walked in place — **exact**             |
+| `attr-filter`                    | count and identifiers of the matching CityObjects                                                                               | converts every member; tests each CityObject's `attributes`                                                                                                                                                            | parses the whole document; tests each CityObject's `attributes`                                                                                                                                                     | parses every line; tests each CityObject's `attributes`                                                                                                              | the features its B+-tree attribute index hits are read once each, without decoding geometry, and every CityObject in them is re-tested; a column outside the index, or a hit list longer than the file's feature count (tagged `attr-index-failed`, Caveat 11), falls back to a `select_all` walk that decodes only that column (Caveats 19, 32) | row groups pruned by the Bloom filter (an `==` predicate), then by min/max statistics; only the predicate column and `id` read; matching ids returned                                                                                                     |
+| `attr-stats`                     | `(min, max, sum, count)` of a numeric attribute                                                                                 | converts every member; folds over every numeric value (Caveat 35)                                                                                                                                                      | parses the whole document; folds over every numeric value (Caveat 35)                                                                                                                                               | parses every line; folds over every numeric value (Caveat 35)                                                                                                        | a walk that decodes only that attribute, no geometry, folding the four values (no numeric-range index; Caveat 35)                                                                                                                                                                                                                                | min/max from column-chunk statistics; sum/count from a one-column scan                                                                                                                                                                                    |
+| `id-lookup` (x4)                 | the whole object, every field                                                                                                   | converts members until the hit (early exit), then visits every field of the object; a miss reads to the end of the document                                                                                            | parses the whole document; one map lookup, then every field of the object visited                                                                                                                                   | parses lines until the feature holding the hit, then visits every field of the object                                                                                | a `select_all` walk that stops at the hit (`fcb ser -A` builds no `id` index; Caveat 19); every field of the object read                                                                                                                                                                                                                         | row groups pruned by the Bloom filter, then by min/max statistics on `id`; a row filter on `id`; every field of the hit visited natively                                                                                                                 |
+
+What "returned" means here, for every format:
+
+- **Returned geometry is visited, not handed over.** A spatial-window match's
+  geometry has every coordinate visited in place, so a zero-copy format cannot
+  win by never touching the geometry it returns.
+- **"Highest LoD" is per object**: each match contributes the geometry of its
+  own highest LoD, not of a dataset-wide one.
+- **Appearance is excluded** for every format, so no format reads or visits
+  textures or materials.
+- **An implicit geometry counts by its anchor and transform only**; its
+  template is not expanded per instance.
 
 The `bloom` family's two packages, `cityparquet` and `cityparquet+nobloom`,
 share the `cityparquet` runner and its column here: a package without bloom
@@ -296,7 +311,7 @@ part of the comparison set and must not be read as one.
 [, selectivity target]):
 
 ```
-dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
+dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,stats_pruned,filter_bytes
 ```
 
 - `time_mean_s` / `time_std_s` / `time_median_s` / `time_min_s` /
@@ -345,9 +360,10 @@ dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_med
   row** (no HTTP concept locally); for a `--transport http` row, the total
   bytes transferred and HTTP request count that scenario's own
   transport-agnostic reader made (see "HTTP transport" above).
-- `row_groups_total` / `bloom_pruned` / `filter_bytes` — **empty on every
-  row but a CityParquet `id-lookup` or `feature-lookup`**: the table's row
-  groups, those its bloom filters ruled out, and the bitset bytes of every
+- `row_groups_total` / `bloom_pruned` / `stats_pruned` / `filter_bytes` —
+  **empty on every row but a CityParquet `id-lookup` or `feature-lookup`**:
+  the table's row groups, those its bloom filters ruled out, those its
+  min/max statistics ruled out among the rest, and the bitset bytes of every
   filter examined (32 per block; header bytes and transport overhead are not
   counted — `bytes_read` carries the latter over HTTP). The kept row groups are
   read by one reader, as without filters; an `id-lookup` hit stops at its
@@ -404,26 +420,29 @@ each cold number stands alone, one per format, one `full-read` only.
    (its `CityObjects` map is flat: a `Building` and its `BuildingPart`s are
    sibling entries linked only by `parents`/`children`). `cityjsonseq`,
    `flatcitybuf` and `citygml` instead count top-level **features/members**
-   for `count`/`full-read`/`bbox-query` (a CityJSONSeq/FCB feature bundles
-   one top-level CityObject with all its children inline, exactly as a
-   CityGML `cityObjectMember` nests its `BuildingPart`s). So the
-   `count`/`full-read`/`bbox-query` rows split into **two grains**:
+   for `count` and the `full-read` `result_count` (a CityJSONSeq/FCB feature
+   bundles one top-level CityObject with all its children inline, exactly as
+   a CityGML `cityObjectMember` nests its `BuildingPart`s). So the `count`
+   and `full-read` rows split into **two grains**:
 
    | grain                                                      | formats                                  |
    | ---------------------------------------------------------- | ---------------------------------------- |
    | one row per **CityObject** (children counted separately)   | `cityparquet`, `cityjson`                |
    | one row per **top-level feature/member** (children inline) | `citygml`, `cityjsonseq`, `flatcitybuf`  |
 
-   But `attr-filter`, `attr-stats` and `id-lookup` are
-   **CityObject-granular in every format** — `citygml`/`cityjsonseq`/
-   `flatcitybuf` deliberately flatten to per-CityObject counting for exactly
-   these three scenarios (`flatcitybuf` because that is what its B+-tree
+   The `full-read` totals the coordinator compares (`objects`, `geometries`,
+   `semantic_faces`) are per CityObject in every format; only its
+   `result_count` keeps the feature grain. `bbox-query`, `attr-filter`,
+   `attr-stats` and `id-lookup` are **CityObject-granular in every format**
+   — `citygml`/`cityjsonseq`/`flatcitybuf` flatten to per-CityObject
+   matching for these four scenarios (`flatcitybuf` because that is what its B+-tree
    attribute index naturally returns per entry: `fcb_core` indexes every
    value of a feature's `city_objects` map, not only the root object, so on
    Vienna an indexed `attr-filter` returns 600 entries from 307 features,
    and the raw-accessor walks of Caveat 32 count the same way; the two
-   parsing formats by explicit choice, to match) — so these three are directly, honestly
-   comparable across every format; `count`/`full-read`/`bbox-query` are not.
+   parsing formats by explicit choice, to match) — so these four are
+   directly comparable across every format; the `count` and `full-read`
+   `result_count` are not.
    Empirically: `lod3_railway.city.json` is 121 CityObjects / 38 top-level
    features; `delft.city.jsonl`'s `object_type == "BuildingPart"` count is
    1116 CityObjects (out of 2231 total CityObjects / 1115 features);
@@ -436,14 +455,14 @@ each cold number stands alone, one per format, one `full-read` only.
    through `children` — so a `Building` with no geometry of its own matches a
    window its `BuildingPart`s intersect, and a `CityObjectGroup` matches
    through its members. This is the subtree union the CityParquet `bbox`
-   column stores (the specification's "Spatial metadata"), and `cityjson`
-   computes the same union. A feature's box is its root object's subtree box,
-   which is what `citygml`, `cityjsonseq` and `flatcitybuf` test, so the
-   feature grain counts the root objects that match. A box intersects the
+   column stores (the specification's "Spatial metadata"), and every runner
+   computes the same union: `cityjson` over the shared vertices, `citygml`
+   and `cityjsonseq` over each feature's own vertices, and `flatcitybuf`
+   for every CityObject of each feature its R-tree hits. Every format
+   therefore returns the identifiers of the same matching CityObjects, and
+   the coordinator compares their digest (Caveat 2). A box intersects the
    window when it overlaps it on every axis, edges included. An object with
-   no geometry anywhere in its subtree has no box and matches nothing. The
-   two grains are therefore two counts of one set, and the coordinator
-   checks both (Caveat 2).
+   no geometry anywhere in its subtree has no box and matches nothing.
 
    The CityParquet `bbox` column also covers an object's declared
    `geographicalExtent`, which no runner reads (FlatCityBuf's R-tree holds
@@ -460,58 +479,61 @@ each cold number stands alone, one per format, one `full-read` only.
    disagree with `cityparquet`, and the run would fail. On the current
    Zurich artefacts no window edge is closer than 3 mm to a `bbox` edge.
 
-2. **Selectivity's denominator differs by scenario, on purpose.** The three
-   CityObject-granular scenarios (`attr-filter`/`attr-stats`/`id-lookup`)
-   divide by the **dataset-global CityObject total** — the
-   same number as CityParquet's own `count` — as a single shared
-   denominator across every format, so their selectivity is always in
-   `(0, 1]` and directly comparable format-to-format. `bbox-query` instead
-   divides by **each format's own** feature/object total (its own `count`
-   result), because a spatial query's numerator is native to that format's
-   own counting unit (see Caveat 1) — a shared CityObject denominator would
-   make `bbox-query` selectivity exceed 1 for the feature-counting formats
-   whenever a feature contains more than one matching CityObject. This is
-   why selectivity is a meaningful, bounded number in this benchmark rather
-   than an artefact to explain away.
+2. **Selectivity's denominator is the CityObject total, for every format.**
+   The four CityObject-granular scenarios (`bbox-query`/`attr-filter`/
+   `attr-stats`/`id-lookup`) divide by the **dataset-global CityObject
+   total** — the same number as CityParquet's own `count` — as a single
+   shared denominator across every format, so their selectivity is always
+   in `(0, 1]` and directly comparable format to format. `count` and
+   `full-read` carry no selectivity.
 
    **A count that disagrees fails the run.** Once every format has run, the
    coordinator checks each row's `result_count` at its own counting level.
    `count` and `full-read` must equal the CityParquet table's CityObjects or
    its features (root objects, `id == feature_id`); each `bbox-*` window
-   must select exactly the CityObjects, or the features, whose box
-   intersects it as the CityParquet `bbox` column says (the reference counts
-   are in the parameter sidecar, `windows[].objects` and
-   `windows[].features`); `attr-filter` must match the predicate's
-   `matched`. `attr-stats` and each `id-*` probe have no reference and must
+   must select exactly the CityObjects whose box intersects it as the
+   CityParquet `bbox` column says (the reference count is in the parameter
+   sidecar, `windows[].objects`); `attr-filter` must match the predicate's
+   `matched`. Beyond the counts, the coordinator compares what each format
+   RETURNED (Caveat 42). `attr-stats` and each `id-*` probe have no reference and must
    agree across every format. A disagreeing row is tagged `count-mismatch`
    in `notes`, the CSV is written anyway, and the coordinator exits
    non-zero naming the scenario, the formats and the counts; a clean run
    prints `cross-format consistency OK` on stderr.
 
-3. **`full-read`'s materialisation is honestly different work per format,
-   not identical work in different clothes.** CityGML streams and decodes
-   every `gml:pos`/`posList`, resolves every `xlink:href` surface reference
-   and rebuilds a feature-local vertex pool before it can walk a boundary
-   tree at all; plain CityJSON parses one whole document and then resolves
-   every boundary leaf through its shared vertex array (Caveat 13);
-   CityJSONSeq serde-parses every JSON line and traverses its geometry;
-   FlatCityBuf decodes its own FlatBuffers representation; CityParquet
-   decodes every row's WKB geometry and counts surfaces. Each is that
-   format's own honest full-read cost — reported per-format, never
-   normalised into a shared unit of work that doesn't actually exist across
-   five different encodings. Where two of them are _labelled_ the same but are not the same
-   operation, that is called out explicitly rather than left to the label
-   (Caveat 13).
+3. **`full-read` returns the same thing from every format, by different
+   work.** Every format returns every record with all its fields in its
+   native form, and every format visits every coordinate as a real
+   coordinate: CityGML streams its members through the library's CityGML
+   reader, which decodes every `gml:pos`/`posList`, resolves every
+   `xlink:href` surface reference and rebuilds a feature-local vertex pool;
+   plain CityJSON parses one whole document and resolves every boundary leaf
+   through its shared vertex array and `transform`; CityJSONSeq parses every
+   line and resolves each feature's own vertices through the header
+   `transform`; FlatCityBuf converts its stored integer vertices to real
+   coordinates; CityParquet walks its Arrow arrays and WKB in place. Each is
+   that format's own full-read cost, reported per format and never
+   normalised into a shared unit of work. The coordinator checks that the
+   five agree on the CityObjects, geometries, semantic faces and extent they
+   visited (Caveat 42).
 
 4. **FlatCityBuf's `bbox-query` is 2D.** Its spatial R-tree indexes x/y
    only; the query window's z component is silently dropped when querying
    FCB (the window itself is still constructed with a full z range, as it
    is for every other format, but FCB's own index simply has no z
-   dimension to test against). A comparison of `bbox-query` result counts
-   between FlatCityBuf and any 3D-tested format (every other format here) can
-   therefore only ever show FlatCityBuf matching **more** rows for the same
-   window, never fewer, purely from the missing z test — not a query-plan
-   or index-quality difference.
+   dimension to test against). The index's hits are therefore a superset
+   of the matches, never a subset, and the runner's own 3D test of every
+   CityObject in a hit feature removes the extra ones, so FlatCityBuf's
+   `result_count` equals every other format's.
+
+   The R-tree also indexes FEATURES, not CityObjects: its entry is a
+   feature's 2D box. The runner therefore reads each hit feature once and
+   tests every CityObject in it against that object's own 3D subtree box,
+   so the returned CityObjects agree with every other format, but a hit
+   feature's non-matching CityObjects (and every feature whose 2D box
+   intersects while no 3D box does) are read and tested as well. That
+   extra reading is the cost of a per-feature 2D index, and it is inside
+   FlatCityBuf's timing.
 
 5. **DuckDB over CityParquet is measured by the database comparison, not
    here — and an ad-hoc DuckDB query over a package needs one setting.**
@@ -630,15 +652,19 @@ each cold number stands alone, one per format, one `full-read` only.
 
 11. **FlatCityBuf index assumptions and compression scope (known limitations).** The
     FlatCityBuf runner uses FCB's native indexes (`select_query` for bbox,
-    `select_attr_query` for attribute/id), which requires the `.fcb` to carry
-    a spatial index (default) and an attribute index (`fcb ser -A`, which
-    `readbench-prepare` always passes). If an index query errors, the runner
-    falls back to a full scan — and **says so in the CSV `notes`**
-    (`no-attr-index` when the column carries no B+-tree at all,
-    `attr-index-failed` when the index query itself errored), so an
-    index-vs-scan measurement is never silently mislabelled. It used to say
-    so on stderr only, which meant a fallback was invisible to everyone
-    reading the artefact. That fallback is a raw-flatbuffer walk, not a
+    `select_attr_query` for the attribute filter), which requires the `.fcb`
+    to carry a spatial index (default) and an attribute index (`fcb ser -A`,
+    which `readbench-prepare` always passes; `id` is never indexed, Caveat
+    19). If the attribute index cannot answer, the runner falls back to a
+    full walk and **says so in the CSV `notes`**: `no-attr-index` when the
+    column carries no B+-tree at all, `attr-index-failed` when the index
+    query errored or returned a hit list longer than the file's feature
+    count. The second case is a known truncation in `fcb_core` 0.7.6: its
+    attribute-index iterator stops after as many entries as the file has
+    features, while the index holds one entry per matching CityObject, so a
+    predicate that matches more CityObjects than there are features would
+    otherwise lose matches silently. An index-vs-scan measurement is
+    therefore never mislabelled. That fallback is a raw-flatbuffer walk, not a
     CityJSON conversion — see Caveat 32. No artefact is read through an
     external compression layer: `citygml`, `cityjson` and `cityjsonseq` are
     read as uncompressed text and `flatcitybuf` as an uncompressed file, so
@@ -683,34 +709,31 @@ each cold number stands alone, one per format, one `full-read` only.
       Caveat 16 for which modules that rules out of the corpus, and why a
       document exercising the gap is refused outright rather than measured.
 
-13. **`cityjson`'s `full-read` is NOT the same operation as
-    `cityjsonseq`'s**, even though both rows wear the same scenario label.
-
-    `cityjsonseq` walks each geometry's `boundaries` index tree and stops
-    there. `cityjson` additionally **resolves every boundary leaf** through
-    the document-level `vertices` array and `transform` into a real-world
-    coordinate — on the `lod3_railway` fixture that is **245,137 leaf
+13. **`cityjson` and `cityjsonseq` resolve coordinates differently in
+    `full-read`.** Both resolve every boundary leaf into a real-world
+    coordinate, but `cityjson` resolves it through the one document-level
+    `vertices` array and `transform`, while `cityjsonseq` resolves it
+    through the feature's own local vertices and the header `transform`. On
+    the `lod3_railway` fixture `cityjson` performs **245,137 leaf
     resolutions against 73,554 unique vertices** (the leaves outnumber the
-    vertices more than threefold, so this is not a per-vertex pass that could
-    be hoisted).
+    vertices more than threefold, so this is not a per-vertex pass that
+    could be hoisted).
 
-    That extra work is measured, not assumed. _Within the `cityjson` runner_,
-    on the same fixture and machine, `full-read` costs roughly a fifth more
-    elapsed time than `count` in release mode — median of 9 runs, 0.199 s for
-    `count` against 0.243 s for `full-read` — so the leaf resolution is real
-    work rather than something the optimiser elides, and
+    That work is measured, not assumed. _Within the `cityjson` runner_, on
+    the same fixture and machine, `full-read` costs roughly a fifth more
+    elapsed time than `count` in release mode — median of 9 runs, 0.199 s
+    for `count` against 0.243 s for `full-read` — so the leaf resolution is
+    real work rather than something the optimiser elides, and
     `std::hint::black_box` pins that rather than trusting it to stay true.
     (That ~20% is a `cityjson`-internal figure, **not** the
     `cityjson`-vs-`cityjsonseq` gap; the cross-format gap also carries the
-    whole-document-vs-line-oriented parse difference on top of it.)
+    whole-document-vs-line-oriented parse difference.)
 
-    This is **defensible**: resolving coordinates against a shared,
-    document-level vertex array _is_ the honest cost of that design, and a
-    CityJSONSeq feature genuinely does not pay it because it carries its own
-    local vertices instead. Neither side is bent to match the other. **But a
-    row labelled `full-read` implies parity of work, and here there is none**
-    — so a `cityjson`-vs-`cityjsonseq` `full-read` delta must not be read as
-    "the same job, one format slower". Part of it is a different job.
+    The two rows therefore do the same job, return the same totals (Caveat
+    42), and differ in where their vertices live: a shared, document-level
+    array against a feature-local one. A `cityjson`-vs-`cityjsonseq`
+    `full-read` delta measures that layout and the parse difference, not a
+    difference in what is visited.
 
 14. **Conversion provenance: the chain runs FORWARDS ONLY, and nothing
     derives from CityParquet.** Every measured artefact is derived from the
@@ -1044,9 +1067,19 @@ each cold number stands alone, one per format, one `full-read` only.
     other corpus dataset holds fewer than 65 536 CityObjects and is a single
     row group. The slice and Zurich are the informative ones.
 
+    Row groups are pruned in two steps: the Bloom filter first, then the
+    column chunk's min/max statistics. `bloom_pruned` counts the row groups
+    the filters rejected and `stats_pruned` those the statistics rejected
+    among the rest, so the two never count one row group twice. Each miss
+    probe is chosen INSIDE the row groups' stored identifier ranges (a
+    stored identifier with `-readbench-absent` appended), so min/max
+    statistics alone cannot reject it and a miss row measures the filters,
+    not the statistics.
+
 25. **In the `bloom` family, a filter's positive is not a match.** At FPP 0.01
-    a miss can still keep a row group; `row_groups_total − bloom_pruned` on
-    the `*-miss` rows is how many the reader still scanned.
+    a miss can still keep a row group; `row_groups_total − bloom_pruned −
+    stats_pruned` on the `*-miss` rows is how many the reader still
+    scanned.
 
 26. **The `bloom` family reads the footer twice per lookup** — once for the
     decode metadata, once inside the lookup — equally for both variants.
@@ -1074,7 +1107,9 @@ each cold number stands alone, one per format, one `full-read` only.
     filters on `id`, `feature_id` and high-cardinality string attributes by
     default, so its packages are larger and its lookups prune; the `bloom`
     family's `cityparquet+nobloom` variant is the one package measured
-    without them.
+    without them. The coordinator now writes 22 columns, with `stats_pruned` after
+    `bloom_pruned`, so that evidence predates the `stats_pruned` column and
+    the return rule of "The six scenarios".
 
 31. **One generation of results, one timing block, one header.** Every
     committed results CSV reports the seven-column timing block
@@ -1227,8 +1262,8 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     38,743 features.** Each feature is a `Building` with its
     `BuildingInstallation`s inline, so the feature-grained formats
     (`citygml`, `cityjsonseq`, `flatcitybuf`) count 38,743 for `count` and
-    `full-read` and a smaller number for each `bbox-*` window than the
-    CityObject-grained ones; Caveat 1 states which is which, and the
+    the `full-read` `result_count`, while every format returns CityObjects
+    for each `bbox-*` window; Caveat 1 states which is which, and the
     coordinator checks each level against its own reference (Caveat 2).
     Ingolstadt (379 in 55), Vienna (1,322 in 307) and Zurich (198,699 in
     52,834) are nested too; Rotterdam, New York and Montréal hold one
@@ -1300,6 +1335,32 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     orphaned) and ingolstadt 26 of 405 geometries and 25,262 of 87,972
     vertices; the other five sources and the 3DBAG slice are unchanged. A
     CityGML source is not normalised; none is in the corpus.
+
+42. **Cross-format consistency covers what is returned, not only how
+    many.** After the counts of Caveat 2, the coordinator's
+    `check_returned` compares, per scenario and query tag, what every
+    format returned: the identifier-set digest (count, sum and xor of the
+    identifiers' hashes) of each `bbox-*` window and of `attr-filter`; the
+    number of geometries returned by each window and the extent their
+    visited coordinates span; and, for `full-read` and each `id-*` probe,
+    the CityObjects, geometries and semantic faces visited and their
+    extent. Extents are brought into the package's axis order and must
+    agree within one quantisation step of the package's `transform` per
+    axis; every other value must be equal. A disagreement tags the rows
+    `count-mismatch` and fails the run. A row that reports no value for a
+    part is named on stderr rather than passed silently.
+
+    A format may be excused from one comparison only through the explicit
+    `TOTAL_EXCLUSIONS` list in the coordinator, each entry naming the
+    format, the comparison and the reason, and pinned by a test. The list
+    holds one entry: **`citygml` is not compared on the `full-read` and
+    identifier-lookup `extent`**. CityGML stores real coordinates and no
+    `transform`, so the library's CityGML reader quantises them with its
+    own step, derived from the CRS's units — a millimetre on a metre axis.
+    Where the source's `transform` is finer (Tokyo's height step is
+    1e-6 m), the CityGML extent lies up to half a millimetre from the other
+    four formats', beyond the one-step tolerance. Its spatial windows'
+    returned extent, and every count, digest and total, are still compared.
 
 ## Environment
 

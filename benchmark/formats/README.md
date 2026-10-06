@@ -194,8 +194,12 @@ to `<figures>/formats/compression.csv`, beside `size_factors.csv`.
 from each input, untimed — `cityparquet`, which carries bloom filters, and
 `cityparquet+nobloom`, which carries none — and times `id-lookup` (`id-50pct`,
 `id-miss`) and `feature-lookup` (`feature-50pct`, `feature-miss`) against
-both. Package bytes go to `sizes.csv`. Every lookup row carries `row_groups_total`, `bloom_pruned` and `filter_bytes` (the
-bitset bytes of the filters examined). Both packages are written in Hilbert
+both. Package bytes go to `sizes.csv`. Every lookup row carries `row_groups_total`, `bloom_pruned`, `stats_pruned`
+(the row groups min/max statistics ruled out among those the filters kept)
+and `filter_bytes` (the bitset bytes of the filters examined), the last four
+of the CSV's 22 columns. Each miss probe is a stored identifier with
+`-readbench-absent` appended, inside the row groups' identifier ranges, so
+statistics alone cannot reject it. Both packages are written in Hilbert
 order: the coordinator builds every variant package that way and refuses a
 `+source` suffix, so the two differ in their bloom filters alone.
 The 3DBAG slice is drawn in `bloom`; the corpus datasets are drawn per dataset
