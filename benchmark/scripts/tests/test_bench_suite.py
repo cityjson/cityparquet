@@ -379,7 +379,7 @@ class NetworkFamilyTest(unittest.TestCase):
         import csv, json, tempfile
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "d.csv"
-            out.write_text("dataset,format,scenario,median_s,notes,bytes_read,http_requests\nd,cityparquet,count,0.05,,1250000,2\n")
+            out.write_text("dataset,format,scenario,time_median_s,notes,bytes_read,http_requests\nd,cityparquet,count,0.05,,1250000,2\n")
             Path(f"{out}.params.json").write_text(json.dumps({"network": {"target": "simulated", "profile": "typical", "bandwidth_mbps": 100.0, "latency_ms": 20.0}}))
             bench_suite.write_model_times(out)
             rows = list(csv.DictReader(out.with_suffix(".model.csv").open()))

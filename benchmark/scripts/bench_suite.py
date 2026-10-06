@@ -496,13 +496,13 @@ def write_model_times(result_csv: Path) -> None:
     output = result_csv.with_suffix(".model.csv")
     with result_csv.open(newline="") as source, output.open("w", newline="") as target:
         writer = csv.writer(target)
-        writer.writerow(["dataset", "format", "scenario", "notes", "network_profile", "target", "bandwidth_mbps", "latency_ms", "bytes_read", "http_requests", "median_s", "model_s"])
+        writer.writerow(["dataset", "format", "scenario", "notes", "network_profile", "target", "bandwidth_mbps", "latency_ms", "bytes_read", "http_requests", "time_median_s", "model_s"])
         for row in csv.DictReader(source):
             if not row.get("bytes_read") or not row.get("http_requests") or "bandwidth_mbps" not in params:
                 model = ""
             else:
                 model = f"{int(row['bytes_read']) * 8 / (params['bandwidth_mbps'] * 1e6) + int(row['http_requests']) * params['latency_ms'] / 1e3:.6f}"
-            writer.writerow([row["dataset"], row["format"], row["scenario"], row.get("notes", ""), params["profile"], params["target"], params.get("bandwidth_mbps", ""), params.get("latency_ms", ""), row.get("bytes_read", ""), row.get("http_requests", ""), row.get("median_s", ""), model])
+            writer.writerow([row["dataset"], row["format"], row["scenario"], row.get("notes", ""), params["profile"], params["target"], params.get("bandwidth_mbps", ""), params.get("latency_ms", ""), row.get("bytes_read", ""), row.get("http_requests", ""), row.get("time_median_s", ""), model])
 
 
 def require_prepared(inputs: list[Path], locations: dict[str, Path]) -> None:
