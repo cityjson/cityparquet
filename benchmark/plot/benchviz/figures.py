@@ -136,6 +136,11 @@ def _statistic(data: dict[str, Any]) -> str:
     return data.get("statistic", "median")
 
 
+def _statistic_note(data: dict[str, Any]) -> str:
+    """The caption line naming the plotted timing statistic (`prep.statistic_note`)."""
+    return data.get("meta", {}).get("statistic_note") or prep.statistic_note(_statistic(data), [])
+
+
 def _ratio(value: Any, base: Any) -> float | None:
     return float(value) / float(base) if value is not None and base not in (None, 0) else None
 
@@ -490,7 +495,10 @@ def format_figures(data: dict[str, Any], out: Path) -> list[Path]:
             bar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
             bar.ax.tick_params(labelsize=6, length=0)
             bar.outline.set_visible(False)
-            bar.set_label(FACTOR_KEY + (f" {note}" if note else ""), fontsize=6, wrap=True)
+            caption = FACTOR_KEY + (f" {note}" if note else "")
+            if field == "time_s":
+                caption += f" {_statistic_note(data)}"
+            bar.set_label(caption, fontsize=6, wrap=True)
             fig.suptitle(_title(dataset), fontsize=11, x=0.01, ha="left")
             written += _save(fig, name, out / FORMATS_DIR / dataset["id"])
     return written
@@ -655,9 +663,8 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
         **data.get("meta", {}).get("dataset_labels", {}).get(largest, {}),
     }
     fig.suptitle(f"{key.capitalize()} filters — {_title(headline)}", x=0.01, ha="left", fontsize=11)
-    note = slice_note(headline)
-    if note:
-        fig.text(0.01, 0.02, note, fontsize=6, color=MUTED, ha="left")
+    note = " ".join(filter(None, (slice_note(headline), _statistic_note(data))))
+    fig.text(0.01, 0.02, note, fontsize=6, color=MUTED, ha="left", wrap=True)
     return _save(fig, key, out)
 
 
@@ -730,6 +737,7 @@ def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
         f"{key.capitalize()} — corpus datasets",
         fontsize=12,
     )
+    fig.text(0.01, 0.005, _statistic_note(data), fontsize=6, color=MUTED, ha="left")
     return _save(fig, f"{key}-corpus", out)
 
 
@@ -923,6 +931,7 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
     }
 
     notes = [
+        _statistic_note(data),
         "Ratios to 3DCityDB within one thread configuration only; never read a "
         "threads=single cell against a threads=parallel one.",
         "Uncoloured: no citable baseline or no citable value. n/a: the system does not "

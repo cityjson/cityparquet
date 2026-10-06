@@ -330,6 +330,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--data-root", type=Path, default=Path(os.environ.get("CITYPARQUET_BENCH_ROOT", DEFAULT_DATA_ROOT)))
     result.add_argument("--out", type=Path)
     result.add_argument("--figures", type=Path)
+    result.add_argument("--statistic", choices=("median", "mean"), default="median", help="summary only: the timing statistic the figures plot; median (spread q1-q3, the default) or mean (spread +-1 population std)")
     return result
 
 
@@ -362,7 +363,7 @@ def main() -> None:
         cmd = ["uv", "run", "--project", "benchmark/plot", "python", "-m", "benchviz", "summary", "--data-root", str(root), "--bench-dir", str(bench_dir), "--out", str(output)]
         # Render exactly the suite selection requested by the caller.  The
         # renderer filters its prepared payload before making figures and HTML.
-        cmd.extend(["--families", ",".join(families)])
+        cmd.extend(["--families", ",".join(families), "--statistic", args.statistic])
         if args.datasets:
             cmd.extend(["--datasets", ",".join(renderer_dataset_ids(data, datasets))])
         if figures:

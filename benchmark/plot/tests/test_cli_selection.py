@@ -5,7 +5,7 @@ from benchviz import __main__ as cli
 
 
 def test_selection_filters_real_payload(tmp_path: Path, monkeypatch):
-    def fake_prep(inputs, out_path):
+    def fake_prep(inputs, out_path, statistic="median"):
         payload = {
             "datasets": [{"id": "rotterdam_delfshaven"}, {"id": "other"}],
             "read": [{"dataset": "rotterdam_delfshaven", "scenario_key": "write"}],

@@ -66,3 +66,22 @@ class ProvenanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SummaryStatisticTests(unittest.TestCase):
+    def _summary_command(self, *extra):
+        from unittest import mock
+        calls = []
+        argv = ["bench_suite.py", "summary", *extra]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(bench_suite, "command", lambda *a: calls.append(a)):
+            bench_suite.main()
+        (cmd,) = calls
+        return list(cmd)
+
+    def test_the_summary_plots_the_median_by_default(self):
+        cmd = self._summary_command()
+        self.assertEqual(cmd[cmd.index("--statistic") + 1], "median")
+
+    def test_the_summary_forwards_the_mean(self):
+        cmd = self._summary_command("--statistic", "mean")
+        self.assertEqual(cmd[cmd.index("--statistic") + 1], "mean")

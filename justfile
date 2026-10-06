@@ -638,7 +638,7 @@ bench-prep *ARGS:
 bench-run *ARGS:
     uv run --project {{PLOT}} python benchmark/scripts/bench_suite.py run "$@"
 
-[doc("Render paper figures and one combined HTML page from existing results")]
+[doc("Render paper figures and one combined HTML page from existing results; --statistic median|mean (default median)")]
 [positional-arguments]
 bench-summary *ARGS:
     uv run --project {{PLOT}} python benchmark/scripts/bench_suite.py summary "$@"

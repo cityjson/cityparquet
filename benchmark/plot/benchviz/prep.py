@@ -150,7 +150,29 @@ def timing(row: dict[str, str] | None, statistic: str = "median") -> dict[str, f
         "time_hi_s": hi,
         "time_min_s": get("time_min_s"),
         "time_max_s": get("time_max_s"),
+        "repeat": _int(row.get("repeat")) if row is not None else None,
     }
+
+
+def statistic_note(statistic: str, records: list[dict]) -> str:
+    """The caption line every timing figure prints: which statistic is
+    plotted, over how many warm runs, and which spread goes with it."""
+    counts = sorted(
+        {r["repeat"] for r in records if r.get("time_s") is not None and r.get("repeat")}
+    )
+    runs = (
+        f"{counts[0]} warm runs"
+        if len(counts) == 1
+        else f"{counts[0]}–{counts[-1]} warm runs"
+        if counts
+        else "the warm runs"
+    )
+    spread = (
+        "spread: interquartile range (q1–q3), min–max recorded"
+        if statistic == "median"
+        else "spread: ±1 population standard deviation, min–max recorded"
+    )
+    return f"Times: {statistic} of {runs} per cell; {spread}."
 
 
 READ_COLUMNS = [
@@ -871,7 +893,7 @@ def load_databases(inputs: Inputs, statistic: str = "median") -> dict:
     def spread(row: dict[str, str], prefix: str) -> dict[str, float | None]:
         block = {column: safe_float(row.get(f"{prefix}{column}")) for column in TIMING_BLOCK}
         values = timing({k: "" if v is None else repr(v) for k, v in block.items()}, statistic)
-        return {f"{prefix}{key}": value for key, value in values.items()}
+        return {f"{prefix}{key}": value for key, value in values.items() if key != "repeat"}
 
     def safe_int(value: str | None) -> int | None:
         try:
@@ -935,6 +957,7 @@ def load_databases(inputs: Inputs, statistic: str = "median") -> dict:
                 "result_count": safe_int(row.get("result_count")),
                 **spread(row, ""),
                 "peak_rss_bytes": safe_int(row.get("peak_rss_bytes")),
+                "repeat": safe_int(row.get("repeat")),
                 **spread(row, "server_"),
                 "size_bytes": safe_int(row.get("size_bytes")),
                 "size_bytes_no_index": safe_int(row.get("size_bytes_no_index")),
@@ -1186,6 +1209,10 @@ def build(inputs: Inputs | None = None, statistic: str = "median") -> tuple[dict
     data = {
         "statistic": statistic,
         "meta": {
+            "statistic_note": statistic_note(
+                statistic,
+                read_records + bloom.get("records", []) + database_data.get("records", []),
+            ),
             "baseline": BASELINE_FORMAT,
             "dataset_labels": manifest_labels(),
             "slice_dataset": slice_dataset(),
@@ -1217,9 +1244,11 @@ def build(inputs: Inputs | None = None, statistic: str = "median") -> tuple[dict
     return data, anomalies + excluded.notes()
 
 
-def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
+def main(
+    inputs: Inputs | None = None, out_path: Path | None = None, statistic: str = "median"
+) -> Path:
     out = out_path or DEFAULT_DATA_PATH
-    data, anomalies = build(inputs)
+    data, anomalies = build(inputs, statistic)
     # allow_nan=False: a NaN/inf would silently produce invalid JSON.
     text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
     out.parent.mkdir(parents=True, exist_ok=True)

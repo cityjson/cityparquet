@@ -49,7 +49,7 @@ def _drop_databases(payload: dict) -> None:
 
 def _cmd_prep(args: argparse.Namespace) -> None:
     data, _, _ = _resolved(args)
-    prep.main(prep.Inputs(_bench_dir(args)), out_path=data)
+    prep.main(prep.Inputs(_bench_dir(args)), out_path=data, statistic=args.statistic)
     payload = json.loads(data.read_text(encoding="utf-8"))
     families = set(args.families.split(",")) if args.families else None
     datasets = set(args.datasets.split(",")) if args.datasets else None
@@ -92,9 +92,7 @@ def _cmd_prep(args: argparse.Namespace) -> None:
             },
             "bloom": {
                 "present": bool(payload["bloom"]["records"]),
-                "metrics": sorted(
-                    {r.get("measure") for r in payload["bloom"]["records"]}
-                ),
+                "metrics": sorted({r.get("measure") for r in payload["bloom"]["records"]}),
             },
             "databases": {
                 "present": bool(payload["databases"]["records"] or payload["databases"]["sizes"]),
@@ -187,21 +185,30 @@ def build_parser() -> argparse.ArgumentParser:
             "benchmark of its own."
         ),
     )
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("prep", parents=[common], help="CSVs -> bench_data.json").set_defaults(
-        func=_cmd_prep
+    # The timing statistic is fixed when bench_data.json is prepared; the figure
+    # and HTML stages read it back from there.
+    statistic = argparse.ArgumentParser(add_help=False)
+    statistic.add_argument(
+        "--statistic",
+        choices=prep.STATISTICS,
+        default="median",
+        help="timing statistic to plot: median (spread q1-q3) or mean (spread +-1 std)",
     )
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser(
+        "prep", parents=[common, statistic], help="CSVs -> bench_data.json"
+    ).set_defaults(func=_cmd_prep)
     sub.add_parser(
         "html", parents=[common], help="bench_data.json -> bench-summary.html"
     ).set_defaults(func=_cmd_html)
     sub.add_parser(
         "figures", parents=[common], help="bench_data.json -> *.svg + *.png"
     ).set_defaults(func=_cmd_figures)
-    sub.add_parser("all", parents=[common], help="prep + html + figures").set_defaults(
+    sub.add_parser("all", parents=[common, statistic], help="prep + html + figures").set_defaults(
         func=_cmd_all
     )
     sub.add_parser(
-        "summary", parents=[common], help="prep + figures + self-contained HTML"
+        "summary", parents=[common, statistic], help="prep + figures + self-contained HTML"
     ).set_defaults(func=_cmd_summary)
     return parser
 
