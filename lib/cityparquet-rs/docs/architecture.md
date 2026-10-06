@@ -80,7 +80,8 @@ Source (CityJSON doc or CityJSONSeq stream)
   (geoarrow.wkb, arrow.json) and the six fixed `bbox` leaf paths — **never by
   column name** — so the recipe can't drift from the schema. This is the
   paper's benchmark variable (see below).
-- **`order`** — optional Hilbert reordering of features before encode.
+- **`order`** — Hilbert reordering of features before encode (the default
+  `RowOrder`; `RowOrder::Source` skips it and streams).
 - **`sidecar`** / **`appearance`** — under Compatibility, the appearance
   interner assigns dataset-global ids and the sidecar writers emit the
   definition tables.
@@ -95,7 +96,8 @@ failure mid-write leaves the existing package intact and the temp dir behind
 for inspection.
 
 `ConvertOptions` bundles the knobs: `profile`, `overwrite`, `batch_size`,
-`recipe` (`WriterRecipe`), and `ordering` (`RowOrder::{Source, Hilbert}`).
+`recipe` (`WriterRecipe`), and `ordering` (`RowOrder::{Hilbert, Source}`,
+Hilbert by default).
 The table layout itself is not a knob: by-type (one `<snake>.parquet` table
 per 1st-level CityObject family) is the sole, mandatory layout.
 
@@ -181,8 +183,9 @@ deliberate drops.
 ## Benchmark harness
 
 `cityparquet-cli::bench` (`cityparquet bench`) drives the paper's variant
-matrix. For each variant — a `RecipePreset` × optional `+hilbert` × optional
-`+by-type` × optional `+rg<N>` row-group-size override — it converts `input`
+matrix. For each variant — a `RecipePreset` × optional `+source` (Hilbert
+order otherwise) × optional `+rg<N>` row-group-size override × optional
+`+<codec>[<level>]` × optional `+nobloom` — it converts `input`
 into a fresh tempdir, times the write, measures package size, times a full
 scan (deriving the dataset bbox while it's at it), times a bbox-pruned window
 query anchored at the bbox lower-left, counts row groups touched vs total,

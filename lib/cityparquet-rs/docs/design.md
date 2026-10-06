@@ -222,12 +222,14 @@ descendants, and never ends up narrower than a source-declared extent. Null
 bboxes don't enter Parquet min/max statistics, so row-group pruning stays
 sound.
 
-Rows can optionally be reordered along a **2D Hilbert curve** over the
+By default, rows are reordered along a **2D Hilbert curve** over the
 bbox centroid (`x`/`y` only — city models are height-thin, so `z` would waste
 curve resolution), clustering spatially-near features into the same or
 adjacent row groups. This improves bbox row-group pruning for windowed
-spatial reads. It buffers the whole dataset in memory to sort, so it is
-opt-in.
+spatial reads. It buffers the whole dataset in memory to sort, so peak memory
+grows with the input; `--ordering source` (`RowOrder::Source`) streams
+features in source order instead, one at a time, for an input too large to
+hold.
 
 ### Appearance
 

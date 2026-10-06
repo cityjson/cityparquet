@@ -78,7 +78,9 @@ cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 ```
 
 `convert` takes the output directory as the **required `-o`/`--output` flag**, not
-positionally. Other flags include `--recipe`, `--ordering source|hilbert`,
+positionally. Other flags include `--recipe`, `--ordering hilbert|source`
+(Hilbert by default, which holds every feature in memory to sort; `source`
+streams, the low-memory path),
 `--row-group-size`, `--zstd-level`,
 `--partition`, `--no-lod0`, `--crs` (an operator-supplied CRS for a source that
 declares none — without it such a source still converts, writing `city.crs: null`), and
