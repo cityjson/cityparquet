@@ -251,7 +251,7 @@ the timed window on every system.
 | ------------------------- | ------------------------ | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `geometry-scan` | ids + native binary geometry | every object's id and every geometry it carries | `SELECT id, <every geometry_lod* column>` fetched to Arrow as WKB | `SELECT object_id, geometry` (the geometry JSONB), binary wire format | `objectid` + an array of the object's geometries, one per LoD, gathered from it and its boundary parts (Caveat 17), binary wire format |
 | `count`                   | count                    | total CityObject count                                             | `SELECT count(*)` — answered from file metadata; caption it as such                                                                                   | `SELECT count(*) FROM cjdb.city_object`                                                                                                                                                                  | `count(*)` over `feature` with the CityObject predicate (Caveat 1)                                                                                                                                                                                |
-| `bbox-query` (1/5/25 %) | ids + highest-LoD geometry | objects whose bbox intersects the window, each with its most detailed geometry | `bbox` STRUCT comparisons — **x/y only**; `coalesce` over the per-LoD WKB columns, most detailed first | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3); the highest-LoD element of the geometry JSONB | envelope `&& ST_MakeEnvelope(...)`; the object's geometry at the highest `property.val_lod` (integer tier), gathered from it and its boundary parts (Caveat 17), via `LEFT JOIN LATERAL` |
+| `bbox-query` (1/5/25 %) | ids + highest-LoD geometry | objects whose bbox intersects the window, each with its most detailed geometry | `bbox` STRUCT comparisons — **x/y only**; `coalesce` over the per-LoD WKB columns, most detailed first | `ground_geometry && ST_MakeEnvelope(...)` then the exact double-precision recheck (Caveat 12), GIST-indexed — 2D by storage (Caveat 3); the highest-LoD element of the geometry JSONB | envelope `&& ST_MakeEnvelope(...)` then the exact double-precision recheck (Caveat 12); the object's geometry at the highest `property.val_lod` (integer tier), gathered from it and its boundary parts (Caveat 17), via `LEFT JOIN LATERAL` |
 | `attr-filter`             | ids                      | objects matching the per-dataset attribute predicate               | `WHERE "<col>" = ?` — a typed, flattened top-level column                                                                                             | `WHERE attributes ->> '<col>' = %s` — expression index on the attribute (see "Index sets")                                                                                                             | `property` join on `pr.name = %s AND pr.val_string = %s` (Caveat 13)                                                                                                                                                                              |
 | `attr-range`              | ids                      | objects whose numeric attribute exceeds the threshold              | `WHERE "<col>" > ?` — DOUBLE column with row-group statistics                                                                                         | `WHERE (attributes ->> '<col>')::float > %s`                                                                                                                                                             | `property` join with `coalesce(val_double, val_int) > %s`                                                                                                                                                                                         |
 | `attr-stats`              | `(min, max, sum, count)` | aggregate of `numeric_column`                                      | aggregates over the flattened top-level column                                                                                                        | aggregates over `(attributes ->> '<col>')::float8` — every row's JSONB unpacked and cast                                                                                                                  | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` (Caveat 13)                                                                                                                                            |
@@ -1110,8 +1110,19 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     cjdb's `bbox-query` never returns it. CityParquet's `bbox` unions the
     object's subtree, and 3DCityDB's importer populates `envelope` for such
     parents, so on datasets with this shape cjdb undercounts. No patch is
-    applied: this follows from cjdb's per-object design. Scenarios that do
-    not use `ground_geometry` are unaffected.
+    applied: this follows from cjdb's per-object design, and cjdb has no
+    indexed column holding the subtree box (its geometry is JSONB).
+    Scenarios that do not use `ground_geometry` are unaffected.
+
+    The harness accepts this undercount as `ok-deviation` only when it is
+    verified on the row: the other systems return the identical set,
+    cjdb's set is a subset of it, and every missing id is decomposed into
+    a NULL footprint or a footprint missing the window (Caveat 11), the
+    decomposition written into `notes`. Anything else stays `id-mismatch`.
+    On Tokyo (236 BuildingInstallations without a footprint) cjdb lacks
+    4 of 499 (4 NULL), 12 of 2,496 (9 NULL, 3 outside) and 77 of 12,479
+    (73 NULL, 4 outside) at the 1 / 5 / 25 % windows, all
+    BuildingInstallations: 0.80 %, 0.48 % and 0.62 %.
 
 11. **cjdb's footprint heuristic can also drop or shrink an object's own
     footprint — and on 3DBAG it demonstrably does.** After discarding
@@ -1148,38 +1159,44 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     class but not in count; settling it needs the four boundary rows'
     `envelope` read on a live import.
 
-12. **PostGIS `&&` returns false positives at EPSG:7415 magnitudes, and
-    both PostgreSQL systems are affected in fact.** Serialised PostGIS
-    geometries cache a single-precision (float4) bounding box, which the
-    `&&` operator uses whether or not an index is involved. One float4 step
-    at x ≈ 1.86e5 — ordinary RD New coordinates, not "in the millions" — is
-    **0.0156 m**, so an envelope lying a centimetre or two outside the
-    window can test as overlapping. An earlier version of this caveat said
-    this needed coordinates in the millions and that `cjdb` was affected
-    only "in principle"; both are wrong. On the committed 3DBAG run the
-    float4 term contributes **+4 objects at the 25 % window on both
-    PostgreSQL systems** (Caveat 11's table). `duckdb-cityparquet` and the
-    native reader compare double-precision bounds and are not exposed.
+12. **PostGIS `&&` alone returns false positives, so both PostgreSQL
+    systems recheck it.** Serialised PostGIS geometries cache a
+    single-precision (float4) bounding box, which `&&` compares whether or
+    not an index is involved. One float4 step is **0.0156 m** at
+    x ≈ 1.86e5 (EPSG:7415) and about **1 m** at Tokyo's EPSG:6697
+    longitudes, so an envelope lying outside the window can test as
+    overlapping. Both PostgreSQL `bbox-query` forms therefore keep `&&` as
+    the GiST probe and follow it with the exact, edge-inclusive test on the
+    box's double-precision bounds (`ST_XMax(col) >= minx AND ST_XMin(col)
+    <= maxx AND …`), the format benchmark's definition. On Tokyo the bare
+    probe admitted +14 / +15 / +20 objects on 3DCityDB at the 1 / 5 / 25 %
+    windows; with the recheck 3DCityDB's set equals `duckdb-cityparquet`'s
+    exactly at all three, so `envelope` is the box over the object's
+    subtree, as CityParquet's `bbox` is. Caveat 11's 3DBAG table predates
+    the recheck and still shows the float4 term (+4 / +3 at 25 %).
+    `duckdb-cityparquet` and the native reader compare double-precision
+    bounds directly.
 
-    The harness keeps `&&`, the idiomatic, index-cooperating PostGIS form.
-    The exact predicate (`ST_Intersects(envelope, env)`, or `&& env AND
-ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
-    the +4/+3 at the cost of leaving each system's native form and adding
-    per-candidate CPU to the timings, for a 3-in-221,005 correction.
-
-13. **3DCityDB's importer restructures CityGML-recognised attributes, which
-    can empty `attr-stats`, `attr-filter` and `attr-range`.** All three look
-    up `property.name` equal to the literal CityJSON attribute name every
-    other system is given. When `citydb-tool` maps a CityJSON attribute onto
-    a structured CityGML 3.0 datatype — `measuredHeight` becomes a `height`
-    property of type `Height`, with the scalar on a child `property` row
-    named `value` — no row has the original name, and 3DCityDB reports 0
-    against the others' counts. The queries are not special-cased for such
-    names. These scenarios are comparable across systems only when the
-    chosen attribute is not such an attribute; the committed 3DBAG run uses
-    `b3_extrusie` for `attr-stats`, on which all three systems agree. If a
-    re-run shows `attr-range` or `attr-filter` disagreeing for this reason,
-    pick the next attribute all three agree on, as `attr-stats` did.
+13. **3DCityDB's importer restructures CityGML-recognised attributes, so
+    the attribute queries resolve each attribute's storage first.** A
+    generic attribute is a top-level `property` row of its own name. An
+    attribute CityGML 3.0 models as a structured datatype is not:
+    `citydb-tool` writes CityJSON's `measuredHeight` as a `height` property
+    (namespace `con`, type `Height`) whose scalar is the child row `value`
+    and whose child `status` is `measured`; no row is named
+    `measuredHeight`. Once per import, untimed, the 3DCityDB system looks
+    for a top-level row of the attribute's name and otherwise for the
+    importer's structured form of it (`CITYJSON_STRUCTURED_ATTRIBUTES` in
+    `sql_citydb.py`, used only when present in the loaded catalogue);
+    `attr-filter`, `attr-range` and `attr-stats` then read that row, as a
+    3DCityDB user would. On Tokyo this turns 3DCityDB's 0 into the others'
+    7,735 (`attr-range`) and 38,743 (`attr-stats`); the range form is
+    served by `property_name_numval_inx` (`name = 'value' AND coalesce(…)
+    > 29.1`) with the parent and `status` rows joined by key. `usage`
+    (`attr-filter`) keeps its name under CityGML 3.0 (`bldg:usage`, a
+    `Code` in `val_string`), so it agrees by design (12,348). `id-lookup`
+    already returns every `property` row of the feature, nested ones
+    included.
 
 14. **The native reader accepts only single-table packages.**
     `cityparquet convert` writes one table per first-level CityObject family.
