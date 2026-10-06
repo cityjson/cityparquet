@@ -438,3 +438,199 @@ fn visit_geometries_equal_source_geometries_less_same_lod_skips() {
         );
     }
 }
+
+/// Independent oracle for the spatial geometry query: for every row whose id
+/// is in `ids`, the most detailed non-null `geometry_lod*` column (ranked by
+/// the parsed `Lod`, the un-suffixed primary `geometry` lowest), walked with
+/// a coordinate counter. Returns `(rows with a geometry, coordinates)`.
+fn highest_lod_oracle(table: &Path, ids: &std::collections::HashSet<String>) -> (u64, u64) {
+    use cityparquet_schema::Lod;
+    struct Count(u64);
+    impl WkbVisitor for Count {
+        fn coord(&mut self, _c: [f64; 3]) {
+            self.0 += 1;
+        }
+    }
+    let (mut geometries, mut coords) = (0u64, Count(0));
+    for batch in batches(table) {
+        let schema = batch.schema();
+        let id = batch
+            .column_by_name("id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .unwrap();
+        let mut lods: Vec<(Option<Lod>, usize)> = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| match f.name().as_str() {
+                "geometry" => Some((None, i)),
+                n => n
+                    .strip_prefix("geometry_")
+                    .and_then(Lod::from_column_suffix)
+                    .map(|l| (Some(l), i)),
+            })
+            .collect();
+        lods.sort();
+        for row in 0..batch.num_rows() {
+            if !ids.contains(id.value(row)) {
+                continue;
+            }
+            for &(_, i) in lods.iter().rev() {
+                let col = batch
+                    .column(i)
+                    .as_any()
+                    .downcast_ref::<BinaryArray>()
+                    .unwrap();
+                if col.is_valid(row) {
+                    geometries += 1;
+                    visit_wkb(col.value(row), &mut coords).unwrap();
+                    break;
+                }
+            }
+        }
+    }
+    (geometries, coords.0)
+}
+
+/// The spatial geometry query returns exactly the ids the id-only bbox query
+/// returns, and one geometry per object that has any — its most detailed
+/// LoD — walked in place; an object without geometry keeps its id.
+#[test]
+fn bbox_query_geometry_returns_ids_and_the_highest_lod_geometry() {
+    use cityparquet::query;
+    let mut geometry_less = 0u64;
+    for (out, table) in [
+        {
+            let out = convert_delft_small_row_groups();
+            let t = out.path().join("building.parquet");
+            (out, t)
+        },
+        {
+            let out = convert_fixture("lod3_railway.city.json");
+            let t = tables(out.path()).remove(0);
+            (out, t)
+        },
+    ] {
+        let e = query::full_read_visit(&table).unwrap().extent;
+        let half = [
+            e[0],
+            e[1],
+            e[2],
+            (e[0] + e[3]) / 2.0,
+            (e[1] + e[4]) / 2.0,
+            e[5],
+        ];
+        for window in [e, half] {
+            let ids = query::bbox_query(&table, window).unwrap();
+            let got = query::bbox_query_geometry(&table, window).unwrap();
+            assert_eq!(got.ids, ids.ids, "{}", table.display());
+            assert_eq!(got.row_groups_total, ids.row_groups_total);
+            assert_eq!(got.row_groups_touched, ids.row_groups_touched);
+            let set: std::collections::HashSet<String> = ids.ids.iter().cloned().collect();
+            let (geometries, coordinates) = highest_lod_oracle(&table, &set);
+            assert_eq!(got.geometries, geometries);
+            assert_eq!(got.coordinates, coordinates);
+            assert!(got.geometries <= got.ids.len() as u64);
+            geometry_less += got.ids.len() as u64 - got.geometries;
+            if got.coordinates > 0 {
+                assert!(got.extent[0] <= got.extent[3] && got.extent[2] <= got.extent[5]);
+            }
+        }
+        drop(out);
+    }
+    // Every object of both fixtures carries a geometry; the geometry-less
+    // case is covered by the next test.
+    assert_eq!(geometry_less, 0);
+}
+
+/// An object without geometry is returned with its id and no geometry. The
+/// table is delft converted, then rewritten with every `Building` row's
+/// geometry columns nulled — the shape of a 3DBAG parent without LoD 0.
+#[test]
+fn bbox_query_geometry_returns_a_geometry_less_object_by_id() {
+    use arrow_array::{BooleanArray, cast::AsArray};
+    use cityparquet::query;
+    let out = convert_delft_small_row_groups();
+    let source = out.path().join("building.parquet");
+    let stripped = out.path().join("stripped.parquet");
+    let input = batches(&source);
+    let schema = input[0].schema();
+    let file = std::fs::File::create(&stripped).unwrap();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema.clone(), None).unwrap();
+    let mut buildings = 0u64;
+    for batch in &input {
+        let ty = batch.column_by_name("object_type").unwrap();
+        let is_building = |row: usize| -> bool {
+            if let Some(d) = ty.as_dictionary_opt::<arrow_array::types::Int32Type>() {
+                let values = d.values().as_string::<i32>();
+                d.is_valid(row) && values.value(d.keys().value(row) as usize) == "Building"
+            } else {
+                let plain = ty.as_string::<i32>();
+                plain.is_valid(row) && plain.value(row) == "Building"
+            }
+        };
+        let strip: BooleanArray = (0..batch.num_rows())
+            .map(|r| Some(is_building(r)))
+            .collect();
+        buildings += strip.true_count() as u64;
+        let columns = schema
+            .fields()
+            .iter()
+            .zip(batch.columns())
+            .map(|(f, c)| {
+                if f.name().starts_with("geometry_lod") {
+                    arrow_select::nullif::nullif(c, &strip).unwrap()
+                } else {
+                    c.clone()
+                }
+            })
+            .collect();
+        writer
+            .write(&RecordBatch::try_new(schema.clone(), columns).unwrap())
+            .unwrap();
+    }
+    writer.close().unwrap();
+    assert!(buildings > 0);
+
+    let e = query::full_read_visit(&source).unwrap().extent;
+    let full = query::bbox_query_geometry(&source, e).unwrap();
+    let got = query::bbox_query_geometry(&stripped, e).unwrap();
+    assert_eq!(got.ids, full.ids, "a geometry-less object keeps its id");
+    let set: std::collections::HashSet<String> = got.ids.iter().cloned().collect();
+    let (geometries, coordinates) = highest_lod_oracle(&stripped, &set);
+    assert_eq!(got.geometries, geometries);
+    assert_eq!(got.coordinates, coordinates);
+    assert_eq!(got.ids.len() as u64 - got.geometries, buildings);
+}
+
+/// The id-returning attribute filter selects the rows the counting filter
+/// counts, under the same bloom-then-statistics pruning.
+#[test]
+fn attr_filter_ids_returns_the_matching_ids_with_the_same_pruning() {
+    use cityparquet::query::{self, AttrPredicate};
+    let out = convert_delft_small_row_groups();
+    let table = out.path().join("building.parquet");
+    let pred = AttrPredicate::Eq(serde_json::Value::String("BuildingPart".into()));
+    let (ids, stats) = query::attr_filter_ids(&table, "object_type", &pred).unwrap();
+    let (count, expected) = query::attr_filter_with_stats(&table, "object_type", &pred).unwrap();
+    assert_eq!(ids.len() as u64, count);
+    assert_eq!(count, 1116);
+    assert_eq!(stats, expected);
+    let unique: std::collections::HashSet<&String> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len());
+
+    let some = ids[0].clone();
+    let eq = AttrPredicate::Eq(serde_json::Value::String(some.clone()));
+    let (hit, stats) = query::attr_filter_ids(&table, "id", &eq).unwrap();
+    assert_eq!(hit, vec![some]);
+    assert!(stats.bloom_pruned + stats.stats_pruned < stats.row_groups_total);
+    let miss = AttrPredicate::Eq(serde_json::Value::String("no-such-id".into()));
+    let (none, stats) = query::attr_filter_ids(&table, "id", &miss).unwrap();
+    assert!(none.is_empty());
+    assert_eq!(
+        stats.bloom_pruned + stats.stats_pruned,
+        stats.row_groups_total
+    );
+}

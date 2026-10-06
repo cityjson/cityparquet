@@ -853,3 +853,207 @@ impl AttrStatsAccumulator {
         }
     }
 }
+
+/// The result of [`crate::query::bbox_query_geometry`]: the ids of the
+/// objects whose `bbox` intersects the window, in row order, and each such
+/// object's geometry at its highest LoD — walked in place (every stored
+/// coordinate read as an `f64`, nothing converted into another
+/// representation). An object with no geometry contributes its id only.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BBoxGeometryResult {
+    pub ids: Vec<String>,
+    /// Geometries walked: one per returned object that has any.
+    pub geometries: u64,
+    /// `[min x, min y, min z, max x, max y, max z]` over every walked
+    /// coordinate; infinite bounds when nothing was walked.
+    pub extent: [f64; 6],
+    pub polygons: u64,
+    pub rings: u64,
+    /// Stored WKB vertices walked, ring-closing vertex included.
+    pub coordinates: u64,
+    pub row_groups_total: usize,
+    pub row_groups_touched: usize,
+}
+
+/// The geometry columns of `schema`, most detailed LoD first: the
+/// `geometry_lod{major}_{minor}` columns ordered numerically by their parsed
+/// LoD (so `lod2_2 > lod1_3 > lod0_0`), then the un-suffixed primary
+/// `geometry` column, if any.
+pub(crate) fn geometry_columns_by_lod_desc(schema: &Schema) -> Vec<String> {
+    let mut ranked: Vec<(Option<cityparquet_schema::Lod>, String)> = schema
+        .fields()
+        .iter()
+        .filter_map(|f| {
+            let name = f.name();
+            if name == "geometry" {
+                return Some((None, name.clone()));
+            }
+            name.strip_prefix("geometry_")
+                .and_then(cityparquet_schema::Lod::from_column_suffix)
+                .map(|lod| (Some(lod), name.clone()))
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    ranked.into_iter().map(|(_, name)| name).collect()
+}
+
+/// The mask selecting the top-level columns named in `columns`, matched by
+/// exact name; a name absent from the schema is an error.
+pub(crate) fn roots_mask(
+    parquet_schema: &SchemaDescriptor,
+    columns: &[&str],
+) -> Result<ProjectionMask> {
+    let fields = parquet_schema.root_schema().get_fields();
+    let roots = columns
+        .iter()
+        .map(|column| {
+            fields
+                .iter()
+                .position(|f| f.name() == *column)
+                .ok_or_else(|| {
+                    CityParquetError::Schema(format!(
+                        "column '{column}' missing from the file's schema"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ProjectionMask::roots(parquet_schema, roots))
+}
+
+/// The projection of a spatial geometry query: `id`, `bbox` and every
+/// geometry column.
+pub(crate) fn bbox_geometry_mask(
+    schema: &Schema,
+    parquet_schema: &SchemaDescriptor,
+) -> Result<ProjectionMask> {
+    let lods = geometry_columns_by_lod_desc(schema);
+    let mut columns = vec!["id", "bbox"];
+    columns.extend(lods.iter().map(String::as_str));
+    roots_mask(parquet_schema, &columns)
+}
+
+/// WKB value `row` of the binary geometry column `col`, `None` when null.
+fn wkb_value<'a>(name: &str, col: &'a dyn Array, row: usize) -> Result<Option<&'a [u8]>> {
+    use arrow_array::cast::AsArray;
+    if col.is_null(row) {
+        return Ok(None);
+    }
+    Ok(Some(match col.data_type() {
+        DataType::Binary => col.as_binary::<i32>().value(row),
+        DataType::LargeBinary => col.as_binary::<i64>().value(row),
+        DataType::BinaryView => col.as_binary_view().value(row),
+        other => {
+            return Err(CityParquetError::Schema(format!(
+                "geometry column '{name}' is not binary WKB: {other:?}"
+            )));
+        }
+    }))
+}
+
+/// Folds one batch of a spatial geometry query — rows the `bbox`
+/// [`RowFilter`] already kept, projected by [`bbox_geometry_mask`] — into
+/// `acc`: each row's id, then its first non-null geometry in
+/// [`geometry_columns_by_lod_desc`] order walked in place.
+pub(crate) fn fold_bbox_geometry(batch: &RecordBatch, acc: &mut BBoxGeometryResult) -> Result<()> {
+    let ids = crate::arrow_compat::string_view(
+        batch
+            .column_by_name("id")
+            .ok_or_else(|| CityParquetError::Schema("'id' column missing".to_string()))?
+            .as_ref(),
+        "id",
+    )?;
+    let lods: Vec<(String, &dyn Array)> = geometry_columns_by_lod_desc(&batch.schema())
+        .into_iter()
+        .map(|name| {
+            let col = batch.column_by_name(&name).expect("projected").as_ref();
+            (name, col)
+        })
+        .collect();
+    let mut walk = crate::visit::VisitTotals {
+        extent: acc.extent,
+        ..Default::default()
+    };
+    for row in 0..batch.num_rows() {
+        acc.ids.push(ids.value(row).to_string());
+        for (name, col) in &lods {
+            if let Some(bytes) = wkb_value(name, *col, row)? {
+                acc.geometries += 1;
+                crate::wkb_read::visit_wkb(bytes, &mut walk)?;
+                break;
+            }
+        }
+    }
+    acc.extent = walk.extent;
+    acc.polygons += walk.polygons;
+    acc.rings += walk.rings;
+    acc.coordinates += walk.coordinates;
+    Ok(())
+}
+
+/// Collects the `id` of every row of one batch of an id-returning attribute
+/// filter (the predicate `RowFilter` already dropped the non-matching rows).
+pub(crate) fn collect_ids(batch: &RecordBatch, ids: &mut Vec<String>) -> Result<()> {
+    let col = batch
+        .column_by_name("id")
+        .ok_or_else(|| CityParquetError::Schema("'id' column missing".to_string()))?;
+    let view = crate::arrow_compat::string_view(col.as_ref(), "id")?;
+    ids.extend((0..col.len()).map(|row| view.value(row).to_string()));
+    Ok(())
+}
+
+impl BBoxGeometryResult {
+    /// An empty result carrying the row-group counts.
+    pub(crate) fn empty(row_groups_total: usize, row_groups_touched: usize) -> Self {
+        Self {
+            ids: Vec::new(),
+            geometries: 0,
+            extent: crate::visit::VisitTotals::default().extent,
+            polygons: 0,
+            rings: 0,
+            coordinates: 0,
+            row_groups_total,
+            row_groups_touched,
+        }
+    }
+}
+
+#[cfg(test)]
+mod lod_order_tests {
+    use super::*;
+    use arrow_schema::Field;
+
+    /// Geometry columns rank by the parsed LoD, numerically per part — not
+    /// by name — with the primary `geometry` column last and the
+    /// `geometry_properties_*` and attribute columns ignored.
+    #[test]
+    fn geometry_columns_rank_by_numeric_lod() {
+        let names = [
+            "id",
+            "geometry_lod0_0",
+            "geometry",
+            "geometry_lod2_2",
+            "geometry_properties_lod2_2",
+            "geometry_lod1_3",
+            "geometry_lod10_0",
+            "geometry_lod1_10",
+            "geometry_lodx",
+        ];
+        let schema = Schema::new(
+            names
+                .iter()
+                .map(|n| Field::new(*n, DataType::Binary, true))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            geometry_columns_by_lod_desc(&schema),
+            [
+                "geometry_lod10_0",
+                "geometry_lod2_2",
+                "geometry_lod1_10",
+                "geometry_lod1_3",
+                "geometry_lod0_0",
+                "geometry",
+            ]
+        );
+    }
+}

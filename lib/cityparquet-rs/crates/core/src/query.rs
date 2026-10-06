@@ -45,8 +45,8 @@ use crate::query_core;
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 
 pub use crate::query_core::{
-    AttrPredicate, AttrStats, BBoxQueryResult, BBoxVisitResult, BloomPrune, BloomTarget,
-    BloomTargets, FullReadResult, LookupStats, bloom_targets,
+    AttrPredicate, AttrStats, BBoxGeometryResult, BBoxQueryResult, BBoxVisitResult, BloomPrune,
+    BloomTarget, BloomTargets, FullReadResult, LookupStats, bloom_targets,
 };
 pub use crate::visit::VisitTotals;
 
@@ -129,6 +129,69 @@ pub fn bbox_query_visit(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxV
         row_groups_total,
         row_groups_touched,
     })
+}
+
+/// The ids of the objects whose `bbox` intersects `query_bbox` (edges
+/// count), each with its geometry at its HIGHEST LoD walked in place.
+///
+/// Row groups are pruned as in [`bbox_query`]. The read projects `id`,
+/// `bbox` and the geometry columns; a `RowFilter` evaluates the `bbox`
+/// struct alone first, so rows outside the window never have a geometry
+/// decoded. For each kept row the most detailed non-null geometry column —
+/// LoDs ordered numerically from the column names, `lod2_2 > lod1_3 >
+/// lod0_0`, the un-suffixed primary `geometry` last — is walked with
+/// [`crate::wkb_read::visit_wkb`]: every stored coordinate read as an
+/// `f64`, nothing converted into another representation. An object without
+/// geometry is returned with its id only.
+pub fn bbox_query_geometry(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxGeometryResult> {
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
+    let (row_groups_total, row_groups_touched) =
+        query_core::bbox_row_group_counts(builder.metadata(), &query_bbox);
+    let mask = query_core::bbox_geometry_mask(builder.schema(), builder.parquet_schema())?;
+    let row_filter = query_core::bbox_row_filter(builder.parquet_schema(), query_bbox);
+    let reader = builder
+        .with_projection(mask)
+        .with_bbox_row_groups(query_bbox)?
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let mut acc = BBoxGeometryResult::empty(row_groups_total, row_groups_touched);
+    for batch in reader {
+        query_core::fold_bbox_geometry(&batch.map_err(CityParquetError::parquet_from)?, &mut acc)?;
+    }
+    Ok(acc)
+}
+
+/// [`attr_filter_with_stats`] returning the `id` of every matching row, in
+/// row order, instead of their count. Row groups are pruned exactly as
+/// there (bloom filters for a string equality, then min/max statistics); the
+/// predicate `RowFilter` reads `column` alone and only `id` is projected for
+/// the surviving rows.
+pub fn attr_filter_ids(
+    table_path: &Path,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<(Vec<String>, LookupStats)> {
+    let file = File::open(table_path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
+        .map_err(CityParquetError::parquet_from)?;
+    let probe = query_core::string_probe(builder.schema(), builder.parquet_schema(), column, pred)?;
+    let output_mask = query_core::root_mask(builder.parquet_schema(), "id")?;
+    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)?;
+    let (row_groups, stats) = prune_row_groups(&file, builder.metadata(), column, probe, pred)?;
+    let reader = builder
+        .with_projection(output_mask)
+        .with_row_filter(row_filter)
+        .with_row_groups(row_groups)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let mut ids = Vec::new();
+    for batch in reader {
+        query_core::collect_ids(&batch.map_err(CityParquetError::parquet_from)?, &mut ids)?;
+    }
+    Ok((ids, stats))
 }
 
 /// The row groups to read for `pred` on `column`: the bloom filters drop
