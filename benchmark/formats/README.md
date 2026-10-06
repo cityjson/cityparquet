@@ -106,7 +106,7 @@ See [`../README.md`](../README.md) for the experimental matrix and figure list.
   package's is the sum of every file in its directory
   (`benchmark/scripts/measure_sizes.py` for the format comparison, the
   coordinator's `sizes.csv` for the bloom family).
-- **Seven timing statistics over `repeat` read samples** — default 7 —
+- **Seven timing statistics over `repeat` read samples** — default 25, run back to back after one discarded warm-up; see `READ_BENCHMARK.md` "Sampling" for the optional cell time budget —
   reported at 6-decimal precision: `time_mean_s`, the **population standard
   deviation** `time_std_s` (the warm repeats are the whole measured set, not
   a draw used to infer a wider one), `time_median_s`, `time_min_s`,
