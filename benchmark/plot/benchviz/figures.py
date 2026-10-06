@@ -67,7 +67,6 @@ LABELS = {
     "flatcitybuf": "FlatCityBuf",
     "3dcitydb": "3DCityDB",
     "cjdb": "cjdb",
-    "citylake": "CityParquet (DuckDB)",
     "duckdb-cityparquet": "CityParquet (DuckDB)",
     "duckdb-cityparquet-writeback": "CityParquet (DuckDB, + package write-back)",
 }
