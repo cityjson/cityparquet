@@ -41,6 +41,18 @@ def _dataset(source: Path, prepared_dir: Path | None = None) -> Dataset:
     # (`readbench_prepare.sh`, `--no-lod0`) under the suite's data root, so
     # both families read the same bytes and no LoD 0 is synthesised.
     prepared = prepared_dir or BENCHMARK_DIR / "runs" / "data" / "readbench"
+    if source.name.endswith(".city.json"):
+        # cjdb imports CityJSONSeq only: a CityJSON input is run from the
+        # `.city.jsonl` the preparation wrote beside the package, or else
+        # one beside the input.
+        candidates = (prepared / f"{name}.city.jsonl", source.with_name(f"{name}.city.jsonl"))
+        found = next((c for c in candidates if c.is_file()), None)
+        if found is None:
+            raise FileNotFoundError(
+                f"{source} is CityJSON and cjdb imports CityJSONSeq only; "
+                f"none of {', '.join(map(str, candidates))} exists"
+            )
+        source = found
     return Dataset(name=name, source=source, cityparquet_dir=prepared / f"{name}.parquet")
 
 
@@ -242,7 +254,7 @@ def cmd_derive_params(args) -> int:
     # The one-feature `append-object` file is written BESIDE the sidecar
     # that describes it, so the two are committed and read together.
     p = params_mod.derive(
-        source, dataset.cityparquet_dir, append_dir=out.parent, dataset=name
+        dataset.source, dataset.cityparquet_dir, append_dir=out.parent, dataset=name
     )
     out.write_text(params_mod.to_json(p))
     print(f"wrote {out}")
@@ -310,7 +322,7 @@ def cmd_bench(args) -> int:
     results_dir = Path(args.output_dir) if args.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
     p = params_mod.derive(
-        source, dataset.cityparquet_dir,
+        dataset.source, dataset.cityparquet_dir,
         append_dir=results_dir, dataset=dataset.name,
     )
     (results_dir / f"{dataset.name}.params.json").write_text(params_mod.to_json(p))
@@ -357,7 +369,7 @@ def cmd_bench(args) -> int:
         json.dumps(
             manifest.collect(
                 dataset_name=dataset.name,
-                source=__import__("hashlib").sha256(source.read_bytes()).hexdigest(),
+                source=__import__("hashlib").sha256(dataset.source.read_bytes()).hexdigest(),
                 ingest=ingest_times,
                 sizes=sizes,
                 versions=_versions(systems),

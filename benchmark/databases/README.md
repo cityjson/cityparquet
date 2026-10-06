@@ -1350,11 +1350,13 @@ not the requested value.
 The CityParquet package must already exist as
 `<prepared-dir>/<dataset>.parquet`, for example from
 `just readbench-prepare <input> <outdir> cityparquet` at the repository
-root. `--dataset` must name the CityJSONSeq file, `<dataset>.city.jsonl`:
-cjdb imports CityJSONSeq, and the harness hands the `--dataset` path to
-`cjdb import -f` unchanged (`_dataset` in `cli.py` keeps the given path as
-the source). The dataset name, and so the package looked up, is the same
-for `<dataset>.city.jsonl` and `<dataset>.city.json`. Without
+root. `--dataset` names the CityJSONSeq file, `<dataset>.city.jsonl`, or
+the CityJSON file `<dataset>.city.json`. cjdb imports CityJSONSeq only, so
+for a CityJSON input `_dataset` in `cli.py` runs every system, the
+parameter derivation and the manifest's source hash from
+`<prepared-dir>/<dataset>.city.jsonl`, or else a `<dataset>.city.jsonl`
+beside the input, and stops with an error when neither exists. The dataset
+name, and so the package looked up, is the same for both inputs. Without
 `--output-dir`, results are written to
 `benchmark/runs/databases/results/`. Every run overwrites
 `<dataset>.csv`, `<dataset>.manifest.json`, `<dataset>.params.json` and

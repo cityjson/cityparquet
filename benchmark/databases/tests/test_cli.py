@@ -52,6 +52,26 @@ def test_dataset_reads_the_format_benchmarks_prepared_package_by_default():
     assert d.cityparquet_dir == ROOT.parent / "runs" / "data" / "readbench" / "delft.parquet"
 
 
+def test_a_city_json_dataset_resolves_to_the_prepared_city_jsonl(tmp_path):
+    # cjdb imports CityJSONSeq only: the preparation writes
+    # `<prepared-dir>/<name>.city.jsonl` beside the package.
+    (tmp_path / "delft.city.jsonl").write_text("{}\n")
+    d = _dataset(Path("/elsewhere/delft.city.json"), tmp_path)
+    assert d.source == tmp_path / "delft.city.jsonl"
+    assert d.cityparquet_dir == tmp_path / "delft.parquet"
+
+
+def test_a_city_json_dataset_falls_back_to_a_sibling_city_jsonl(tmp_path):
+    (tmp_path / "delft.city.jsonl").write_text("{}\n")
+    d = _dataset(tmp_path / "delft.city.json", tmp_path / "prepared")
+    assert d.source == tmp_path / "delft.city.jsonl"
+
+
+def test_a_city_json_dataset_without_a_city_jsonl_is_a_loud_failure(tmp_path):
+    with pytest.raises(FileNotFoundError, match="delft.city.jsonl"):
+        _dataset(tmp_path / "delft.city.json", tmp_path / "prepared")
+
+
 def test_dataset_strips_city_jsonl_suffix_not_just_the_extension():
     d = _dataset(Path("/x/Montreal.city.jsonl"))
     assert d.name == "Montreal"
