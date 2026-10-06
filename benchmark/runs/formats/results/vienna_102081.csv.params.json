@@ -70,8 +70,29 @@
       "substituted": false
     }
   ],
-  "object_type": "BuildingPart",
-  "object_type_count": 1015,
+  "attr_filter": {
+    "column": "roofType",
+    "pred": {
+      "eq": "FLACHDACH"
+    },
+    "matched": 600,
+    "share": 0.45385779122541603,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "UUID_LOD2_208604-fecca1ee-6880-4521-a187",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "UUID_LOD2_208604-fecca1ee-6880-4521-a187-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
   "numeric_attr": "measuredHeight",
   "cp_object_total": 1322
 }

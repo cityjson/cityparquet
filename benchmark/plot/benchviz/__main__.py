@@ -41,9 +41,15 @@ def _bench_dir(args: argparse.Namespace) -> Path:
     )
 
 
+def _drop_databases(payload: dict) -> None:
+    """Deselect the database family, its figure conditions included."""
+    payload["databases"] = {"baseline": "3dcitydb", "records": [], "sizes": []}
+    payload.get("meta", {}).get("conditions", {}).pop("databases", None)
+
+
 def _cmd_prep(args: argparse.Namespace) -> None:
     data, _, _ = _resolved(args)
-    prep.main(prep.Inputs(_bench_dir(args)), out_path=data)
+    prep.main(prep.Inputs(_bench_dir(args)), out_path=data, statistic=args.statistic)
     payload = json.loads(data.read_text(encoding="utf-8"))
     families = set(args.families.split(",")) if args.families else None
     datasets = set(args.datasets.split(",")) if args.datasets else None
@@ -57,26 +63,22 @@ def _cmd_prep(args: argparse.Namespace) -> None:
             }
             datasets |= {aliases[name] for name in list(datasets) if name in aliases}
         payload["datasets"] = [d for d in payload.get("datasets", []) if d.get("id") in datasets]
-        for field in ("read", "sizes", "ordering"):
+        for field in ("read", "sizes"):
             payload[field] = [r for r in payload.get(field, []) if r.get("dataset") in datasets]
-        for axis in payload.get("scaling", {}).values():
-            if isinstance(axis, dict):
-                axis["records"] = [
-                    r for r in axis.get("records", []) if r.get("dataset") in datasets
-                ]
-                axis["sizes"] = [r for r in axis.get("sizes", []) if r.get("dataset") in datasets]
+        bloom = payload["bloom"]
+        for field in ("records", "sizes"):
+            bloom[field] = [r for r in bloom.get(field, []) if r.get("dataset") in datasets]
         if payload["databases"].get("dataset") not in datasets:
-            payload["databases"] = {"baseline": "3dcitydb", "records": [], "sizes": []}
+            _drop_databases(payload)
     if families:
         if "formats" not in families:
             payload["read"] = []
         if "sizes" not in families:
             payload["sizes"] = []
-        for name in ("codec", "rowgroup"):
-            if name not in families:
-                payload["scaling"][name] = {"records": [], "sizes": [], "gaps": [], "variants": []}
+        if "bloom" not in families:
+            payload["bloom"] = {"records": [], "sizes": [], "gaps": [], "variants": []}
         if "databases" not in families:
-            payload["databases"] = {"baseline": "3dcitydb", "records": [], "sizes": []}
+            _drop_databases(payload)
     data.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     coverage = {
         "families": {
@@ -88,21 +90,20 @@ def _cmd_prep(args: argparse.Namespace) -> None:
                 "present": bool(payload["sizes"]),
                 "metrics": ["bytes"] if payload["sizes"] else [],
             },
-            "codec": {
-                "present": bool(payload["scaling"]["codec"]["records"]),
-                "metrics": sorted(
-                    {r.get("measure") for r in payload["scaling"]["codec"]["records"]}
-                ),
-            },
-            "rowgroup": {
-                "present": bool(payload["scaling"]["rowgroup"]["records"]),
-                "metrics": sorted(
-                    {r.get("measure") for r in payload["scaling"]["rowgroup"]["records"]}
-                ),
+            "bloom": {
+                "present": bool(payload["bloom"]["records"]),
+                "metrics": sorted({r.get("measure") for r in payload["bloom"]["records"]}),
             },
             "databases": {
                 "present": bool(payload["databases"]["records"] or payload["databases"]["sizes"]),
-                "metrics": sorted({r.get("scenario") for r in payload["databases"]["records"]}),
+                "metrics": sorted(
+                    {
+                        f"{r.get('scenario')} threads={r.get('threads')}"
+                        if r.get("tier") == "read"
+                        else str(r.get("scenario"))
+                        for r in payload["databases"]["records"]
+                    }
+                ),
             },
         }
     }
@@ -154,7 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="DIR",
-        help="benchmark results to read (default: this repo's benchmark/formats/)",
+        help="benchmark results to read (default: this repo's benchmark/runs/formats/)",
     )
 
     common.add_argument(
@@ -168,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--families",
         metavar="CSV",
-        help="selected families: sizes,formats,codec,rowgroup,databases",
+        help="selected families: sizes,formats,bloom,databases",
     )
     common.add_argument("--datasets", metavar="CSV", help="selected dataset IDs")
 
@@ -180,25 +181,34 @@ def build_parser() -> argparse.ArgumentParser:
         prog="benchviz",
         description=(
             "Build the CityParquet benchmark visualisations from the result CSVs "
-            "an earlier `just bench` / `just codec-bench` / `just rowgroup-bench` / "
-            "`just sizes` run left in benchmark/formats/. Runs no benchmark of its own."
+            "an earlier `just bench-run` left in benchmark/runs/formats/. Runs no "
+            "benchmark of its own."
         ),
     )
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("prep", parents=[common], help="CSVs -> bench_data.json").set_defaults(
-        func=_cmd_prep
+    # The timing statistic is fixed when bench_data.json is prepared; the figure
+    # and HTML stages read it back from there.
+    statistic = argparse.ArgumentParser(add_help=False)
+    statistic.add_argument(
+        "--statistic",
+        choices=prep.STATISTICS,
+        default="median",
+        help="timing statistic to plot: median (spread q1-q3) or mean (spread +-1 std)",
     )
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser(
+        "prep", parents=[common, statistic], help="CSVs -> bench_data.json"
+    ).set_defaults(func=_cmd_prep)
     sub.add_parser(
         "html", parents=[common], help="bench_data.json -> bench-summary.html"
     ).set_defaults(func=_cmd_html)
     sub.add_parser(
         "figures", parents=[common], help="bench_data.json -> *.svg + *.png"
     ).set_defaults(func=_cmd_figures)
-    sub.add_parser("all", parents=[common], help="prep + html + figures").set_defaults(
+    sub.add_parser("all", parents=[common, statistic], help="prep + html + figures").set_defaults(
         func=_cmd_all
     )
     sub.add_parser(
-        "summary", parents=[common], help="prep + figures + self-contained HTML"
+        "summary", parents=[common, statistic], help="prep + figures + self-contained HTML"
     ).set_defaults(func=_cmd_summary)
     return parser
 

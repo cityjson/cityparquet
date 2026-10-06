@@ -1,16 +1,105 @@
 {
-  "attr_column": "object_type",
-  "attr_eq": "BuildingPart",
-  "bbox_full": {
-    "maxx": 196791.084,
-    "maxy": 526311.881,
-    "maxz": 148.19400000000002,
-    "minx": 174638.897,
-    "miny": 426189.756,
-    "minz": -8.165000000000001
+  "append": {
+    "object_count": 2,
+    "path": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/databases/results/3dbag_n1000000.append.city.jsonl",
+    "source_feature_id": "NL.IMBAG.Pand.0171100000002606",
+    "suffix": "-appended",
+    "unmapped_references": 0
   },
+  "attr_filter": {
+    "column": "b3_dak_type",
+    "eq_value": "slanted",
+    "ge_bound": null,
+    "hand_picked": true,
+    "matched": 338875,
+    "op": "eq",
+    "share": 0.33887466112533887
+  },
+  "attr_range": {
+    "column": "b3_h_dak_max",
+    "matched": 99631,
+    "quantile": 0.8,
+    "threshold": 29.74180030822759
+  },
+  "bbox_full": {
+    "maxx": 196791.0849934082,
+    "maxy": 526311.8819335938,
+    "maxz": 148.1942901611328,
+    "minx": 174638.897,
+    "miny": 426189.7559953613,
+    "minz": -8.165994644165039
+  },
+  "id_probes": [
+    {
+      "id": "NL.IMBAG.Pand.0202100000251277",
+      "present": true,
+      "tag": "id-10pct"
+    },
+    {
+      "id": "NL.IMBAG.Pand.0268100000030371",
+      "present": true,
+      "tag": "id-50pct"
+    },
+    {
+      "id": "NL.IMBAG.Pand.0269100000023289",
+      "present": true,
+      "tag": "id-90pct"
+    },
+    {
+      "id": "NL.IMBAG.Pand.0268100000030371-absent",
+      "present": false,
+      "tag": "id-miss"
+    }
+  ],
   "numeric_column": "b3_extrusie",
-  "parent_id": "NL.IMBAG.Pand.0166100000000002",
-  "target_id": "NL.IMBAG.Pand.0166100000000002",
-  "total_city_objects": 1000001
+  "point_xy": [
+    189934.65152392577,
+    444206.76598950196
+  ],
+  "total_city_objects": 1000001,
+  "window_rows": 1000001,
+  "windows": [
+    {
+      "achieved": 0.00999999000001,
+      "approx": false,
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "window": {
+        "maxx": 190469.84100000001,
+        "maxy": 446625.6831700652,
+        "maxz": 148.1942901611328,
+        "minx": 189399.46204785153,
+        "miny": 441787.8488089387,
+        "minz": -8.165994644165039
+      }
+    },
+    {
+      "achieved": 0.05000094999905,
+      "approx": false,
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "window": {
+        "maxx": 191039.2120075101,
+        "maxy": 449199.0919790039,
+        "maxz": 148.1942901611328,
+        "minx": 188830.09104034145,
+        "miny": 439214.44,
+        "minz": -8.165994644165039
+      }
+    },
+    {
+      "achieved": 0.24999975000025,
+      "approx": false,
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "window": {
+        "maxx": 193319.51,
+        "maxy": 459505.4455928641,
+        "maxz": 148.1942901611328,
+        "minx": 186549.79304785153,
+        "miny": 428908.0863861398,
+        "minz": -8.165994644165039
+      }
+    }
+  ]
 }

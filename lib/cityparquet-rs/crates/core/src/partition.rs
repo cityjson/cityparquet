@@ -355,7 +355,7 @@ fn ensure_parent_ready(dir: &Path, overwrite: bool) -> Result<Vec<std::path::Pat
 /// `read_parquet('OUT/*/…')` glob sees a uniform column layout; each partition
 /// still scans its own features for its own bbox/count/stats.
 ///
-/// Memory: like `--ordering hilbert`, this buffers every feature (and clones
+/// Memory: like Hilbert ordering, the default, this buffers every feature (and clones
 /// each partition's subset before encoding) — the documented full-load cost.
 pub fn convert_partitioned(
     sources: &[Source],
@@ -408,6 +408,7 @@ pub fn convert_partitioned(
         module_geo: full_scan.module_geo.clone(),
         crs: full_scan.crs.clone(),
         crs_diagnostic: full_scan.crs_diagnostic.clone(),
+        bloom_attributes: full_scan.bloom_attributes.clone(),
     };
     drop(full);
 

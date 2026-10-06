@@ -30,7 +30,7 @@ description = "Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParq
 # library mean "the three crates people actually consume" — and living outside
 # that workspace entirely, as it now does, says the same thing structurally.
 publish = false
-# Two [[bin]]s live here (the coordinator and `scaling-corpus`); a bare
+# Two [[bin]]s live here (the coordinator and `fcb-slice`); a bare
 # `cargo run -p cityparquet-readbench` — the `bench` recipe's own
 # invocation — must keep meaning the coordinator.
 default-run = "cityparquet-readbench"
@@ -45,8 +45,8 @@ path = "src/main.rs"
 doc = false
 
 [[bin]]
-name = "scaling-corpus"
-path = "src/bin/scaling_corpus.rs"
+name = "fcb-slice"
+path = "src/bin/fcb_slice.rs"
 doc = false
 
 # Versions are written out rather than inherited: a one-package workspace has
@@ -60,7 +60,7 @@ cityparquet-schema = { path = "../../lib/cityparquet-rs/crates/schema" }
 # EXACT pins, both of them, and they must stay exact.
 #
 # `fcb_core` is a MEASURED format's reader: the FlatCityBuf numbers in
-# benchmark/formats/read_results/ were produced by 0.7.6, so a caret range would
+# benchmark/runs/formats/results/ were produced by 0.7.6, so a caret range would
 # let a later release silently change what the published figures mean. 0.7.8
 # also moved `ser` to positional arguments (breaking readbench_prepare.sh) and
 # changed which crate its public `CityObject` comes from, which is a compile
@@ -77,10 +77,11 @@ cityparquet-schema = { path = "../../lib/cityparquet-rs/crates/schema" }
 fcb_core = "=0.7.6"
 cjseq2 = "=0.1.0"
 peak_alloc = "0.3.0"
-clap = { version = "4", features = ["derive"] }
-serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+# `preserve_order`: `lod::drop_lods` re-serialises a feature, and its keys must
+# stay in the source order.
+serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
-flate2 = "1"
 arrow-array = "58"
 arrow-schema = "58"
 parquet = { version = "58", features = ["zstd"] }

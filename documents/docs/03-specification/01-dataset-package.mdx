@@ -21,13 +21,13 @@ has a single `building.parquet`, while a richer one has `building.parquet`,
 
 ```text
 amsterdam/
-  metadata.json              # STAC Item
-  building.parquet           # object tables — one file per CityGML module
+  metadata.json               # STAC Item
+  building.parquet            # object tables — one file per CityGML module
   transportation.parquet
   water_body.parquet
-  materials.parquet          # sidecar — only if the source has materials
-  textures.parquet           # sidecar — only if the source has textures
-  geometry_templates.parquet # sidecar — only if the source has templates
+  materials.parquet           # sidecar — only if the source has materials
+  textures.parquet            # sidecar — only if the source has textures
+  implicit_geometries.parquet # sidecar — only if the source has implicit geometries
 ```
 
 ## File roles
@@ -37,10 +37,10 @@ amsterdam/
   no single combined object table; a dataset spanning only one module simply has one
   such file.
 - **Sidecar files** — `materials.parquet`, `textures.parquet`,
-  `geometry_templates.parquet`. All are **optional**, and each is written exactly
+  `implicit_geometries.parquet`. All are **optional**, and each is written exactly
   when the source has something to put in it. A source with no textures produces no
   `textures.parquet` — as CityGML and CityJSON datasets routinely carry no
-  appearance, material or template data at all.
+  appearance, material or implicit-geometry data at all.
 - **`metadata.json`** — the package-level STAC **Item**, using the 3D city model STAC
   extension.
 - **`collection.json`** — an optional dataset-level STAC **Collection** curating
@@ -69,7 +69,8 @@ CamelCase module name is split at each word boundary (before an upper-case lette
 follows a lower-case letter, and before an upper-case letter followed by a lower-case
 letter), lower-cased, and joined with `_`. So the `WaterBody` module →
 `water_body.parquet`, `CityFurniture` → `city_furniture.parquet`. Extension modules are
-named per the [extensions rules](/specification/extensions).
+named per the [extensions rules](/specification/extensions): the same snake_case name,
+prefixed with the extension's namespace.
 
 ### The standard object-table files
 
@@ -110,10 +111,11 @@ to resolve — that is precisely how the grouping is "represented with `parents`
 feature type.** `Core` is a module of abstract base classes, never instantiated
 directly, so there is no `core.parquet`.
 
-**Extension modules** add further files beyond this table — an ADE with its own module
-gets a file named after that module (`Energy` ADE → `energy.parquet`), while a type
-that specialises an existing class joins that class's module file. See
-[extensions](/specification/extensions).
+**Extension modules** add further files beyond this table — an extension class that
+declares its own module gets a file named after that module, prefixed with the
+extension's namespace (the Building Physics module of the Energy ADE, namespace
+`energy` → `energy_building_physics.parquet`), while a class that specialises an existing
+class joins that class's module file. See [extensions](/specification/extensions).
 
 ## Versioning
 
@@ -126,8 +128,8 @@ specifies version **0.1.0-draft**.
 ## Round-trip losslessness
 
 CityParquet encodes what the source model carries, and nothing else. A source without
-textures yields no texture data; a source without geometry templates yields no
-template sidecar. There is no notion of a reduced or enriched package — the question
+textures yields no texture data; a source without implicit geometries yields no
+implicit-geometry sidecar. There is no notion of a reduced or enriched package — the question
 is only whether what *was* present survives.
 
 The honest answer is a spectrum, not a single "lossless" claim. A CityGML/CityJSON →
@@ -140,17 +142,16 @@ yet fully preserved at all. This table is the contract:
 | Object identity and hierarchy (`id`, `parents`, `children`, roles) | **Exact.** |
 | Typed attributes with a consistent source type | **Exact.** |
 | Attributes with mixed types across objects | **Lossy on type** — promoted (`BIGINT`→`DOUBLE`) or widened to `VARCHAR`/`JSON`; values preserved, declared type may differ from any single source value. |
-| Extension attributes | **Exact in value;** name is transformed (`+height` ⇄ `ex_height`). |
+| Extension attributes | **Exact in value;** name is prefixed with the extension namespace (`+heatCapacity` ⇄ `energy_heatCapacity`). |
 | Geometry (one per object per LoD) | **Exact as a model.** |
 | Per-surface semantics | **Exact up to null-expansion** (see below). |
 | Appearance — materials, textures | **Exact up to broadcast-expansion** (see below), via sidecars + inline-UV re-interning. |
-| Geometry templates and a **single** instance per object | **Exact.** |
-| **Additional** instances on one object | 🟡 **Lossy** — only the first is kept ([open](/open-questions)). |
+| Implicit geometry, a **single** one per object | **Exact.** |
+| **Additional** implicit geometries on one object | 🟡 **Lossy** — only the first is kept ([open](/open-questions)). |
 | **Duplicate** geometry at one (object, LoD) | 🟡 **Lossy** — extras dropped ([open](/open-questions)). |
 | Addresses | **Exact for the kept fields** (street/number/postcode/city/state/country/free-text + `location`); source members outside that set are dropped. |
 | Unmapped source members | **Exact in value;** held in `other`, returned as `attributes` members on export. |
-| ADE namespace / object-class metadata | 🟡 **Partial** — attributes and types survive; full namespace fidelity is [open](/open-questions). |
-| Synthesised LoD0 footprint ([writer enrichment](/specification/geometry-semantics#lod0-synthesis-writer-feature)) | **Not a round trip** — the object gains a footprint the source lacked; kept on export. |
+| ADE namespace / object-class metadata | 🟡 **Partial** — attributes, types and the extension declaration survive; full ADE object-class metadata is [open](/open-questions). |
 
 Two deliberate **canonicalisations** — where the result is equal to the source as a
 model but not byte-for-byte as a document:

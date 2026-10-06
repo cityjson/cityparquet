@@ -15,14 +15,14 @@ renders existing results. Rendering never starts a benchmark.
 On this machine the data and output root is
 `benchmark/runs/`. Its layout is:
 
-| Path | Contents |
-| --- | --- |
-| `data/benchmark/`, `data/scaling/` | Source corpus and nested 3DBAG slices |
-| `data/readbench/` | Prepared format artefacts |
-| `formats/results/`, `formats/scaling_{codec,rowgroup}_results/` | Full format and configuration measurements |
-| `formats/smoke/` | Isolated smoke measurements |
-| `databases/{prepared,results,smoke}/` | Database lifecycle inputs and measurements |
-| `summary/{full,smoke}/` | Rendered figures and combined HTML |
+| Path                                          | Contents                                          |
+| --------------------------------------------- | ------------------------------------------------- |
+| `data/benchmark/`, `data/3dbag/`              | Source corpus and the 3DBAG slice                 |
+| `data/readbench/`                             | Prepared format artefacts                         |
+| `formats/results/`, `formats/bloom_results/`  | Full format, size and bloom measurements          |
+| `formats/{short,smoke}/`                      | The same families under the `short` and `smoke` profiles |
+| `databases/{prepared,results,short,smoke}/`   | Database lifecycle inputs and measurements        |
+| `summary/{full,short,smoke}/`                 | Rendered figures and combined HTML                |
 
 Benchmark inputs, derived artefacts, results and rendered summaries are generated
 beneath this ignored directory. The paper checkout may explicitly export figures
@@ -32,15 +32,39 @@ to `paper/assets/bench/`.
 
 ```sh
 just bench-prep --families formats
-just bench-run --families codec,rowgroup
-just bench-run --datasets 3dbag --smoke
+just bench-run --families bloom
+just bench-run --profile short
+just bench-run --datasets 3dbag --families formats
 just bench-summary --data-root benchmark/runs
 ```
 
-The family names are `sizes`, `formats`, `codec`, `rowgroup` and `databases`.
-With no selection, the suite includes all five. Use each command's `--help`
-for its selection and output options. Smoke runs validate the pipeline with
-small inputs and fewer repetitions; their results are not publication runs.
+The family names are `sizes`, `formats`, `bloom` and `databases`. With no
+selection, the suite includes all four. Use each command's `--help` for its
+selection and output options. Smoke runs validate the pipeline with small
+inputs and fewer repetitions; their results are not publication runs.
+
+Three run profiles decide which datasets are measured, how many repetitions
+and where results land, so a test run can never overwrite the paper's
+evidence: `--profile full` (the default; the seven corpus datasets and the
+3DBAG slice, 25 read repetitions, each family's own results directory, and
+the database family measures the slice), `--profile short` (the corpus
+without the slice, the same repetitions, results under `<family>/short/`; for
+iterating on the harness in about an hour rather than a day) and `--profile
+smoke` (`--smoke`: Rotterdam alone, one repetition, `<family>/smoke/`; a
+pipeline check, not a measurement). Under `short` and `smoke` the database
+family measures Rotterdam (the manifest's `small_database_dataset`) through
+its prepared `rotterdam_delfshaven.city.jsonl`. Every run manifest records its
+profile.
+
+Each measured cell takes one discarded warm-up and then 25 timed samples by
+default, run back to back; samples are not interleaved across formats or
+systems. For the formats and bloom families, `just bench-run
+--cell-budget-s <seconds>` (off by default) stops a cell's sampling once its
+runs, warm-up included, have taken that long and at least `--min-repeat`
+samples exist (default 7); such a row records the samples taken in `repeat`
+and carries the `budget` tag in `notes`. The database family always takes
+`--repeat` samples. `benchmark/formats/READ_BENCHMARK.md` ("Sampling") has
+the rule.
 
 ## Full run
 
@@ -52,9 +76,9 @@ just bench-run --data-root benchmark/runs
 just bench-summary --data-root benchmark/runs
 ```
 
-Preparation fetches the six-file corpus (about 423 MB), uses the pinned 7.6 GB
-3DBAG FlatCityBuf source to make seven nested slices through the nominal
-one-million-object prefix, prepares all required format artefacts, builds the
+Preparation fetches the seven-file corpus (about 1.2 GB), cuts the 3DBAG slice
+from the pinned 7.6 GB FlatCityBuf source (`just fetch-3dbag`), prepares all
+required format artefacts (`readbench_prepare.sh`), builds the
 release CityParquet CLI, and prepares the database environment. It needs Rust
 and Cargo, Java 17 or later, `fcb`, `cjseq`, the pinned citygml-tools archive,
 Python with `uv`, and rootless Podman plus the database images for the database
@@ -64,65 +88,84 @@ container storage and available local ports. `bench-summary` only reads those
 results.
 
 Use `--families` to run one family after preparing it. `--datasets` accepts
-manifest IDs, `3dbag` for the scaling series, and `largest` for the largest
-slice. A selected database run requires `largest`; its normal dataset is the
-largest 3DBAG slice. The selector rejects data roots outside `benchmark/runs/`.
+manifest IDs, and `3dbag` for the slice (`[suite] slice_dataset` in
+`manifest.toml`). The database family's dataset is the slice under `full` and
+Rotterdam under `short` and `smoke`. The selector rejects data roots outside
+`benchmark/runs/`.
 
 ## Experimental matrix
 
-| Family | Data | Measurements | Read queries |
-| --- | --- | --- | --- |
-| `sizes` | Corpus with the largest 3DBAG scaling slice | Complete file or package size | None |
-| `formats` | Same corpus | Write time and peak memory; read time and peak memory | All format queries |
-| `codec` | Nested 3DBAG scaling slices | Size and the four performance metrics | Full read, bbox windows, middle-position ID |
-| `rowgroup` | Same slices | Same metrics | Same queries |
-| `databases` | Largest 3DBAG slice | Storage including indexes; mean query time and peak memory | Database query suite |
+| Family      | Data                             | Measurements                                               | Read queries                                                                            |
+| ----------- | -------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `sizes`     | Corpus with the 3DBAG slice      | Complete file or package size                              | None                                                                                    |
+| `formats`   | Same corpus                      | Read time and peak memory                                  | All format queries                                                                      |
+| `bloom`     | Same corpus                      | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
+| `databases` | The 3DBAG slice                  | Storage including indexes; mean query time and peak memory | Database query suite                                                                    |
 
-The corpus retains Rotterdam, Ingolstadt, Vienna, New York and Zurich, and
-uses the largest scaling slice for 3DBAG. Dataset IDs identify artefacts;
-figures use readable display names. The scaling generator takes whole features
-from a pinned FlatCityBuf source in source order. Slices are nested prefixes,
-not replicated objects. Actual CityObject counts can exceed the nominal target
-because a feature is indivisible; the recorded counts determine plot positions.
+The corpus is Rotterdam, Ingolstadt, Vienna, New York, Zurich, Tokyo (Chiyoda)
+and Montréal, with the 3DBAG slice
+([`formats/README.md`](formats/README.md) lists each with its source and query
+predicates; Tokyo and Montréal are derived by this project, and Montréal is
+exported from CityParquet). Dataset IDs identify artefacts;
+figures use readable display names. The slicer (`fcb-slice`, driven by `just
+fetch-3dbag [DEST] [SIZES]`) takes whole features from a pinned FlatCityBuf
+source in source order until it reaches 1,000,000 CityObjects; because a
+feature is indivisible, the slice holds 1,000,001, and the recorded count is
+the one reported. Another `SIZES` cuts a smaller prefix for trying the harness
+out, which no profile measures. The slice is treated like a corpus dataset in the
+format comparison, the size table and the bloom axis, and it is the database
+family's dataset. It is cut without LoD 1.2: CityGML 2.0 has integer LoDs only and
+cannot carry LoD 1.2 beside LoD 1.3, so removing it at the source gives all
+five formats the same geometry, LoD 0, 1.3 and 2.2
+([`formats/READ_BENCHMARK.md`](formats/READ_BENCHMARK.md), Caveat 14).
 
-The format comparison displays the Hilbert-ordered configuration as
-**CityParquet**. Its internal configuration ID remains distinct from source
-order. Codec experiments hold ordering and row-group size fixed; row-group
-experiments hold ordering and codec fixed. Codec levels are not matched for
-compression effort across codec families.
+The format comparison measures five formats: `citygml`, `cityjson`,
+`cityjsonseq`, `flatcitybuf` and `cityparquet`. CityParquet is one package per
+dataset, its rows written in Hilbert-curve order (`cityparquet convert
+--ordering hilbert`: the writer's default, pinned explicitly so the benchmark
+states its configuration), displayed as **CityParquet**. The bloom experiment compares `cityparquet` with
+`cityparquet+nobloom`, both Hilbert-ordered, and holds ordering, codec and
+row-group size fixed.
 
 ## Figures
 
-`just bench-summary` produces individual SVG and PNG files and a self-contained
-`index.html` collecting the same figures and their conditions.
+`just bench-summary` produces individual SVG and PNG files, the format
+comparison's ratio tables as CSV, and a self-contained `index.html` collecting
+the same figures, tables and conditions. The format comparison lives in its own
+`formats/` folder of the figures directory, one sub-folder per dataset id.
 
-| Figure | Content |
-| --- | --- |
-| `sizes` | Vertical size bars, one subplot per dataset; actual sizes and ratios to CityJSONSeq |
-| `heatmap` | One panel per dataset, with write time, write memory, read time and read memory heatmaps |
-| `codec`, `rowgroup` | Five metric panels for the largest measured scaling dataset |
-| `codec-scaling`, `rowgroup-scaling` | Absolute metrics against actual CityObject counts |
-| `databases` | Storage bars and query time/memory heatmaps |
+| Figure                                                  | Content                                                                                                                                                                    |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `formats/sizes`                                         | Vertical size bars, one subplot per dataset; actual sizes and factors against CityGML                                                                                      |
+| `formats/<dataset>/time`, `formats/<dataset>/rss`       | One heatmap per dataset and metric: read time or read peak memory per query and format, with factors against CityGML                                                       |
+| `formats/size_factors.csv`, `formats/size_extremes.csv` | Bytes and size factors against CityGML per dataset; the best and worst dataset by CityParquet's factor                                                                     |
+| `formats/query_factors.csv`                             | Time and peak memory per dataset, query and format, with both factors against CityGML                                                                                      |
+| `bloom`                                                 | Package size and the two read heatmaps for the 3DBAG slice                                                                                                                 |
+| `bloom-corpus`                                          | The bloom pair per corpus dataset                                                                                                                                          |
+| `databases`                                             | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |
 
-Heatmap colours encode measurement divided by baseline: **lower is better**,
-with 1× neutral. Cell labels show actual values and units. Format comparisons
-use CityJSONSeq; configuration comparisons use their fixed default; database
-comparisons use **3DCityDB**. A missing baseline is not replaced by another
-system. Missing, unsupported or failed measurements remain explicit rather
+The format comparison's baseline is **CityGML**, and every relative value is a
+factor: CityGML's value divided by the format's, so **higher is better** ("CityParquet
+is 5× faster, or smaller, than CityGML"), with 1× neutral. The configuration and
+database comparisons keep a ratio of measurement to baseline, **lower is
+better**: configuration comparisons use their fixed default and database
+comparisons use **3DCityDB**. Cell labels show actual values and units. A
+missing, skipped or failed baseline cell leaves its factor or ratio unavailable
+and is not replaced by another system. Missing, unsupported or failed measurements remain explicit rather
 than becoming zeros. The combined HTML reports incomplete coverage.
 
 ## Evidence and interpretation
 
 Keep source identity, query parameters, software revisions, machine information
-and repetition settings with measurements. Do not combine old write runs and
-new read runs as if they were one experiment. Database memory must cover the
+and repetition settings with measurements. Do not combine results from
+different runs as if they were one experiment. Database memory must cover the
 execution system, not only its client process; the database methodology defines
 the measurement boundary and sampling limitations.
 
 Read the detailed methodology before citing a result:
 
 - [Format queries and fairness caveats](formats/READ_BENCHMARK.md)
-- [Writing and configuration experiments](formats/README.md)
+- [File sizes and configuration experiments](formats/README.md)
 - [Database measurements](databases/README.md)
 
 Relevant qualifications include CityGML synthesis and possible information

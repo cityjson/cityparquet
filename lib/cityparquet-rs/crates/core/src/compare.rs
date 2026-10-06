@@ -500,9 +500,9 @@ impl AppearanceDefs<'_> {
 
     /// The RAW DOCUMENT appearance arrays that a `GeometryInstance` TEMPLATE's
     /// `material`/`texture` indices actually reference — used in
-    /// [`resolve_instance`], mirroring `crate::package::build_template_rows`'s
+    /// [`resolve_instance`], mirroring `crate::package::build_implicit_geometry_rows`'s
     /// write-side counterpart (which dereferences template appearance against
-    /// the exact same array when building `geometry_templates.parquet`).
+    /// the exact same array when building `implicit_geometries.parquet`).
     ///
     /// Deliberately NOT `header.appearance`: see
     /// [`crate::source::Source::doc_appearance`]'s doc comment — for a
@@ -1907,7 +1907,7 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
                 }
                 // Canonicalised, not literal, comparison — same reasoning as
                 // `canonical_lod_key`: a template is a single geometry at a
-                // single LoD (spec "geometry_templates.parquet"), and since
+                // single LoD (spec "implicit_geometries.parquet"), and since
                 // spec-alignment M6 that LoD is carried by the sidecar's
                 // per-LoD column NAME (`geometry_lod3_0`, canonical
                 // `major.minor` form) rather than a literal string column, so
@@ -2429,6 +2429,7 @@ mod tests {
     fn header_metadata_members_are_logged_as_excluded_not_silently_ignored() {
         let path = fixture("delft.city.jsonl");
         let report = compare_datasets(&path, &path, &CompareOptions::default()).unwrap();
+        assert!(report.equal, "identical inputs must compare equal");
         assert!(report.differences.is_empty());
         for member in ["title", "geographicalExtent"] {
             assert!(
@@ -2441,18 +2442,6 @@ mod tests {
                 report.excluded
             );
         }
-    }
-
-    #[test]
-    fn compare_delft_against_itself_is_equal() {
-        let path = fixture("delft.city.jsonl");
-        let report = compare_datasets(&path, &path, &CompareOptions::default()).unwrap();
-        assert!(
-            report.equal,
-            "identical inputs must compare equal, got differences: {:?}",
-            report.differences
-        );
-        assert!(report.differences.is_empty());
     }
 
     /// M4 task 4: before this fix, a Solid's `semantics`/`material` were

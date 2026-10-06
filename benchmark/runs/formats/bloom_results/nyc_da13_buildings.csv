@@ -1,0 +1,9 @@
+dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
+nyc_da13_buildings.city.json,cityparquet,id-lookup,0.000042,1,0.066213,0.000909,0.065948,0.064989,0.067572,0.065498,0.066995,16590047,33083392,7,id-50pct,,,1,0,32768
+nyc_da13_buildings.city.json,cityparquet,id-lookup,0.000000,0,0.002456,0.000300,0.002449,0.001944,0.002918,0.002291,0.002648,161621,12120064,7,id-miss,,,1,1,32768
+nyc_da13_buildings.city.json,cityparquet,feature-lookup,0.000042,1,0.066357,0.001119,0.066278,0.064450,0.067808,0.065768,0.067215,16590052,33071104,7,feature-50pct,,,1,0,32768
+nyc_da13_buildings.city.json,cityparquet,feature-lookup,0.000000,0,0.002479,0.000208,0.002401,0.002314,0.002977,0.002388,0.002444,161626,12091392,7,feature-miss,,,1,1,32768
+nyc_da13_buildings.city.json,cityparquet+nobloom,id-lookup,0.000042,1,0.067178,0.002465,0.065829,0.065112,0.072585,0.065503,0.067857,16590063,33079296,7,id-50pct,,,1,0,0
+nyc_da13_buildings.city.json,cityparquet+nobloom,id-lookup,0.000000,0,0.008650,0.000575,0.008884,0.007379,0.009173,0.008530,0.009026,2085729,13299712,7,id-miss,,,1,0,0
+nyc_da13_buildings.city.json,cityparquet+nobloom,feature-lookup,0.000042,1,0.067758,0.003053,0.066181,0.065493,0.074885,0.065962,0.067911,16590068,33083392,7,feature-50pct,,,1,0,0
+nyc_da13_buildings.city.json,cityparquet+nobloom,feature-lookup,0.000000,0,0.008421,0.000491,0.008692,0.007517,0.008936,0.008189,0.008712,2085750,13299712,7,feature-miss,,,1,0,0

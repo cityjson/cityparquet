@@ -61,12 +61,10 @@ lives, and the resulting re-runs and methodology edits.
 
 Out of scope, deliberately:
 
-- **A bloom filter on the `id` column.** CityParquet's writer emits none
-  (`recipe.rs` sets no `set_column_bloom_filter_enabled`) and
-  `query::id_lookup` is an unpruned `RowFilter` over the whole id column.
-  Adding one changes what a CityParquet package _is_, so it belongs in its own
-  design, argued from the `id-miss` figure this work produces — not decided in
-  the same change as the benchmark that motivates it.
+- **A bloom filter on the `id` column.** Designed on its own, argued from the
+  `id-miss` figure this work produces, in `2026-09-22-bloom-filters-design.md`,
+  which covers `id` and `feature_id` and the benchmark family that measures
+  them.
 - **`lib/cityparquet-rs/crates/cli/src/bench.rs`.** It carries a third copy of
   the lower-left window construction, but it is a different tool answering a
   different question (row-group pruning effectiveness at a given

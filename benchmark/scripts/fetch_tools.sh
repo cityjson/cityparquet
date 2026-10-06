@@ -7,8 +7,15 @@
 #                                                            |--fcb ser -A--> FlatCityBuf
 #                                                            |--cityparquet convert--> CityParquet
 #
-# citygml-tools is unpacked into benchmark/formats/tools/ (gitignored, like benchmark/formats/data/);
-# cjseq is a Rust binary and goes wherever `cargo install` puts it.
+# citygml-tools is unpacked into benchmark/formats/tools/ (gitignored); cjseq
+# and the `fcb` CLI are Rust binaries and go wherever `cargo install` puts them.
+#
+# THE PINS: citygml-tools 2.5.0, cjseq 0.3.1, and the `fcb` CLI from crate
+# `fcb_cli` 0.7.8 (it writes the `.fcb` artefact and provides `fcb inspect`).
+# The FlatCityBuf READER is a separate pin, `fcb_core =0.7.6` in
+# benchmark/readbench/Cargo.toml. `readbench_prepare.sh` reads the cjseq and
+# fcb pins from this file and warns, on every run, when the binary on PATH
+# reports another version.
 #
 # Reproducibility beats freshness: the
 # citygml-tools version, its download URL and its archive's sha256 are
@@ -17,13 +24,13 @@
 # never quietly measure artefacts produced by a different converter than the
 # one benchmark/formats/READ_BENCHMARK.md's Environment block names.
 #
-# WHY BOTH TOOLS. citygml-tools converts CityGML to CityJSON; cjseq performs
-# the CityJSON -> CityJSONSeq hop. FlatCityBuf and CityParquet are then both
+# WHY THESE TOOLS. citygml-tools converts CityGML to CityJSON and back; cjseq
+# performs the CityJSON -> CityJSONSeq hop; `fcb ser -A` writes FlatCityBuf. FlatCityBuf and CityParquet are then both
 # built from that SAME CityJSONSeq, which is what makes their comparison fair.
 #
 # Idempotent: an already-unpacked citygml-tools of the pinned version is left
-# alone, and an already-installed cjseq is never reinstalled (a version other
-# than the pin is reported loudly, not silently downgraded — it is the
+# alone, and an already-installed cjseq or fcb is never reinstalled (a version
+# other than the pin is reported loudly, not silently downgraded — it is the
 # developer's machine, and the version actually used is recorded in
 # benchmark/formats/tools/tool_versions.txt for the Environment block).
 #
@@ -49,6 +56,9 @@ CITYGML_TOOLS_SHA256="bb2949fbc6c3ec44ec85c25a0bcdfe9accde9cbdb9e26ec77388977969
 
 # cjseq 0.3.1 (cityjson/cjseq), installed via cargo.
 CJSEQ_VERSION="0.3.1"
+
+# The `fcb` CLI 0.7.8 (crate fcb_cli), installed via cargo.
+FCB_CLI_VERSION="0.7.8"
 
 # citygml-tools 2.x runs on Java 17 or newer.
 JAVA_MIN_MAJOR=17
@@ -191,6 +201,29 @@ install_cjseq() {
   fi
 }
 
+# --- fcb -------------------------------------------------------------------
+install_fcb() {
+  if command -v fcb >/dev/null 2>&1; then
+    local have
+    have="$(fcb --version 2>/dev/null | awk '{print $2}')"
+    if [[ "$have" == "$FCB_CLI_VERSION" ]]; then
+      echo "skip fcb ${FCB_CLI_VERSION} (already installed)"
+    else
+      echo "warn fcb: installed version '$have' is not the pinned ${FCB_CLI_VERSION};" \
+        "leaving it alone (run \`cargo install fcb_cli --version ${FCB_CLI_VERSION} --locked\`" \
+        "to match the pin)." >&2
+    fi
+    return
+  fi
+  require_tool cargo "installing fcb ${FCB_CLI_VERSION}"
+  echo "install fcb ${FCB_CLI_VERSION} (cargo install fcb_cli)"
+  cargo install fcb_cli --version "$FCB_CLI_VERSION" --locked
+  if ! command -v fcb >/dev/null 2>&1; then
+    echo "error: fcb is still not on PATH after \`cargo install\`; is ~/.cargo/bin on your PATH?" >&2
+    exit 1
+  fi
+}
+
 # --- provenance ------------------------------------------------------------
 # The exact versions used, for benchmark/formats/READ_BENCHMARK.md's Environment block.
 # Written from what the binaries REPORT, not from the pins, so a warned-about
@@ -202,6 +235,7 @@ write_versions() {
     echo "# Copy into benchmark/formats/READ_BENCHMARK.md's Environment block."
     echo "citygml-tools = $("$CITYGML_TOOLS_LINK/citygml-tools" --version 2>&1 | head -1)"
     echo "cjseq = $(cjseq --version 2>&1 | head -1)"
+    echo "fcb = $(fcb --version 2>&1 | head -1)"
     echo "java = $(java -version 2>&1 | head -1)"
   } >"$file"
   echo "-- versions recorded in $file"
@@ -214,6 +248,7 @@ mkdir -p "$TOOLS_DIR"
 check_java
 install_citygml_tools
 install_cjseq
+install_fcb
 write_versions
 
 echo "fetch-tools complete"

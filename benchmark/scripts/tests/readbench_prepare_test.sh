@@ -111,7 +111,7 @@ jq_free_bin() {
   # `dirname`; the rest are what the build steps would need if the guard were
   # gone and the run continued.
   for tool in bash env dirname basename mkdir cat sed grep awk head tr wc \
-    find mktemp cp mv rm gzip gunzip; do
+    find mktemp cp mv rm; do
     resolved="$(PATH="$BASE_PATH" command -v "$tool" 2>/dev/null || true)"
     if [[ -n "$resolved" ]]; then
       ln -sf "$resolved" "$dir/nojq/$tool"
@@ -216,8 +216,8 @@ if [[ "$sub" != "convert" ]]; then
 fi
 # The WHOLE command line, kept before the parse loop below consumes it. A
 # recorded `src` proves which file was converted; only the full argv proves
-# HOW -- and `--ordering hilbert` is the entire difference between the two
-# CityParquet rows the ordering benchmark compares.
+# HOW -- and `--ordering hilbert` is what makes the package the benchmark's
+# one CityParquet configuration.
 argv=("$@")
 out=""
 src=""
@@ -414,23 +414,6 @@ esac
 FCB_STUB
         chmod +x "$dir/bin/fcb"
         ;;
-      gzip)
-        # A RECORDING PASS-THROUGH, not a fake: the case that reads the argv
-        # back also needs a real gzip stream (another case gunzips the
-        # artefact and compares it to the CityJSONSeq). The real binary is
-        # resolved and baked in here, because the stub shadows `gzip` on PATH
-        # and calling it by name would recurse.
-        local real_gzip
-        real_gzip="$(PATH="$BASE_PATH" command -v gzip)"
-        cat >"$dir/bin/gzip" <<GZIP_STUB
-#!/usr/bin/env bash
-set -euo pipefail
-SANDBOX="\$(cd "\$(dirname "\$0")/.." && pwd)"
-printf '%s\n' "\$@" >"\$SANDBOX/gzip-argv.txt"
-exec "$real_gzip" "\$@"
-GZIP_STUB
-        chmod +x "$dir/bin/gzip"
-        ;;
       *)
         echo "new_sandbox: unknown stub '$stub'" >&2
         exit 1
@@ -584,7 +567,7 @@ case_unknown_format_rejected() {
     return
   fi
   local valid
-  for valid in cityparquet-hilbert flatcitybuf cityjsonseq-gz; do
+  for valid in cityparquet flatcitybuf cityjsonseq; do
     if ! log_mentions "$valid"; then
       fail "$name" "message does not list '$valid'; log: $(cat "$LAST_LOG")"
       return
@@ -603,8 +586,8 @@ case_unknown_format_rejected() {
 # `from-cityjson`. This case used to assert the opposite (that CityGML was
 # reported as not derivable and skipped); see the header's CITYGML IS
 # SYNTHESISED block for why that reversed. The property that matters now is
-# that all EIGHT formats exist for one input, because a dataset producing
-# seven of them contributes a comparison with the baseline missing.
+# that all FIVE formats exist for one input, because a dataset producing
+# four of them contributes a comparison with the baseline missing.
 #
 # The synthesised CityGML is derived from the CityJSON STAGE, not from the
 # input directly — asserted below from the stub's recorded source, not from
@@ -621,7 +604,7 @@ case_default_on_cityjsonseq_builds_every_format() {
   fi
   local artefact
   for artefact in tiny.gml tiny.city.json tiny.city.jsonl tiny.parquet \
-    tiny-hilbert.parquet tiny.fcb tiny.jsonl.gz; do
+    tiny.fcb; do
     if [[ ! -e "$dir/out/$artefact" ]]; then
       fail "$name" "missing $artefact; log: $(cat "$LAST_LOG")"
       return
@@ -686,7 +669,7 @@ case_cityjsonseq_is_materialised_from_a_seq_input() {
 # Case 7: a CityGML input builds the whole forward chain
 #
 #   CityGML --citygml-tools--> CityJSON --cjseq cat--> CityJSONSeq
-#                                                  |-> gz | fcb | CityParquet
+#                                                  |-> fcb | CityParquet
 #
 # and nothing in it derives from CityParquet. That last clause is what the
 # `cityparquet` stub enforces: it refuses every subcommand but `convert`, so
@@ -705,8 +688,8 @@ case_citygml_input_builds_the_whole_chain() {
     return
   fi
   local artefact
-  for artefact in tiny.gml tiny.city.json tiny.city.jsonl tiny.jsonl.gz \
-    tiny.fcb tiny.parquet tiny-hilbert.parquet; do
+  for artefact in tiny.gml tiny.city.json tiny.city.jsonl \
+    tiny.fcb tiny.parquet; do
     if [[ ! -e "$dir/out/$artefact" ]]; then
       fail "$name" "missing $artefact; log: $(cat "$LAST_LOG")"
       return
@@ -731,18 +714,12 @@ case_citygml_input_builds_the_whole_chain() {
   # script's own echo of the path: a step that logs one file and converts
   # another would sail past a log-only assertion.
   local fed
-  for fed in "$dir/out/tiny.fcb" "$dir/out/tiny.parquet/stub-source.txt" \
-    "$dir/out/tiny-hilbert.parquet/stub-source.txt"; do
+  for fed in "$dir/out/tiny.fcb" "$dir/out/tiny.parquet/stub-source.txt"; do
     if [[ "$(cat "$fed")" != "$dir/out/tiny.city.jsonl" ]]; then
       fail "$name" "$fed records input '$(cat "$fed")', not the derived CityJSONSeq"
       return
     fi
   done
-  # The gzip baseline is the same bytes again, so its content is the proof.
-  if ! gunzip -c "$dir/out/tiny.jsonl.gz" | cmp -s - "$dir/out/tiny.city.jsonl"; then
-    fail "$name" "tiny.jsonl.gz is not a gzip of the derived CityJSONSeq"
-    return
-  fi
   run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
   if [[ $LAST_RC -ne 0 ]]; then
     fail "$name" "second run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
@@ -1208,8 +1185,7 @@ case_cityjson_input_builds_a_real_seq_artefact() {
   # …and the seq is what FlatCityBuf and both packages were fed, so the two
   # halves of every comparison read the same bytes.
   local fed
-  for fed in "$dir/out/tiny.fcb" "$dir/out/tiny.parquet/stub-source.txt" \
-    "$dir/out/tiny-hilbert.parquet/stub-source.txt"; do
+  for fed in "$dir/out/tiny.fcb" "$dir/out/tiny.parquet/stub-source.txt"; do
     if [[ "$(cat "$fed")" != "$dir/out/tiny.city.jsonl" ]]; then
       fail "$name" "$fed records input '$(cat "$fed")', not the derived CityJSONSeq"
       return
@@ -1224,26 +1200,24 @@ case_cityjson_input_builds_a_real_seq_artefact() {
 # Each of these is one word in one line of the prepare script, and dropping
 # any of them leaves an artefact that is still non-empty, still counts
 # correctly, and still passes every other case here — while silently changing
-# what the benchmark measures:
+# what the benchmark measures, or leaving it to a tool's default:
 #
-#   --ordering hilbert  without it the "Hilbert" package is byte-identical to
-#                       the source-order one, and `just ordering-bench`
-#                       publishes "ordering makes no difference" — a null
-#                       result that reads as a finding, on one of this
-#                       branch's two deliverables.
+#   --ordering hilbert  Hilbert is the writer's default as well, so dropping
+#                       it changes nothing today; the pin is what keeps a
+#                       later change of default from publishing, under the
+#                       same name, a package whose bbox rows prune far fewer
+#                       row groups.
 #   fcb ser -A          without it there is no B+-tree attribute index, so
 #                       FlatCityBuf falls back to a full scan on
 #                       attr-filter/id-lookup and the row is published as an
 #                       indexed query.
-#   gzip -9             a different level is a different compression baseline
-#                       in the size chart.
 #
 # Asserted from the stubs' own recorded argv, not from the script's echo.
 # --------------------------------------------------------------------------
 case_measurement_flags_are_passed() {
-  local name="--ordering hilbert, fcb -A and gzip -9 all reach the tools"
+  local name="--ordering hilbert and fcb -A both reach the tools"
   local dir
-  dir="$(new_sandbox cargo fcb citygml-tools cjseq gzip)"
+  dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
   run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
   if [[ $LAST_RC -ne 0 ]]; then
     fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
@@ -1251,17 +1225,9 @@ case_measurement_flags_are_passed() {
   fi
   # One line per argument, so `grep -qFx` matches a whole argument and never
   # a fragment of a path.
-  if ! grep -qFx -- "--ordering" "$dir/out/tiny-hilbert.parquet/stub-argv.txt" \
-    || ! grep -qFx -- "hilbert" "$dir/out/tiny-hilbert.parquet/stub-argv.txt"; then
-    fail "$name" "the Hilbert package was not written with --ordering hilbert: $(
-      tr '\n' ' ' <"$dir/out/tiny-hilbert.parquet/stub-argv.txt"
-    )"
-    return
-  fi
-  # …and its source-order twin must NOT carry it, or the two rows are the
-  # same package twice and the comparison is vacuous in the other direction.
-  if grep -qFx -- "--ordering" "$dir/out/tiny.parquet/stub-argv.txt"; then
-    fail "$name" "the source-order package was written with --ordering: $(
+  if ! grep -qFx -- "--ordering" "$dir/out/tiny.parquet/stub-argv.txt" \
+    || ! grep -qFx -- "hilbert" "$dir/out/tiny.parquet/stub-argv.txt"; then
+    fail "$name" "the package was not written with --ordering hilbert: $(
       tr '\n' ' ' <"$dir/out/tiny.parquet/stub-argv.txt"
     )"
     return
@@ -1270,10 +1236,6 @@ case_measurement_flags_are_passed() {
     fail "$name" "fcb ser was not given -A (no attribute index): $(
       tr '\n' ' ' <"$dir/fcb-ser-argv.txt"
     )"
-    return
-  fi
-  if ! grep -qFx -- "-9" "$dir/gzip-argv.txt"; then
-    fail "$name" "the gz baseline was not gzip -9: $(tr '\n' ' ' <"$dir/gzip-argv.txt")"
     return
   fi
   pass "$name"
@@ -1374,11 +1336,11 @@ case_artefact_names_match_the_rust_enum() {
 # validity check, and `benchmark/runs/data/readbench/` persists across runs — so a
 # directory prepared before the chain changed keeps serving artefacts derived
 # from a stage that no longer exists, and nothing says so. That is C1's bug
-# class one level up: a pre-fix `<base>.jsonl.gz` is a gzip of the WHOLE
-# CityJSON document, which the gz runner reads quite happily (measured:
-# 0.254909 s / 61,192,614 B against the real seq-gz's 0.092799 s / 1,798,710 B
-# — 2.75x too slow, 34x too heavy, and the same whole-document parse C1's own
-# "before" figure was).
+# class one level up: the gzipped-CityJSONSeq baseline the benchmark once
+# measured was, before the fix, a gzip of the WHOLE CityJSON document, which
+# its runner read quite happily (measured: 0.254909 s / 61,192,614 B against
+# the real stream's 0.092799 s / 1,798,710 B — 2.75x too slow, 34x too heavy,
+# and the same whole-document parse C1's own "before" figure was).
 #
 # A sentence in the docs cannot fix this: it is missed by exactly the person
 # who most needs it, and the failure publishes plausible-looking numbers. So
@@ -1429,6 +1391,39 @@ case_stale_chain_artefacts_are_refused() {
 # chain", never "fresh directory": treating an unknown provenance as current
 # would let exactly the directories this guard exists for through.
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Case 8e': a bump that changed ONE stage refuses only that stage's artefact.
+#
+# Chain version 5 changed the CityParquet stage alone (Hilbert row order), so
+# a directory stamped 4 holds a stale package but a FlatCityBuf file this
+# chain would write again byte for byte — and the hours-long stages must not
+# be rebuilt for nothing.
+# --------------------------------------------------------------------------
+case_a_one_stage_bump_refuses_only_that_stage() {
+  local name="a chain bump refuses only the artefacts of the stage it changed"
+  local dir
+  dir="$(new_sandbox cargo fcb)"
+  run_prepare "$dir" --formats cityparquet,flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "first run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  printf '4\n' >"$dir/out/.readbench-chain/tiny"
+  run_prepare "$dir" --formats cityparquet,flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "built by an older derivation chain"; then
+    return
+  fi
+  if ! grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.parquet"; then
+    fail "$name" "the refusal does not name the stale package; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.fcb"; then
+    fail "$name" "the refusal names the FlatCityBuf file, whose stage did not change; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
 case_unstamped_artefacts_are_refused() {
   local name="artefacts with no chain-version stamp at all are refused"
   local dir
@@ -1495,19 +1490,13 @@ case_current_chain_artefacts_are_reused() {
 # three incompatible versions. This case reads BOTH lists out of their own
 # source files and compares them, the same trick
 # `benchmark/plot/tests/test_csv_contract.py` uses for the CSV header.
-#
-# `duckdb-parquet` is deliberately excluded: it is an SQL-engine baseline
-# driven by `benchmark/scripts/readbench_duckdb.sh` over an already-prepared
-# CityParquet package, so this script has no artefact to build for it (the
-# Rust side says the same thing as `Artefact::NotCoordinated`).
 # --------------------------------------------------------------------------
 case_vocabulary_matches_the_rust_enum() {
-  local name="the script's format list matches Format::ALL minus duckdb-parquet"
+  local name="the script's format list matches Format::ALL"
   local rust_tags script_tags
   rust_tags="$(awk '/pub fn as_str/,/^        }$/' "$FORMAT_RS" \
     | grep -oE '=> "[a-z0-9-]+"' \
     | sed 's/.*"\(.*\)"/\1/' \
-    | grep -v '^duckdb-parquet$' \
     | tr '\n' ' ')"
   script_tags="$(sed -n 's/^VALID_FORMATS=(\(.*\))$/\1/p' "$PREPARE" \
     | tr -s ' ' ' ')"
@@ -1528,7 +1517,30 @@ case_vocabulary_matches_the_rust_enum() {
   pass "$name"
 }
 
+# --------------------------------------------------------------------------
+# A tool whose reported version is not the pin in fetch_tools.sh is named on
+# stderr, on every run — the run still completes, and says so.
+# --------------------------------------------------------------------------
+case_an_unpinned_tool_version_is_warned_about() {
+  local name="a tool reporting another version than its pin is warned about"
+  local dir pin
+  dir="$(new_sandbox cargo fcb)"
+  cp "$BENCHMARK_DIR/scripts/fetch_tools.sh" "$dir/repo/benchmark/scripts/fetch_tools.sh"
+  pin="$(sed -n 's/^FCB_CLI_VERSION="\(.*\)"$/\1/p' "$dir/repo/benchmark/scripts/fetch_tools.sh")"
+  run_prepare "$dir" --formats flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ -z "$pin" ]] || ! log_mentions "warn: fcb reports version 'unknown', but the pinned version is $pin"; then
+    fail "$name" "the stub fcb's missing version was not reported (pin '$pin'); log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
 case_cityparquet_only
+case_an_unpinned_tool_version_is_warned_about
 case_flatcitybuf_without_fcb
 case_flatcitybuf_skips_the_cli_build
 case_unknown_format_rejected
@@ -1555,6 +1567,7 @@ case_cityjson_input_builds_a_real_seq_artefact
 case_measurement_flags_are_passed
 case_fcb_info_count_is_reported
 case_stale_chain_artefacts_are_refused
+case_a_one_stage_bump_refuses_only_that_stage
 case_unstamped_artefacts_are_refused
 case_current_chain_artefacts_are_reused
 case_vocabulary_matches_the_rust_enum

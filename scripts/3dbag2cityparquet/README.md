@@ -12,9 +12,10 @@ resident memory is **~20× the input JSON**, which over 3DBAG's ~53 GB is
 
 The way through is that **CityJSONSeq sources stream**. `Source::features()`
 reopens the file and yields line by line, and the writer makes two such passes
-(scan for the schema, then encode) — only `--ordering hilbert` buffers. So the
-whole dataset can be handed to the reference writer as **one CityJSONSeq file**,
-and the writer computes the footer itself. Nothing here grafts metadata onto a
+(scan for the schema, then encode) — as long as it is told `--ordering source`.
+Its default, Hilbert ordering, buffers every feature to sort them. So the whole
+dataset can be handed to the reference writer as **one CityJSONSeq file**,
+converted with `--ordering source`, and the writer computes the footer itself. Nothing here grafts metadata onto a
 Parquet file after the fact; `cityparquet` remains the only thing that decides
 what a CityParquet package contains.
 
@@ -109,6 +110,12 @@ python3 3dbag2cityparquet.py all \
   --jobs    64
 ```
 
+The `convert` stage passes `--ordering source` itself: `cityparquet convert`
+sorts in Hilbert order by default, which buffers the whole dataset. Further
+writer flags go through `--convert-arg`, one word each; the `=` spelling
+(`--convert-arg=--row-group-size`) is what lets a value that starts with `--`
+through.
+
 Needs `duckdb` (the `verify` stage only) and both binaries built:
 `lib/cityparquet-rs/target/release/cityparquet` and
 `vendor/cjseq/target/release/cjseq`.
@@ -128,8 +135,9 @@ partial output is written to `.part` and renamed, so a crash never leaves a
 half-file that looks finished.
 
 Tiles are fed in quadtree order `(z, x, y)`, which gives the writer spatially
-coherent row groups for free. `--ordering hilbert` would do better but buffers
-every feature — the 1.1 TB this whole approach exists to avoid.
+coherent row groups for free. Hilbert ordering, the writer's default, would do
+better but buffers every feature — the 1.1 TB this whole approach exists to
+avoid, which is why the convert stage needs `--ordering source`.
 
 ## Caveats, which are part of the artefact
 

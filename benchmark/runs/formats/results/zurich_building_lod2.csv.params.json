@@ -70,8 +70,29 @@
       "substituted": false
     }
   ],
-  "object_type": "BuildingPart",
-  "object_type_count": 145865,
+  "attr_filter": {
+    "column": "class",
+    "pred": {
+      "eq": "BB01"
+    },
+    "matched": 38601,
+    "share": 0.19426871801065934,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "UUID_33ff9550-fefd-47bf-8609-78269077019a",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "UUID_33ff9550-fefd-47bf-8609-78269077019a-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
   "numeric_attr": "GebaeudeStatus",
   "cp_object_total": 198699
 }

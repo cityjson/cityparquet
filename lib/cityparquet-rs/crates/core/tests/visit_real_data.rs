@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use arrow_array::{Array, BinaryArray, RecordBatch};
-use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::wkb_read::{DecodedKind, WkbVisitor, visit_wkb, wkb_to_geometry};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -18,11 +18,11 @@ fn fixture(name: &str) -> PathBuf {
 
 fn convert_fixture(name: &str) -> tempfile::TempDir {
     let out = tempfile::tempdir().unwrap();
-    convert(&ConvertOptions::new(
-        fixture(name),
-        out.path().to_path_buf(),
-    ))
-    .unwrap();
+    // Source order pinned: the tallies below are order-independent, but the
+    // row-group assignments some tests rely on are not.
+    let mut opts = ConvertOptions::new(fixture(name), out.path().to_path_buf());
+    opts.ordering = RowOrder::Source;
+    convert(&opts).unwrap();
     out
 }
 
@@ -229,6 +229,8 @@ fn convert_delft_small_row_groups() -> tempfile::TempDir {
         row_group_size: 256,
         ..cityparquet::recipe::WriterRecipe::default()
     };
+    // Which row groups prune depends on the row order, so it is pinned.
+    opts.ordering = RowOrder::Source;
     convert(&opts).unwrap();
     out
 }
@@ -259,18 +261,26 @@ fn bbox_attr_and_id_visits_select_the_same_rows_as_the_id_paths() {
     assert_eq!(visited.row_groups_touched, ids.row_groups_touched);
 
     let pred = AttrPredicate::Eq(serde_json::Value::String("BuildingPart".into()));
-    let attr = query::attr_filter_visit(&table, "object_type", &pred).unwrap();
-    assert_eq!(attr.totals.objects, 1116);
-    assert_eq!(attr.count, 1116);
+    let (attr, stats) = query::attr_filter_visit(&table, "object_type", &pred).unwrap();
+    assert_eq!(attr.objects, 1116);
+    assert_eq!(
+        stats,
+        query::attr_filter_with_stats(&table, "object_type", &pred)
+            .unwrap()
+            .1
+    );
 
     let (hit, stats) = query::id_lookup_visit(&table, &ids.ids[0]).unwrap();
     assert_eq!(hit.objects, 1);
     assert!(hit.geometries >= 1);
-    assert_eq!(stats.rows_matched, 1);
-    assert!(stats.row_groups_scanned <= stats.row_groups_total);
+    assert!(stats.bloom_pruned + stats.stats_pruned < stats.row_groups_total);
     let (miss, stats) = query::id_lookup_visit(&table, "no-such-id").unwrap();
     assert_eq!(miss.objects, 0);
-    assert_eq!(stats.rows_matched, 0);
+    assert_eq!(
+        stats.bloom_pruned + stats.stats_pruned,
+        stats.row_groups_total,
+        "every row group is ruled out for an absent id: {stats:?}"
+    );
 }
 
 /// Row-group statistics pruning never drops a matching row: across a sweep
@@ -314,27 +324,31 @@ fn attr_filter_statistics_pruning_matches_the_unpruned_scan() {
                 years.iter().filter(|&&y| y >= t && y <= t + 25.0).count(),
             ),
         ] {
-            let got =
+            let (count, got) =
                 query::attr_filter_with_stats(&table, "oorspronkelijkbouwjaar", &pred).unwrap();
-            assert_eq!(got.count, want as u64, "{pred:?}");
+            assert_eq!(count, want as u64, "{pred:?}");
             assert_eq!(
                 query::attr_filter(&table, "oorspronkelijkbouwjaar", &pred).unwrap(),
                 want as u64
             );
-            assert!(got.row_groups_pruned <= got.row_groups_total);
-            pruned_any |= got.row_groups_pruned > 0;
+            assert_eq!(
+                got.bloom_pruned, 0,
+                "no bloom filter answers a numeric predicate"
+            );
+            assert!(got.stats_pruned <= got.row_groups_total);
+            pruned_any |= got.stats_pruned > 0;
         }
     }
     assert!(pruned_any, "no threshold pruned a row group");
     // String equality: a value outside every row group's [min, max] prunes
     // them all; a present value keeps its rows.
     let none = AttrPredicate::Eq("~~~~ not an id".into());
-    let got = query::attr_filter_with_stats(&table, "id", &none).unwrap();
+    let (count, got) = query::attr_filter_with_stats(&table, "id", &none).unwrap();
     assert_eq!(
-        (got.count, got.row_groups_pruned),
+        (count, got.bloom_pruned + got.stats_pruned),
         (0, got.row_groups_total)
     );
     let pred = AttrPredicate::Eq(serde_json::Value::String("BuildingPart".into()));
-    let got = query::attr_filter_with_stats(&table, "object_type", &pred).unwrap();
-    assert_eq!(got.count, 1116);
+    let (count, _) = query::attr_filter_with_stats(&table, "object_type", &pred).unwrap();
+    assert_eq!(count, 1116);
 }

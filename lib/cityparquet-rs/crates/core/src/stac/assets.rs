@@ -15,8 +15,8 @@ pub const PARQUET_MEDIA_TYPE: &str = "application/vnd.apache.parquet";
 /// [`crate::stac::properties::PackageTables::open`] scans for to rebuild
 /// `tables` — the binding that replaced the manifest's `tables` list.
 pub const ROLE_OBJECT_TABLE: &str = "cityparquet-objects";
-/// STAC asset role identifying a sidecar: materials, textures or geometry
-/// templates (§11, §12). Scanned for by
+/// STAC asset role identifying a sidecar: materials, textures or implicit
+/// geometries (§11, §12). Scanned for by
 /// [`crate::stac::properties::PackageTables::open`] to rebuild
 /// `sidecar_files` — the binding that replaced the manifest's
 /// `sidecar_files` list.
@@ -27,7 +27,7 @@ pub const ROLE_SIDECAR: &str = "cityparquet-sidecar";
 pub enum AssetKind {
     /// An object table (§5).
     ObjectTable,
-    /// A sidecar: materials, textures or geometry templates (§11, §12).
+    /// A sidecar: materials, textures or implicit geometries (§11, §12).
     Sidecar,
 }
 

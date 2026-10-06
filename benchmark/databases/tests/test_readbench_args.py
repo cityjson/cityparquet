@@ -5,16 +5,9 @@ import pytest
 from citybench.config import BBox, Dataset, Params
 from citybench.systems import readbench
 from citybench.systems.readbench import ReadbenchSystem, build_child_args, parse_child_stdout
+from conftest import ge_attr_filter, make_params
 
-PARAMS = Params(
-    bbox_full=BBox(0.0, 0.0, 0.0, 100.0, 100.0, 10.0),
-    attr_column="object_type",
-    attr_eq="Building",
-    numeric_column="h_dak_max",
-    target_id="obj-1",
-    parent_id="obj-0",
-    total_city_objects=100,
-)
+PARAMS = make_params()
 
 
 def test_count_args_are_minimal():
@@ -26,22 +19,40 @@ def test_count_args_are_minimal():
 
 
 def test_bbox_args_pass_six_comma_separated_ordinates():
-    args = build_child_args("bbox-query", PARAMS, "/pkg", selectivity=0.25)
+    window = PARAMS.window("bbox-25pct")
+    args = build_child_args("bbox-query", PARAMS, "/pkg", window)
     i = args.index("--bbox")
-    # 25% of area -> 50% of each side, anchored lower-left; z is full range
-    assert args[i + 1] == "0.0,0.0,0.0,50.0,50.0,10.0"
+    # The resolved window verbatim — the SAME six numbers every SQL system
+    # binds, never a re-derivation on this side.
+    assert args[i + 1] == ",".join(str(v) for v in window.window.as_cli_list())
+    # z is never narrowed: the window spans the dataset's full z range.
+    assert args[i + 1].split(",")[2] == str(PARAMS.bbox_full.minz)
 
 
 def test_bbox_args_carry_a_selectivity_tag():
-    args = build_child_args("bbox-query", PARAMS, "/pkg", selectivity=0.05)
+    args = build_child_args("bbox-query", PARAMS, "/pkg",
+                            PARAMS.window("bbox-5pct"))
     i = args.index("--selectivity-tag")
     assert args[i + 1] == "bbox-5pct"
 
 
-def test_attr_filter_passes_string_equality():
+def test_attr_filter_passes_the_derived_attribute_not_a_structural_column():
     args = build_child_args("attr-filter", PARAMS, "/pkg")
-    assert args[args.index("--attr-column") + 1] == "object_type"
-    assert args[args.index("--attr-eq") + 1] == "Building"
+    assert args[args.index("--attr-column") + 1] == "b3_dak_type"
+    assert args[args.index("--attr-eq") + 1] == "slanted"
+    # `object_type` is not a CityJSON attribute, so FlatCityBuf's B+-tree
+    # can never index it — the defect that made every FCB `attr-filter` row
+    # a full walk (review §0).
+    assert "object_type" not in args
+
+
+def test_attr_filter_passes_the_numeric_lower_bound_form():
+    args = build_child_args(
+        "attr-filter", replace(PARAMS, attr_filter=ge_attr_filter()), "/pkg"
+    )
+    assert args[args.index("--attr-column") + 1] == "TerrainHeight"
+    assert args[args.index("--attr-ge") + 1] == "2.45"
+    assert "--attr-eq" not in args
 
 
 def test_attr_stats_uses_the_numeric_column():
@@ -60,15 +71,27 @@ def test_attr_stats_raises_scenario_unavailable_when_dataset_has_no_numeric_colu
         build_child_args("attr-stats", no_numeric, "/pkg")
 
 
-def test_id_lookup_passes_target_id():
-    args = build_child_args("id-lookup", PARAMS, "/pkg")
-    assert args[args.index("--target-id") + 1] == "obj-1"
+def test_id_lookup_passes_the_probe_it_was_handed():
+    """One child invocation per probe, each handed the SAME id at the same
+    position in the canonical stream order that every SQL system is given
+    — including the verified-absent one, which is the probe that actually
+    separates a reader with an id index from one without."""
+    for probe in PARAMS.id_probes:
+        args = build_child_args("id-lookup", PARAMS, "/pkg", probe=probe)
+        assert args[args.index("--target-id") + 1] == probe.id
 
 
-def test_tier2_scenarios_are_rejected():
-    # The Rust child implements only the inherited seven.
+def test_id_lookup_without_a_probe_is_a_loud_failure():
     with pytest.raises(ValueError):
-        build_child_args("hierarchy", PARAMS, "/pkg")
+        build_child_args("id-lookup", PARAMS, "/pkg")
+
+
+def test_scenarios_the_child_does_not_implement_are_rejected():
+    # The Rust child implements five of the ten read scenarios; the read
+    # harness is not this family's to extend.
+    for scenario in ("lod-query", "parts-per-building", "geometry-scan"):
+        with pytest.raises(ValueError):
+            build_child_args(scenario, PARAMS, "/pkg")
 
 
 def test_parse_child_stdout_local_four_fields():
@@ -103,49 +126,41 @@ def test_parse_child_stdout_rejects_unexpected_field_count():
 # condition would slip straight through.
 
 
-def test_bbox_query_without_selectivity_raises():
-    # `selectivity` defaults to None; every other TIER1 scenario tolerates
+def test_bbox_query_without_a_window_raises():
+    # `window` defaults to None; every non-windowed scenario tolerates
     # that, but bbox-query has nothing to build a window from without it.
     with pytest.raises(ValueError):
         build_child_args("bbox-query", PARAMS, "/pkg")
 
 
 def test_bbox_args_carry_the_1pct_selectivity_tag_too():
-    # Only the 5pct/25pct tags are exercised by the brief's own tests;
-    # this completes _SELECTIVITY_TAGS's third entry.
-    args = build_child_args("bbox-query", PARAMS, "/pkg", selectivity=0.01)
+    args = build_child_args("bbox-query", PARAMS, "/pkg",
+                            PARAMS.window("bbox-1pct"))
     assert args[args.index("--selectivity-tag") + 1] == "bbox-1pct"
 
 
-def test_project_uses_the_categorical_attr_column_not_the_numeric_one():
-    # A real bug caught while implementing this task: an earlier draft
-    # grouped `project` with `attr-stats` and pointed it at
-    # `params.numeric_column`. `sql_duckdb.sql_for`'s own `project` branch
-    # always counts `object_type` (== `params.attr_column` for every
-    # dataset), so doing the same here is required for the cross-system
-    # comparison to mean anything — otherwise this system's `project`
-    # scenario would silently scan a different column than every SQL
-    # system's `project`.
-    args = build_child_args("project", PARAMS, "/pkg")
-    assert args[args.index("--attr-column") + 1] == "object_type"
-    assert "h_dak_max" not in args
+def test_scenarios_the_rust_child_does_not_implement_are_refused_loudly():
+    """`geometry-scan`, `bbox-fetch`, `point-query`, `attr-range` and the
+    write tier have no counterpart in the child's own `Scenario` enum, and
+    the read harness is not this family's to extend. The registry never
+    asks the native readers for them (`READBENCH_SCENARIOS`); this guard is
+    the second line of defence if it ever did."""
+    for scenario in ("geometry-scan", "bbox-fetch", "point-query",
+                     "attr-range", "parts-per-building", "attr-add"):
+        with pytest.raises(ValueError, match="not implemented by the readbench child"):
+            build_child_args(scenario, PARAMS, "/pkg")
 
 
 def _dataset(tmp_path) -> Dataset:
     return Dataset(
         name="delft",
         source=tmp_path / "delft.city.jsonl",
-        cityparquet_dir=tmp_path / "cityparquet" / "delft",
-        hilbert_dir=tmp_path / "cityparquet" / "delft-hilbert",
+        cityparquet_dir=tmp_path / "readbench" / "delft.parquet",
     )
 
 
-def test_tag_reflects_the_hilbert_flag(tmp_path):
-    # ReadbenchSystem serves two registry tags off one class (hence it is
-    # deliberately not @register-decorated); each constructor argument
-    # must land on the right one.
+def test_tag_is_cityparquet(tmp_path):
     assert ReadbenchSystem(binary=tmp_path / "bin").tag == "cityparquet"
-    assert ReadbenchSystem(binary=tmp_path / "bin", hilbert=True).tag == "cityparquet-hilbert"
 
 
 def test_prepare_raises_file_not_found_when_binary_is_missing(tmp_path):
@@ -161,7 +176,8 @@ def test_prepare_does_not_raise_when_binary_exists(tmp_path):
 
 
 def test_size_sums_every_file_under_the_ingested_package(tmp_path):
-    package = tmp_path / "cityparquet" / "delft"
+    dataset = _dataset(tmp_path)
+    package = dataset.cityparquet_dir
     package.mkdir(parents=True)
     (package / "building.parquet").write_bytes(b"x" * 100)
     sidecars = package / "sidecars"
@@ -169,7 +185,7 @@ def test_size_sums_every_file_under_the_ingested_package(tmp_path):
     (sidecars / "materials.parquet").write_bytes(b"y" * 50)
 
     system = ReadbenchSystem(binary=tmp_path / "bin")
-    system.ingest(_dataset(tmp_path))
+    system.ingest(dataset)
     report = system.size()
 
     assert report.size_bytes == 150
@@ -182,7 +198,7 @@ class _FakeCompletedProcess:
         self.stderr = ""
 
 
-def test_ingest_routes_a_hilbert_system_to_the_hilbert_package_and_run_reports_it(
+def test_ingest_routes_the_system_to_the_cityparquet_package_and_run_reports_it(
     tmp_path, monkeypatch
 ):
     dataset = _dataset(tmp_path)
@@ -194,38 +210,17 @@ def test_ingest_routes_a_hilbert_system_to_the_hilbert_package_and_run_reports_i
 
     monkeypatch.setattr(readbench.subprocess, "run", fake_run)
 
-    system = ReadbenchSystem(binary=tmp_path / "bin", hilbert=True)
+    system = ReadbenchSystem(binary=tmp_path / "bin")
     ingest_result = system.ingest(dataset)
     assert ingest_result.wall_clock_s == 0.0
 
     system.run("count", PARAMS, repeat=1)
 
-    # ingest() must have pointed --input at hilbert_dir, not cityparquet_dir.
+    # ingest() must have pointed --input at the package...
     argv = captured["argv"]
-    assert str(dataset.hilbert_dir) in argv
-    assert str(dataset.cityparquet_dir) not in argv
-    # ...and --format must match, since this is the flag that tells the
+    assert argv[argv.index("--input") + 1] == str(dataset.cityparquet_dir)
+    # ...and --format must name it, since this is the flag that tells the
     # child which artefact layout it is opening.
-    assert argv[argv.index("--format") + 1] == "cityparquet-hilbert"
-
-
-def test_ingest_routes_a_plain_system_to_the_source_ordered_package(tmp_path, monkeypatch):
-    dataset = _dataset(tmp_path)
-    captured: dict = {}
-
-    def fake_run(argv, **kwargs):
-        captured["argv"] = argv
-        return _FakeCompletedProcess("0.1 100 200 5\n")
-
-    monkeypatch.setattr(readbench.subprocess, "run", fake_run)
-
-    system = ReadbenchSystem(binary=tmp_path / "bin", hilbert=False)
-    system.ingest(dataset)
-    system.run("count", PARAMS, repeat=1)
-
-    argv = captured["argv"]
-    assert str(dataset.cityparquet_dir) in argv
-    assert str(dataset.hilbert_dir) not in argv
     assert argv[argv.index("--format") + 1] == "cityparquet"
 
 

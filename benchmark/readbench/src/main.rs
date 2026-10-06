@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use cityparquet_readbench::format::Format;
+use cityparquet_readbench::sampling::SamplingPlan;
 use clap::{Args, Parser, Subcommand};
 
 use scenario::{AttrPred, QueryParams, Scenario};
@@ -17,10 +18,10 @@ use scenario::{AttrPred, QueryParams, Scenario};
 ///
 /// This binary has two entry points sharing one CLI surface: the `run`
 /// subcommand (the coordinator — drives a whole (format x scenario) matrix,
-/// medians the repeats, and writes the results CSV; see [`coordinator`]) and
+/// means the repeats, and writes the results CSV; see [`coordinator`]); and
 /// `--child` (a plain top-level flag, no subcommand keyword) — a
 /// single-scenario worker the coordinator spawns once per (format, scenario,
-/// dataset, repeat) measurement. `--child` resets the heap allocator, times
+/// dataset, repeat) measurement, which resets the heap allocator, times
 /// exactly one `FormatRunner::run` call, and prints one line to stdout:
 /// `time_s peak_heap_bytes ru_maxrss_bytes result_count`.
 #[derive(Parser, Debug)]
@@ -38,22 +39,6 @@ struct Cli {
     #[arg(long)]
     child: bool,
 
-    /// With `--child`: measure one CONVERSION instead of one read. Needs
-    /// `--variant`, `--input` (a CityJSONSeq artefact) and `--out` (a
-    /// directory that does not exist yet). Prints the same four-field line
-    /// a read child prints, with the conversion's object count last.
-    #[arg(long)]
-    write: bool,
-
-    /// With `--child --write`: the variant id whose recipe to convert with
-    /// (`cityparquet::variant`'s grammar).
-    #[arg(long)]
-    variant: Option<String>,
-
-    /// With `--child --write`: where the package is written.
-    #[arg(long)]
-    out: Option<PathBuf>,
-
     /// Format backend — one of `Format::ALL`'s canonical names, which
     /// `Format::from_str` validates (and whose error lists them all), so no
     /// list is repeated here to drift out of date.
@@ -61,12 +46,12 @@ struct Cli {
     format: Option<Format>,
 
     /// Scenario to run: full-read, count, bbox-query, attr-filter,
-    /// attr-stats, id-lookup, project.
+    /// attr-stats, id-lookup, feature-lookup (CityParquet only).
     #[arg(long)]
     scenario: Option<String>,
 
     /// Format-specific input path: a CityParquet package directory (or its
-    /// main table file directly), a `.city.jsonl`/`.jsonl.gz` file, or a
+    /// main table file directly), a `.city.jsonl` file, or a
     /// `.fcb` file.
     #[arg(long)]
     input: Option<PathBuf>,
@@ -76,7 +61,7 @@ struct Cli {
     #[arg(long, value_delimiter = ',')]
     bbox: Option<Vec<f64>>,
 
-    /// Attribute column for `attr-filter` / `attr-stats` / `project`.
+    /// Attribute column for `attr-filter` / `attr-stats`.
     #[arg(long)]
     attr_column: Option<String>,
 
@@ -101,6 +86,10 @@ struct Cli {
     #[arg(long)]
     target_id: Option<String>,
 
+    /// Target `feature_id` for `feature-lookup`.
+    #[arg(long)]
+    target_feature_id: Option<String>,
+
     /// Free-text selectivity label the coordinator threads through to the
     /// results CSV's `notes` column; no scenario reads this itself.
     #[arg(long)]
@@ -123,7 +112,7 @@ struct Cli {
 enum Command {
     /// Drive a whole (format x scenario) benchmark matrix and write the
     /// results CSV (see [`coordinator::run`]).
-    Run(RunArgs),
+    Run(Box<RunArgs>),
 }
 
 /// `cityparquet-readbench run`'s own flags — the CLI-facing mirror of
@@ -146,34 +135,68 @@ struct RunArgs {
     out: PathBuf,
 
     /// Warm repeats per measurement; a further, discarded warmup precedes
-    /// every one. Must be >= 1.
-    #[arg(long, default_value_t = 7)]
+    /// every one. Must be >= 1. With `--cell-budget-s` it is the ceiling.
+    #[arg(long, default_value_t = 25)]
     repeat: usize,
+
+    /// Optional time budget per measurement, in seconds (off by default):
+    /// sampling stops once the measurement's runs, warm-up included, have
+    /// taken this long and at least `--min-repeat` warm samples exist. A
+    /// measurement that stops early carries the `budget` tag in `notes`.
+    #[arg(long)]
+    cell_budget_s: Option<f64>,
+
+    /// The fewest warm samples a budgeted measurement takes; clamped to
+    /// `--repeat`. Must be >= 1.
+    #[arg(long, default_value_t = 7)]
+    min_repeat: usize,
+
+    /// NUMA node for the measured children: a node id, `auto` (the node with
+    /// the most free memory at start) or `off`. Pinned with `numactl` (CPU
+    /// and memory), else `taskset` (CPU only); the coordinator takes the
+    /// node's first core. Off Linux it is recorded as not applied.
+    #[arg(long, env = "BENCH_NUMA_NODE", default_value = "auto")]
+    numa_node: cityparquet_readbench::isolation::NumaRequest,
+
+    /// Optional memory ceiling for the children, in bytes, applied through
+    /// `systemd-run --user --scope -p MemoryMax=`; recorded as not applied
+    /// (never fatal) when the user scope is unavailable.
+    #[arg(long)]
+    memory_max: Option<u64>,
+
+    /// Load gate before every sample: the pinned node's share of the load,
+    /// `load1 * node_cores / total_cores`, against a threshold; `auto` is
+    /// half the node's cores, `off` disables it.
+    #[arg(long, default_value = "auto")]
+    max_load: cityparquet_readbench::isolation::MaxLoadRequest,
+
+    /// The longest a sample waits (in 10 s steps) for the load to drop; a
+    /// cell that proceeds above the threshold carries `busy` in `notes`.
+    #[arg(long, default_value_t = 600)]
+    max_load_wait_s: u64,
 
     /// Comma-separated format names — one of `Format::ALL`'s canonical
     /// names each, validated by `Format::from_str` (an unknown name is
-    /// rejected here, never silently skipped); omit for
-    /// `Format::DEFAULT_SET`, the format-comparison set. `Format::ORDERING_SET`
-    /// names the other measured set (`just ordering-bench` passes it).
+    /// rejected here, never silently skipped); omit for every format,
+    /// `Format::ALL`.
     #[arg(long, value_delimiter = ',', value_parser = parse_format)]
     formats: Option<Vec<Format>>,
 
     /// Comma-separated variant ids (`cityparquet::variant`'s grammar). A
-    /// CONFIGURATION run: every id is written with its recipe by a write
-    /// child, kept as `<prepared-dir>/<base>.<id>.parquet`, then read by the
+    /// CONFIGURATION run: every id is converted with its recipe (untimed),
+    /// kept as `<prepared-dir>/<base>.<id>.parquet`, then read by the
     /// CityParquet runner. Exclusive with `--formats`; the list must contain
-    /// the bare `cityparquet` baseline; local transport only.
+    /// the bare `cityparquet` baseline. Over `--transport http` the run is
+    /// read-only: it reads the `<base>.<id>.parquet` packages a local run
+    /// built, uploaded beside the prepared artefacts, and builds none.
     #[arg(long, value_delimiter = ',')]
     variants: Option<Vec<String>>,
 
-    /// Warm write repeats per variant (a discarded warmup precedes them).
-    /// Only read by `--variants`. Must be >= 1.
-    #[arg(long, default_value_t = 3)]
-    write_repeat: usize,
-
-    /// Comma-separated scenario names (`full-read`, `count`, `bbox-query`,
-    /// `attr-filter`, `attr-stats`, `id-lookup`, `project`, or their
-    /// [`Scenario::from_str`] aliases); omit for every scenario.
+    /// Comma-separated scenario names, or their [`Scenario::from_str`]
+    /// aliases. Omitting this selects [`Scenario::ALL`] — the six
+    /// format-comparison scenarios `full-read`, `count`, `bbox-query`,
+    /// `attr-filter`, `attr-stats` and `id-lookup`. `feature-lookup`
+    /// is CityParquet-only, so it is not in that set and has to be named here.
     #[arg(long, value_delimiter = ',')]
     scenarios: Option<Vec<String>>,
 
@@ -181,6 +204,11 @@ struct RunArgs {
     /// Omit to retain the full positioned-hit plus miss matrix.
     #[arg(long, value_delimiter = ',')]
     id_probes: Option<Vec<String>>,
+
+    /// Restrict `feature-lookup` to resolved probe tags (`feature-50pct`,
+    /// `feature-miss`). Omit to keep both.
+    #[arg(long, value_delimiter = ',')]
+    feature_probes: Option<Vec<String>>,
 
     /// After the warm matrix, run one additional `FullRead` per format,
     /// tagged `cold` in `notes` (see [`coordinator::run`]'s own doc comment
@@ -208,6 +236,7 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     if let Some(Command::Run(run_args)) = cli.command {
+        let run_args = *run_args;
         let transport = match run_args.transport.as_str() {
             "local" => coordinator::Transport::Local,
             "http" => coordinator::Transport::Http,
@@ -217,15 +246,25 @@ fn run(cli: Cli) -> Result<()> {
             input: run_args.input,
             prepared_dir: run_args.prepared_dir,
             out: run_args.out,
-            repeat: run_args.repeat,
+            sampling: SamplingPlan::new(
+                run_args.repeat,
+                run_args.cell_budget_s,
+                run_args.min_repeat,
+            )?,
             formats: run_args.formats,
             variants: run_args.variants,
-            write_repeat: run_args.write_repeat,
             scenarios: run_args.scenarios,
             id_probes: run_args.id_probes,
+            feature_probes: run_args.feature_probes,
             cold: run_args.cold,
             transport,
             base_url: run_args.base_url,
+            isolation: coordinator::IsolationOptions {
+                numa_node: run_args.numa_node,
+                memory_max: run_args.memory_max,
+                max_load: run_args.max_load,
+                max_load_wait_s: run_args.max_load_wait_s,
+            },
         });
     }
 
@@ -235,10 +274,6 @@ fn run(cli: Cli) -> Result<()> {
              coordinator) or `--child --format <f> --scenario <s> --input <path>` (a single \
              measurement)"
         );
-    }
-
-    if cli.write {
-        return run_write_child(cli);
     }
 
     let format = cli.format.context("--child requires --format")?;
@@ -264,6 +299,7 @@ fn run(cli: Cli) -> Result<()> {
         attr_column: cli.attr_column,
         attr_pred,
         target_id: cli.target_id,
+        target_feature_id: cli.target_feature_id,
         selectivity_tag: cli.selectivity_tag,
     };
 
@@ -330,44 +366,27 @@ fn run(cli: Cli) -> Result<()> {
             outcome.result_count
         ),
     }
-    Ok(())
-}
-
-/// One timed conversion, in a process of its own so its peak RSS is its own.
-///
-/// `ConvertOptions` is filled the way the CLI's `convert` fills it
-/// (`generate_lod0: true`, the default batch size), so a variant package has
-/// the same content as the prepare script's `<base>.parquet` and differs from
-/// it only in the recipe under test. A library-default `ConvertOptions::new`
-/// would leave LoD0 generation OFF and the row counts would not line up.
-fn run_write_child(cli: Cli) -> Result<()> {
-    let id = cli.variant.context("--write requires --variant")?;
-    let input = cli.input.context("--write requires --input")?;
-    let out = cli.out.context("--write requires --out")?;
-    let variant = cityparquet::variant::Variant::parse(&id).map_err(|e| anyhow::anyhow!("{e}"))?;
-    if out.exists() {
-        bail!(
-            "--out {} exists; the write child needs a fresh directory",
-            out.display()
+    if let Some(lookup) = outcome.lookup {
+        eprintln!(
+            "{} {} {} {}",
+            formats::LOOKUP_STATS_MARKER,
+            lookup.row_groups_total,
+            lookup.bloom_pruned,
+            lookup.filter_bytes
         );
     }
-
-    let mut opts = cityparquet::package::ConvertOptions::new(input, out);
-    opts.recipe = variant.recipe();
-    opts.ordering = variant.ordering();
-    opts.generate_lod0 = true;
-
-    alloc::reset();
-    let start = Instant::now();
-    let report = cityparquet::package::convert(&opts)
-        .with_context(|| format!("converting with variant '{id}'"))?;
-    let time_s = start.elapsed().as_secs_f64();
-    let peak_heap_bytes = alloc::peak_heap_bytes();
-    let ru_maxrss_bytes = max_rss_bytes()?;
-    println!(
-        "{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {}",
-        report.object_count
-    );
+    // After the timed line, like the lookup counters: the aggregates are what
+    // lets a test hold every format's `attr-stats` to the same four numbers.
+    if let Some(stats) = outcome.attr_stats {
+        eprintln!(
+            "{} {} {} {} {}",
+            formats::ATTR_STATS_MARKER,
+            stats.min,
+            stats.max,
+            stats.sum,
+            stats.count
+        );
+    }
     Ok(())
 }
 
@@ -433,6 +452,7 @@ fn build_attr_pred(eq: Option<&str>, ge: Option<f64>, le: Option<f64>) -> Result
 /// function so the conversion itself is unit-testable. Non-Linux, non-macOS
 /// platforms fall through to the raw value (BSD-lineage bytes) — this crate
 /// only ever runs on the two.
+#[cfg(any(not(target_os = "linux"), test))]
 fn rss_to_bytes(raw: i64) -> u64 {
     #[cfg(target_os = "linux")]
     {
@@ -444,9 +464,59 @@ fn rss_to_bytes(raw: i64) -> u64 {
     }
 }
 
-/// `getrusage(RUSAGE_SELF).ru_maxrss`, normalised to BYTES on every
-/// platform via [`rss_to_bytes`].
+/// The child's own peak resident set size, in BYTES.
+///
+/// On Linux this is `VmHWM` from `/proc/self/status`, NOT
+/// `getrusage(RUSAGE_SELF).ru_maxrss`. The two differ for an exec'd child:
+/// `exec_mmap` folds the high-water mark of the PRE-exec address space —
+/// under `posix_spawn`/`vfork` that is the PARENT's — into the task's
+/// `signal->maxrss`, which is what `getrusage` and `wait4` report, so a
+/// child could never report less than the coordinator's own peak. Every
+/// committed read CSV before this change carries that floor: on the 1M
+/// 3DBAG slice 36 read rows across four formats share the value
+/// 269 963 264, the coordinator's RSS after deriving the query parameters
+/// (see `READ_BENCHMARK.md`, Caveat 34). `VmHWM` is the high-water mark of
+/// the child's OWN `mm`, created fresh by exec, and is not inherited
+/// (measured: a `/proc/self/status` child under a 420 MB parent reports
+/// 10.5 MB, while `ru_maxrss` reports 419 MB). Other platforms fall back to
+/// `getrusage` via [`rss_to_bytes`].
 fn max_rss_bytes() -> Result<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status")
+            .context("reading /proc/self/status for VmHWM")?;
+        vm_hwm_bytes(&status)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        max_rss_bytes_getrusage()
+    }
+}
+
+/// Parse the `VmHWM:` line of a `/proc/<pid>/status` document into bytes.
+/// The kernel prints it in kB (units of 1024 bytes).
+#[cfg(any(target_os = "linux", test))]
+fn vm_hwm_bytes(status: &str) -> Result<u64> {
+    let line = status
+        .lines()
+        .find(|l| l.starts_with("VmHWM:"))
+        .ok_or_else(|| anyhow::anyhow!("no VmHWM line in /proc/self/status"))?;
+    let mut fields = line.split_whitespace().skip(1);
+    let value: u64 = fields
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("VmHWM line has no value: '{line}'"))?
+        .parse()
+        .with_context(|| format!("parsing VmHWM from '{line}'"))?;
+    match fields.next() {
+        Some("kB") => Ok(value.saturating_mul(1024)),
+        other => bail!("unexpected VmHWM unit {other:?} in '{line}'"),
+    }
+}
+
+/// `getrusage(RUSAGE_SELF).ru_maxrss`, normalised to BYTES on every
+/// platform via [`rss_to_bytes`]. Not used on Linux (see [`max_rss_bytes`]).
+#[cfg(not(target_os = "linux"))]
+fn max_rss_bytes_getrusage() -> Result<u64> {
     // SAFETY: `usage` is zero-initialized and only read after `getrusage`
     // returns success; `RUSAGE_SELF` and a valid `&mut rusage` are exactly
     // what this libc binding requires.
@@ -463,7 +533,7 @@ fn max_rss_bytes() -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::rss_to_bytes;
+    use super::{rss_to_bytes, vm_hwm_bytes};
 
     /// P1 regression: `ru_maxrss`'s unit is platform-defined — KiB on Linux
     /// (`getrusage(2)`), bytes on macOS/BSD. Before `rss_to_bytes` existed
@@ -475,5 +545,40 @@ mod tests {
         assert_eq!(rss_to_bytes(2048), 2048 * 1024, "Linux ru_maxrss is KiB");
         #[cfg(not(target_os = "linux"))]
         assert_eq!(rss_to_bytes(2048), 2048, "macOS/BSD ru_maxrss is bytes");
+    }
+
+    #[test]
+    fn vm_hwm_is_parsed_from_the_status_document_in_kib() {
+        let status = "Name:\tx\nVmPeak:\t  20 kB\nVmHWM:\t   10556 kB\nVmRSS:\t 9000 kB\n";
+        assert_eq!(vm_hwm_bytes(status).unwrap(), 10556 * 1024);
+        assert!(
+            vm_hwm_bytes("Name:\tx\n").is_err(),
+            "a document without VmHWM is an error"
+        );
+        assert!(
+            vm_hwm_bytes("VmHWM:\t 12 MB\n").is_err(),
+            "an unexpected unit is an error"
+        );
+    }
+
+    /// The point of `VmHWM`: an exec'd child must not inherit this process's
+    /// high-water mark. Spawn `cat /proc/self/status` from the test binary
+    /// (whose own VmHWM is tens of MB) and check the child's VmHWM is its
+    /// own few MB, below the parent's. No ballast is allocated here on
+    /// purpose: the `alloc` module's peak-tracking test shares this process
+    /// and a large allocation would disturb it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_spawned_child_reports_its_own_high_water_mark() {
+        let parent = vm_hwm_bytes(&std::fs::read_to_string("/proc/self/status").unwrap()).unwrap();
+        let out = std::process::Command::new("cat")
+            .arg("/proc/self/status")
+            .output()
+            .expect("spawning cat");
+        let child = vm_hwm_bytes(&String::from_utf8_lossy(&out.stdout)).unwrap();
+        assert!(
+            child < parent && child < 16 * 1024 * 1024,
+            "child VmHWM {child} is not below the parent's {parent}"
+        );
     }
 }

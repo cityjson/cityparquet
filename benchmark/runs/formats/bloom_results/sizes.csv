@@ -1,0 +1,13 @@
+dataset,format,bytes,mb,ratio_vs_cityjsonseq,baseline_format,ratio_vs_baseline
+3dbag_n1000000,cityparquet,783700592,747.395126,3.685078,cityparquet,1.000000
+3dbag_n1000000,cityparquet+nobloom,779701600,743.581390,3.703978,cityparquet,1.005129
+ingolstadt,cityparquet,1026498,0.978945,3.921968,cityparquet,1.000000
+ingolstadt,cityparquet+nobloom,1024646,0.977179,3.929056,cityparquet,1.001807
+nyc_da13_buildings,cityparquet,22767613,21.712888,4.396068,cityparquet,1.000000
+nyc_da13_buildings,cityparquet+nobloom,22603643,21.556514,4.427958,cityparquet,1.007254
+rotterdam_delfshaven,cityparquet,794307,0.757510,3.553593,cityparquet,1.000000
+rotterdam_delfshaven,cityparquet+nobloom,790165,0.753560,3.572221,cityparquet,1.005242
+vienna_102081,cityparquet,1600191,1.526061,3.148992,cityparquet,1.000000
+vienna_102081,cityparquet+nobloom,1597583,1.523574,3.154133,cityparquet,1.001632
+zurich_building_lod2,cityparquet,84409064,80.498756,3.069830,cityparquet,1.000000
+zurich_building_lod2,cityparquet+nobloom,83912220,80.024929,3.088006,cityparquet,1.005921

@@ -112,27 +112,37 @@ impl Row {
     }
 }
 
-const CSV_COLUMNS: [&str; 13] = [
+const CSV_COLUMNS: [&str; 21] = [
     "dataset",
     "format",
     "scenario",
     "selectivity",
     "result_count",
-    "time_s",
-    "time_mad_s",
+    "time_mean_s",
+    "time_std_s",
+    "time_median_s",
+    "time_min_s",
+    "time_max_s",
+    "time_q1_s",
+    "time_q3_s",
     "peak_heap_bytes",
     "peak_rss_bytes",
     "repeat",
     "notes",
     "bytes_read",
     "http_requests",
+    "row_groups_total",
+    "bloom_pruned",
+    "filter_bytes",
 ];
 
-const EXPECTED_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,\
-time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests";
+const EXPECTED_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_mean_s,\
+time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,\
+peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,\
+filter_bytes";
 
 #[test]
-fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from_real_data() {
+fn run_produces_the_exact_csv_contract_with_means_and_selectivity_derived_from_real_data() {
     let prepared = tempfile::tempdir().unwrap();
     let input = fixture("delft.city.jsonl");
 
@@ -208,17 +218,37 @@ fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from
             row_fields = row.fields
         );
 
-        let time_s: f64 = row
-            .field("time_s")
-            .parse()
-            .unwrap_or_else(|e| panic!("time_s '{}' must parse as f64: {e}", row.field("time_s")));
-        assert!(time_s >= 0.0, "time_s must be non-negative, got {time_s}");
-        let _time_mad_s: f64 = row.field("time_mad_s").parse().unwrap_or_else(|e| {
-            panic!(
-                "time_mad_s '{}' must parse as f64: {e}",
-                row.field("time_mad_s")
-            )
-        });
+        let timing: Vec<f64> = [
+            "time_mean_s",
+            "time_std_s",
+            "time_median_s",
+            "time_min_s",
+            "time_max_s",
+            "time_q1_s",
+            "time_q3_s",
+        ]
+        .iter()
+        .map(|name| {
+            row.field(name)
+                .parse()
+                .unwrap_or_else(|e| panic!("{name} '{}' must parse as f64: {e}", row.field(name)))
+        })
+        .collect();
+        let [mean, std, median, min, max, q1, q3] = timing[..] else {
+            unreachable!()
+        };
+        assert!(
+            mean >= 0.0 && std >= 0.0,
+            "mean/std must be non-negative: {timing:?}"
+        );
+        assert!(
+            min <= q1 && q1 <= median && median <= q3 && q3 <= max,
+            "min <= q1 <= median <= q3 <= max must hold: {timing:?}"
+        );
+        assert!(
+            min <= mean && mean <= max,
+            "the mean lies in [min, max]: {timing:?}"
+        );
         let _peak_heap_bytes: u64 = row.field("peak_heap_bytes").parse().unwrap_or_else(|e| {
             panic!(
                 "peak_heap_bytes '{}' must parse as u64: {e}",
@@ -388,7 +418,7 @@ fn run_skips_a_format_with_no_prepared_artefact_and_still_produces_the_other() {
 /// per-format skip note above and nothing more. When `--formats` is omitted,
 /// the coordinator picked the format-comparison set itself, and a CSV holding
 /// only some of it is not the comparison the operator asked for — silently
-/// dropping four of five formats would be published as "the format
+/// dropping three of five formats would be published as "the format
 /// comparison". So a default-set run that resolves fewer formats than the set
 /// holds must say so loudly, naming exactly what is missing.
 ///
@@ -424,22 +454,22 @@ fn a_default_set_run_says_loudly_when_it_could_not_measure_the_whole_set() {
         "an incomplete default-set run must say the CSV is not a complete format \
          comparison; stderr:\n{stderr}"
     );
-    for missing in ["citygml", "cityjson", "flatcitybuf", "cityparquet-hilbert"] {
+    for missing in ["citygml", "cityjson", "flatcitybuf"] {
         assert!(
             stderr.contains(missing),
             "the warning must name the missing format '{missing}'; stderr:\n{stderr}"
         );
     }
 
-    // Only `cityjsonseq` could resolve, and it still ran.
+    // Only `cityjsonseq` and `cityparquet` could resolve, and both still ran.
     let csv_text = std::fs::read_to_string(&out_csv).unwrap();
     let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    let formats: Vec<&str> = rows.iter().map(|r| r.field("format")).collect();
     assert_eq!(
-        rows.len(),
-        1,
-        "expected only cityjsonseq's count row: {csv_text}"
+        formats,
+        ["cityjsonseq", "cityparquet"],
+        "expected only the two present formats' count rows: {csv_text}"
     );
-    assert_eq!(rows[0].field("format"), "cityjsonseq");
 }
 
 /// The mirror of the case above: when the operator NAMED the formats, the
@@ -479,20 +509,22 @@ fn an_explicitly_requested_skip_does_not_raise_the_incomplete_set_alarm() {
     );
 }
 
-/// Object-level scenarios (`AttrFilter`/`AttrStats`/`Project`/`IdLookup`) are
+/// Object-level scenarios (`AttrFilter`/`AttrStats`/`IdLookup`) are
 /// CityObject-level for EVERY format (see `coordinator`'s own module doc),
 /// so their selectivity denominator must be the dataset-global CityObject
 /// total — the `cityparquet` package's own `Count` — shared across every
 /// format, never a per-format total. On `delft.city.jsonl`,
 /// `cityjsonseq`'s own `Count` is 1115 (feature-level: one line per
-/// top-level `Building`), while `AttrFilter(object_type == "BuildingPart")`
-/// is 1116 (CityObject-level: `BuildingPart`s are children flattened out of
-/// their parent `Building` features) — dividing the object-level numerator
-/// by the feature-level `cityjsonseq` total therefore yields `1116/1115 ≈
-/// 1.0009`, a selectivity > 1.0, which is nonsensical and was the pre-fix
-/// bug this test pins down as GREEN (it would fail RED against the
-/// unfixed coordinator, which used `total_count_for(format, path)` — each
-/// format's OWN count — as the denominator for every non-BBoxQuery
+/// top-level `Building`), while every object-level numerator counts
+/// CityObjects out of 2231 (`BuildingPart`s are children flattened out of
+/// their parent `Building` features) — so dividing an object-level
+/// numerator by the feature-level `cityjsonseq` total inflates that
+/// format's selectivity by roughly a factor of two, and with the numerator
+/// this scenario used to carry (`object_type == "BuildingPart"`, 1116) it
+/// produced `1116/1115 ≈ 1.0009`, a nonsensical selectivity > 1.0. That was
+/// the pre-fix bug this test pins down as GREEN (it would fail RED against
+/// the unfixed coordinator, which used `total_count_for(format, path)` —
+/// each format's OWN count — as the denominator for every non-BBoxQuery
 /// scenario).
 #[test]
 fn attr_filter_selectivity_uses_the_shared_cityparquet_object_total_as_denominator() {
@@ -553,11 +585,18 @@ fn attr_filter_selectivity_uses_the_shared_cityparquet_object_total_as_denominat
     let cjseq_count: u64 = cityjsonseq_row.field("result_count").parse().unwrap();
     assert_eq!(
         cp_count, cjseq_count,
-        "AttrFilter(object_type) result_count must match across formats (both CityObject-level)"
+        "AttrFilter result_count must match across formats (both CityObject-level)"
     );
+    // `delft.city.jsonl` is not in `params::HAND_PICKED`, so its predicate
+    // comes from the derived rule: `b3_dak_type` is the string attribute
+    // whose most frequent value's share of rows lands closest to 0.25, and
+    // that value is `slanted` — 584 of the 2231 CityObjects (independently
+    // confirmed with DuckDB over the converted package). 3DBAG carries the
+    // attribute on the `Building` only, so the count is CityObject-level
+    // and a strict subset of the 1115 parents.
     assert_eq!(
-        cp_count, 1116,
-        "delft.city.jsonl's known BuildingPart count"
+        cp_count, 584,
+        "delft.city.jsonl's known `b3_dak_type == \"slanted\"` count"
     );
 
     let cp_selectivity: f64 = cityparquet_row.field("selectivity").parse().unwrap();
@@ -673,60 +712,6 @@ async fn run_with_http_transport_reports_bytes_and_requests_on_the_cityparquet_r
         requests >= 1,
         "expected at least 1 http_requests, got {requests}"
     );
-}
-
-/// **C1's regression guard.** A CityGML input must never be measured as
-/// CityJSONSeq.
-///
-/// `Format::CityJsonSeq` used to resolve to the `--input` itself, which was
-/// correct only while every input WAS a `.city.jsonl`. On the catalogue
-/// corpus — `.gml` and `.city.json` — that made the `cityjsonseq` row a
-/// measurement of the input's own format under another name: on
-/// `plateau_chuo_fld.gml`, `count` was 0.175 s of CityGML parsing published
-/// as CityJSONSeq. Nothing caught it, because every coordinator test here
-/// used the one input kind for which the old resolution was right.
-///
-/// So: with no `<base>.city.jsonl` in `--prepared-dir`, `cityjsonseq` must be
-/// SKIPPED — the same treatment any other format's missing artefact gets —
-/// and the `.gml` must not appear in the CSV under that tag.
-#[test]
-fn a_citygml_input_is_never_measured_as_cityjsonseq() {
-    let prepared = tempfile::tempdir().unwrap();
-    let input = citygml_fixture("savenow_ingolstadt_lod2.gml");
-    let package_dir = prepared.path().join("savenow_ingolstadt_lod2.parquet");
-    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
-    let out_csv = prepared.path().join("out.csv");
-
-    let output = run_coordinator(&[
-        "--input",
-        input.to_str().unwrap(),
-        "--prepared-dir",
-        prepared.path().to_str().unwrap(),
-        "--out",
-        out_csv.to_str().unwrap(),
-        "--repeat",
-        "1",
-        "--scenarios",
-        "count",
-        "--formats",
-        "cityparquet,cityjsonseq",
-    ]);
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("skipping format 'cityjsonseq'")
-            && stderr.contains("savenow_ingolstadt_lod2.city.jsonl"),
-        "cityjsonseq must be skipped for its own missing prepared artefact; stderr:\n{stderr}"
-    );
-
-    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
-    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
-    assert_eq!(
-        rows.len(),
-        1,
-        "only cityparquet may be measured here: {csv_text}"
-    );
-    assert_eq!(rows[0].field("format"), "cityparquet");
 }
 
 /// The same guard for a `.city.json` input — the other half of the catalogue
@@ -947,9 +932,8 @@ fn id_lookup_is_skipped_and_disclosed_when_there_is_no_seq_artefact() {
 }
 
 /// The run writes its resolved parameters beside the CSV. That file is the
-/// ONE description of which windows, ids and attributes a run measured —
-/// `benchmark/scripts/readbench_duckdb.sh` reads it rather than re-deriving
-/// the same choices in bash, so the two cannot drift.
+/// ONE description of which windows, ids and attributes a run measured,
+/// read back by the renderer and hashed into the run manifest.
 #[test]
 fn the_run_writes_a_resolved_params_sidecar_beside_the_csv() {
     let prepared = tempfile::tempdir().unwrap();
@@ -994,12 +978,24 @@ fn the_run_writes_a_resolved_params_sidecar_beside_the_csv() {
         4,
         "four id probes in the sidecar"
     );
+    let attr_filter = &parsed["attr_filter"];
     assert!(
-        !parsed["object_type"]
+        !attr_filter["column"]
             .as_str()
-            .expect("object_type")
+            .expect("attr_filter.column")
             .is_empty(),
-        "the sidecar carries the attr-filter predicate"
+        "the sidecar carries the attr-filter column"
+    );
+    assert!(
+        attr_filter["pred"]["eq"].is_string() || attr_filter["pred"]["ge"].is_number(),
+        "the sidecar carries the attr-filter predicate itself, jq-dispatchable: {attr_filter}"
+    );
+    assert!(
+        attr_filter["matched"]
+            .as_u64()
+            .expect("attr_filter.matched")
+            > 0,
+        "the sidecar carries what the predicate matched when it was derived"
     );
     assert!(
         parsed["cp_object_total"].as_u64().expect("cp_object_total") > 0,
@@ -1013,5 +1009,244 @@ fn the_run_writes_a_resolved_params_sidecar_beside_the_csv() {
             "sidecar window {} selects no rows",
             window["tag"]
         );
+    }
+}
+
+/// `feature-lookup` is CityParquet's alone: a named non-CityParquet format is
+/// skipped and told so, and the CityParquet rows are the middle feature (a
+/// Building and its part) and a verified miss, each with its lookup counters.
+#[test]
+fn feature_lookup_measures_cityparquet_only_with_lookup_counters() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    convert(&ConvertOptions::new(
+        input.clone(),
+        prepared.path().join("delft.parquet"),
+    ))
+    .unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let out_csv = prepared.path().join("out.csv");
+    let output = run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "feature-lookup",
+        "--formats",
+        "cityparquet,cityjsonseq",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("skipping scenario 'feature-lookup' for format 'cityjsonseq'"),
+        "{stderr}"
+    );
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    assert_eq!(csv_text.lines().next().unwrap(), EXPECTED_HEADER);
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(rows.len(), 2, "{csv_text}");
+    for row in &rows {
+        assert_eq!(row.field("format"), "cityparquet");
+        assert_eq!(row.field("scenario"), "feature-lookup");
+        assert_eq!(row.field("row_groups_total"), "1", "delft is one row group");
+        assert!(!row.field("filter_bytes").is_empty());
+    }
+    let hit = rows
+        .iter()
+        .find(|r| r.field("notes").starts_with("feature-50pct"))
+        .unwrap();
+    assert!(
+        ["2", "3"].contains(&hit.field("result_count")),
+        "a delft feature is a Building and its parts"
+    );
+    assert_eq!(
+        hit.field("bloom_pruned"),
+        "0",
+        "a hit cannot prune the group that holds it"
+    );
+    let miss = rows
+        .iter()
+        .find(|r| r.field("notes").starts_with("feature-miss"))
+        .unwrap();
+    assert_eq!(miss.field("result_count"), "0");
+    assert_eq!(
+        miss.field("bloom_pruned"),
+        "1",
+        "the `feature_id` filter rules out delft's single row group"
+    );
+}
+
+/// A cell time budget stops sampling at the `--min-repeat` floor once it is
+/// spent: a budget of one microsecond is spent by the warm-up alone, so every
+/// cell takes exactly the floor, records it in `repeat`, carries the `budget`
+/// tag, and both sidecars record the sampling parameters.
+#[test]
+fn a_spent_cell_budget_stops_sampling_at_the_floor() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let out_csv = prepared.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "4",
+        "--cell-budget-s",
+        "0.000001",
+        "--min-repeat",
+        "2",
+        "--scenarios",
+        "count,bbox",
+        "--formats",
+        "cityparquet",
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(rows.len(), 4);
+    for row in &rows {
+        assert_eq!(row.field("repeat"), "2");
+        let notes = row.field("notes");
+        assert!(
+            notes.split(';').next_back() == Some("budget"),
+            "expected the budget tag last, got {notes:?}"
+        );
+    }
+
+    let samples: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.samples.json")).unwrap(),
+    )
+    .unwrap();
+    let samples = samples.as_array().unwrap();
+    assert_eq!(samples.len(), 12, "4 cells x warmup + 2 samples");
+    assert!(
+        samples
+            .iter()
+            .all(|s| s["cell_budget_s"] == 0.000001 && s["min_repeat"] == 2)
+    );
+
+    let params: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.params.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(params["sampling"]["repeat"], 4);
+    assert_eq!(params["sampling"]["cell_budget_s"], 0.000001);
+    assert_eq!(params["sampling"]["min_repeat"], 2);
+}
+
+/// Without a budget a cell takes exactly `--repeat` samples and carries no
+/// `budget` tag; the sidecars record the budget as null.
+#[test]
+fn without_a_cell_budget_every_cell_takes_repeat_samples() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let out_csv = prepared.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "3",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet",
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].field("repeat"), "3");
+    assert!(!rows[0].field("notes").split(';').any(|tag| tag == "budget"));
+
+    let params: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.params.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(params["sampling"]["cell_budget_s"].is_null());
+    assert_eq!(
+        params["sampling"]["min_repeat"], 3,
+        "the default floor of 7, clamped to repeat"
+    );
+}
+
+#[test]
+fn the_params_sidecar_records_the_isolation_requested_and_applied() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let out_csv = prepared.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "2",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet",
+        "--numa-node",
+        "auto",
+        "--memory-max",
+        "8000000000",
+        "--max-load",
+        "auto",
+        "--max-load-wait-s",
+        "30",
+    ]);
+
+    let params: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.params.json")).unwrap(),
+    )
+    .unwrap();
+    let iso = &params["isolation"];
+    assert_eq!(iso["pinning"]["requested"], "auto");
+    assert_eq!(iso["memory_max"]["requested_bytes"], 8_000_000_000u64);
+    assert_eq!(iso["max_load"]["requested"], "auto");
+    assert_eq!(iso["max_load"]["wait_s"], 30);
+    let cells = iso["load"]["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 1, "one summary per measured cell: {iso}");
+    assert_eq!(cells[0]["busy"], false);
+
+    let samples: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.samples.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(samples[0].as_object().unwrap().contains_key("load1"));
+
+    if cfg!(not(target_os = "linux")) {
+        assert_eq!(iso["pinning"]["status"], "not applied: not Linux");
+        assert_eq!(iso["memory_max"]["status"], "not applied: not Linux");
+        assert_eq!(iso["max_load"]["status"], "not applied: no /proc");
+        assert_eq!(iso["load"]["status"], "not applied: no /proc");
+        assert!(iso["command_prefix"].as_array().unwrap().is_empty());
+        assert!(samples[0]["load1"].is_null());
     }
 }

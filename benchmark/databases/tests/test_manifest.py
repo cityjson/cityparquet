@@ -47,9 +47,14 @@ def test_required_keys_is_exactly_the_eight_documented_fields():
     # schema creation and cannot be changed afterwards, and getting it
     # wrong does not error, so the SRID each PostgreSQL-backed system
     # actually landed on is recorded, not just requested.
+    # `execution` and `count_check` were added with the two thread
+    # configurations and the count-deviation tolerance: the primary figure
+    # is now a choice the manifest has to state, and `ok-deviation` in the
+    # CSV means nothing without the tolerance it was judged against.
     assert required_keys() == (
         "dataset", "source", "baseline", "host", "versions", "pg_settings", "ingest", "sizes",
         "patches", "srid", "memory_measurement", "temporary_storage",
+        "execution", "count_check", "isolation",
     )
 
 
@@ -152,3 +157,11 @@ def test_srid_carries_through_the_landed_value_per_system():
     )
     assert m["srid"] == srid
     assert m["srid"] is srid
+
+
+def test_isolation_is_recorded_verbatim_and_defaults_to_empty():
+    record = {"node": 1, "client": {"cpu": "applied"}}
+    assert collect(dataset_name="d", ingest={}, sizes={}, versions={},
+                   pg_settings={}, isolation=record)["isolation"] == record
+    assert collect(dataset_name="d", ingest={}, sizes={}, versions={},
+                   pg_settings={})["isolation"] == {}

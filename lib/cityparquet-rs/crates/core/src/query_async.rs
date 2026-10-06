@@ -17,6 +17,7 @@
 //! aggregation — is shared verbatim with the sync path via
 //! `crate::query_core`, so the two can no longer drift.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -26,23 +27,31 @@ use object_store::ObjectStore;
 use object_store::path::Path as ObjectPath;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::ProjectionMask;
-use parquet::arrow::async_reader::ParquetObjectReader;
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
+use parquet::bloom_filter::Sbbf;
+use parquet::schema::types::ColumnPath;
 
 use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 
-use crate::query::{AttrPredicate, AttrStats, BBoxQueryResult, FullReadResult};
+use crate::decode::DecodedObject;
+use crate::query::{
+    AttrPredicate, AttrStats, BBoxQueryResult, BloomPrune, FullReadResult, LookupStats,
+};
 use crate::query_core;
 use crate::reader::CityParquetReaderBuilder;
 
-/// Used only by this module's `mod tests` (via its `use super::*`), which
-/// reads a real id straight off the local table with the sync reader.
+/// Used only by this module's `mod tests` (via its `use super::*`).
 #[cfg(test)]
-use arrow_array::StringArray;
+use arrow_array::{Array, StringArray};
+#[cfg(test)]
+use parquet::file::metadata::ParquetMetaData;
 
 /// Re-stamps `batch` with `schema` (field metadata included) — the async
 /// analogue of [`crate::reader::CityParquetRecordBatchReader`]'s per-batch
 /// rewrap, inlined here rather than as its own stream-wrapper type since
-/// only [`full_read_async`]/`id_lookup_async` need it.
+/// only the full-row readers ([`full_read_async`] and the identifier lookups)
+/// need it.
 fn restamp(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
     RecordBatch::try_new(SchemaRef::clone(schema), batch.columns().to_vec())
         .map_err(CityParquetError::from)
@@ -134,34 +143,60 @@ pub async fn bbox_query_async(
     })
 }
 
-/// The async mirror of [`crate::query::attr_filter`]: restricts the scan to
-/// `column` alone and applies `pred` as a Parquet row filter — the SAME
-/// `query_core::attr_predicate_row_filter` (hence the same
-/// `evaluate_attr_predicate` dispatch) the sync path installs, so a
-/// predicate that is legal/illegal against a given column's Arrow type
-/// behaves identically on both transports.
+/// The async mirror of [`crate::query::attr_filter`]. See
+/// [`attr_filter_async_with_stats`].
 pub async fn attr_filter_async(
     store: Arc<dyn ObjectStore>,
     path: &ObjectPath,
     column: &str,
     pred: &AttrPredicate,
 ) -> Result<u64> {
-    let reader = ParquetObjectReader::new(store, path.clone());
-    let builder = ParquetRecordBatchStreamBuilder::new(reader)
+    attr_filter_async_with_stats(store, path, column, pred)
+        .await
+        .map(|(count, _)| count)
+}
+
+/// The async mirror of [`crate::query::attr_filter_with_stats`]: the same
+/// type check, exact-name mask, `query_core::attr_predicate_row_filter`
+/// and probe rule, with the column's filters fetched in one ranged call.
+pub async fn attr_filter_async_with_stats(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<(u64, LookupStats)> {
+    let mut reader = ParquetObjectReader::new(store, path.clone());
+    let arrow_meta = ArrowReaderMetadata::load_async(&mut reader, ArrowReaderOptions::new())
         .await
         .map_err(CityParquetError::parquet_from)?;
+    let builder =
+        ParquetRecordBatchStreamBuilder::new_with_metadata(reader.clone(), arrow_meta.clone());
 
-    query_core::require_column(builder.schema(), column)?;
-
-    let output_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
-    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred);
+    let probe = query_core::string_probe(builder.schema(), builder.parquet_schema(), column, pred)?;
+    let output_mask = query_core::root_mask(builder.parquet_schema(), column)?;
+    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)?;
+    let candidates: Vec<usize> = (0..arrow_meta.metadata().num_row_groups()).collect();
+    let prune = match probe {
+        Some(value) => {
+            bloom_keep_row_groups_async(
+                &mut reader,
+                &arrow_meta,
+                &query_core::top_level_path(column),
+                &[value],
+                &candidates,
+            )
+            .await?
+        }
+        None => BloomPrune::unpruned(&candidates),
+    };
+    let stats = LookupStats::from_prune(&prune);
 
     let mut stream = builder
         .with_projection(output_mask)
         .with_row_filter(row_filter)
+        .with_row_groups(prune.keep)
         .build()
         .map_err(CityParquetError::parquet_from)?;
-
     let mut count = 0u64;
     while let Some(batch) = stream
         .try_next()
@@ -170,7 +205,7 @@ pub async fn attr_filter_async(
     {
         count += batch.num_rows() as u64;
     }
-    Ok(count)
+    Ok((count, stats))
 }
 
 /// The async mirror of [`crate::query::attr_stats`]: the same
@@ -192,7 +227,7 @@ pub async fn attr_stats_async(
 
     let mut acc = query_core::AttrStatsAccumulator::new(builder.metadata(), column);
 
-    let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let projection = query_core::root_mask(builder.parquet_schema(), column)?;
     let mut stream = builder
         .with_projection(projection)
         .build()
@@ -208,27 +243,138 @@ pub async fn attr_stats_async(
     Ok(acc.finish())
 }
 
-/// The async mirror of [`crate::query::id_lookup`]: filters to `id` via the
-/// shared `query_core::id_row_filter`, then fully decodes the (expected
-/// exactly one) surviving row.
+/// The async mirror of [`crate::query::bloom_keep_row_groups`]: every
+/// declared-length filter the candidates need is fetched with ONE
+/// [`AsyncFileReader::get_byte_ranges`] call on `reader` — a reader the
+/// caller holds beside any builder (a clone of the same
+/// [`ParquetObjectReader`] is cheap); `ParquetObjectReader` forwards it to
+/// `object_store`'s `get_ranges`, which coalesces ranges into few requests
+/// while the gap between them stays under its threshold (1 MiB by default).
+/// Under `BloomFilterPosition::End` successive filters of one column are
+/// separated only by that row group's other filters, which is what usually
+/// keeps them under it — a file with enough filtered columns, or large
+/// enough filters, between them needs more than one request. The batched
+/// call is the guarantee; the request count is the store's business.
+/// A filter without a declared length is read on its own
+/// through the builder's `get_row_group_column_bloom_filter`.
+/// [`BloomPrune::filter_bytes`] counts bitset bytes either way, so it equals
+/// the sync path's.
+pub async fn bloom_keep_row_groups_async<R>(
+    reader: &mut R,
+    metadata: &ArrowReaderMetadata,
+    column: &ColumnPath,
+    values: &[&str],
+    candidates: &[usize],
+) -> Result<BloomPrune>
+where
+    R: AsyncFileReader + Clone + Send + 'static,
+{
+    let targets = query_core::bloom_targets(metadata.metadata(), column, candidates);
+    let mut filters: Vec<Option<Sbbf>> = vec![None; targets.with_filter.len()];
+
+    let ranged: Vec<(usize, Range<u64>)> = targets
+        .with_filter
+        .iter()
+        .enumerate()
+        .filter_map(|(i, target)| {
+            target
+                .length
+                .map(|length| (i, target.offset..target.offset + length))
+        })
+        .collect();
+    if !ranged.is_empty() {
+        let fetched = reader
+            .get_byte_ranges(ranged.iter().map(|(_, range)| range.clone()).collect())
+            .await
+            .map_err(CityParquetError::parquet_from)?;
+        for ((i, _), bytes) in ranged.iter().zip(fetched) {
+            filters[*i] = Some(Sbbf::from_bytes(&bytes).map_err(CityParquetError::parquet_from)?);
+        }
+    }
+
+    if let Some(leaf) = targets.leaf {
+        for (i, target) in targets.with_filter.iter().enumerate() {
+            if target.length.is_some() {
+                continue;
+            }
+            let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
+                reader.clone(),
+                metadata.clone(),
+            );
+            filters[i] = builder
+                .get_row_group_column_bloom_filter(target.row_group, leaf)
+                .await
+                .map_err(CityParquetError::parquet_from)?;
+        }
+    }
+
+    let filter_bytes: u64 = filters
+        .iter()
+        .flatten()
+        .map(query_core::filter_bitset_bytes)
+        .sum();
+    let verdicts: Vec<bool> = filters
+        .iter()
+        .map(|filter| {
+            filter
+                .as_ref()
+                .is_none_or(|sbbf| query_core::sbbf_matches_any(sbbf, values))
+        })
+        .collect();
+    Ok(BloomPrune::from_verdicts(
+        &targets,
+        candidates,
+        &verdicts,
+        filter_bytes,
+    ))
+}
+
+/// The async mirror of [`crate::query::id_lookup`]. See
+/// [`id_lookup_async_with_stats`].
 pub async fn id_lookup_async(
     store: Arc<dyn ObjectStore>,
     path: &ObjectPath,
     meta: &CityMetadata,
     id: &str,
-) -> Result<Option<crate::decode::DecodedObject>> {
-    let reader = ParquetObjectReader::new(store, path.clone());
-    let builder = ParquetRecordBatchStreamBuilder::new(reader)
+) -> Result<Option<DecodedObject>> {
+    id_lookup_async_with_stats(store, path, meta, id)
+        .await
+        .map(|(object, _)| object)
+}
+
+/// The async mirror of [`crate::query::id_lookup_with_stats`]: the footer is
+/// fetched once, the `id` filters with one ranged call
+/// ([`bloom_keep_row_groups_async`]), and ONE stream then reads the kept row
+/// groups with the exact `id` filter, stopping at the first match.
+pub async fn id_lookup_async_with_stats(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    meta: &CityMetadata,
+    id: &str,
+) -> Result<(Option<DecodedObject>, LookupStats)> {
+    let mut reader = ParquetObjectReader::new(store, path.clone());
+    let arrow_meta = ArrowReaderMetadata::load_async(&mut reader, ArrowReaderOptions::new())
         .await
         .map_err(CityParquetError::parquet_from)?;
-    let schema = builder.cityparquet_arrow_schema()?;
+    let candidates: Vec<usize> = (0..arrow_meta.metadata().num_row_groups()).collect();
+    let prune = bloom_keep_row_groups_async(
+        &mut reader,
+        &arrow_meta,
+        &query_core::top_level_path("id"),
+        &[id],
+        &candidates,
+    )
+    .await?;
+    let stats = LookupStats::from_prune(&prune);
 
-    let row_filter = query_core::id_row_filter(builder.parquet_schema(), id);
+    let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(reader, arrow_meta);
+    let schema = builder.cityparquet_arrow_schema()?;
+    let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id)?;
     let mut stream = builder
+        .with_row_groups(prune.keep)
         .with_row_filter(row_filter)
         .build()
         .map_err(CityParquetError::parquet_from)?;
-
     while let Some(batch) = stream
         .try_next()
         .await
@@ -239,10 +385,73 @@ pub async fn id_lookup_async(
         }
         let batch = restamp(batch, &schema)?;
         if let Some(object) = query_core::first_decoded_object(&batch, meta)? {
-            return Ok(Some(object));
+            return Ok((Some(object), stats));
         }
     }
-    Ok(None)
+    Ok((None, stats))
+}
+
+/// The async mirror of [`crate::query::feature_lookup`]. See
+/// [`feature_lookup_async_with_stats`].
+pub async fn feature_lookup_async(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    meta: &CityMetadata,
+    feature_id: &str,
+) -> Result<Vec<DecodedObject>> {
+    feature_lookup_async_with_stats(store, path, meta, feature_id)
+        .await
+        .map(|(objects, _)| objects)
+}
+
+/// The async mirror of [`crate::query::feature_lookup_with_stats`]: the
+/// `feature_id` filters arrive in one ranged call
+/// ([`bloom_keep_row_groups_async`]) and the surviving row groups are read
+/// to the end by one stream.
+pub async fn feature_lookup_async_with_stats(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    meta: &CityMetadata,
+    feature_id: &str,
+) -> Result<(Vec<DecodedObject>, LookupStats)> {
+    let mut reader = ParquetObjectReader::new(store, path.clone());
+    let arrow_meta = ArrowReaderMetadata::load_async(&mut reader, ArrowReaderOptions::new())
+        .await
+        .map_err(CityParquetError::parquet_from)?;
+    let candidates: Vec<usize> = (0..arrow_meta.metadata().num_row_groups()).collect();
+    let prune = bloom_keep_row_groups_async(
+        &mut reader,
+        &arrow_meta,
+        &query_core::top_level_path("feature_id"),
+        &[feature_id],
+        &candidates,
+    )
+    .await?;
+    let stats = LookupStats::from_prune(&prune);
+
+    let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(reader, arrow_meta);
+    let schema = builder.cityparquet_arrow_schema()?;
+    let row_filter =
+        query_core::utf8_eq_row_filter(builder.parquet_schema(), "feature_id", feature_id)?;
+    let mut stream = builder
+        .with_row_groups(prune.keep)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+
+    let mut objects = Vec::new();
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let batch = restamp(batch, &schema)?;
+        objects.extend(crate::decode::decode_batch(&batch, meta)?);
+    }
+    Ok((objects, stats))
 }
 
 /// The async mirror of [`crate::query::project_column`]: a single-column
@@ -259,7 +468,7 @@ pub async fn project_column_async(
 
     query_core::require_column(builder.schema(), column)?;
 
-    let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let projection = query_core::root_mask(builder.parquet_schema(), column)?;
     let mut stream = builder
         .with_projection(projection)
         .build()
@@ -299,6 +508,282 @@ mod tests {
         let table_name = tables.tables[0].file_name().unwrap().to_str().unwrap();
         let store = LocalFileSystem::new_with_prefix(dir).unwrap();
         (Arc::new(store), ObjectPath::from(table_name))
+    }
+
+    /// `delft_table`, written with `recipe`.
+    async fn delft_table_with(
+        dir: &Path,
+        recipe: crate::recipe::WriterRecipe,
+    ) -> (Arc<dyn ObjectStore>, ObjectPath) {
+        let fixture = fixture_dir().join("delft.city.jsonl");
+        assert!(fixture.exists(), "missing fixture; run `just fixtures`");
+        let mut opts = crate::package::ConvertOptions::new(fixture, dir.to_path_buf());
+        opts.recipe = recipe;
+        crate::package::convert(&opts).unwrap();
+        let store = LocalFileSystem::new_with_prefix(dir).unwrap();
+        (Arc::new(store), ObjectPath::from("building.parquet"))
+    }
+
+    fn small_groups() -> crate::recipe::WriterRecipe {
+        crate::recipe::WriterRecipe {
+            row_group_size: 64,
+            ..crate::recipe::WriterRecipe::default()
+        }
+    }
+
+    fn sync_meta(table_file: &Path) -> CityMetadata {
+        let file = std::fs::File::open(table_file).unwrap();
+        let builder =
+            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        crate::reader::CityParquetReaderBuilder::cityparquet_metadata(&builder).unwrap()
+    }
+
+    /// Every id in the table, in row order.
+    fn every_id(table_file: &Path) -> Vec<String> {
+        let file = std::fs::File::open(table_file).unwrap();
+        let builder =
+            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let mask = query_core::root_mask(builder.parquet_schema(), "id").unwrap();
+        let mut ids = Vec::new();
+        for batch in builder.with_projection(mask).build().unwrap() {
+            let batch = batch.unwrap();
+            let column = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            ids.extend((0..column.len()).map(|i| column.value(i).to_string()));
+        }
+        ids
+    }
+
+    const MISS: &str = "NL.IMBAG.Pand.readbench-absent";
+
+    /// An `AsyncFileReader` that counts its `get_byte_ranges` calls.
+    #[derive(Clone)]
+    struct RangeCallCounter<R> {
+        inner: R,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl<R: AsyncFileReader> AsyncFileReader for RangeCallCounter<R> {
+        fn get_bytes(
+            &mut self,
+            range: std::ops::Range<u64>,
+        ) -> futures::future::BoxFuture<'_, parquet::errors::Result<bytes::Bytes>> {
+            self.inner.get_bytes(range)
+        }
+
+        fn get_byte_ranges(
+            &mut self,
+            ranges: Vec<std::ops::Range<u64>>,
+        ) -> futures::future::BoxFuture<'_, parquet::errors::Result<Vec<bytes::Bytes>>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.get_byte_ranges(ranges)
+        }
+
+        fn get_metadata<'a>(
+            &'a mut self,
+            options: Option<&'a ArrowReaderOptions>,
+        ) -> futures::future::BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
+            self.inner.get_metadata(options)
+        }
+    }
+
+    /// `meta` with every `bloom_filter_length` removed — the shape of a file
+    /// from a writer that sets only the offset.
+    fn without_filter_lengths(meta: &ParquetMetaData) -> ParquetMetaData {
+        let mut builder = meta.clone().into_builder();
+        let row_groups = builder
+            .take_row_groups()
+            .into_iter()
+            .map(|rg| {
+                let columns = rg
+                    .columns()
+                    .iter()
+                    .map(|c| {
+                        c.clone()
+                            .into_builder()
+                            .set_bloom_filter_length(None)
+                            .build()
+                            .unwrap()
+                    })
+                    .collect();
+                rg.into_builder()
+                    .set_column_metadata(columns)
+                    .build()
+                    .unwrap()
+            })
+            .collect();
+        builder.set_row_groups(row_groups).build()
+    }
+
+    #[tokio::test]
+    async fn id_lookup_async_with_stats_matches_the_sync_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table_with(dir.path(), small_groups()).await;
+        let table_file = dir.path().join(path.as_ref());
+        let meta = sync_meta(&table_file);
+        let mut probes: Vec<String> = every_id(&table_file).into_iter().step_by(311).collect();
+        probes.push(MISS.to_string());
+        for id in &probes {
+            let (sync_object, sync_stats) =
+                crate::query::id_lookup_with_stats(&table_file, &meta, id).unwrap();
+            let (async_object, async_stats) =
+                id_lookup_async_with_stats(Arc::clone(&store), &path, &meta, id)
+                    .await
+                    .unwrap();
+            assert_eq!(async_stats, sync_stats, "{id}");
+            assert_eq!(
+                async_object.map(|o| o.id),
+                sync_object.map(|o| o.id),
+                "{id}"
+            );
+        }
+    }
+
+    /// Acceptance 4, on the fixture: every filter the prune needs arrives
+    /// through ONE `get_byte_ranges` call. The batched call is the guarantee;
+    /// how many requests the store serves it in is not — it coalesces ranges
+    /// only while the gap between them stays under its threshold (1 MiB by
+    /// default). Here the filters sit together after the last row group and
+    /// the gaps are small, so this fixture is served in exactly one request.
+    #[tokio::test]
+    async fn the_async_prune_fetches_every_filter_with_one_ranged_call() {
+        use crate::counting_store::CountingObjectStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_, path) = delft_table_with(dir.path(), small_groups()).await;
+        let table_file = dir.path().join(path.as_ref());
+        let counting = Arc::new(CountingObjectStore::new(
+            LocalFileSystem::new_with_prefix(dir.path()).unwrap(),
+        ));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = RangeCallCounter {
+            inner: ParquetObjectReader::new(
+                Arc::clone(&counting) as Arc<dyn ObjectStore>,
+                path.clone(),
+            ),
+            calls: Arc::clone(&calls),
+        };
+        let arrow_meta = ArrowReaderMetadata::load_async(&mut reader, ArrowReaderOptions::new())
+            .await
+            .unwrap();
+        let candidates: Vec<usize> = (0..arrow_meta.metadata().num_row_groups()).collect();
+        assert_eq!(candidates.len(), 35);
+        let before = counting.tally();
+        calls.store(0, std::sync::atomic::Ordering::SeqCst);
+
+        let prune = bloom_keep_row_groups_async(
+            &mut reader,
+            &arrow_meta,
+            &query_core::top_level_path("id"),
+            &[MISS],
+            &candidates,
+        )
+        .await
+        .unwrap();
+
+        let after = counting.tally();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(after.requests - before.requests, 1);
+        assert!(after.bytes - before.bytes >= prune.filter_bytes);
+        assert!(prune.pruned >= 1, "{prune:?}");
+
+        let sync = crate::query::bloom_keep_row_groups(
+            &std::fs::File::open(&table_file).unwrap(),
+            arrow_meta.metadata(),
+            &query_core::top_level_path("id"),
+            &[MISS],
+            &candidates,
+        )
+        .unwrap();
+        assert_eq!(prune, sync, "same keep, pruned count and filter bytes");
+    }
+
+    /// A filter without `bloom_filter_length` is read on its own through the
+    /// builder's `get_row_group_column_bloom_filter`, never through the
+    /// ranged call — and prunes, and accounts its bytes, exactly as the
+    /// ranged path does.
+    #[tokio::test]
+    async fn a_filter_without_a_declared_length_falls_back_to_a_per_row_group_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table_with(dir.path(), small_groups()).await;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = RangeCallCounter {
+            inner: ParquetObjectReader::new(store, path.clone()),
+            calls: Arc::clone(&calls),
+        };
+        let declared = ArrowReaderMetadata::load_async(&mut reader, ArrowReaderOptions::new())
+            .await
+            .unwrap();
+        let stripped = ArrowReaderMetadata::try_new(
+            Arc::new(without_filter_lengths(declared.metadata())),
+            ArrowReaderOptions::new(),
+        )
+        .unwrap();
+        let candidates: Vec<usize> = (0..declared.metadata().num_row_groups()).collect();
+        let column = query_core::top_level_path("id");
+
+        calls.store(0, std::sync::atomic::Ordering::SeqCst);
+        let fallback =
+            bloom_keep_row_groups_async(&mut reader, &stripped, &column, &[MISS], &candidates)
+                .await
+                .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let ranged =
+            bloom_keep_row_groups_async(&mut reader, &declared, &column, &[MISS], &candidates)
+                .await
+                .unwrap();
+        assert_eq!(fallback, ranged);
+        assert!(fallback.filter_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn attr_filter_async_prunes_and_counts_like_the_sync_path() {
+        use crate::query::AttrPredicate;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table_with(dir.path(), small_groups()).await;
+        let table_file = dir.path().join(path.as_ref());
+        for (column, value) in [
+            ("identificatie", "NL.IMBAG.Pand.0503100000012869"),
+            ("identificatie", MISS),
+            ("status", "Pand in gebruik"),
+        ] {
+            let pred = AttrPredicate::Eq(serde_json::Value::String(value.to_string()));
+            let sync = crate::query::attr_filter_with_stats(&table_file, column, &pred).unwrap();
+            let async_result =
+                attr_filter_async_with_stats(Arc::clone(&store), &path, column, &pred)
+                    .await
+                    .unwrap();
+            assert_eq!(async_result, sync, "{column}={value}");
+        }
+        let (count, _) = attr_filter_async_with_stats(
+            Arc::clone(&store),
+            &path,
+            "identificatie",
+            &AttrPredicate::Eq(serde_json::Value::String(
+                "NL.IMBAG.Pand.0503100000012869".to_string(),
+            )),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            count, 1,
+            "the first delft Building's identificatie is unique"
+        );
+        let err = attr_filter_async(
+            Arc::clone(&store),
+            &path,
+            "identificatie",
+            &AttrPredicate::Ge(1.0),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("only `Eq(<string>)` applies"), "{err}");
     }
 
     #[tokio::test]
@@ -443,5 +928,37 @@ mod tests {
             .unwrap();
         assert_eq!(async_count, sync_count);
         assert_eq!(async_count, 2231);
+    }
+
+    #[tokio::test]
+    async fn feature_lookup_async_matches_the_sync_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table_with(dir.path(), small_groups()).await;
+        let table_file = dir.path().join(path.as_ref());
+        let meta = sync_meta(&table_file);
+        let first = crate::query::id_lookup(&table_file, &meta, &every_id(&table_file)[0])
+            .unwrap()
+            .unwrap();
+        let feature = first.feature_id.clone().expect("feature_id is non-null");
+        for target in [feature.as_str(), MISS] {
+            let (sync_objects, sync_stats) =
+                crate::query::feature_lookup_with_stats(&table_file, &meta, target).unwrap();
+            let (async_objects, async_stats) =
+                feature_lookup_async_with_stats(Arc::clone(&store), &path, &meta, target)
+                    .await
+                    .unwrap();
+            assert_eq!(async_stats, sync_stats, "{target}");
+            let ids = |objects: &[DecodedObject]| -> Vec<String> {
+                objects.iter().map(|o| o.id.clone()).collect()
+            };
+            assert_eq!(ids(&async_objects), ids(&sync_objects), "{target}");
+            assert_eq!(
+                feature_lookup_async(Arc::clone(&store), &path, &meta, target)
+                    .await
+                    .unwrap()
+                    .len(),
+                sync_objects.len()
+            );
+        }
     }
 }

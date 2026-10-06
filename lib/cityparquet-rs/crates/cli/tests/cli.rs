@@ -259,11 +259,11 @@ fn convert_with_overwrite_succeeds() {
 }
 
 /// M4 task 11 (Step 3): the `convert` report line gains 3 fields
-/// (`materials_written textures_written templates_written`), appended after
+/// (`materials_written textures_written implicit_geometries_written`), appended after
 /// the 6 fields it already printed; `--tolerate-invalid-appearance`'s own
 /// counter (`invalid_appearance_refs_dropped`) appends a 10th. Exercised
 /// against a convert of railway, which carries real materials/textures/
-/// templates so they are written unconditionally (spec-alignment gap 19
+/// implicit geometries so they are written unconditionally (spec-alignment gap 19
 /// dropped the `--profile` flag this test used to pass), whose sidecar
 /// counts are pinned elsewhere (85/34/3 —
 /// `railway_compatibility_convert_writes_materials_and_textures_sidecars` in
@@ -300,7 +300,7 @@ fn convert_compatibility_reports_sidecar_counts() {
         &parts[6..10],
         &["85", "34", "3", "0"],
         "the 4 new trailing fields must be materials_written textures_written \
-         templates_written invalid_appearance_refs_dropped in that order, got: {}",
+         implicit_geometries_written invalid_appearance_refs_dropped in that order, got: {}",
         stdout
     );
 }
@@ -608,6 +608,75 @@ fn convert_with_an_invalid_compression_fails() {
         stderr.contains("invalid compression"),
         "expected an invalid-compression error, got: {stderr}"
     );
+}
+
+/// Dotted paths of every column that declares a bloom filter in `table`.
+fn bloom_filtered_columns(table: &std::path::Path) -> std::collections::BTreeSet<String> {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    let reader = SerializedFileReader::new(std::fs::File::open(table).unwrap()).unwrap();
+    reader
+        .metadata()
+        .row_groups()
+        .iter()
+        .flat_map(|rg| rg.columns())
+        .filter(|c| c.bloom_filter_offset().is_some())
+        .map(|c| c.column_path().string())
+        .collect()
+}
+
+/// The default convert writes bloom filters on the identifiers; `--no-bloom`
+/// writes none at all.
+#[test]
+fn convert_writes_bloom_filters_by_default_and_no_bloom_suppresses_them() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let filtered = |extra: &[&str]| {
+        let out = tempfile::tempdir().unwrap();
+        let status = Command::new(binary)
+            .arg("convert")
+            .arg(fixture("delft.city.jsonl"))
+            .arg("-o")
+            .arg(out.path())
+            .args(extra)
+            .status()
+            .expect("failed to run convert");
+        assert!(status.success(), "convert {extra:?} failed");
+        bloom_filtered_columns(&out.path().join("building.parquet"))
+    };
+    let default = filtered(&[]);
+    assert!(
+        default.contains("id") && default.contains("feature_id"),
+        "default filters: {default:?}"
+    );
+    let off = filtered(&["--no-bloom"]);
+    assert!(off.is_empty(), "--no-bloom filters: {off:?}");
+}
+
+/// `--bloom-fpp` outside (0, 1) is refused with a clear error before any
+/// conversion, not a parquet-rs panic.
+#[test]
+fn convert_rejects_a_bloom_fpp_outside_the_open_unit_interval() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    for bad in ["0", "1", "1.5", "-0.1", "NaN"] {
+        let out = tempfile::tempdir().unwrap();
+        let output = Command::new(binary)
+            .arg("convert")
+            .arg(fixture("delft.city.jsonl"))
+            .arg("-o")
+            .arg(out.path())
+            .arg(format!("--bloom-fpp={bad}"))
+            .output()
+            .expect("failed to run convert");
+        assert!(!output.status.success(), "--bloom-fpp={bad} was accepted");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--bloom-fpp") && stderr.contains("strictly between 0 and 1"),
+            "--bloom-fpp={bad}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("panicked"),
+            "--bloom-fpp={bad} panicked: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -1091,4 +1160,62 @@ fn an_unusable_crs_is_reported_even_when_the_source_declares_its_own() {
         );
         assert!(stderr.contains(needle), "--crs {spec:?}: stderr: {stderr}");
     }
+}
+
+/// The `id` column of a package's `building.parquet`, in row order.
+fn building_ids_in(package: &std::path::Path) -> Vec<String> {
+    use arrow_array::{Array, StringArray};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let file = std::fs::File::open(package.join("building.parquet")).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut ids = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        let column = batch.column_by_name("id").expect("an id column");
+        let column = column
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("a Utf8 id");
+        ids.extend((0..column.len()).map(|i| column.value(i).to_string()));
+    }
+    ids
+}
+
+/// `convert` with no `--ordering` writes rows in Hilbert order: its row order
+/// is `--ordering hilbert`'s, and not `--ordering source`'s. `--ordering
+/// source` stays available as the streaming opt-out.
+#[test]
+fn convert_writes_hilbert_order_by_default_and_ordering_source_opts_out() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let convert_with = |ordering: Option<&str>| -> Vec<String> {
+        let pkg = tempfile::tempdir().unwrap();
+        let mut cmd = Command::new(binary);
+        cmd.arg("convert").arg(fixture("delft.city.jsonl"));
+        if let Some(ordering) = ordering {
+            cmd.arg("--ordering").arg(ordering);
+        }
+        let status = cmd
+            .arg("-o")
+            .arg(pkg.path())
+            .status()
+            .expect("failed to run convert");
+        assert!(status.success());
+        building_ids_in(pkg.path())
+    };
+
+    let default = convert_with(None);
+    let hilbert = convert_with(Some("hilbert"));
+    let source = convert_with(Some("source"));
+    // `assert!`, not `assert_eq!`: a failure would print 2,231 ids twice.
+    assert!(
+        hilbert != source,
+        "delft's Hilbert order must differ from its source order, or this test proves nothing"
+    );
+    assert!(
+        default == hilbert,
+        "convert without --ordering must write Hilbert order"
+    );
 }

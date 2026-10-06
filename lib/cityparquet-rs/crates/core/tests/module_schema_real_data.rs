@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::merge::merge_sources;
-use cityparquet::package::{ConvertOptions, convert, convert_source};
+use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::source::{Source, SourceFormat};
@@ -94,6 +94,12 @@ fn convert_to_package(input: &Path) -> (tempfile::TempDir, Vec<String>) {
         package_dir.path().to_path_buf(),
     ))
     .unwrap();
+    // delft: 2231 objects (1115 Building + 1116 BuildingPart); railway: 121.
+    assert_eq!(
+        report.object_count,
+        2231 + 121,
+        "the merged delft+railway convert must report every source object"
+    );
     let names: Vec<String> = report
         .files
         .iter()
@@ -378,26 +384,4 @@ fn partitioned_convert_prunes_consistently_when_a_module_is_absent_from_some_par
             "building.parquet's geometry_lod* columns must match across partitions"
         );
     }
-}
-
-/// `convert_source` (the already-open-`Source` entry point `convert_partitioned`
-/// itself builds on) round-trips the merged dataset too — a second,
-/// lighter-weight proof alongside checklist item 2's `convert`-path version,
-/// exercising the API surface `crate::partition` actually calls.
-#[test]
-fn convert_source_of_the_merged_dataset_still_reports_the_full_object_count() {
-    let src_dir = tempfile::tempdir().unwrap();
-    let src_path = src_dir.path().join("delft_and_railway.city.jsonl");
-    write_delft_and_railway_merged(&src_path);
-    let source = Source::open(&src_path).unwrap();
-
-    let package_dir = tempfile::tempdir().unwrap();
-    let report = convert_source(
-        &source,
-        &ConvertOptions::new(src_path, package_dir.path().to_path_buf()),
-    )
-    .unwrap();
-
-    // delft: 2231 objects (1115 Building + 1116 BuildingPart); railway: 121.
-    assert_eq!(report.object_count, 2231 + 121);
 }

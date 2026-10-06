@@ -1,0 +1,42 @@
+{
+  "code": {
+    "git_head": "5c54e510b45fe7c66751da4295ef43c7524150f1",
+    "tracked_diff_sha256": "7d8ab09120f567b68220193f76c99ba53bf7906f4d44aa91d9fe840a88026b4c",
+    "untracked_sources_sha256": {}
+  },
+  "family": "bloom",
+  "machine": {
+    "machine": "x86_64",
+    "processor": "x86_64",
+    "python": "3.12.3",
+    "release": "6.8.0-136-generic",
+    "system": "Linux"
+  },
+  "measurement": {
+    "fixed_configuration": "bloom/zstd-3/default-row-groups; time_s/time_std_s recomputed on 2026-09-25 as mean and population standard deviation from the run's own raw samples (the run wrote median/MAD)",
+    "read_repeat": 7,
+    "write_repeat": 3
+  },
+  "profile": "full",
+  "result": {
+    "csv": "/data2/hideba/cityparquet-paper/cityparquet-bench-fairness/benchmark/runs/formats/scaling_bloom_results/nyc_da13_buildings.csv",
+    "files_sha256": {
+      "nyc_da13_buildings.csv": "df457aa465779e0850bb47fecd143789c21f2cd1b2aade57880c29f9f35d61e2",
+      "nyc_da13_buildings.csv.params.json": "18ca119f36c13fbfd1def97e90c0ac41c520a631605bad301d5e669c09dab37a",
+      "nyc_da13_buildings.csv.samples.json": "9c2f026b63907c4a86bf7dab2a3f956db761bd86ddcf437fdf9d6e79db4cfe03"
+    },
+    "params_sha256": "18ca119f36c13fbfd1def97e90c0ac41c520a631605bad301d5e669c09dab37a"
+  },
+  "schema": 1,
+  "smoke": false,
+  "source": {
+    "path": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/data/benchmark/nyc_da13_buildings.city.json",
+    "sha256": "c885bb6af297531c95b097aff5d38e694935ac22fe1b973cbad15948021f6cb8"
+  },
+  "tools": {
+    "cityparquet": "unavailable",
+    "cjseq": "cjseq 0.3.1",
+    "fcb": "fcb 0.7.8",
+    "rust": "rustc 1.93.1 (01f6ddf75 2026-02-11)"
+  }
+}

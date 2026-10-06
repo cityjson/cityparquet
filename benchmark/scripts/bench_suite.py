@@ -18,8 +18,48 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / "benchmark" / "manifest.toml"
-FAMILIES = ("sizes", "formats", "codec", "rowgroup", "databases")
+FAMILIES = ("sizes", "formats", "bloom", "databases")
+
+# A run profile fixes which datasets are measured, how many repetitions and
+# where the results go, so that a test run can never overwrite the paper's
+# evidence:
+#   full   the corpus and the 3DBAG slice, 25 read repetitions, results in each
+#          family's own directory; the database family measures the slice;
+#   short  the corpus without the slice, the same repetitions, results under
+#          `<family>/short/`; for iterating on the harness in an hour instead
+#          of a day;
+#   smoke  Rotterdam alone, 1 repetition, `<family>/smoke/`; a pipeline check,
+#          never a measurement.
+# Under `short` and `smoke` the database family measures the manifest's
+# `small_database_dataset` (Rotterdam) in the slice's place.
+PROFILES = ("full", "short", "smoke")
+# The dataset roles that are format, size and bloom inputs.
+INPUT_ROLES = frozenset({"corpus", "slice"})
+
+
+def slice_dataset(manifest: dict) -> str:
+    """The manifest key of the 3DBAG slice."""
+    return manifest["suite"]["slice_dataset"]
+
+
+def database_dataset(manifest: dict, profile: str) -> str:
+    """The manifest key of the dataset the database family measures."""
+    if profile == "full":
+        return slice_dataset(manifest)
+    return manifest["suite"]["small_database_dataset"]
+
+
+def profile_subdir(profile: str) -> str:
+    return "" if profile == "full" else profile
+
+
 DEFAULT_DATA_ROOT = REPO / "benchmark" / "runs"
+# Relative spread below which the database family's cross-system count
+# check publishes an EXPLAINED deviation (status=ok-deviation, with the
+# decomposition kept in `notes`) instead of failing the run. See
+# `benchmark/databases/README.md`, "Count cross-check", and
+# `citybench.runner.DEFAULT_COUNT_TOLERANCE`.
+DATABASE_COUNT_TOLERANCE = 0.001
 
 
 def load_manifest() -> dict:
@@ -39,32 +79,22 @@ def family_selection(text: str) -> list[str]:
     return list(dict.fromkeys(selected))
 
 
-def dataset_selection(manifest: dict, families: list[str], requested: str, smoke: bool) -> list[str]:
+def dataset_selection(manifest: dict, families: list[str], requested: str, profile: str) -> list[str]:
     datasets = manifest["datasets"]
     if requested:
-        result: list[str] = []
-        for item in values(requested):
-            if item == "3dbag":
-                result.extend(
-                    key for key, entry in datasets.items()
-                    if entry["role"] in {"scaling", "largest-scaling"}
-                    and (not smoke or entry.get("target_objects") == 1000)
-                )
-            elif item in {"largest", "largest-3dbag"}:
-                result.append(manifest["suite"]["largest_scaling_dataset"])
-            else:
-                result.append(item)
-    elif smoke:
-        result = ["rotterdam", "3dbag_n1000"]
+        result = [slice_dataset(manifest) if item == "3dbag" else item for item in values(requested)]
+    elif profile == "smoke":
+        result = ["rotterdam"]
     else:
         result = []
-        if any(family in {"sizes", "formats"} for family in families):
-            result.extend(key for key, entry in datasets.items() if entry["role"] == "corpus")
-            result.append(manifest["suite"]["largest_scaling_dataset"])
-        if any(family in {"codec", "rowgroup"} for family in families):
-            result.extend(key for key, entry in datasets.items() if entry["role"] in {"scaling", "largest-scaling"})
+        if any(family in {"sizes", "formats", "bloom"} for family in families):
+            result.extend(
+                key for key, entry in datasets.items()
+                if entry["role"] in INPUT_ROLES
+                and (profile != "short" or entry["role"] != "slice")
+            )
         if "databases" in families:
-            result.append(manifest["suite"]["largest_scaling_dataset"])
+            result.append(database_dataset(manifest, profile))
     unknown = sorted(set(result) - set(datasets))
     if unknown:
         raise SystemExit(f"unknown benchmark dataset: {', '.join(unknown)}")
@@ -83,7 +113,7 @@ def just(*args: str) -> None:
 def paths(root: Path) -> dict[str, Path]:
     return {
         "corpus": root / "data" / "benchmark",
-        "scaling": root / "data" / "scaling",
+        "3dbag": root / "data" / "3dbag",
         "prepared": root / "data" / "readbench",
         "formats": root / "formats",
         "databases": root / "databases",
@@ -93,7 +123,7 @@ def paths(root: Path) -> dict[str, Path]:
 
 
 def source(entry: dict, locations: dict[str, Path]) -> Path:
-    location = locations["corpus"] if entry["role"] == "corpus" else locations["scaling"]
+    location = locations["corpus"] if entry["role"] == "corpus" else locations["3dbag"]
     return location / entry["source"]
 
 
@@ -147,15 +177,12 @@ def code_identity() -> dict[str, object]:
     }
 
 
-def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repeat: int, write_repeat: int | None, smoke: bool, fixed_configuration: str) -> None:
+def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repeat: int, smoke: bool, fixed_configuration: str, profile: str = "full", cell_budget_s: float | None = None, min_repeat: int = 7) -> None:
     """Persist enough local evidence to identify one benchmark result exactly."""
     artefacts = [
         result_csv,
         Path(f"{result_csv}.samples.json"),
         Path(f"{result_csv}.params.json"),
-        # One immutable raw write table belongs to this aggregate.  A shared
-        # table would change after later datasets and invalidate this manifest.
-        result_csv.with_suffix(".write.samples.csv"),
     ]
     files = {str(path.name): sha256(path) for path in artefacts if path.is_file()}
     params = Path(f"{result_csv}.params.json")
@@ -163,9 +190,10 @@ def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repe
         "schema": 1,
         "family": family,
         "smoke": smoke,
+        "profile": profile,
         "source": {"path": str(source_path.resolve()), "sha256": sha256(source_path)},
         "result": {"csv": str(result_csv.resolve()), "files_sha256": files, "params_sha256": sha256(params) if params.is_file() else None},
-        "measurement": {"read_repeat": repeat, "write_repeat": write_repeat, "fixed_configuration": fixed_configuration},
+        "measurement": {"read_repeat": repeat, "cell_budget_s": cell_budget_s, "min_repeat": min_repeat, "fixed_configuration": fixed_configuration},
         "code": code_identity(),
         "machine": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "processor": platform.processor(), "python": sys.version.split()[0]},
         "tools": {"rust": version("rustc", "--version"), "fcb": version("fcb", "--version"), "cjseq": version("cjseq", "--version"), "cityparquet": version("lib/cityparquet-rs/target/release/cityparquet", "--version")},
@@ -176,36 +204,29 @@ def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repe
     temporary.replace(target)
 
 
-def prepare(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], smoke: bool) -> None:
+def prepare(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str) -> None:
     selected = [manifest["datasets"][key] for key in datasets]
     if any(entry["role"] == "corpus" for entry in selected):
         just("fetch-data", str(locations["corpus"]))
-    if any(entry["role"] != "corpus" for entry in selected):
-        # Generate only selected strict prefixes. Existing larger/smaller slices
-        # are untouched, making a smoke preparation cheap and idempotent.
-        sizes = ",".join(str(entry["target_objects"]) for entry in selected if entry["role"] != "corpus")
-        just("fetch-scaling-data", str(locations["scaling"]), sizes)
-    # Format and size comparisons need all artefacts for the large 3DBAG
-    # replacement; configuration families only need CityParquet + CityJSONSeq.
-    if any(family in {"sizes", "formats"} for family in families):
+    if any(entry["role"] == "slice" for entry in selected):
+        just("fetch-3dbag", str(locations["3dbag"]))
+    # Format and size comparisons need every artefact; the bloom and database
+    # families need only CityParquet + CityJSONSeq.
+    full_formats = any(family in {"sizes", "formats"} for family in families)
+    if full_formats:
         just("fetch-tools")
-    if any(family in {"sizes", "formats"} for family in families):
         command("cargo", "build", "--release", "--manifest-path", "lib/cityparquet-rs/Cargo.toml", "-p", "cityparquet-cli", "--bin", "cityparquet")
+        # The read harness lives in its own workspace — a second manifest, a
+        # second target directory. Building it here keeps compilation out of
+        # the run.
+        command("cargo", "build", "--release", "--manifest-path", "benchmark/readbench/Cargo.toml", "--bin", "cityparquet-readbench")
     locations["prepared"].mkdir(parents=True, exist_ok=True)
     for key in datasets:
         entry = manifest["datasets"][key]
         input_path = source(entry, locations)
         if not input_path.is_file():
             raise SystemExit(f"prepared source missing after fetch: {input_path}")
-        # Full five-format artefacts are needed only by the corpus/large-format
-        # comparison.  Intermediate configuration slices need CityParquet;
-        # smoke runs retain all formats for their deliberately small sample.
-        full_formats = (
-            any(family in {"sizes", "formats"} for family in families)
-            and (smoke or entry["role"] in {"corpus", "largest-scaling"})
-        )
-        just("readbench-prepare", str(input_path), str(locations["prepared"]), "" if full_formats else "cityparquet")
-
+        just("readbench-prepare", str(input_path), str(locations["prepared"]), "" if full_formats else "cityparquet,cityjsonseq")
 
     if "databases" in families:
         root = locations["formats"].parent
@@ -221,7 +242,7 @@ def stage(locations: dict[str, Path], name: str, inputs: list[Path]) -> Path:
         if link.exists() or link.is_symlink():
             link.unlink()
         # A hard link is discoverable by the existing low-level `find` recipes
-        # and does not duplicate a multi-gigabyte scaling input.
+        # and does not duplicate a multi-gigabyte input.
         link.hardlink_to(input_path)
     for existing in directory.iterdir():
         if existing.name not in wanted:
@@ -229,9 +250,11 @@ def stage(locations: dict[str, Path], name: str, inputs: list[Path]) -> Path:
     return directory
 
 
-def result_dir(locations: dict[str, Path], family: str, smoke: bool) -> Path:
-    root = locations["formats"] / "smoke" if smoke else locations["formats"]
-    names = {"formats": "results", "sizes": "results", "codec": "scaling_codec_results", "rowgroup": "scaling_rowgroup_results"}
+def result_dir(locations: dict[str, Path], family: str, profile: str) -> Path:
+    if profile is True or profile is False:  # the old boolean spelling
+        profile = "smoke" if profile else "full"
+    root = locations["formats"] / profile_subdir(profile) if profile_subdir(profile) else locations["formats"]
+    names = {"formats": "results", "sizes": "results", "bloom": "bloom_results"}
     return root / names[family]
 
 
@@ -243,60 +266,80 @@ def require_prepared(inputs: list[Path], locations: dict[str, Path]) -> None:
         raise SystemExit(f"prepared artefacts missing: run just bench-prep first ({locations['prepared']})")
 
 
-def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], smoke: bool) -> None:
+def read_repeat(profile: str) -> int:
+    """Timed read repetitions per cell (each after one discarded warm-up)."""
+    return 1 if profile == "smoke" else 25
+
+
+def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7) -> None:
+    smoke = profile == "smoke"
+    repeat = read_repeat(profile)
+    budget = "" if cell_budget_s is None else str(cell_budget_s)
+    sampling = {"cell_budget_s": cell_budget_s, "min_repeat": min_repeat}
     selected = {key: manifest["datasets"][key] for key in datasets}
-    format_inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in {"corpus", "largest-scaling"} or (smoke and entry["role"] == "scaling")]
-    scaling_inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in {"scaling", "largest-scaling"}]
-    require_prepared(format_inputs + scaling_inputs, locations)
-    if any(family in {"sizes", "formats"} for family in families):
-        if not format_inputs:
-            raise SystemExit("formats and sizes need corpus data or the largest 3DBAG slice")
-        # `bench` remains the low-level format runner until its external-write
-        # sampler lands. It must be passed explicit external output paths.
-        if "formats" in families:
-            output = result_dir(locations, "formats", smoke)
-            just("bench", str(stage(locations, "formats", format_inputs)), str(output), "", str(locations["prepared"]), "1" if smoke else "7")
-            for input_path in format_inputs:
-                command(
-                    "python3", "benchmark/scripts/format_write.py", "--input", str(input_path),
-                    "--canonical-seq", str(locations["prepared"] / f"{dataset_stem(input_path)}.city.jsonl"),
-                    "--out", str(output / f"{dataset_stem(input_path)}.csv"),
-                    "--raw-out", str(output / f"{dataset_stem(input_path)}.write.samples.csv"),
-                    "--scratch", str(locations["work"] / "write-samples"),
-                    "--repeat", "1" if smoke else "3",
-                )
-                write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=1 if smoke else 7, write_repeat=1 if smoke else 3, smoke=smoke, fixed_configuration="CityParquet=Hilbert; direct writers from canonical CityJSONSeq")
-        if "sizes" in families:
-            output = result_dir(locations, "sizes", smoke) / "sizes.csv"
-            for input_path in format_inputs:
-                command("python3", "benchmark/scripts/measure_sizes.py", "--input", str(input_path), "--prepared", str(locations["prepared"]), "--out", str(output))
-    for family, recipe in (("codec", "codec-bench"), ("rowgroup", "rowgroup-bench")):
-        if family not in families:
-            continue
-        if not scaling_inputs:
-            raise SystemExit(f"{family} needs a 3DBAG scaling dataset")
-        output = result_dir(locations, family, smoke)
-        just(recipe, str(stage(locations, family, scaling_inputs)), str(output), str(locations["prepared"]), "1" if smoke else "7", "1" if smoke else "3")
-        for input_path in scaling_inputs:
-            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family=family, repeat=1 if smoke else 7, write_repeat=1 if smoke else 3, smoke=smoke, fixed_configuration="codec/default-row-groups" if family == "codec" else "row-groups/zstd-3")
+    inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in INPUT_ROLES]
+    require_prepared(inputs, locations)
+    if any(family in {"sizes", "formats", "bloom"} for family in families) and not inputs:
+        raise SystemExit("formats, sizes and bloom need a corpus dataset or the 3DBAG slice")
+    if "formats" in families:
+        # `bench` is the low-level format runner. It must be passed explicit
+        # external output paths.
+        output = result_dir(locations, "formats", profile)
+        just("bench", str(stage(locations, "formats", inputs)), str(output), read_formats, str(locations["prepared"]), str(repeat), budget, str(min_repeat))
+        for input_path in inputs:
+            # A read subset is part of the run's identity: a CSV whose
+            # read rows were measured for four formats must say so.
+            configuration = "CityParquet=Hilbert"
+            if read_formats:
+                configuration += f"; read-formats={read_formats}"
+            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=repeat, smoke=smoke, fixed_configuration=configuration, profile=profile, **sampling)
+    if "sizes" in families:
+        output = result_dir(locations, "sizes", profile) / "sizes.csv"
+        for input_path in inputs:
+            command(sys.executable, "benchmark/scripts/measure_sizes.py", "--input", str(input_path), "--prepared", str(locations["prepared"]), "--out", str(output))
+    if "bloom" in families:
+        output = result_dir(locations, "bloom", profile)
+        just("bloom-bench", str(stage(locations, "bloom", inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat))
+        for input_path in inputs:
+            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile, **sampling)
     if "databases" in families:
-        database_input = scaling_inputs[0] if smoke and scaling_inputs else source(manifest["datasets"][manifest["suite"]["largest_scaling_dataset"]], locations)
+        database_key = database_dataset(manifest, profile)
+        if database_key not in selected:
+            raise SystemExit(f"the database family under --profile {profile} measures {database_key}; select it")
+        database_entry = manifest["datasets"][database_key]
+        database_input = source(database_entry, locations)
+        if database_entry["role"] != "slice":
+            # The database systems ingest CityJSONSeq; the prepared stream is
+            # the same content the format family read.
+            database_input = locations["prepared"] / f"{dataset_stem(database_input)}.city.jsonl"
         if not database_input.is_file():
             raise SystemExit("database input is not prepared; run just bench-prep --families databases first")
-        output = locations["databases"] / ("smoke" if smoke else "results")
+        output = locations["databases"] / (profile_subdir(profile) or "results")
         root = locations["formats"].parent
-        command("uv", "run", "--project", "benchmark/databases", "python", "-m", "citybench.cli", "smoke" if smoke else "run", "--data-root", str(root), "--prepared-dir", str(locations["prepared"]), "--dataset", str(database_input), "--output-dir", str(output))
+        # One invocation measures BOTH thread configurations — `single`
+        # (the primary figure) and `parallel` — and then the write tier,
+        # in that order: the write tier's mutations leave bloat behind that
+        # a later read pass would measure as if it were the steady state.
+        # The count tolerance is passed explicitly rather than left to the
+        # CLI default so the suite's own choice is visible here and in the
+        # run manifest.
+        command("uv", "run", "--project", "benchmark/databases", "python", "-m", "citybench.cli", "smoke" if smoke else "run", "--data-root", str(root), "--prepared-dir", str(locations["prepared"]), "--dataset", str(database_input), "--output-dir", str(output), "--count-tolerance", str(DATABASE_COUNT_TOLERANCE))
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("command", choices=("prep", "run", "summary"))
-    result.add_argument("--families", default="all")
+    result.add_argument("--families", default="all", help=f"comma-separated families from {','.join(FAMILIES)}, or all")
     result.add_argument("--datasets", default="")
-    result.add_argument("--smoke", action="store_true")
+    result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 25 read repetitions, the families' own result directories (the paper's evidence); short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Rotterdam alone, 1 repetition, under <family>/smoke/. Under short and smoke the database family measures Rotterdam")
+    result.add_argument("--smoke", action="store_true", help="the same as --profile smoke")
+    result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")
+    result.add_argument("--cell-budget-s", type=float, default=None, help="run only: optional per-cell time budget in seconds for the formats and bloom families (default: off); a cell stops sampling once its runs, warm-up included, took this long and at least --min-repeat samples exist")
+    result.add_argument("--min-repeat", type=int, default=7, help="run only: the fewest timed samples a budgeted cell takes (default 7, clamped to the repetitions)")
     result.add_argument("--data-root", type=Path, default=Path(os.environ.get("CITYPARQUET_BENCH_ROOT", DEFAULT_DATA_ROOT)))
     result.add_argument("--out", type=Path)
     result.add_argument("--figures", type=Path)
+    result.add_argument("--statistic", choices=("median", "mean"), default="median", help="summary only: the timing statistic the figures plot; median (spread q1-q3, the default) or mean (spread +-1 population std)")
     return result
 
 
@@ -308,27 +351,28 @@ def main() -> None:
         raise SystemExit(f"--data-root must be below {allowed}")
     data = load_manifest()
     families = family_selection(args.families)
-    datasets = dataset_selection(data, families, args.datasets, args.smoke)
+    profile = "smoke" if args.smoke else args.profile
+    datasets = dataset_selection(data, families, args.datasets, profile)
     locations = paths(root)
     # Low-level fetch and conversion recipes inherit this explicit root.
     os.environ["CITYPARQUET_BENCH_ROOT"] = str(root)
     if args.command == "prep":
-        prepare(data, locations, families, datasets, args.smoke)
+        prepare(data, locations, families, datasets, profile)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, args.smoke)
+        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat)
     else:
-        output = (args.out or locations["summary"] / ("smoke" if args.smoke else "full")).expanduser().resolve()
+        output = (args.out or locations["summary"] / profile).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None
         # The summary HTML and JSON stay under the data root; the figures may be
         # exported anywhere the caller owns, which is how the paper checkout
         # writes them to paper/assets/bench/ (benchmark/README.md).
         if not output.is_relative_to(allowed):
             raise SystemExit(f"--out must be below {allowed}")
-        bench_dir = locations["formats"] / "smoke" if args.smoke else locations["formats"]
+        bench_dir = locations["formats"] / profile_subdir(profile) if profile_subdir(profile) else locations["formats"]
         cmd = ["uv", "run", "--project", "benchmark/plot", "python", "-m", "benchviz", "summary", "--data-root", str(root), "--bench-dir", str(bench_dir), "--out", str(output)]
         # Render exactly the suite selection requested by the caller.  The
         # renderer filters its prepared payload before making figures and HTML.
-        cmd.extend(["--families", ",".join(families)])
+        cmd.extend(["--families", ",".join(families), "--statistic", args.statistic])
         if args.datasets:
             cmd.extend(["--datasets", ",".join(renderer_dataset_ids(data, datasets))])
         if figures:

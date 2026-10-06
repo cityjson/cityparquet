@@ -15,20 +15,21 @@ preserving its structure:
 
 ```
 benchmark/runs/data/readbench/
-  <name>.parquet/           # CityParquet package directory
+  <name>.parquet/           # CityParquet package directory (Hilbert order)
     metadata.json           # STAC manifest — CityParquet's HTTP reader
     building.parquet        #   range-fetches this first to find the
     ...                     #   package's own table(s)
-  <name>-hilbert.parquet/
-    metadata.json
-    ...
+  <name>.<variant>.parquet/ # a local `--variants` run's packages
+    ...                     #   (e.g. `<name>.cityparquet+nobloom.parquet/`),
+                            #   read by the same run over HTTP
   <name>.fcb
   <name>.city.jsonl
-  <name>.jsonl.gz
+  <name>.city.json
+  <name>.gml
 ```
 
-Nothing outside that directory is ever fetched: every format — the plain
-(non-gz) `cityjsonseq` included — reads an artefact the prepare script wrote
+Nothing outside that directory is ever fetched: every format — `cityjsonseq`
+included — reads an artefact the prepare script wrote
 there, under the name `Format::artefact` resolves
 (`benchmark/readbench/src/format.rs`). The `--input` argument only
 names the dataset.
@@ -114,7 +115,7 @@ directly, regardless of transport; see `benchmark/formats/READ_BENCHMARK.md`):
 cargo run --release -p cityparquet-readbench -- run \
     --input tests/fixtures/delft.city.jsonl \
     --prepared-dir benchmark/runs/data/readbench \
-    --out benchmark/formats/read_results/delft-http.csv \
+    --out benchmark/runs/formats/http/delft-http.csv \
     --transport http --base-url "<BASE_URL>" \
     --repeat 7
 ```

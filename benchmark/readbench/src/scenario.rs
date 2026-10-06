@@ -3,7 +3,7 @@
 //!
 //! This is the one seam the whole read-benchmark milestone hangs off:
 //! Task 8 establishes it against the CityParquet backend; Tasks 9/10 reuse
-//! it, unchanged, for CityJSONSeq/gzipped-CityJSONSeq and FlatCityBuf; the
+//! it, unchanged, for CityJSONSeq and FlatCityBuf; the
 //! Task 11 coordinator is the only thing that ever *populates* a
 //! [`QueryParams`] with real values (dataset bbox windows, a sampled
 //! attribute column/predicate, a sampled id) — this task's own `--child`
@@ -13,7 +13,7 @@
 use std::str::FromStr;
 
 /// One read-access-pattern scenario. Every format backend
-/// (`formats::FormatRunner`) implements all seven via its own natural
+/// (`formats::FormatRunner`) implements all six via its own natural
 /// mechanism — see the milestone plan's "Scenario & metric contract" table
 /// for the per-format mapping and the common materialisation target each
 /// variant forces.
@@ -32,20 +32,22 @@ pub enum Scenario {
     AttrStats,
     /// The single object with a given id.
     IdLookup,
-    /// One attribute column read across every row; non-null count.
-    Project,
+    /// Every object of the feature with a given `feature_id` — the feature
+    /// and all its parts. CityParquet only: no other format stores the
+    /// column, so it is not in [`Scenario::ALL`] (the format-comparison set)
+    /// and a run names it explicitly.
+    FeatureLookup,
 }
 
 impl Scenario {
     /// Every variant, in the milestone plan's canonical order.
-    pub const ALL: [Scenario; 7] = [
+    pub const ALL: [Scenario; 6] = [
         Scenario::FullRead,
         Scenario::Count,
         Scenario::BBoxQuery,
         Scenario::AttrFilter,
         Scenario::AttrStats,
         Scenario::IdLookup,
-        Scenario::Project,
     ];
 
     /// The canonical kebab-case CLI/CSV spelling (round-trips through
@@ -58,7 +60,7 @@ impl Scenario {
             Scenario::AttrFilter => "attr-filter",
             Scenario::AttrStats => "attr-stats",
             Scenario::IdLookup => "id-lookup",
-            Scenario::Project => "project",
+            Scenario::FeatureLookup => "feature-lookup",
         }
     }
 }
@@ -83,14 +85,15 @@ impl FromStr for Scenario {
             "attr-filter" | "attrfilter" => Ok(Scenario::AttrFilter),
             "attr-stats" | "attrstats" => Ok(Scenario::AttrStats),
             "id-lookup" | "idlookup" => Ok(Scenario::IdLookup),
-            "project" => Ok(Scenario::Project),
+            "feature-lookup" | "featurelookup" => Ok(Scenario::FeatureLookup),
             other => Err(format!(
-                "unknown scenario '{other}'; expected one of: {}",
+                "unknown scenario '{other}'; expected one of: {}, {}",
                 Scenario::ALL
                     .iter()
                     .map(|s| s.as_str())
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(", "),
+                Scenario::FeatureLookup.as_str()
             )),
         }
     }
@@ -127,13 +130,15 @@ pub struct QueryParams {
     /// `[minx, miny, minz, maxx, maxy, maxz]` query window for
     /// [`Scenario::BBoxQuery`].
     pub bbox: Option<[f64; 6]>,
-    /// Attribute column name for [`Scenario::AttrFilter`],
-    /// [`Scenario::AttrStats`], and [`Scenario::Project`].
+    /// Attribute column name for [`Scenario::AttrFilter`] and
+    /// [`Scenario::AttrStats`].
     pub attr_column: Option<String>,
     /// Predicate for [`Scenario::AttrFilter`].
     pub attr_pred: Option<AttrPred>,
     /// Target object id for [`Scenario::IdLookup`].
     pub target_id: Option<String>,
+    /// Target `feature_id` for [`Scenario::FeatureLookup`].
+    pub target_feature_id: Option<String>,
     /// Free-text label (e.g. `bbox-1pct`) the coordinator threads through
     /// to the results CSV's `notes` column; no runner reads this itself.
     pub selectivity_tag: Option<String>,
@@ -159,5 +164,31 @@ mod tests {
             Scenario::BBoxQuery
         );
         assert!("not-a-scenario".parse::<Scenario>().is_err());
+    }
+
+    /// `project` (a single-attribute projection) was retired as a workload:
+    /// it is no real-world query and costs about what `full-read` costs. It
+    /// must be rejected like any unknown name, with no alias left behind.
+    #[test]
+    fn the_retired_project_scenario_is_an_unknown_name() {
+        let err = "project".parse::<Scenario>().unwrap_err();
+        assert!(err.contains("unknown scenario 'project'"), "{err}");
+        let (_, listed) = err
+            .split_once("expected one of:")
+            .expect("the error lists the names");
+        assert!(!listed.contains("project"), "{err}");
+        assert!(Scenario::ALL.iter().all(|s| s.as_str() != "project"));
+    }
+
+    #[test]
+    fn feature_lookup_parses_but_is_not_in_the_format_comparison_set() {
+        assert_eq!(
+            "feature-lookup".parse::<Scenario>().unwrap(),
+            Scenario::FeatureLookup
+        );
+        assert_eq!(Scenario::FeatureLookup.as_str(), "feature-lookup");
+        assert!(!Scenario::ALL.contains(&Scenario::FeatureLookup));
+        let err = "nope".parse::<Scenario>().unwrap_err();
+        assert!(err.contains("feature-lookup"), "{err}");
     }
 }

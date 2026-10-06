@@ -5,8 +5,10 @@
 //! is the piece that actually drives a whole benchmark matrix: for every
 //! requested (format, scenario) pair it derives real [`QueryParams`] from the
 //! data itself (never a hardcoded id/attribute/bbox), spawns the `--child`
-//! process `repeat` times (plus one discarded warmup) via
-//! [`std::env::current_exe`], medians the timings (+ MAD), takes the MAX
+//! process up to `repeat` times, back to back (plus one discarded warmup;
+//! an optional cell time budget can stop it earlier, see [`SamplingPlan`]) via
+//! [`std::env::current_exe`], means the timings (+ the population standard
+//! deviation), takes the MAX
 //! peak heap/RSS across the repeats, computes `selectivity`, and holds one
 //! row for the results CSV — which this module owns outright (a fresh
 //! truncate-and-write per run, never an append, so a re-run is always
@@ -18,7 +20,7 @@
 //! [`cityparquet_readbench::params::resolve`], which this module calls once
 //! per dataset and whose result it also writes beside the CSV as
 //! `<out>.params.json` — the single description of what a run measured, read
-//! by `benchmark/scripts/readbench_duckdb.sh` rather than re-derived there.
+//! back by the renderer (`benchmark/plot`) and hashed into the run manifest.
 //!
 //! That derivation REQUIRES the `cityparquet` package (`<x>.parquet`)
 //! regardless of which `--formats` were requested: it is the source of the
@@ -35,46 +37,53 @@
 //! `bbox-5pct`, `bbox-25pct`, each `;approx` when the target row fraction
 //! was not reachable), and [`Scenario::IdLookup`] one per probe
 //! (`id-10pct`, `id-50pct`, `id-90pct`, `id-miss`).
+//! [`Scenario::FeatureLookup`] (CityParquet only, and only when named) emits
+//! two: `feature-50pct` and `feature-miss`. Every CityParquet lookup row
+//! carries its [`LookupCounters`] in the three trailing CSV columns.
 //!
 //! **`--variants`: the configuration run.** Given variant ids rather than
-//! formats, this module measures ONE format's writer axes instead of
-//! comparing formats: per variant it spawns `--child --write` (a warmup plus
-//! `write_repeat` warm repeats, each converting the prepared CityJSONSeq
-//! artefact into a scratch directory inside `prepared_dir`), keeps the last
-//! repeat's package as `<prepared_dir>/<base>.<id>.parquet`, and then runs
-//! the ordinary read children against it. The CSV keeps its shape — the
-//! variant id goes in the `format` column, and the conversion is a `write`
-//! row — and the packages' sizes go to `sizes.csv` beside it (see
-//! [`write_sizes`]). Every write runs before any read, so the two kinds of
-//! load never interleave; the rows are sorted back into per-variant groups
-//! before they are written.
+//! formats, this module compares ONE format's writer configurations instead
+//! of comparing formats: per variant it converts the prepared CityJSONSeq
+//! artefact with that variant's recipe (untimed — building a package is not
+//! a measurement here), keeps the package as
+//! `<prepared_dir>/<base>.<id>.parquet`, and then runs the ordinary read
+//! children against it. The CSV keeps its shape — the variant id goes in
+//! the `format` column — and the packages' sizes go to `sizes.csv` beside it
+//! (see [`write_sizes`]). Every package is built before any read runs; the
+//! rows are sorted back into per-variant groups before they are written.
+//! Over `--transport http` the run is read-only: it reads the
+//! `<base>.<id>.parquet` packages a local run built, uploaded beside the
+//! prepared artefacts, and writes no `sizes.csv`.
 //!
-//! **Self-consistency (disclosed, never a hard failure).** After the
-//! `AttrFilter` scenario has run for every resolved format, this module
-//! compares their `result_count`s: `object_type` equality is CityObject-level
-//! for every format (CityParquet's own row grain; CityJSONSeq/FlatCityBuf
-//! deliberately flatten to the same grain for this scenario — see their own
-//! module docs), so a healthy run should see them agree exactly. A mismatch
-//! is not a fatal error — this is a diagnostic, not a correctness gate on
-//! the coordinator itself — but it is not stderr-only either: it is recorded
-//! in the `notes` column of every `AttrFilter` row (see
-//! [`ATTR_FILTER_MISMATCH`]), because the CSV is what gets published, and a
-//! spoiled run must not be byte-indistinguishable from a clean one. The same
-//! applies to a runner that fell back from an index to a full scan (see
-//! [`ChildLine::notes`]).
+//! **Cross-format consistency (a hard failure).** Once the matrix has run,
+//! every row's `result_count` is checked ([`check_consistency`]): `count`,
+//! `full-read`, each `bbox-*` window and `attr-filter` against the reference
+//! the parameters were derived with, at the row's own counting level
+//! (CityObjects or features); `attr-stats` and each `id-*` probe for
+//! equality across formats. A disagreeing row is tagged
+//! [`COUNT_MISMATCH`] in `notes`, the CSV is still written so the evidence
+//! survives, and the run then exits non-zero naming the scenario, the
+//! formats and the counts. A runner that fell back from an index to a full
+//! scan discloses it in `notes` too (see [`ChildLine::notes`]).
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use cityparquet::package::RowOrder;
 use cityparquet::variant::Variant;
-use cityparquet_readbench::format::{Artefact, Format};
+use cityparquet_readbench::format::Format;
+use cityparquet_readbench::isolation::{self, LoadDecision, MaxLoadRequest, NumaRequest};
 use cityparquet_readbench::naming::strip_known_extension;
+use cityparquet_readbench::sampling::SamplingPlan;
+use cityparquet_readbench::stats::TimingStats;
 
-use crate::formats::{IoStats, Source};
+use crate::formats::{IoStats, LOOKUP_STATS_MARKER, LookupCounters, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 use cityparquet_readbench::params;
 
@@ -93,27 +102,27 @@ pub struct RunOptions {
     pub prepared_dir: PathBuf,
     /// Result CSV path; this run OWNS the file (fresh truncate + write).
     pub out: PathBuf,
-    /// Warm repeats per measurement (a further, discarded warmup precedes
-    /// every one). Must be >= 1.
-    pub repeat: usize,
-    /// Requested formats; `None`/empty selects [`Format::DEFAULT_SET`], the
-    /// format-comparison set.
+    /// How many warm samples a measurement takes: up to `sampling.repeat`
+    /// (a further, discarded warmup precedes every one), stopping early on
+    /// the optional cell time budget; see [`SamplingPlan`].
+    pub sampling: SamplingPlan,
+    /// Requested formats; `None`/empty selects [`Format::ALL`], the
+    /// format comparison.
     pub formats: Option<Vec<Format>>,
     /// Requested variant ids (`cityparquet::variant`'s grammar). When set,
     /// this is a CONFIGURATION run rather than a format comparison: every id
-    /// is converted by a write child into
-    /// `<prepared_dir>/<base>.<id>.parquet` and then read by the CityParquet
-    /// runner. Exclusive with `formats`; local transport only.
+    /// is converted into `<prepared_dir>/<base>.<id>.parquet` and then read
+    /// by the CityParquet runner. Exclusive with `formats`. Over HTTP the
+    /// packages are read, never built.
     pub variants: Option<Vec<String>>,
-    /// Warm write repeats per variant (a discarded warmup precedes them);
-    /// read only on a `variants` run, where it must be >= 1.
-    pub write_repeat: usize,
     /// Requested scenario names (canonical [`Scenario::as_str`] spelling,
     /// case-insensitive); `None`/empty selects every [`Scenario::ALL`].
     pub scenarios: Option<Vec<String>>,
     /// Optional subset of resolved `id-lookup` probe tags. Configuration runs
     /// use this to hold lookup position at 50%; format comparisons retain all.
     pub id_probes: Option<Vec<String>>,
+    /// Optional subset of resolved `feature-lookup` probe tags.
+    pub feature_probes: Option<Vec<String>>,
     /// After the warm matrix, run one additional `FullRead` per format,
     /// tagged `cold` in `notes` (see [`run`]'s own doc comment on the
     /// `sudo purge` protocol this does NOT automate).
@@ -122,6 +131,158 @@ pub struct RunOptions {
     pub transport: Transport,
     /// HTTP base URL; required when `transport` is [`Transport::Http`].
     pub base_url: Option<String>,
+    /// Pinning, memory ceiling and load gate for the measured children.
+    pub isolation: IsolationOptions,
+}
+
+/// The shared-host isolation the CLI requested (see [`isolation`]).
+#[derive(Debug, Clone)]
+pub struct IsolationOptions {
+    pub numa_node: NumaRequest,
+    /// `MemoryMax` of the children's `systemd-run --user --scope`, in bytes.
+    pub memory_max: Option<u64>,
+    pub max_load: MaxLoadRequest,
+    /// The longest a sample waits for the load to drop before it proceeds
+    /// and its cell is tagged `busy`.
+    pub max_load_wait_s: u64,
+}
+
+/// The argv prefix every child is spawned under (`systemd-run`, then
+/// `numactl`/`taskset`), resolved once per run by [`setup_isolation`].
+static CHILD_PREFIX: OnceLock<Vec<String>> = OnceLock::new();
+
+/// The load gate before every sample, and what it saw.
+struct Gate {
+    threshold: Option<f64>,
+    max_wait: Duration,
+    node_cores: usize,
+    total_cores: usize,
+    waits: Vec<serde_json::Value>,
+    cells: Vec<serde_json::Value>,
+}
+
+impl Gate {
+    /// Reads the load, waits in [`isolation::WAIT_STEP`]s while the node's
+    /// share is above the threshold, and returns the reading and whether the
+    /// sample proceeded despite the load (`busy`).
+    fn before_sample(&mut self, cell: &str) -> (Option<isolation::LoadSample>, bool) {
+        let mut waited = Duration::ZERO;
+        loop {
+            let reading = isolation::read_load();
+            let share =
+                reading.map(|r| isolation::node_share(r.load1, self.node_cores, self.total_cores));
+            let decision = isolation::load_decision(share, self.threshold, waited, self.max_wait);
+            if decision == LoadDecision::Wait {
+                eprintln!(
+                    "cityparquet-readbench: {cell}: node load share {:.2} above --max-load {:.2}; \
+                     waiting {}s ({}s so far)",
+                    share.unwrap_or_default(),
+                    self.threshold.unwrap_or_default(),
+                    isolation::WAIT_STEP.as_secs(),
+                    waited.as_secs()
+                );
+                std::thread::sleep(isolation::WAIT_STEP);
+                waited += isolation::WAIT_STEP;
+                continue;
+            }
+            let busy = decision == LoadDecision::Busy;
+            if waited > Duration::ZERO || busy {
+                self.waits.push(serde_json::json!({
+                    "cell": cell,
+                    "waited_s": waited.as_secs(),
+                    "share": share,
+                    "outcome": if busy { "busy" } else { "proceeded" },
+                }));
+            }
+            return (reading, busy);
+        }
+    }
+}
+
+/// Resolves the isolation once: pins the coordinator, fixes the children's
+/// argv prefix, and returns the `isolation` record and the load gate.
+fn setup_isolation(opts: &IsolationOptions) -> (serde_json::Value, Gate) {
+    let is_linux = cfg!(target_os = "linux");
+    let tools = isolation::probe_tools();
+    let nodes = if is_linux {
+        isolation::read_nodes()
+    } else {
+        Vec::new()
+    };
+    let (pin_prefix, pin) = isolation::build_pinning(is_linux, opts.numa_node, &nodes, tools);
+    let coordinator_pinning = match pin.coordinator_core {
+        Some(core) => isolation::pin_self(is_linux, tools, core),
+        None => pin.status.clone(),
+    };
+    let (memory_prefix, memory_status) = match opts.memory_max {
+        None => (Vec::new(), "not requested".to_string()),
+        Some(bytes) => match isolation::probe_memory_scope(is_linux, tools, bytes) {
+            Ok(()) => (isolation::memory_prefix(bytes), "applied".to_string()),
+            Err(reason) => (Vec::new(), format!("not applied: {reason}")),
+        },
+    };
+    let prefix = isolation::compose(&memory_prefix, &pin_prefix, &[]);
+    let _ = CHILD_PREFIX.set(prefix.clone());
+
+    let total_cores = match nodes.iter().map(|n| n.cpus.len()).sum::<usize>() {
+        0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+        n => n,
+    };
+    let node_cores = pin
+        .node
+        .and_then(|id| nodes.iter().find(|n| n.id == id))
+        .map_or(total_cores, |n| n.cpus.len());
+    let memory = isolation::read_memory();
+    let has_proc = isolation::read_load().is_some();
+    let threshold = if has_proc {
+        isolation::resolve_max_load(opts.max_load, node_cores)
+    } else {
+        None
+    };
+    let no_proc = "not applied: no /proc";
+    let record = serde_json::json!({
+        "command_prefix": prefix,
+        "pinning": pin,
+        "coordinator_pinning": coordinator_pinning,
+        "memory_max": {"requested_bytes": opts.memory_max, "status": memory_status},
+        "memory": {
+            "mem_total_bytes": memory.and_then(|m| m.0),
+            "mem_available_bytes_at_start": memory.and_then(|m| m.1),
+            "status": if memory.is_some() { "recorded" } else { no_proc },
+        },
+        "max_load": {
+            "requested": opts.max_load.to_string(),
+            "threshold": threshold,
+            "node_cores": node_cores,
+            "total_cores": total_cores,
+            "wait_s": opts.max_load_wait_s,
+            "status": if !has_proc { no_proc.to_string() }
+                else if threshold.is_none() { "not applied: --max-load off".to_string() }
+                else { "applied".to_string() },
+        },
+        "load": {
+            "status": if has_proc { "recorded per sample" } else { no_proc },
+            "waits": [],
+            "cells": [],
+        },
+    });
+    let gate = Gate {
+        threshold,
+        max_wait: Duration::from_secs(opts.max_load_wait_s),
+        node_cores,
+        total_cores,
+        waits: Vec::new(),
+        cells: Vec::new(),
+    };
+    (record, gate)
+}
+
+fn write_params(sidecar: &Path, json: &serde_json::Value) -> Result<()> {
+    fs::write(
+        sidecar,
+        serde_json::to_string_pretty(json).context("serialising the resolved query parameters")?,
+    )
+    .with_context(|| format!("writing {}", sidecar.display()))
 }
 
 /// `run`'s own transport selector — the CLI-facing mirror of
@@ -139,8 +300,15 @@ pub enum Transport {
 /// own `io: None` handling) and populated for an
 /// http-transport row from the wrapped `ObjectStore`/range-client tally each
 /// `FormatRunner`'s `Source::Http` arm reports (see `formats::IoStats`).
-const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,\
-peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests";
+/// The last three are a CityParquet lookup's [`LookupCounters`], empty on every other row.
+///
+/// The timing block (`time_mean_s` .. `time_q3_s`) is [`TimingStats`] over the
+/// warm samples, in that struct's field order; `benchmark/databases` writes
+/// the identical block.
+const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_mean_s,\
+time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,\
+peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
+bloom_pruned,filter_bytes";
 
 /// The resolved-parameters sidecar for a results CSV: the CSV's own path with
 /// `.params.json` appended, so the two travel together and a run cannot leave
@@ -165,6 +333,15 @@ struct Sample {
     peak_rss_bytes: u64,
     peak_heap_bytes: u64,
     result_count: u64,
+    /// The run's cell time budget in seconds, `null` when sampling was not
+    /// budgeted, and its effective `--min-repeat` floor.
+    cell_budget_s: Option<f64>,
+    min_repeat: usize,
+    /// `/proc/loadavg` and `MemAvailable` just before the sample; `null`
+    /// without `/proc` (the `isolation` record says so once).
+    load1: Option<f64>,
+    runnable: Option<u32>,
+    mem_available_bytes: Option<u64>,
 }
 
 fn samples_sidecar_path(out: &Path) -> PathBuf {
@@ -188,9 +365,6 @@ fn write_samples(out: &Path, samples: &[Sample]) -> Result<()> {
 
 /// Runs `opts`'s whole (format x scenario) matrix, writing `opts.out` fresh.
 pub fn run(opts: &RunOptions) -> Result<()> {
-    if opts.repeat == 0 {
-        bail!("--repeat must be >= 1");
-    }
     if opts.transport == Transport::Http && opts.base_url.is_none() {
         bail!("--transport http requires --base-url");
     }
@@ -204,12 +378,6 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         (_, Some(v)) if !v.is_empty() => Some(parse_variant_list(v)?),
         _ => None,
     };
-    if variants.is_some() && opts.transport == Transport::Http {
-        bail!("--variants runs on --transport local only: there is no server-side write");
-    }
-    if variants.is_some() && opts.write_repeat == 0 {
-        bail!("--write-repeat must be >= 1");
-    }
 
     let dataset = opts
         .input
@@ -232,8 +400,8 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // The measured sources, each with the LABEL its `format` column carries
     // (a format name here; a variant id on a `--variants` run). A
     // configuration run resolves nothing in this block: its sources are the
-    // packages its own write children have yet to produce, so it is filled
-    // in after the CSV header is written, below.
+    // packages it has yet to build, so it is filled in after the CSV header
+    // is written, below.
     let mut resolved_formats: Vec<(Format, Source, String)> = Vec::new();
     if variants.is_none() {
         // Who chose the format list matters to how a skip below is reported: an
@@ -242,7 +410,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         // published as "the format comparison" (see the summary after this loop).
         let (requested_formats, chosen_by_default): (Vec<Format>, bool) = match &opts.formats {
             Some(v) if !v.is_empty() => (v.clone(), false),
-            _ => (Format::DEFAULT_SET.to_vec(), true),
+            _ => (Format::ALL.to_vec(), true),
         };
 
         let mut skipped_formats: Vec<Format> = Vec::new();
@@ -275,13 +443,6 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 // HEAD request this coordinator would otherwise need to make.
                 ArtefactResolution::Source(source @ Source::Http { .. }) => {
                     resolved_formats.push((format, source, format.as_str().to_string()));
-                }
-                ArtefactResolution::NotCoordinated => {
-                    skipped_formats.push(format);
-                    eprintln!(
-                        "cityparquet-readbench: skipping format '{format}': driven by \
-                         benchmark/scripts/readbench_duckdb.sh, not this coordinator"
-                    )
                 }
                 ArtefactResolution::NonUtf8Key => {
                     skipped_formats.push(format);
@@ -336,20 +497,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // the CityJSONSeq stream (the canonical order the id deciles are cut
     // from). The CityGML artefact is checked when present, so an id probe it
     // does not contain is substituted rather than timed as a silent miss.
-    let seq_path = match Format::CityJsonSeq.artefact(base) {
-        Artefact::Prepared(name) => {
-            let path = opts.prepared_dir.join(name);
-            path.exists().then_some(path)
-        }
-        Artefact::NotCoordinated => None,
-    };
-    let gml_path = match Format::CityGml.artefact(base) {
-        Artefact::Prepared(name) => {
-            let path = opts.prepared_dir.join(name);
-            path.exists().then_some(path)
-        }
-        Artefact::NotCoordinated => None,
-    };
+    let seq_path = Some(opts.prepared_dir.join(Format::CityJsonSeq.artefact(base)))
+        .filter(|path| path.exists());
+    let gml_path =
+        Some(opts.prepared_dir.join(Format::CityGml.artefact(base))).filter(|path| path.exists());
     let mut resolved = params::resolve(
         &dataset,
         &cp_table,
@@ -357,49 +508,47 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         gml_path.as_deref(),
     )?;
 
-    if let Some(requested) = &opts.id_probes {
-        if requested.is_empty() {
-            bail!("--id-probes must name at least one resolved probe tag");
-        }
-        let available: Vec<&str> = resolved
-            .id_probes
-            .iter()
-            .map(|probe| probe.tag.as_str())
-            .collect();
-        let unknown: Vec<&String> = requested
-            .iter()
-            .filter(|tag| !available.iter().any(|available| available == &tag.as_str()))
-            .collect();
-        if !unknown.is_empty() {
-            bail!(
-                "--id-probes requested unavailable tag(s) {}; available: {}",
-                unknown
-                    .iter()
-                    .map(|tag| tag.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                available.join(", ")
-            );
-        }
-        resolved
-            .id_probes
-            .retain(|probe| requested.iter().any(|tag| tag == &probe.tag));
-    }
+    retain_requested_probes(
+        "id-probes",
+        &mut resolved.id_probes,
+        opts.id_probes.as_ref(),
+    )?;
+    retain_requested_probes(
+        "feature-probes",
+        &mut resolved.feature_probes,
+        opts.feature_probes.as_ref(),
+    )?;
 
     eprintln!(
-        "cityparquet-readbench: derived params for '{dataset}': windows={:?}, object_type \
-         most-frequent='{}' (n={}), numeric attribute={:?}, id probes={:?}, CityObject \
-         total={}",
+        "cityparquet-readbench: derived params for '{dataset}': windows={:?}, attr-filter={}, \
+         numeric attribute={:?}, id probes={:?}, feature probes={:?}, CityObject total={}",
         resolved
             .windows
             .iter()
             .map(|w| (w.tag.as_str(), w.achieved, w.approx))
             .collect::<Vec<_>>(),
-        resolved.object_type,
-        resolved.object_type_count,
+        match &resolved.attr_filter {
+            Some(spec) => format!(
+                "{} (n={}, {:.1}% of rows, {})",
+                spec.notes_tag(),
+                spec.matched,
+                spec.share * 100.0,
+                if spec.hand_picked {
+                    "hand-picked"
+                } else {
+                    "derived"
+                }
+            ),
+            None => "none (skipped)".to_string(),
+        },
         resolved.numeric_attr,
         resolved
             .id_probes
+            .iter()
+            .map(|p| (p.tag.as_str(), p.id.as_str()))
+            .collect::<Vec<_>>(),
+        resolved
+            .feature_probes
             .iter()
             .map(|p| (p.tag.as_str(), p.id.as_str()))
             .collect::<Vec<_>>(),
@@ -413,16 +562,32 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     }
 
     // The resolved parameters, beside the CSV this run owns. It is the ONE
-    // description of which windows, ids and attributes this run measured —
-    // `benchmark/scripts/readbench_duckdb.sh` reads it rather than
-    // re-deriving the same choices in bash, so the two cannot drift.
+    // description of which windows, ids and attributes this run measured,
+    // read back by the renderer and hashed into the run manifest.
+    // `sampling` records how many samples a cell takes (the ceiling, the
+    // cell time budget and its effective floor) beside the query parameters.
     let sidecar = params_sidecar_path(&opts.out);
-    fs::write(
-        &sidecar,
-        serde_json::to_string_pretty(&resolved)
-            .context("serialising the resolved query parameters")?,
-    )
-    .with_context(|| format!("writing {}", sidecar.display()))?;
+    let mut sidecar_json =
+        serde_json::to_value(&resolved).context("serialising the resolved query parameters")?;
+    sidecar_json
+        .as_object_mut()
+        .context("the resolved query parameters serialise to a JSON object")?
+        .insert(
+            "sampling".to_string(),
+            serde_json::json!({
+                "repeat": opts.sampling.repeat,
+                "cell_budget_s": opts.sampling.cell_budget_s(),
+                "min_repeat": opts.sampling.min_repeat,
+            }),
+        );
+    // `isolation` records what was requested and applied; it is written now
+    // and again after the matrix with the waits and per-cell load filled in.
+    let (isolation_record, mut gate) = setup_isolation(&opts.isolation);
+    sidecar_json
+        .as_object_mut()
+        .context("the resolved query parameters serialise to a JSON object")?
+        .insert("isolation".to_string(), isolation_record);
+    write_params(&sidecar, &sidecar_json)?;
     let mut csv = OpenOptions::new()
         .create(true)
         .write(true)
@@ -441,20 +606,19 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     let mut rows: Vec<Row> = Vec::new();
     let mut samples: Vec<Sample> = Vec::new();
 
-    // A configuration run's own sources: one write child per variant, timed
-    // into `rows` and measured into `sizes`, each leaving the package the
-    // read children below then run against. It happens here, after the
-    // sidecar and the header, so a run that dies in a write still leaves a
-    // clean, empty CSV and the parameters it was going to measure with.
+    // A configuration run's own sources: one package per variant, measured
+    // into `sizes`, each the package the read children below then run
+    // against. It happens here, after the sidecar and the header, so a run
+    // that dies in a conversion still leaves a clean, empty CSV and the
+    // parameters it was going to measure with.
     //
-    // Order: every write first, then every read. Writing and reading one
-    // variant at a time would interleave two different kinds of load on the
-    // page cache; the CSV is sorted back into per-variant groups at the end
-    // (see the sort before the rows are written).
+    // Order: every package is built first, then every read runs, so no read
+    // shares the page cache with a conversion in flight; the CSV is sorted
+    // back into per-variant groups at the end (see the sort before the rows
+    // are written).
     let mut sizes: Vec<SizeRow> = Vec::new();
-    let variant_seq: Option<PathBuf> = match &variants {
-        None => None,
-        Some(_) => Some(seq_path.clone().ok_or_else(|| {
+    let variant_seq: Option<PathBuf> = match (&variants, opts.transport) {
+        (Some(_), Transport::Local) => Some(seq_path.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "--variants needs the prepared CityJSONSeq artefact {}.city.jsonl to convert \
                  from (run `just readbench-prepare {}` first)",
@@ -462,37 +626,43 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 opts.input.display()
             )
         })?),
+        _ => None,
     };
     if let Some(list) = &variants {
-        let seq = variant_seq
-            .as_deref()
-            .expect("set together with `variants`");
-        for (id, _) in list {
-            let package = run_write(
-                &mut rows,
-                &mut samples,
-                &dataset,
-                base,
-                id,
-                &opts.prepared_dir,
-                seq,
-                opts.write_repeat,
-            )?;
-            sizes.push(SizeRow {
-                dataset: base.to_string(),
-                label: id.clone(),
-                bytes: dir_bytes(&package)?,
-            });
-            resolved_formats.push((Format::CityParquet, Source::Local(package), id.clone()));
+        for (id, variant) in list {
+            match opts.transport {
+                Transport::Local => {
+                    let seq = variant_seq
+                        .as_deref()
+                        .expect("set for every local `variants` run");
+                    let package = build_variant(base, id, variant, &opts.prepared_dir, seq)?;
+                    sizes.push(SizeRow {
+                        dataset: base.to_string(),
+                        label: id.clone(),
+                        bytes: dir_bytes(&package)?,
+                    });
+                    resolved_formats.push((
+                        Format::CityParquet,
+                        Source::Local(package),
+                        id.clone(),
+                    ));
+                }
+                // Read-only: the package a local run built under this same
+                // name, uploaded beside the prepared artefacts.
+                Transport::Http => resolved_formats.push((
+                    Format::CityParquet,
+                    Source::Http {
+                        base_url: opts
+                            .base_url
+                            .clone()
+                            .expect("run validated --base-url for --transport http"),
+                        key: format!("{base}.{id}.parquet"),
+                    },
+                    id.clone(),
+                )),
+            }
         }
     }
-
-    // AttrFilter's result_count per measured label, collected for the
-    // self-consistency check below. Keyed by the LABEL rather than the
-    // format so a configuration run compares its variants against each other
-    // — on a format run every label is that format's own name, so nothing
-    // changes there.
-    let mut attr_filter_counts: HashMap<String, u64> = HashMap::new();
 
     for (format, source, label) in &resolved_formats {
         let format = *format;
@@ -505,13 +675,14 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                     run_measurement(
                         &mut rows,
                         &mut samples,
+                        &mut gate,
                         &dataset,
                         format,
                         label,
                         source,
                         *scenario,
                         &QueryParams::default(),
-                        opts.repeat,
+                        &opts.sampling,
                         None,
                         "",
                     )?;
@@ -519,7 +690,11 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 Scenario::BBoxQuery => {
                     for window in &resolved.windows {
                         let params = QueryParams {
-                            bbox: Some(window.window),
+                            bbox: Some(window_in_artefact_order(
+                                window.window,
+                                format,
+                                resolved.swap_xy,
+                            )),
                             ..Default::default()
                         };
                         // `approx` means the target row fraction was not
@@ -534,43 +709,54 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         run_measurement(
                             &mut rows,
                             &mut samples,
+                            &mut gate,
                             &dataset,
                             format,
                             label,
                             source,
                             *scenario,
                             &params,
-                            opts.repeat,
+                            &opts.sampling,
                             Some(total),
                             &notes,
                         )?;
                     }
                 }
-                Scenario::AttrFilter => {
-                    let params = QueryParams {
-                        attr_column: Some("object_type".to_string()),
-                        attr_pred: Some(AttrPred::Eq(serde_json::Value::String(
-                            resolved.object_type.clone(),
-                        ))),
-                        ..Default::default()
-                    };
-                    let notes = format!("object_type={}", resolved.object_type);
-                    let count = run_measurement(
-                        &mut rows,
-                        &mut samples,
-                        &dataset,
-                        format,
-                        label,
-                        source,
-                        *scenario,
-                        &params,
-                        opts.repeat,
-                        Some(resolved.cp_object_total),
-                        &notes,
-                    )?;
-                    attr_filter_counts.insert(label.clone(), count);
-                }
-                Scenario::AttrStats | Scenario::Project => match &resolved.numeric_attr {
+                Scenario::AttrFilter => match &resolved.attr_filter {
+                    Some(spec) => {
+                        let params = QueryParams {
+                            attr_column: Some(spec.column.clone()),
+                            attr_pred: Some(match &spec.pred {
+                                params::AttrFilterPred::Eq(value) => {
+                                    AttrPred::Eq(serde_json::Value::String(value.clone()))
+                                }
+                                params::AttrFilterPred::Ge(bound) => AttrPred::Ge(*bound),
+                            }),
+                            ..Default::default()
+                        };
+                        let notes = spec.notes_tag();
+                        run_measurement(
+                            &mut rows,
+                            &mut samples,
+                            &mut gate,
+                            &dataset,
+                            format,
+                            label,
+                            source,
+                            *scenario,
+                            &params,
+                            &opts.sampling,
+                            Some(resolved.cp_object_total),
+                            &notes,
+                        )?;
+                    }
+                    None => eprintln!(
+                        "cityparquet-readbench: skipping scenario '{scenario}' for format \
+                         '{format}': dataset '{dataset}' has no attribute column a selective \
+                         predicate can be derived from (never fabricated)"
+                    ),
+                },
+                Scenario::AttrStats => match &resolved.numeric_attr {
                     Some(column) => {
                         let params = QueryParams {
                             attr_column: Some(column.clone()),
@@ -580,13 +766,14 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         run_measurement(
                             &mut rows,
                             &mut samples,
+                            &mut gate,
                             &dataset,
                             format,
                             label,
                             source,
                             *scenario,
                             &params,
-                            opts.repeat,
+                            &opts.sampling,
                             Some(resolved.cp_object_total),
                             &notes,
                         )?;
@@ -601,6 +788,44 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 // target would make the published time a function of where
                 // that id happened to sit in the stream, which is a property
                 // of the sample rather than of the format.
+                Scenario::FeatureLookup if format != Format::CityParquet => {
+                    eprintln!(
+                        "cityparquet-readbench: skipping scenario '{scenario}' for format \
+                         '{format}': {}",
+                        crate::formats::FEATURE_LOOKUP_CITYPARQUET_ONLY
+                    )
+                }
+                Scenario::FeatureLookup if resolved.feature_probes.is_empty() => eprintln!(
+                    "cityparquet-readbench: skipping scenario '{scenario}' for format \
+                     '{format}': dataset '{dataset}' has no prepared cityjsonseq artefact to \
+                     take the feature probes from (never fabricated)"
+                ),
+                Scenario::FeatureLookup => {
+                    for probe in &resolved.feature_probes {
+                        let params = QueryParams {
+                            target_feature_id: Some(probe.id.clone()),
+                            ..Default::default()
+                        };
+                        let mut notes = probe.tag.clone();
+                        if probe.substituted {
+                            notes.push_str(";id-substituted");
+                        }
+                        run_measurement(
+                            &mut rows,
+                            &mut samples,
+                            &mut gate,
+                            &dataset,
+                            format,
+                            label,
+                            source,
+                            *scenario,
+                            &params,
+                            &opts.sampling,
+                            Some(resolved.cp_object_total),
+                            &notes,
+                        )?;
+                    }
+                }
                 Scenario::IdLookup if resolved.id_probes.is_empty() => eprintln!(
                     "cityparquet-readbench: skipping scenario '{scenario}' for format \
                      '{format}': dataset '{dataset}' has no prepared cityjsonseq artefact to \
@@ -619,13 +844,14 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         run_measurement(
                             &mut rows,
                             &mut samples,
+                            &mut gate,
                             &dataset,
                             format,
                             label,
                             source,
                             *scenario,
                             &params,
-                            opts.repeat,
+                            &opts.sampling,
                             Some(resolved.cp_object_total),
                             &notes,
                         )?;
@@ -644,11 +870,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
             let row = Row {
                 dataset: dataset.clone(),
                 label: label.clone(),
-                measure: Measure::Read(Scenario::FullRead),
+                scenario: Scenario::FullRead,
                 selectivity: None,
                 result_count: line.result_count,
-                time_s: line.time_s,
-                time_mad_s: 0.0,
+                timing: TimingStats::of(&[line.time_s]),
                 peak_heap_bytes: line.peak_heap_bytes,
                 peak_rss_bytes: line.ru_maxrss_bytes,
                 repeat: 1,
@@ -663,6 +888,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 // from.
                 notes: vec!["cold".to_string()],
                 io: line.io,
+                lookup: None,
             };
             debug_assert!(
                 line.notes.is_empty(),
@@ -673,37 +899,29 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         }
     }
 
-    // Self-consistency check: never fatal, but never invisible either (see
-    // this module's own doc comment).
-    if attr_filter_counts.len() > 1 {
-        let mut values = attr_filter_counts.values();
-        let first = *values.next().expect("len > 1 implies at least one value");
-        if values.all(|v| *v == first) {
-            eprintln!(
-                "cityparquet-readbench: self-consistency OK: every resolved format's \
-                 AttrFilter(object_type) result_count == {first}"
-            );
-        } else {
-            eprintln!(
-                "cityparquet-readbench: WARNING: formats disagree on \
-                 AttrFilter(object_type) result_count: {attr_filter_counts:?}"
-            );
-            tag_attr_filter_mismatch(&mut rows);
-        }
+    // Cross-format consistency: every count is checked against the reference
+    // the parameters were derived with, or against the other formats, and a
+    // disagreement fails the run — after the CSV is written, with the
+    // disagreeing rows tagged, so the evidence of what went wrong survives.
+    let formats_by_label: HashMap<String, Format> = resolved_formats
+        .iter()
+        .map(|(format, _, label)| (label.clone(), *format))
+        .collect();
+    let failures = check_consistency(&mut rows, &formats_by_label, &resolved);
+    if failures.is_empty() {
+        eprintln!("cityparquet-readbench: cross-format consistency OK");
     }
 
-    // A configuration run groups its rows per variant, write first, so a CSV
-    // reads top to bottom the way the recipe listed the variants (the writes
-    // all happened before the reads; see the variants block above).
-    // `sort_by_key` is stable, so the read rows keep their scenario order
-    // within each group.
+    // A configuration run groups its rows per variant, so a CSV reads top to
+    // bottom the way the recipe listed the variants. `sort_by_key` is
+    // stable, so the rows keep their scenario order within each group.
     if let Some(list) = &variants {
         let position = |label: &str| {
             list.iter()
                 .position(|(id, _)| id == label)
                 .unwrap_or(usize::MAX)
         };
-        rows.sort_by_key(|r| (position(&r.label), r.measure != Measure::Write));
+        rows.sort_by_key(|r| position(&r.label));
     }
 
     for row in &rows {
@@ -711,24 +929,92 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     }
 
     write_samples(&opts.out, &samples)?;
+    sidecar_json["isolation"]["load"]["waits"] = serde_json::Value::Array(gate.waits);
+    sidecar_json["isolation"]["load"]["cells"] = serde_json::Value::Array(gate.cells);
+    write_params(&sidecar, &sidecar_json)?;
 
-    if variants.is_some() {
+    if variants.is_some() && opts.transport == Transport::Local {
         let seq = variant_seq
             .as_deref()
-            .expect("set together with `variants`");
+            .expect("set for every local variants run");
         write_sizes(&opts.out, base, seq, &sizes)?;
     }
 
+    if !failures.is_empty() {
+        bail!(
+            "cross-format consistency check failed for '{dataset}' ({} disagreement(s); the \
+             rows are tagged `{COUNT_MISMATCH}` in {}):\n  {}",
+            failures.len(),
+            opts.out.display(),
+            failures.join("\n  ")
+        );
+    }
+    Ok(())
+}
+
+/// `window` (in the CityParquet package's longitude-first order) in the axis
+/// order `format`'s artefact stores: swapped in `x`/`y` for a latitude-first
+/// dataset read through an artefact that keeps the source's order.
+fn window_in_artefact_order(window: [f64; 6], format: Format, swap_xy: bool) -> [f64; 6] {
+    if swap_xy && !format.stores_longitude_first() {
+        [
+            window[1], window[0], window[2], window[4], window[3], window[5],
+        ]
+    } else {
+        window
+    }
+}
+
+/// Keeps only the `requested` tags of `probes`; an empty request, or a tag
+/// that did not resolve, is an error naming what is available.
+fn retain_requested_probes(
+    flag: &str,
+    probes: &mut Vec<params::IdProbe>,
+    requested: Option<&Vec<String>>,
+) -> Result<()> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    if requested.is_empty() {
+        bail!("--{flag} must name at least one resolved probe tag");
+    }
+    let available: Vec<&str> = probes.iter().map(|probe| probe.tag.as_str()).collect();
+    let unknown: Vec<&str> = requested
+        .iter()
+        .map(String::as_str)
+        .filter(|tag| !available.contains(tag))
+        .collect();
+    if !unknown.is_empty() {
+        bail!(
+            "--{flag} requested unavailable tag(s) {}; available: {}",
+            unknown.join(", "),
+            available.join(", ")
+        );
+    }
+    probes.retain(|probe| requested.iter().any(|tag| tag == &probe.tag));
     Ok(())
 }
 
 /// The variant list, parsed, de-duplicated by canonical id, and required to
 /// carry the bare `cityparquet` baseline every ratio is taken against.
+///
+/// A `+source` suffix is refused: every package this benchmark builds is
+/// written in Hilbert order ([`build_variant`]), as is the `<base>.parquet`
+/// the query parameters derive from, so a variant differs from the baseline
+/// in its recipe alone. A source-order variant would differ in its row order
+/// too.
 fn parse_variant_list(ids: &[String]) -> Result<Vec<(String, Variant)>> {
     let mut seen: Vec<String> = Vec::new();
     let mut out = Vec::with_capacity(ids.len());
     for raw in ids {
         let variant = Variant::parse(raw).map_err(|e| anyhow::anyhow!("--variants: {e}"))?;
+        if variant.ordering() != RowOrder::Hilbert {
+            bail!(
+                "--variants: '{raw}' asks for source order, but every benchmark package is \
+                 written in Hilbert order so that variants differ in their recipe alone; drop \
+                 the +source suffix"
+            );
+        }
         let id = variant.id();
         if seen.contains(&id) {
             bail!("--variants: duplicate variant '{id}'");
@@ -749,33 +1035,124 @@ fn parse_variant_list(ids: &[String]) -> Result<Vec<(String, Variant)>> {
 /// CityParquet ships with, spelled bare.
 const VARIANT_BASELINE: &str = "cityparquet";
 
-/// The `notes` tag a spoiled cross-format comparison carries into the CSV.
-///
-/// The stderr WARNING above is for whoever watched the run; this is for
-/// everyone who only ever sees the artefact. Without it a run whose formats
-/// disagreed on `AttrFilter(object_type)` — i.e. one whose object-level rows
-/// are not measuring the same query — is byte-indistinguishable from a clean
-/// one.
-const ATTR_FILTER_MISMATCH: &str = "attr-filter-count-mismatch";
+/// The `notes` tag a row carries when its `result_count` disagrees with the
+/// reference or with the other formats. Without it a spoiled run would be
+/// byte-indistinguishable from a clean one to anyone who only sees the CSV.
+const COUNT_MISMATCH: &str = "count-mismatch";
 
-/// Records [`ATTR_FILTER_MISMATCH`] on every [`Scenario::AttrFilter`] row —
-/// the rows whose `result_count`s are the ones that disagreed.
-fn tag_attr_filter_mismatch(rows: &mut [Row]) {
-    for row in rows
-        .iter_mut()
-        .filter(|r| r.measure == Measure::Read(Scenario::AttrFilter))
-    {
-        row.notes.push(ATTR_FILTER_MISMATCH.to_string());
+/// Checks every row's `result_count` and tags the ones that disagree with
+/// [`COUNT_MISMATCH`]; returns one line per disagreement, naming the
+/// scenario, the formats and the counts.
+///
+/// Formats count at two levels (READ_BENCHMARK.md, Caveat 1):
+/// [`Format::counts_features`] formats count features, the others
+/// CityObjects. Where the parameters carry a reference for both levels the
+/// row is checked against its own level's reference:
+///
+/// - `count` / `full-read`: [`params::ResolvedParams::cp_object_total`] or
+///   `cp_feature_total`;
+/// - each `bbox-*` window: its `objects` or `features` — the CityObjects, or
+///   the features' root objects, whose bbox intersects the window;
+/// - `attr-filter`: the predicate's `matched` (CityObject-level in every
+///   format).
+///
+/// `attr-stats` and each `id-*` probe have no reference and are checked for
+/// equality across every format instead. A configuration run's variants are
+/// all CityParquet, so the same rules apply to them.
+fn check_consistency(
+    rows: &mut [Row],
+    formats: &HashMap<String, Format>,
+    resolved: &params::ResolvedParams,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    let mut tagged = vec![false; rows.len()];
+    let primary = |row: &Row| -> String {
+        row.notes
+            .first()
+            .map(|n| n.split(';').next().unwrap_or("").to_string())
+            .unwrap_or_default()
+    };
+    let is_cold = |row: &Row| row.notes.iter().any(|n| n == "cold");
+
+    // Against a reference, per level.
+    for (i, row) in rows.iter().enumerate() {
+        if is_cold(row) {
+            continue;
+        }
+        let Some(format) = formats.get(&row.label) else {
+            continue;
+        };
+        let features = format.counts_features();
+        let level = if features { "features" } else { "CityObjects" };
+        let expected = match row.scenario {
+            Scenario::Count | Scenario::FullRead => Some(if features {
+                resolved.cp_feature_total
+            } else {
+                resolved.cp_object_total
+            }),
+            Scenario::BBoxQuery => resolved
+                .windows
+                .iter()
+                .find(|w| w.tag == primary(row))
+                .map(|w| if features { w.features } else { w.objects }),
+            Scenario::AttrFilter => resolved.attr_filter.as_ref().map(|spec| spec.matched),
+            _ => None,
+        };
+        if let Some(expected) = expected
+            && row.result_count != expected
+        {
+            let what = match row.scenario {
+                Scenario::BBoxQuery => primary(row),
+                other => other.as_str().to_string(),
+            };
+            failures.push(format!(
+                "{what}: {} reports {}, expected {expected} {level}",
+                row.label, row.result_count
+            ));
+            tagged[i] = true;
+        }
     }
+
+    // Equality across formats where there is no reference.
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        if is_cold(row) || !matches!(row.scenario, Scenario::AttrStats | Scenario::IdLookup) {
+            continue;
+        }
+        let key = match row.scenario {
+            Scenario::IdLookup => primary(row),
+            other => other.as_str().to_string(),
+        };
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, members)) => members.push(i),
+            None => groups.push((key, vec![i])),
+        }
+    }
+    for (key, members) in groups {
+        let first = rows[members[0]].result_count;
+        if members.iter().any(|&i| rows[i].result_count != first) {
+            let counts: Vec<String> = members
+                .iter()
+                .map(|&i| format!("{}={}", rows[i].label, rows[i].result_count))
+                .collect();
+            failures.push(format!("{key}: formats disagree: {}", counts.join(", ")));
+            for i in members {
+                tagged[i] = true;
+            }
+        }
+    }
+
+    for (row, tag) in rows.iter_mut().zip(tagged) {
+        if tag {
+            row.notes.push(COUNT_MISMATCH.to_string());
+        }
+    }
+    failures
 }
 
-/// One requested format's artefact [`Source`], or how it is out of this
-/// coordinator's scope.
+/// One requested format's artefact [`Source`], or why it has none.
 enum ArtefactResolution {
     Source(Source),
-    /// [`Artefact::NotCoordinated`] — `duckdb-parquet`, a separate
-    /// SQL-engine baseline (Task 12).
-    NotCoordinated,
     /// The artefact has no valid-UTF-8 relative key, so no HTTP URL can be
     /// built from it (only reachable under [`Transport::Http`]).
     NonUtf8Key,
@@ -788,12 +1165,10 @@ enum ArtefactResolution {
 /// wholesale — see `benchmark/scripts/readbench_upload.md`).
 ///
 /// The per-format NAMING itself lives on [`Format::artefact`]; this function
-/// only turns the resulting [`Artefact`] into a path or an HTTP key.
+/// only turns the resulting name into a path or an HTTP key.
 ///
 /// EVERY format reads a PREPARED artefact: `input` itself is never measured,
-/// so this function does not touch it. (`Format::CityJsonSeq` used to read
-/// it, which was correct only while every `--input` was a `.city.jsonl` —
-/// see [`Artefact`]'s own doc comment.)
+/// so this function does not touch it.
 fn resolve_format_artefact(
     format: Format,
     prepared_dir: &Path,
@@ -801,10 +1176,7 @@ fn resolve_format_artefact(
     transport: Transport,
     base_url: Option<&str>,
 ) -> ArtefactResolution {
-    let local_path = match format.artefact(base) {
-        Artefact::Prepared(name) => prepared_dir.join(name),
-        Artefact::NotCoordinated => return ArtefactResolution::NotCoordinated,
-    };
+    let local_path = prepared_dir.join(format.artefact(base));
 
     match transport {
         Transport::Local => ArtefactResolution::Source(Source::Local(local_path)),
@@ -877,6 +1249,24 @@ fn locate_cityparquet_table(prepared_dir: &Path, base: &str) -> Result<PathBuf> 
     }
 }
 
+/// A child's own protocol line: the LAST non-empty line of its stdout.
+///
+/// Every `--child` invocation prints its protocol line last, so nothing
+/// before it belongs to this coordinator. Splitting the WHOLE capture on
+/// whitespace instead — which is what this used to do — makes the parse
+/// hostage to any library that writes to stdout behind a runner's back:
+/// `fcb_core`'s indexed numeric-range `select_attr_query` prints
+/// `index_start: …` / `start_position: …` / `query condition: …` on some
+/// paths, which would turn a perfectly good `--attr-ge` measurement into an
+/// "expected 4 or 6 fields" failure rather than a number.
+fn protocol_line(stdout: &str) -> &str {
+    stdout
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .unwrap_or("")
+}
+
 /// One parsed `--child` protocol stdout line. `io` is `Some` only for the 6-
 /// field http-transport protocol shape (see [`spawn_child`]'s own parsing).
 struct ChildLine {
@@ -891,6 +1281,8 @@ struct ChildLine {
     /// the kind of thing a reader of the CSV must not have to have been
     /// watching the terminal to learn.
     notes: Vec<String>,
+    /// The child's [`LookupCounters`], from its [`LOOKUP_STATS_MARKER`] line.
+    lookup: Option<LookupCounters>,
 }
 
 /// The disclosure tags `stderr` announces, in
@@ -908,6 +1300,33 @@ fn child_disclosures(stderr: &str) -> Vec<String> {
         .collect()
 }
 
+/// The [`LookupCounters`] a child reported after [`LOOKUP_STATS_MARKER`],
+/// if it reported any.
+fn child_lookup_counters(stderr: &str) -> Result<Option<LookupCounters>> {
+    let Some(line) = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix(LOOKUP_STATS_MARKER))
+    else {
+        return Ok(None);
+    };
+    let fields: Vec<u64> = line
+        .split_whitespace()
+        .map(|field| {
+            field
+                .parse::<u64>()
+                .with_context(|| format!("parsing lookup counter '{field}'"))
+        })
+        .collect::<Result<_>>()?;
+    let [row_groups_total, bloom_pruned, filter_bytes] = fields[..] else {
+        bail!("expected three lookup counters after '{LOOKUP_STATS_MARKER}', got '{line}'");
+    };
+    Ok(Some(LookupCounters {
+        row_groups_total,
+        bloom_pruned,
+        filter_bytes,
+    }))
+}
+
 /// Spawns a FRESH `--child` process (this binary's own executable, found via
 /// [`std::env::current_exe`] — never `env!("CARGO_BIN_EXE_...")`, which is
 /// only set for `cargo test`/`cargo bench` targets, not a normal build) for
@@ -923,7 +1342,17 @@ fn spawn_child(
 ) -> Result<ChildLine> {
     let self_exe = std::env::current_exe().context("cannot determine own executable path")?;
 
-    let mut cmd = Command::new(&self_exe);
+    // Under the run's isolation prefix: `systemd-run` outermost, then
+    // `numactl`/`taskset`, then this executable.
+    let prefix = CHILD_PREFIX.get().map_or(&[][..], Vec::as_slice);
+    let mut cmd = match prefix.split_first() {
+        Some((tool, rest)) => {
+            let mut cmd = Command::new(tool);
+            cmd.args(rest).arg(&self_exe);
+            cmd
+        }
+        None => Command::new(&self_exe),
+    };
     cmd.arg("--child")
         .arg("--format")
         .arg(format.as_str())
@@ -977,6 +1406,9 @@ fn spawn_child(
     if let Some(id) = &params.target_id {
         cmd.arg("--target-id").arg(id);
     }
+    if let Some(feature_id) = &params.target_feature_id {
+        cmd.arg("--target-feature-id").arg(feature_id);
+    }
 
     let output = cmd.output().with_context(|| {
         format!("spawning child process (format={format}, scenario={scenario})")
@@ -988,9 +1420,11 @@ fn spawn_child(
         );
     }
 
-    let notes = child_disclosures(&String::from_utf8_lossy(&output.stderr));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let notes = child_disclosures(&stderr);
+    let lookup = child_lookup_counters(&stderr)?;
     let stdout = String::from_utf8(output.stdout).context("child stdout was not valid UTF-8")?;
-    let line = stdout.trim();
+    let line = protocol_line(&stdout);
     let fields: Vec<&str> = line.split_whitespace().collect();
     // 4 fields: local transport (unchanged since Task 8). 6 fields: http
     // transport, `bytes_read`/`http_requests` appended (see
@@ -1025,6 +1459,7 @@ fn spawn_child(
             .with_context(|| format!("parsing result_count from '{}'", fields[3]))?,
         io,
         notes,
+        lookup,
     })
 }
 
@@ -1036,7 +1471,7 @@ fn spawn_child(
 /// total is the correct SELECTIVITY denominator only for [`Scenario::BBoxQuery`]
 /// (feature-level numerator over a feature-level denominator, for every
 /// format). For the CityObject-level scenarios (`AttrFilter`/`AttrStats`/
-/// `Project`/`IdLookup`), [`run`] instead uses the dataset-global CityObject
+/// `IdLookup`), [`run`] instead uses the dataset-global CityObject
 /// total — this same function called once against the `cityparquet` package
 /// — as a SHARED denominator across every format, so those scenarios'
 /// selectivity is directly comparable and always in `(0, 1]` (see this
@@ -1046,10 +1481,13 @@ fn total_count_for(format: Format, source: &Source) -> Result<u64> {
     Ok(line.result_count)
 }
 
-/// Runs one (format, scenario, params) measurement: `repeat + 1` fresh child
-/// processes (the first discarded as a warmup), then the MEDIAN `time_s` (+
-/// MAD), the MAX `peak_heap_bytes`/`ru_maxrss_bytes` across the `repeat` warm
-/// samples, and `result_count` from the first warm sample (every warm sample
+/// Runs one (format, scenario, params) measurement: up to `repeat + 1` fresh
+/// child processes, back to back (the first discarded as a warmup; fewer
+/// warm samples only when the cell time budget stops sampling, see
+/// [`SamplingPlan`], which also tags the row `budget`), then every
+/// [`TimingStats`] statistic of the warm samples' times, the MAX
+/// `peak_heap_bytes`/`ru_maxrss_bytes` across the warm samples, the number
+/// of warm samples taken in `repeat`, and `result_count` from the first warm sample (every warm sample
 /// measures the identical scenario against the identical unmodified input,
 /// so they always agree on `result_count`; only the timing/memory varies).
 /// Buffers one CSV row (see [`run`] on why rows are held to the end) and
@@ -1059,17 +1497,18 @@ fn total_count_for(format: Format, source: &Source) -> Result<u64> {
 fn run_measurement(
     rows: &mut Vec<Row>,
     samples: &mut Vec<Sample>,
+    gate: &mut Gate,
     dataset: &str,
     format: Format,
     label: &str,
     source: &Source,
     scenario: Scenario,
     params: &QueryParams,
-    repeat: usize,
+    sampling: &SamplingPlan,
     total_for_selectivity: Option<u64>,
     notes: &str,
 ) -> Result<u64> {
-    let mut times = Vec::with_capacity(repeat);
+    let mut times = Vec::with_capacity(sampling.repeat);
     let mut peak_heap_max = 0u64;
     let mut peak_rss_max = 0u64;
     let mut result_count: Option<u64> = None;
@@ -1078,12 +1517,23 @@ fn run_measurement(
     // unmodified remote object, so bytes/requests are deterministic across
     // repeats (unlike timing) — no need to aggregate beyond "the first one".
     let mut io: Option<IoStats> = None;
+    let mut lookup: Option<LookupCounters> = None;
     // Likewise the first warm sample's own disclosures (see
     // [`ChildLine::notes`]): which mechanism a runner took is a property of
     // the artefact, identical in every repeat.
     let mut child_notes: Vec<String> = Vec::new();
 
-    for i in 0..=repeat {
+    // The cell's wall time, warm-up included, for the budget stop rule.
+    let cell_start = Instant::now();
+    let cell = format!("{dataset}/{label}/{scenario}/{notes}");
+    let mut cell_load = isolation::CellLoad::default();
+    let mut busy = false;
+    for i in 0..=sampling.repeat {
+        let (load, sample_busy) = gate.before_sample(&cell);
+        busy |= sample_busy;
+        if let Some(load) = &load {
+            cell_load.add(load);
+        }
         let line = spawn_child(format, scenario, source, params)?;
         samples.push(Sample {
             dataset: dataset.to_string(),
@@ -1096,9 +1546,14 @@ fn run_measurement(
             peak_rss_bytes: line.ru_maxrss_bytes,
             peak_heap_bytes: line.peak_heap_bytes,
             result_count: line.result_count,
+            cell_budget_s: sampling.cell_budget_s(),
+            min_repeat: sampling.min_repeat,
+            load1: load.map(|l| l.load1),
+            runnable: load.map(|l| l.runnable),
+            mem_available_bytes: load.and_then(|l| l.mem_available_bytes),
         });
         if i == 0 {
-            // Warmup: discarded entirely (never contributes to the median,
+            // Warmup: discarded entirely (never contributes to the mean,
             // the MAX peak metrics, or `result_count`).
             continue;
         }
@@ -1108,13 +1563,17 @@ fn run_measurement(
         if result_count.is_none() {
             result_count = Some(line.result_count);
             io = line.io;
+            lookup = line.lookup;
             child_notes = line.notes;
         }
+        if sampling.stop_after(times.len(), cell_start.elapsed()) {
+            break;
+        }
     }
+    let taken = times.len();
 
     let result_count = result_count.expect("repeat >= 1 guarantees at least one warm sample");
-    let time_s = median(&times);
-    let time_mad_s = mad(&times, time_s);
+    let timing = TimingStats::of(&times);
 
     let selectivity = match scenario {
         Scenario::Count | Scenario::FullRead => None,
@@ -1127,180 +1586,86 @@ fn run_measurement(
         tags.push(notes.to_string());
     }
     tags.extend(child_notes);
+    if sampling.stopped_early(taken) {
+        tags.push("budget".to_string());
+    }
+    if busy {
+        tags.push("busy".to_string());
+    }
+    gate.cells.push(serde_json::json!({
+        "dataset": dataset,
+        "format": label,
+        "scenario": scenario.to_string(),
+        "query_tag": notes,
+        "load1_max": cell_load.load1_max,
+        "runnable_max": cell_load.runnable_max,
+        "mem_available_min_bytes": cell_load.mem_available_min_bytes,
+        "busy": busy,
+    }));
 
     rows.push(Row {
         dataset: dataset.to_string(),
         label: label.to_string(),
-        measure: Measure::Read(scenario),
+        scenario,
         selectivity,
         result_count,
-        time_s,
-        time_mad_s,
+        timing,
         peak_heap_bytes: peak_heap_max,
         peak_rss_bytes: peak_rss_max,
-        repeat,
+        repeat: taken,
         notes: tags,
         io,
+        lookup,
     });
 
     Ok(result_count)
 }
 
-/// One variant's write: a discarded warmup and `write_repeat` warm repeats,
-/// each a child process converting into a fresh directory INSIDE
-/// `prepared_dir` (a rename across filesystems would fail, and a 1M-object
-/// package does not belong in /tmp). The last repeat's package is kept as
-/// `<prepared_dir>/<base>.<id>.parquet`; returns that path.
-fn run_write(
-    rows: &mut Vec<Row>,
-    samples: &mut Vec<Sample>,
-    dataset: &str,
+/// Builds one variant's package: the prepared CityJSONSeq converted with the
+/// variant's recipe into a scratch directory INSIDE `prepared_dir` (a rename
+/// across filesystems would fail, and a 1M-object package does not belong in
+/// /tmp), then moved to `<prepared_dir>/<base>.<id>.parquet`; returns that
+/// path. Untimed: the configuration run measures the reads of the package
+/// and its size, not how long it took to build.
+///
+/// `ConvertOptions` is filled the way the prepare script's `cityparquet
+/// convert --ordering hilbert` fills it (Hilbert row order,
+/// `generate_lod0: true`, the default batch size), so a variant package has
+/// the same content as `<base>.parquet` and differs from it only in the
+/// recipe under test. A library-default `ConvertOptions::new`
+/// would leave LoD0 generation OFF and the row counts would not line up.
+///
+/// Hilbert order is also the library default, and it is pinned here
+/// regardless — as `--ordering hilbert` is in the prepare script — so the
+/// benchmark states its configuration rather than inheriting it, and a later
+/// change of default cannot change what its figures measure.
+fn build_variant(
     base: &str,
     id: &str,
+    variant: &Variant,
     prepared_dir: &Path,
     seq: &Path,
-    write_repeat: usize,
 ) -> Result<PathBuf> {
-    let self_exe = std::env::current_exe().context("cannot determine own executable path")?;
-    let mut times = Vec::with_capacity(write_repeat);
-    let mut peak_heap_max = 0u64;
-    let mut peak_rss_max = 0u64;
-    let mut object_count: Option<u64> = None;
-    let mut kept: Option<tempfile::TempDir> = None;
+    let scratch = tempfile::Builder::new()
+        .prefix(&format!(".{base}.{id}.build."))
+        .tempdir_in(prepared_dir)
+        .with_context(|| format!("creating a scratch directory in {}", prepared_dir.display()))?;
+    let built = scratch.path().join("pkg");
+    let mut opts = cityparquet::package::ConvertOptions::new(seq.to_path_buf(), built.clone());
+    opts.recipe = variant.recipe();
+    opts.ordering = RowOrder::Hilbert;
+    opts.generate_lod0 = true;
+    cityparquet::package::convert(&opts)
+        .with_context(|| format!("converting with variant '{id}'"))?;
 
-    for i in 0..=write_repeat {
-        let scratch = tempfile::Builder::new()
-            .prefix(&format!(".{base}.{id}.repeat."))
-            .tempdir_in(prepared_dir)
-            .with_context(|| {
-                format!("creating a scratch directory in {}", prepared_dir.display())
-            })?;
-        let out = scratch.path().join("pkg");
-        let output = Command::new(&self_exe)
-            .arg("--child")
-            .arg("--write")
-            .arg("--variant")
-            .arg(id)
-            .arg("--input")
-            .arg(seq)
-            .arg("--out")
-            .arg(&out)
-            .output()
-            .with_context(|| format!("spawning the write child (variant={id})"))?;
-        if !output.status.success() {
-            bail!(
-                "write child failed (variant={id}); stderr:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        let stdout =
-            String::from_utf8(output.stdout).context("write child stdout was not valid UTF-8")?;
-        let fields: Vec<&str> = stdout.split_whitespace().collect();
-        if fields.len() != 4 {
-            bail!(
-                "expected 4 fields from the write child, got {} in '{}'",
-                fields.len(),
-                stdout.trim()
-            );
-        }
-        let time_s: f64 = fields[0]
-            .parse()
-            .with_context(|| format!("parsing time_s from '{}'", fields[0]))?;
-        let heap: u64 = fields[1]
-            .parse()
-            .with_context(|| format!("parsing peak_heap_bytes from '{}'", fields[1]))?;
-        let rss: u64 = fields[2]
-            .parse()
-            .with_context(|| format!("parsing ru_maxrss_bytes from '{}'", fields[2]))?;
-        let count: u64 = fields[3]
-            .parse()
-            .with_context(|| format!("parsing object_count from '{}'", fields[3]))?;
-        samples.push(Sample {
-            dataset: dataset.to_string(),
-            format: id.to_string(),
-            scenario: "write".to_string(),
-            query_tag: String::new(),
-            sample_index: i,
-            warmup: i == 0,
-            time_s,
-            peak_rss_bytes: rss,
-            peak_heap_bytes: heap,
-            result_count: count,
-        });
-        if i == 0 {
-            continue; // warmup: the directory drops here and is deleted
-        }
-        times.push(time_s);
-        peak_heap_max = peak_heap_max.max(heap);
-        peak_rss_max = peak_rss_max.max(rss);
-        object_count = Some(count);
-        kept = Some(scratch); // an earlier warm repeat's TempDir drops and is deleted
-    }
-
-    let kept = kept.expect("write_repeat >= 1 guarantees a kept repeat");
     let target = prepared_dir.join(format!("{base}.{id}.parquet"));
     if target.exists() {
         fs::remove_dir_all(&target)
             .with_context(|| format!("removing the previous {}", target.display()))?;
     }
-    let scratch = kept.keep();
-    fs::rename(scratch.join("pkg"), &target)
-        .with_context(|| format!("moving the kept package to {}", target.display()))?;
-    fs::remove_dir(&scratch).with_context(|| format!("removing {}", scratch.display()))?;
-
-    let time_s = median(&times);
-    rows.push(Row {
-        dataset: dataset.to_string(),
-        label: id.to_string(),
-        measure: Measure::Write,
-        selectivity: None,
-        result_count: object_count.expect("at least one warm repeat"),
-        time_s,
-        time_mad_s: mad(&times, time_s),
-        peak_heap_bytes: peak_heap_max,
-        peak_rss_bytes: peak_rss_max,
-        repeat: write_repeat,
-        notes: Vec::new(),
-        io: None,
-    });
+    fs::rename(&built, &target)
+        .with_context(|| format!("moving the built package to {}", target.display()))?;
     Ok(target)
-}
-
-/// The median of `values` (must be non-empty).
-fn median(values: &[f64]) -> f64 {
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).expect("time_s is always finite"));
-    let n = sorted.len();
-    let mid = n / 2;
-    if n.is_multiple_of(2) {
-        (sorted[mid - 1] + sorted[mid]) / 2.0
-    } else {
-        sorted[mid]
-    }
-}
-
-/// The median absolute deviation of `values` from `med` (must be non-empty).
-fn mad(values: &[f64], med: f64) -> f64 {
-    let deviations: Vec<f64> = values.iter().map(|v| (v - med).abs()).collect();
-    median(&deviations)
-}
-
-/// What one CSV row measured: a conversion or one read scenario. `write`
-/// never enters [`Scenario::ALL`], so `--scenarios write` is rejected by the
-/// scenario parser and a write row can only come from the `--variants` path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Measure {
-    Write,
-    Read(Scenario),
-}
-
-impl std::fmt::Display for Measure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Measure::Write => f.write_str("write"),
-            Measure::Read(s) => f.write_str(s.as_str()),
-        }
-    }
 }
 
 /// One results-CSV row, held until the whole matrix has run.
@@ -1316,16 +1681,17 @@ struct Row {
     /// What the `format` column prints: `format.as_str()` on a format run,
     /// the variant id on a `--variants` run.
     label: String,
-    measure: Measure,
+    scenario: Scenario,
     selectivity: Option<f64>,
     result_count: u64,
-    time_s: f64,
-    time_mad_s: f64,
+    /// Every timing statistic over the warm samples (one sample on a cold row).
+    timing: TimingStats,
     peak_heap_bytes: u64,
     peak_rss_bytes: u64,
     repeat: usize,
     notes: Vec<String>,
     io: Option<IoStats>,
+    lookup: Option<LookupCounters>,
 }
 
 impl Row {
@@ -1342,21 +1708,35 @@ impl Row {
             Some(io) => (io.bytes.to_string(), io.requests.to_string()),
             None => (String::new(), String::new()),
         };
+        let lookup_fields = match self.lookup {
+            Some(l) => format!(
+                "{},{},{}",
+                l.row_groups_total, l.bloom_pruned, l.filter_bytes
+            ),
+            None => ",,".to_string(),
+        };
         let notes = self.notes.join(";");
-        let (dataset, format, scenario, result_count, time_s, time_mad_s) = (
+        let (dataset, format, scenario, result_count) = (
             &self.dataset,
             &self.label,
-            self.measure,
+            self.scenario.as_str(),
             self.result_count,
-            self.time_s,
-            self.time_mad_s,
         );
+        let TimingStats {
+            mean,
+            std,
+            median,
+            min,
+            max,
+            q1,
+            q3,
+        } = self.timing;
         let (peak_heap_bytes, peak_rss_bytes, repeat) =
             (self.peak_heap_bytes, self.peak_rss_bytes, self.repeat);
         format!(
-            "{dataset},{format},{scenario},{selectivity_field},{result_count},{time_s:.6},\
-             {time_mad_s:.6},{peak_heap_bytes},{peak_rss_bytes},{repeat},{notes},\
-             {bytes_field},{requests_field}"
+            "{dataset},{format},{scenario},{selectivity_field},{result_count},{mean:.6},{std:.6},\
+             {median:.6},{min:.6},{max:.6},{q1:.6},{q3:.6},{peak_heap_bytes},{peak_rss_bytes},{repeat},{notes},\
+             {bytes_field},{requests_field},{lookup_fields}"
         )
     }
 }
@@ -1449,17 +1829,48 @@ mod tests {
         Row {
             dataset: "delft.city.jsonl".to_string(),
             label: Format::FlatCityBuf.as_str().to_string(),
-            measure: Measure::Read(scenario),
+            scenario,
             selectivity: None,
             result_count: 1116,
-            time_s: 0.5,
-            time_mad_s: 0.0,
+            timing: TimingStats::of(&[0.5]),
             peak_heap_bytes: 1,
             peak_rss_bytes: 2,
             repeat: 1,
             notes: notes.iter().map(|n| (*n).to_string()).collect(),
             io: None,
+            lookup: None,
         }
+    }
+
+    /// A library that prints to stdout behind a runner's back must not be
+    /// able to break the child protocol. `fcb_core`'s indexed numeric-range
+    /// query does exactly that, so an `--attr-ge` measurement would
+    /// otherwise fail to parse rather than return a number.
+    #[test]
+    fn the_protocol_line_is_the_last_non_empty_stdout_line() {
+        assert_eq!(
+            protocol_line("0.001 10 20 30\n"),
+            "0.001 10 20 30",
+            "a clean child is unchanged"
+        );
+        assert_eq!(
+            protocol_line(
+                "index_start: 1234\nstart_position: 8\nquery condition: TerrainHeight Ge \
+                 2.45\n0.000467 19132 5255168 217\n"
+            ),
+            "0.000467 19132 5255168 217",
+            "library chatter before the protocol line must be ignored"
+        );
+        assert_eq!(
+            protocol_line("0.001 10 20 30\n\n  \n"),
+            "0.001 10 20 30",
+            "trailing blank lines are not the protocol line"
+        );
+        assert_eq!(
+            protocol_line(""),
+            "",
+            "an empty capture yields an empty line"
+        );
     }
 
     /// The `notes` column is one CSV field, so several tags on one row must
@@ -1469,7 +1880,7 @@ mod tests {
     fn several_notes_tags_stay_inside_one_csv_field() {
         let rendered = row(
             Scenario::AttrFilter,
-            &["object_type=Building", "no-attr-index"],
+            &["attr=b3_dak_type=slanted", "no-attr-index"],
         )
         .render();
         assert_eq!(
@@ -1479,32 +1890,118 @@ mod tests {
             CSV_HEADER.split(',').count()
         );
         assert!(
-            rendered.contains("object_type=Building;no-attr-index"),
+            rendered.contains("attr=b3_dak_type=slanted;no-attr-index"),
             "tags must be joined with ';': {rendered}"
         );
     }
 
-    /// A run whose formats disagreed on `AttrFilter(object_type)` is not
-    /// measuring the same query in every row of that scenario. Warning about
-    /// it on stderr alone leaves the CSV — the thing that gets published and
-    /// plotted — indistinguishable from a clean run's.
+    fn labelled(label: &str, scenario: Scenario, notes: &[&str], count: u64) -> Row {
+        let mut r = row(scenario, notes);
+        r.label = label.to_string();
+        r.result_count = count;
+        r
+    }
+
+    /// Tokyo's shape: 49,915 CityObjects in 38,743 features, and one window
+    /// selecting 499 objects in 262 features.
+    fn tokyo_like() -> params::ResolvedParams {
+        params::ResolvedParams {
+            dataset: "tokyo.city.json".to_string(),
+            windows: vec![params::BboxWindow {
+                tag: "bbox-1pct".to_string(),
+                target: 0.01,
+                achieved: 0.01,
+                window: [0.0; 6],
+                approx: false,
+                objects: 499,
+                features: 262,
+            }],
+            id_probes: Vec::new(),
+            attr_filter: None,
+            feature_probes: Vec::new(),
+            numeric_attr: None,
+            cp_object_total: 49_915,
+            cp_feature_total: 38_743,
+            swap_xy: true,
+        }
+    }
+
+    fn formats() -> HashMap<String, Format> {
+        [Format::CityJson, Format::CityJsonSeq, Format::CityParquet]
+            .into_iter()
+            .map(|f| (f.as_str().to_string(), f))
+            .collect()
+    }
+
     #[test]
-    fn a_spoiled_run_is_visible_in_the_csv_not_only_on_stderr() {
+    fn counts_that_agree_at_their_own_level_pass() {
         let mut rows = vec![
-            row(Scenario::AttrFilter, &["object_type=Building"]),
-            row(Scenario::Count, &[]),
+            labelled("cityjson", Scenario::BBoxQuery, &["bbox-1pct"], 499),
+            labelled(
+                "cityjsonseq",
+                Scenario::BBoxQuery,
+                &["bbox-1pct;approx"],
+                262,
+            ),
+            labelled("cityparquet", Scenario::BBoxQuery, &["bbox-1pct"], 499),
+            labelled("cityjson", Scenario::Count, &[], 49_915),
+            labelled("cityjsonseq", Scenario::Count, &[], 38_743),
+            labelled("cityjson", Scenario::IdLookup, &["id-50pct"], 1),
+            labelled("cityjsonseq", Scenario::IdLookup, &["id-50pct"], 1),
         ];
-        tag_attr_filter_mismatch(&mut rows);
-        assert!(
-            rows[0].render().contains(ATTR_FILTER_MISMATCH),
-            "the attr-filter row must carry the disclosure: {}",
-            rows[0].render()
+        assert!(check_consistency(&mut rows, &formats(), &tokyo_like()).is_empty());
+        assert!(rows.iter().all(|r| !r.render().contains(COUNT_MISMATCH)));
+    }
+
+    /// The defect this check exists for: every source-order format returned
+    /// 0 on a latitude-first dataset while CityParquet returned 499, and the
+    /// run still reported itself consistent.
+    #[test]
+    fn the_tokyo_zeros_fail_and_name_the_scenario_format_and_counts() {
+        let mut rows = vec![
+            labelled("cityjson", Scenario::BBoxQuery, &["bbox-1pct"], 0),
+            labelled("cityjsonseq", Scenario::BBoxQuery, &["bbox-1pct"], 0),
+            labelled("cityparquet", Scenario::BBoxQuery, &["bbox-1pct"], 499),
+        ];
+        let failures = check_consistency(&mut rows, &formats(), &tokyo_like());
+        assert_eq!(
+            failures,
+            vec![
+                "bbox-1pct: cityjson reports 0, expected 499 CityObjects".to_string(),
+                "bbox-1pct: cityjsonseq reports 0, expected 262 features".to_string(),
+            ]
+        );
+        assert!(rows[0].render().contains(COUNT_MISMATCH));
+        assert!(!rows[2].render().contains(COUNT_MISMATCH));
+    }
+
+    #[test]
+    fn a_seeded_disagreement_without_a_reference_fails_too() {
+        let mut rows = vec![
+            labelled(
+                "cityjson",
+                Scenario::AttrStats,
+                &["attr=measuredHeight"],
+                38_743,
+            ),
+            labelled(
+                "cityjsonseq",
+                Scenario::AttrStats,
+                &["attr=measuredHeight"],
+                38_742,
+            ),
+            labelled("cityjson", Scenario::IdLookup, &["id-miss"], 0),
+            labelled("cityjsonseq", Scenario::IdLookup, &["id-miss"], 0),
+        ];
+        let failures = check_consistency(&mut rows, &formats(), &tokyo_like());
+        assert_eq!(
+            failures,
+            vec!["attr-stats: formats disagree: cityjson=38743, cityjsonseq=38742".to_string()]
         );
         assert!(
-            !rows[1].render().contains(ATTR_FILTER_MISMATCH),
-            "only the rows whose counts disagreed are tagged: {}",
-            rows[1].render()
+            rows[0].render().contains(COUNT_MISMATCH) && rows[1].render().contains(COUNT_MISMATCH)
         );
+        assert!(!rows[2].render().contains(COUNT_MISMATCH));
     }
 
     /// A `cold` row is excluded from the charts by an EXACT `notes == "cold"`
@@ -1514,7 +2011,8 @@ mod tests {
     #[test]
     fn a_cold_rows_notes_field_is_exactly_cold() {
         let rendered = row(Scenario::FullRead, &["cold"]).render();
-        let notes = rendered.split(',').nth(10).unwrap();
+        let notes_index = CSV_HEADER.split(',').position(|c| c == "notes").unwrap();
+        let notes = rendered.split(',').nth(notes_index).unwrap();
         assert_eq!(notes, "cold");
     }
 
@@ -1537,5 +2035,39 @@ mod tests {
             vec!["attr-index-failed".to_string()]
         );
         assert!(child_disclosures("").is_empty());
+    }
+
+    #[test]
+    fn lookup_counters_fill_the_three_trailing_columns_and_are_empty_otherwise() {
+        let plain = row(Scenario::IdLookup, &["id-miss"]);
+        let rendered = plain.render();
+        assert!(rendered.ends_with("id-miss,,,,,"), "{rendered}");
+        assert_eq!(rendered.split(',').count(), CSV_HEADER.split(',').count());
+
+        let mut counted = row(Scenario::IdLookup, &["id-miss"]);
+        counted.lookup = Some(LookupCounters {
+            row_groups_total: 16,
+            bloom_pruned: 15,
+            filter_bytes: 4096,
+        });
+        let rendered = counted.render();
+        assert!(rendered.ends_with("id-miss,,,16,15,4096"), "{rendered}");
+        assert_eq!(rendered.split(',').count(), CSV_HEADER.split(',').count());
+    }
+
+    #[test]
+    fn a_childs_lookup_counters_are_read_from_its_marker_line() {
+        let stderr = format!("some log\n{LOOKUP_STATS_MARKER} 16 15 4096\n");
+        assert_eq!(
+            child_lookup_counters(&stderr).unwrap(),
+            Some(LookupCounters {
+                row_groups_total: 16,
+                bloom_pruned: 15,
+                filter_bytes: 4096,
+            })
+        );
+        assert_eq!(child_lookup_counters("some log\n").unwrap(), None);
+        assert!(child_lookup_counters(&format!("{LOOKUP_STATS_MARKER} 1 2\n")).is_err());
+        assert!(child_lookup_counters(&format!("{LOOKUP_STATS_MARKER} 1 2 3 4\n")).is_err());
     }
 }

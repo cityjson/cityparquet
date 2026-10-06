@@ -9,11 +9,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cityparquet_schema::{
-    AttributeInferer, CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, CityParquetError,
-    CityParquetSchema, CrsState, ExtensionRegistry, GeoColumnEntry, GeoMetadata, GeometryEncoding,
-    Lod, ModuleKey, ModuleKeyResolver, Result, SourceFormat as SchemaSourceFormat,
-    geometry_column_name, normalise_attribute_name,
+    AttributeInferer, AttributeType, CITYPARQUET_VERSION, CityColumnEntry, CityMetadata,
+    CityParquetError, CityParquetSchema, CrsState, ExtensionDeclarations, ExtensionNaming,
+    ExtensionRegistry, GeoColumnEntry, GeoMetadata, GeometryEncoding, Lod, ModuleKey,
+    ModuleKeyResolver, Result, SourceFormat as SchemaSourceFormat, geometry_column_name,
 };
+
+use cardinality_estimator::CardinalityEstimator;
 
 use cjseq::GeometryType;
 
@@ -21,6 +23,34 @@ use crate::source::{Source, SourceFormat};
 use cityparquet_schema::crs::AxisOrder;
 
 use crate::wkb_write::{VertexPool, geometry_bbox};
+
+/// A scalar string attribute column gets a bloom filter when its estimated
+/// distinct count is at least this fraction of its non-null count
+/// (specification `05-metadata.mdx`, "Recommended writer defaults").
+pub const BLOOM_DISTINCT_RATIO: f64 = 0.2;
+
+/// Distinct-value sketch for one attribute column's JSON-string values: the
+/// non-null count and a HyperLogLog++ estimate (precision 12: exact below
+/// 129 distinct values, about 1.6 % standard error above, at most ~3 KiB
+/// whatever the row count).
+#[derive(Default)]
+struct StringCardinality {
+    non_null: u64,
+    distinct: CardinalityEstimator<str>,
+}
+
+impl StringCardinality {
+    fn observe(&mut self, value: &str) {
+        self.non_null += 1;
+        self.distinct.insert(value);
+    }
+
+    /// `estimated_distinct >= 0.2 × non_null`, never for an all-null column.
+    fn qualifies(&self) -> bool {
+        self.non_null > 0
+            && self.distinct.estimate() as f64 >= BLOOM_DISTINCT_RATIO * self.non_null as f64
+    }
+}
 
 /// Outcome of scanning a [`Source`] once: the inferred schema plus the
 /// dataset-level facts ([`CityParquetMetadata`] needs) that only a full scan
@@ -67,9 +97,10 @@ pub struct ScanResult {
     pub crs_diagnostic: Option<String>,
     /// The CityJSON header's `transform`, kept for the writer's requantisation.
     pub transform: serde_json::Value,
-    /// The CityJSON header's `extensions` declarations, verbatim (absent
-    /// stays `None`; an empty object stays an empty object).
-    pub extensions: Option<serde_json::Value>,
+    /// The source's extension declarations as `city.extensions`, keyed by
+    /// namespace (spec "Extensions"; absent stays `None`, an empty
+    /// `extensions` member stays an empty map). See [`Self::naming`].
+    pub extensions: Option<ExtensionDeclarations>,
     /// The CityJSON header's `metadata` object, re-serialised verbatim. See
     /// [`CityParquetMetadata::source_metadata`] for the passthrough
     /// limitation (e.g. `fullMetadataUrl` is never preserved).
@@ -119,6 +150,15 @@ pub struct ScanResult {
     /// type sets — never a dataset-wide union stamped onto every file (spec
     /// "The footer describes the file it lives in").
     pub module_geo: BTreeMap<ModuleKey, BTreeMap<Lod, BTreeSet<String>>>,
+    /// The `String` attribute columns that get a bloom filter under an
+    /// enabled [`crate::recipe::BloomPolicy`]: those whose estimated distinct
+    /// count is at least [`BLOOM_DISTINCT_RATIO`] of their non-null count.
+    /// Always a subset of `schema.attributes` of type `String`: a diverted
+    /// name leaves it, both here and in
+    /// [`Self::add_synthesized_lod0_column`]. Decided dataset-wide — a
+    /// partitioned conversion stamps the whole-dataset set into every
+    /// partition (`crate::package::CanonicalSchema::bloom_attributes`).
+    pub bloom_attributes: BTreeSet<String>,
     source_format: SchemaSourceFormat,
     source_version: String,
 }
@@ -185,9 +225,19 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 /// (see `extension_module_real_data.rs`'s
 /// `unresolvable_extension_type_is_a_clean_schema_error`), just one pass
 /// earlier — fail fast rather than fail during encode.
+///
+/// Extension names are attributed here too (spec "Extensions"): a CityJSON
+/// `+` attribute is inferred under its namespace-prefixed column name, and a
+/// `+` name the declared extensions cannot attribute — or a core attribute
+/// or class carrying a declared namespace prefix — rejects the source before
+/// anything is written.
 pub fn scan(source: &Source) -> Result<ScanResult> {
     let header = source.header();
+    let extensions =
+        cityparquet_schema::extensions::declarations_from_cityjson(header.extensions.as_ref())?;
+    let naming = ExtensionNaming::new(extensions.as_ref());
     let mut inferer = AttributeInferer::default();
+    let mut string_cardinality: BTreeMap<String, StringCardinality> = BTreeMap::new();
     let mut lod_strings: Vec<String> = Vec::new();
     let mut object_count = 0usize;
     let mut bbox_with_lod: Option<[f64; 6]> = None;
@@ -199,9 +249,9 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     let mut resolver = ModuleKeyResolver::new(ExtensionRegistry::new());
     let mut module_lod_sets: BTreeMap<ModuleKey, BTreeSet<Lod>> = BTreeMap::new();
     let mut module_geo: BTreeMap<ModuleKey, BTreeMap<Lod, BTreeSet<String>>> = BTreeMap::new();
-    // Whether the source carries any `GeometryInstance` — its `template.point`
+    // Whether the source carries any `GeometryInstance` — its `implicit_geometry.point`
     // (the placement anchor, in DATASET coordinates — see
-    // `crate::encode::build_template`) is a CRS-bearing coordinate in its own
+    // `crate::encode::build_implicit_geometry`) is a CRS-bearing coordinate in its own
     // right (spec "CRS rules"), distinct from `geometries_with_lod` (which
     // only counts LoD-bearing analysis geometry).
     let mut has_geometry_instance = false;
@@ -256,6 +306,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
 
         for (id, co) in &feature.city_objects {
             object_count += 1;
+            naming.encode_name(&co.thetype, "city-object type")?;
             let module_key = resolver.resolve(&co.thetype)?;
             // Every module actually encountered gets an entry, even one with
             // no analysis geometry at all — see the field's doc comment.
@@ -263,7 +314,21 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
 
             if let Some(attrs) = co.attributes.as_ref().and_then(|v| v.as_object()) {
                 for (name, value) in attrs {
-                    inferer.observe(&normalise_attribute_name(name), value);
+                    let name = naming.encode_name(name, "attribute")?;
+                    // Only JSON strings: a column that ends up `String`
+                    // holds nothing else (numbers, booleans and arrays
+                    // promote it to another type).
+                    if let serde_json::Value::String(text) = value {
+                        match string_cardinality.get_mut(&name) {
+                            Some(sketch) => sketch.observe(text),
+                            None => {
+                                let mut sketch = StringCardinality::default();
+                                sketch.observe(text);
+                                string_cardinality.insert(name.clone(), sketch);
+                            }
+                        }
+                    }
+                    inferer.observe(&name, value);
                 }
             }
 
@@ -304,7 +369,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
                     None => {
                         // A `GeometryInstance` is lod-less by design — its
                         // referenced template carries the lod (§12) and it
-                        // routes to the `template` column, not a geometry
+                        // routes to the `implicit_geometry` column, not a geometry
                         // column. Any OTHER lod-less geometry is invalid
                         // CityJSON 2.0 (§3 requires `lod` on every
                         // non-instance geometry) and MUST be rejected here,
@@ -483,6 +548,20 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         }
     }
 
+    // The high-cardinality rule, decided on the FINAL attribute set: a
+    // diverted name has no column, and a column that inferred any type but
+    // `String` (a Date or Timestamp, a Json mix) is never a candidate.
+    let bloom_attributes: BTreeSet<String> = attributes
+        .iter()
+        .filter(|(name, ty)| {
+            *ty == AttributeType::String
+                && string_cardinality
+                    .get(name)
+                    .is_some_and(StringCardinality::qualifies)
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+
     let schema = CityParquetSchema {
         lods: lods.clone(),
         // Exactly the LoDs `geo` will declare, so the GEOMETRY annotation and
@@ -495,6 +574,11 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         // three-way distinction lives in the footer's `city`/`geo` objects,
         // which is where a reader looks for it.
         crs: crs.known().cloned(),
+        extension_namespaces: extensions
+            .iter()
+            .flatten()
+            .map(|(ns, _)| ns.clone())
+            .collect(),
     };
 
     let module_lods: BTreeMap<ModuleKey, Vec<Lod>> = module_lod_sets
@@ -513,7 +597,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         crs,
         crs_diagnostic,
         transform,
-        extensions: header.extensions.clone(),
+        extensions,
         source_metadata,
         appearance_defaults,
         diverted_attribute_names,
@@ -521,12 +605,19 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         synthesize_lod0: None,
         module_lods,
         module_geo,
+        bloom_attributes,
         source_format: to_schema_source_format(source.format()),
         source_version: header.version.clone(),
     })
 }
 
 impl ScanResult {
+    /// The naming policy the source's declared extensions impose (spec
+    /// "Extensions"): the encoder stores every extension name through it.
+    pub fn naming(&self) -> ExtensionNaming {
+        ExtensionNaming::new(self.extensions.as_ref())
+    }
+
     /// The GeoParquet-legal geometry columns as `(column name, geometry_types)`
     /// pairs, ascending by LoD (§13.3, G1) — the writer declares exactly these
     /// in `geo.columns`, and the highest-LoD one is the `primary_column`.
@@ -593,6 +684,10 @@ impl ScanResult {
             }
         }
         self.schema.attributes = kept;
+        // A diverted attribute has no column any more, so no filter either.
+        let attributes = &self.schema.attributes;
+        self.bloom_attributes
+            .retain(|name| attributes.iter().any(|(kept, _)| kept == name));
 
         // The synthesised footprint is a `MultiPolygon Z`, which is inside
         // GeoParquet's legal subset, so it is declared like any other legal

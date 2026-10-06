@@ -425,7 +425,7 @@ pub fn wkb_to_geometry(bytes: &[u8]) -> Result<DecodedGeometry> {
 }
 
 /// Parses a standalone PointZ WKB buffer (as produced by
-/// [`crate::wkb_write::point_to_wkb`]), for template points.
+/// [`crate::wkb_write::point_to_wkb`]), for implicit-geometry reference points.
 pub fn read_point(bytes: &[u8]) -> Result<[f64; 3]> {
     let mut cursor = Cursor::new(bytes);
     let tc = cursor.read_header()?;

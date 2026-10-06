@@ -1,0 +1,9 @@
+dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
+rotterdam_delfshaven.city.json,cityparquet,id-lookup,0.001172,1,0.021540,0.002351,0.020880,0.019901,0.027130,0.020144,0.021291,5508834,17846272,7,id-50pct,,,1,0,2048
+rotterdam_delfshaven.city.json,cityparquet,id-lookup,0.000000,0,0.003067,0.000398,0.002840,0.002606,0.003725,0.002752,0.003396,219431,12107776,7,id-miss,,,1,1,2048
+rotterdam_delfshaven.city.json,cityparquet,feature-lookup,0.001172,1,0.021346,0.000919,0.021409,0.020025,0.022474,0.020580,0.022177,5508839,17870848,7,feature-50pct,,,1,0,2048
+rotterdam_delfshaven.city.json,cityparquet,feature-lookup,0.000000,0,0.002971,0.000302,0.002914,0.002575,0.003454,0.002741,0.003185,219436,12083200,7,feature-miss,,,1,1,2048
+rotterdam_delfshaven.city.json,cityparquet+nobloom,id-lookup,0.001172,1,0.021339,0.001098,0.021720,0.019519,0.022445,0.020535,0.022310,5508850,17874944,7,id-50pct,,,1,0,0
+rotterdam_delfshaven.city.json,cityparquet+nobloom,id-lookup,0.000000,0,0.003870,0.000468,0.003709,0.003255,0.004685,0.003524,0.004195,239496,12918784,7,id-miss,,,1,0,0
+rotterdam_delfshaven.city.json,cityparquet+nobloom,feature-lookup,0.001172,1,0.021666,0.000988,0.021802,0.020251,0.022757,0.020881,0.022545,5508855,17883136,7,feature-50pct,,,1,0,0
+rotterdam_delfshaven.city.json,cityparquet+nobloom,feature-lookup,0.000000,0,0.003923,0.000240,0.004050,0.003472,0.004148,0.003803,0.004091,239517,12906496,7,feature-miss,,,1,0,0

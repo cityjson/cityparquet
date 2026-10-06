@@ -28,19 +28,19 @@ podman-compose. Verified directly, on both running containers, rather
 than by re-reading the config:
 
 - `nproc` inside both containers reports **128** (the host's full core
-  count) — `nproc` reflects CPU *affinity* (the cgroup `cpuset`
+  count) — `nproc` reflects CPU _affinity_ (the cgroup `cpuset`
   controller), which the limit does not touch, so this number alone does
   **not** show whether the limit binds.
 - `/sys/fs/cgroup/cpu.max` inside both containers: **`1600000 100000`**
   (a 1,600,000µs quota per 100,000µs period — 16 cores' worth of CPU
-  *bandwidth*, the controller that actually caps throughput).
+  _bandwidth_, the controller that actually caps throughput).
 - `/sys/fs/cgroup/memory.max` inside both containers: **`34359738368`**
   bytes, exactly 32GiB.
 - `podman inspect <container> --format '{{.Config.CreateCommand}}'` shows
   podman-compose 1.6.0 translated the Compose `deploy:` block into native
   podman flags at container-creation time: **`--cpus 16.0 -m 32g`** (also
   reflected in `HostConfig.NanoCpus = 16000000000`, `HostConfig.CpuQuota
-  = 1600000`, `HostConfig.Memory = 34359738368`) — identical on both
+= 1600000`, `HostConfig.Memory = 34359738368`) — identical on both
   `citybench-cjdb` and `citybench-citydb`.
 - **Enforcement was confirmed under load**, not just inferred from the
   cgroup files: 32 concurrent CPU-bound busy-loop workers were started
@@ -61,12 +61,12 @@ the container remains true and is worth knowing about separately: it is
 the reason `citydb-tool import cityjson`'s default thread count (which
 reads `nproc`) had to be capped explicitly with `--threads=4` (see
 the "Counting granularity" section's import notes) — that
-default reads CPU *affinity*, not the bandwidth quota, so it is unaffected
+default reads CPU _affinity_, not the bandwidth quota, so it is unaffected
 by whether the `--cpus` limit binds.
 
 ```
 ## Tables and row counts
-       table_name       
+       table_name
 ------------------------
  address
  ade
@@ -89,7 +89,7 @@ by whether the `--cpus` limit binds.
 
 
 ## Columns
-       table_name       | ordinal_position |          column_name          |        data_type         | is_nullable 
+       table_name       | ordinal_position |          column_name          |        data_type         | is_nullable
 ------------------------+------------------+-------------------------------+--------------------------+-------------
  address                |                1 | id                            | bigint                   | NO
  address                |                2 | objectid                      | text                     | YES
@@ -234,7 +234,7 @@ by whether the `--cpus` limit binds.
 
 
 ## Indexes
-       tablename        |           indexname            |                                                          indexdef                                                          
+       tablename        |           indexname            |                                                          indexdef
 ------------------------+--------------------------------+----------------------------------------------------------------------------------------------------------------------------
  address                | address_pk                     | CREATE UNIQUE INDEX address_pk ON citydb.address USING btree (id)
  ade                    | ade_pk                         | CREATE UNIQUE INDEX ade_pk ON citydb.ade USING btree (id)
@@ -354,13 +354,13 @@ alternatives" below for exactly when each is and isn't safe.
 
 ### The three counts
 
-| Source | Query | Count | Matches ground truth? |
-|---|---|---:|---|
-| Ground truth (source file) | `citybench.params.derive(...).total_city_objects` | **2231** | — |
-| cjdb | `SELECT count(*) FROM cjdb.city_object` | **2231** | Yes |
-| 3DCityDB v5, naive | `SELECT count(*) FROM citydb.feature` | 10045 | No — 4.5x overcount |
-| 3DCityDB v5, `is_toplevel = 1` only | joins `objectclass`, filters `is_toplevel = 1` | 1115 | No — undercount (drops `BuildingPart`) |
-| 3DCityDB v5, **recommended predicate** (above) | see above | **2231** | **Yes** |
+| Source                                         | Query                                             |    Count | Matches ground truth?                  |
+| ---------------------------------------------- | ------------------------------------------------- | -------: | -------------------------------------- |
+| Ground truth (source file)                     | `citybench.params.derive(...).total_city_objects` | **2231** | —                                      |
+| cjdb                                           | `SELECT count(*) FROM cjdb.city_object`           | **2231** | Yes                                    |
+| 3DCityDB v5, naive                             | `SELECT count(*) FROM citydb.feature`             |    10045 | No — 4.5x overcount                    |
+| 3DCityDB v5, `is_toplevel = 1` only            | joins `objectclass`, filters `is_toplevel = 1`    |     1115 | No — undercount (drops `BuildingPart`) |
+| 3DCityDB v5, **recommended predicate** (above) | see above                                         | **2231** | **Yes**                                |
 
 All three systems agree once the recommended predicate is applied to
 3DCityDB.
@@ -371,14 +371,14 @@ All three systems agree once the recommended predicate is applied to
 row per CityJSON CityObject. For this fixture the breakdown by
 `objectclass_id` is:
 
-| `objectclass_id` | `classname` | `is_toplevel` | rows |
-|---:|---|---:|---:|
-| 709 | WallSurface | 0 | 3350 |
-| 710 | GroundSurface | 0 | 2232 |
-| 712 | RoofSurface | 0 | 2232 |
-| 901 | Building | 1 | 1115 |
-| 902 | BuildingPart | 0 | 1116 |
-| — | **total** | — | **10045** |
+| `objectclass_id` | `classname`   | `is_toplevel` |      rows |
+| ---------------: | ------------- | ------------: | --------: |
+|              709 | WallSurface   |             0 |      3350 |
+|              710 | GroundSurface |             0 |      2232 |
+|              712 | RoofSurface   |             0 |      2232 |
+|              901 | Building      |             1 |      1115 |
+|              902 | BuildingPart  |             0 |      1116 |
+|                — | **total**     |             — | **10045** |
 
 `WallSurface`, `GroundSurface` and `RoofSurface` are CityGML **semantic
 (boundary) surfaces** — in CityJSON these live inside a geometry's
@@ -390,7 +390,7 @@ Two candidate single-column predicates were ruled out first:
 
 - **`count(*)` with no filter**: 10045 — includes the semantic surfaces.
 - **`objectclass.is_toplevel = 1`**: 1115 — correctly excludes the
-  semantic surfaces, but *also* incorrectly excludes `BuildingPart`
+  semantic surfaces, but _also_ incorrectly excludes `BuildingPart`
   (`is_toplevel = 0`), which nonetheless is a real CityJSON CityObject (a
   child of `Building`).
 
@@ -417,7 +417,7 @@ by a different path:
 
 This is the structural fact behind the recommended predicate above: **a
 `feature` row is a CityObject unless its objectclass, or an ancestor of
-it, is `AbstractSpaceBoundary` (id 13)** — *except* that this bare rule
+it, is `AbstractSpaceBoundary` (id 13)** — _except_ that this bare rule
 has one known counter-example (`ReliefFeature`, id `500`), which is why
 the recommended predicate adds `OR is_toplevel = 1` as a guard. See
 "ReliefFeature anomaly" below for that counter-example.
@@ -449,7 +449,7 @@ WHERE f.objectclass_id NOT IN (SELECT leaf_id FROM is_space_boundary);
 ```
 
 Only safe when the dataset is known not to contain any class descending
-from id 13 that is *also* `is_toplevel = 1` — `ReliefFeature` (id 500) is
+from id 13 that is _also_ `is_toplevel = 1` — `ReliefFeature` (id 500) is
 the one known instance of this in the current schema. This holds for
 `delft.city.jsonl` (buildings only) but is not proven to hold generally —
 see "ReliefFeature anomaly" below.
@@ -515,14 +515,16 @@ A query for `val_lod = '1.2'` (CityJSON's own notation) therefore matches
 **zero rows** — not an error, just silently the wrong answer. `citydb-tool`'s CityJSON importer
 collapses `"1.2"`/`"1.3"` into `"1"` and (presumably, unconfirmed for this
 buildings-only fixture, which has no LoD3/LoD2.3 geometry) `"2.2"`/`"2.3"`
-into `"2"`. `sql_citydb.py`'s `lod-extract` therefore targets `val_lod =
-'1'`, not `'1.2'`.
+into `"2"`. `sql_citydb.py`'s `lod-query` therefore targets `val_lod =
+'1'`, not `'1.2'`. Note what that widens: 3DCityDB's "LoD 1" covers
+CityJSON's 1.2 _and_ 1.3, so on a dataset carrying both, its `lod-query`
+row set is a superset of the other two systems'.
 
 Restricting to CityObject-granular features (the "Recommended predicate"
 above) matters here too, independently of the granularity predicate's
 role in `count`: `property.name = 'lod1Solid'` rows (the CityObject's own
 LoD1 solid geometry, one per `BuildingPart`) and `property.name =
-'lod1MultiSurface'` rows (the same solid's *boundary surfaces* — i.e. the
+'lod1MultiSurface'` rows (the same solid's _boundary surfaces_ — i.e. the
 `WallSurface`/`GroundSurface`/`RoofSurface` features' own LoD1 geometry)
 both carry `val_lod = '1'` and `val_geometry_id IS NOT NULL`. Without the
 CityObject-granularity predicate, `val_lod = '1' AND val_geometry_id IS
@@ -542,12 +544,12 @@ schemaname='citydb'` reading **59** immediately after import, before
 against a freshly-imported schema, not a step this harness's `ingest()`
 needs to call. Every column this benchmark's scenario queries filter, join
 or aggregate on is already covered by one of the 59: `feature_objectid_inx`
-(id-lookup, the parent lookup half of hierarchy), `feature_objectclass_inx`
-(count, project, attr-filter, semantic-surface, the CityObject-granularity
-predicate itself), `feature_envelope_spx` (bbox-query, GIST), `property_
-name_inx` (attr-stats), `property_val_geometry_fkx` (lod-extract),
-`property_feature_fkx` + `feature_pk` (the rest of hierarchy's join
-chain). Confirmed by `EXPLAIN` under default planner settings for every
+(id-lookup, the parent lookup half of parts-per-building),
+`feature_objectclass_inx` (count, attr-filter, the
+CityObject-granularity predicate itself), `feature_envelope_spx`
+(bbox-query, GIST), `property_name_inx` (attr-stats),
+`property_val_geometry_fkx` (lod-query), `property_feature_fkx` +
+`feature_pk` (the rest of parts-per-building's join chain). Confirmed by `EXPLAIN` under default planner settings for every
 scenario.
 `sql_citydb.index_ddl()` therefore returns an empty list: there is nothing
 genuinely missing to add, and adding a same-shape index under a new name

@@ -121,10 +121,14 @@ that CityParquet replaces a transactional system.
   measurements. The database suite has its own execution settings, including
   a multithreaded DuckDB configuration. These are local native measurements,
   not HTTP delivery or browser WebAssembly timings.
-- **Aggregation:** the format timings are medians of seven measured runs after
-  warm-up. The database timings are arithmetic means of seven measured runs,
-  as recorded in the exported CSV and shown by the figure's “Mean query time”
-  label. The two summaries use different statistics.
+- **Aggregation:** the format timings and the database timings both report
+  the same seven-column timing block over the measured runs (`time_mean_s`,
+  `time_std_s` as the population standard deviation, `time_median_s`,
+  `time_min_s`, `time_max_s`, `time_q1_s`, `time_q3_s`); the format reads and
+  the database reads follow a discarded warm-up and take 25 timed samples by
+  default, run back to back per cell, and the database write tier has its own
+  protocol. The figures plot the median by default (the mean with
+  `--statistic mean`), and each figure's caption names the statistic.
 - **Counting and geometry:** feature-level and CityObject-level operations are
   not interchangeable. Attribute filtering, aggregation, projection, and ID
   queries use CityObject granularity; full-read and spatial comparisons require
@@ -133,9 +137,7 @@ that CityParquet replaces a transactional system.
   cache, or a complete deployment footprint.
 - **Coverage:** the completeness file records family/metric presence, not a
   blanket correctness certificate. Failed or mismatched results remain visible.
-- **Compression:** size rankings apply to the tested settings. The separate
-  codec experiments use different default compression levels, so they do not
-  establish a universally best codec.
+- **Compression:** size rankings apply to the tested settings.
 
 The implementation is experimental. See the
 [format methodology](https://github.com/cityjson/cityparquet/tree/develop/benchmark/formats)

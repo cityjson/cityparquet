@@ -42,7 +42,7 @@ use super::geometry::{self, Polygon, RawSolid, RefTarget, SolidGeom, SurfaceRef}
 use super::vertices::VertexBuilder;
 use super::xml::{
     NS_APP, NS_BLDG, NS_GEN, NS_GML, get_attr_local, gml_id, ns_eq, ns_is, ns_of, skip_element,
-    xml_err,
+    unescaped_text, xml_err,
 };
 use crate::appearance::AppearanceInterner;
 
@@ -1498,7 +1498,7 @@ fn read_leaf_text<R: BufRead>(
     loop {
         buf.clear();
         match reader.read_event_into(buf).map_err(xml_err)? {
-            Event::Text(t) => text.push_str(&t.unescape().map_err(xml_err)?),
+            Event::Text(t) => text.push_str(&unescaped_text(&t)?),
             Event::CData(t) => text.push_str(&String::from_utf8_lossy(&t)),
             Event::Start(_) => {
                 has_child = true;

@@ -1,128 +1,134 @@
 ---
 title: Getting started
-description: Query a 3D city model with DuckDB in five minutes — including 3D volumes, without downloading the whole file.
+description: Query buildings across the Netherlands, measure a neighbourhood, and export it — directly from CityParquet on object storage.
 sidebar:
   badge: WIP
   icon: rocket
 ---
 
-The fastest way to feel what CityParquet is for: run an analytical query over a
-3D city model with [DuckDB](https://duckdb.org/) — including a **3D measurement
-over a whole tile without downloading it**. This page is the **copy-paste happy
-path**, no theory. For explained, task-oriented walkthroughs, see
-[Tutorials](/tutorials).
+These examples use [3DBAG](https://3dbag.nl), encoding roughly **11 million
+buildings across the Netherlands in one CityParquet file** hosted on object
+storage: [building.parquet](https://cityparquet.open3d.city/data/3dbag/building.parquet).
+The file contains both buildings and their geometry-bearing building parts.
+Query it directly with [DuckDB](https://duckdb.org/), without downloading the
+whole country first.
 
 :::tip[Nothing to install]
-The [SQL playground](/playground) runs the whole stack — DuckDB, `cityjson` and
-`three_d` — in your browser, over a 16.4 GB 3DBAG package on object storage. Use it to
-try the queries below before installing anything locally.
+The [SQL playground](/playground) runs DuckDB in your browser against the same
+3DBAG file. For the local file export in the final step, use the DuckDB SQL shell.
 :::
 
 <Steps>
-  <Step title="Install DuckDB and the extensions">
-    Install [DuckDB](https://duckdb.org/docs/installation/), then install both
-    extensions from the community registry. `cityjson` reads CityJSON and
-    CityJSONSeq; `three_d` measures and validates the resulting 3D geometry.
+  <Step title="Install DuckDB">
+    Install [DuckDB](https://duckdb.org/docs/installation/) and open its SQL
+    shell. DuckDB reads Parquet directly and automatically loads `httpfs` for
+    HTTPS access. The later measurement and export steps install their own
+    extensions.
+
+  </Step>
+
+  <Step title="Open the 3DBAG CityParquet file">
+    Preview five objects from the national dataset:
 
     ```sql
-    INSTALL cityjson FROM community;
-    LOAD cityjson;
+    SELECT *
+    FROM read_parquet(
+      'https://cityparquet.open3d.city/data/3dbag/building.parquet')
+    LIMIT 5;
+    ```
+
+    The URL points to a single file on object storage. There is no database
+    server to connect to or import step to complete.
+
+  </Step>
+
+  <Step title="How many buildings are taller than 100 metres?">
+    Count buildings across the Netherlands whose maximum roof elevation is
+    more than 100 metres above their ground level:
+
+    ```sql
+    SELECT COUNT(*) AS buildings_over_100m
+    FROM read_parquet(
+      'https://cityparquet.open3d.city/data/3dbag/building.parquet')
+    WHERE object_type = 'Building'
+      AND b3_h_dak_max - b3_h_maaiveld > 100;
+    ```
+
+    Roof and ground elevations use the same vertical datum, so subtracting
+    them gives height above ground, rather than elevation above sea level.
+    See the [3DBAG height documentation](https://docs.3dbag.nl/en/schema/layers/).
+    DuckDB needs only the object type and these two attributes; it does not
+    fetch the 3D geometry for this question. Buildings with missing height
+    values do not satisfy the filter.
+
+  </Step>
+
+  <Step title="What is the built volume in an area of Delft?">
+    Select a 1 km × 1 km window in Delft from the same national file and add
+    the volumes of its valid LoD 2.2 solids. The coordinates are in the dataset’s
+    Dutch national grid (`EPSG:7415`); the bounding-box filter includes objects
+    overlapping the window, without clipping them at its edge.
+
+    ```sql
     INSTALL three_d FROM community;
-    LOAD three_d;
-    ```
-
-    The registry lists [`cityjson`](https://duckdb.org/community_extensions/extensions/cityjson)
-    and [`three_d`](https://duckdb.org/community_extensions/extensions/three_d).
-    If an older version is already installed, refresh it with
-    `FORCE INSTALL cityjson FROM community;` and
-    `FORCE INSTALL three_d FROM community;`, then restart DuckDB and load them.
-
-    A plain DuckDB build already reads Parquet, so no extra extension is needed to
-    open a converted CityParquet package.
-
-  </Step>
-
-  <Step title="Open a CityParquet file">
-    A CityParquet package is a directory of Parquet files — one per CityGML
-    module. Read one of them with DuckDB's built-in `read_parquet` — no extension
-    required:
-
-    ```sql
-    SELECT * FROM read_parquet('mycityparquet/building.parquet');
-    ```
-
-    Or read a CityJSON / CityJSONSeq source directly through the `cityjson`
-    extension — remote URLs work too (the `httpfs` extension is auto-loaded):
-
-    ```sql
-    SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
-    ```
-
-  </Step>
-
-  <Step title="Run your first query">
-    Project a few columns and filter by object type — equality filters on
-    `id`, `feature_id`, and `object_type` are pushed down into the scan:
-
-    ```sql
-    -- How many objects of each type?
-    SELECT object_type, COUNT(*) AS cnt
-    FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
-    GROUP BY object_type;
-
-    -- Just the buildings
-    SELECT id, object_type
-    FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
-    WHERE object_type = 'Building';
-    ```
-
-  </Step>
-
-  <Step title="Measure 3D geometry — read only what you need">
-    Now the payoff: compute the **total built volume** of a whole tile with the
-    `three_d` extension. `ST_3DFromWKB` turns each stored solid into a measurable
-    `SOLID_3D`, and `ST_3DVolume` measures it. Guard with `ST_3DTryFromWKB` and the
-    validation report, because real reconstructions always contain a few invalid
-    solids:
-
-    ```sql
     LOAD three_d;
 
     SELECT ROUND(SUM(ST_3DVolume(solid)), 0) AS total_volume_m3
     FROM (
-      SELECT ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
-      FROM read_cityjsonseq(
-        'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl', lod => '2.2')
-      WHERE geometry_lod2_2 IS NOT NULL
+      SELECT ST_3DTryFromWKB(
+        geometry_lod2_2, to_json(geometry_properties_lod2_2)) AS solid
+      FROM read_parquet(
+        'https://cityparquet.open3d.city/data/3dbag/building.parquet')
+      WHERE bbox.xmin < 85000 AND bbox.xmax > 84000
+        AND bbox.ymin < 447000 AND bbox.ymax > 446000
+        AND geometry_lod2_2 IS NOT NULL
     )
     WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;
     ```
 
-    ```text
-    ┌─────────────────┐
-    │ total_volume_m3 │
-    ├─────────────────┤
-    │    1915861.0    │
-    └─────────────────┘
+    The result is a total in cubic metres, excluding solids that cannot be
+    decoded or fail validation. CityParquet stores each level of detail in
+    separate columns, so this query reads LoD 2.2 geometry and its companion
+    properties without fetching other LoDs. The spatial filter also allows
+    DuckDB to skip row groups outside the selected area.
+
+  </Step>
+
+  <Step title="Export the selected area to CityJSONSeq">
+    Use the `cityjson` extension to write the same Delft window as a local
+    CityJSONSeq file. Keep both buildings and building parts so the extract
+    includes attributes and geometry:
+
+    ```sql
+    INSTALL cityjson FROM community;
+    LOAD cityjson;
+
+    COPY (
+      SELECT * FROM read_parquet(
+        'https://cityparquet.open3d.city/data/3dbag/building.parquet')
+      WHERE object_type IN ('Building', 'BuildingPart')
+        AND bbox.xmin < 85000 AND bbox.xmax > 84000
+        AND bbox.ymin < 447000 AND bbox.ymax > 446000
+    )
+    TO 'delft_window.city.jsonl'
+      (FORMAT cityjsonseq, crs 'https://www.opengis.net/def/crs/EPSG/0/7415');
     ```
 
-    Every geometry column is LoD-suffixed, in this mode as much as in the default
-    wide one — `lod => '2.2'` restricts the read to one LoD, it does not rename the
-    column to a bare `geometry`.
-
-    Against a **CityParquet package on object storage**, the same query is the
-    cloud-native win: because only the geometry column is referenced, DuckDB fetches
-    only that column's bytes (**projection pushdown**) and prunes the row groups it
-    cannot match — so you compute over a national-scale model **without downloading
-    it**. The column names are the same either way, so swapping `read_cityjsonseq`
-    for `read_parquet` against the package's object table is the only change.
+    This export selects all columns for the matching objects, including their
+    available LoDs, and writes the file in your current directory. For more
+    detail, see [Working with 3DBAG at cloud scale — Convert to CityJSONSeq](/tutorials/cloud-scale-3dbag#convert-to-cityjsonseq-and-other-formats).
 
   </Step>
 </Steps>
 
-:::note[This is the unexplained happy path]
-Nothing here is explained — it is the shortest route from zero to a first query.
-The [Introduction](/#why-a-new-format) explains what CityParquet is and why, and
-the [Tutorials](/tutorials) walk through each task step by step, including the
-[duckdb-3d walkthrough](/tutorials/duckdb-3d) behind the volume query above.
+:::note[A whole country, only the data you need]
+You have queried a dataset of roughly **11 million buildings**, then measured
+and exported a selected area. DuckDB fetches only the columns and row groups
+needed by each query over the network, alongside the file metadata. The national
+height count may scan those attribute columns across all row groups; the Delft
+queries can skip unrelated groups. The export needs all columns for its selected
+objects. None of these steps requires downloading the entire CityParquet file.
+
+Continue with [Working with 3DBAG at cloud scale](/tutorials/cloud-scale-3dbag)
+for spatial queries, geometry analysis, and format conversion in more detail.
 :::

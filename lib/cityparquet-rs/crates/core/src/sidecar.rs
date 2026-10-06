@@ -64,8 +64,8 @@ fn schema_err(msg: impl Into<String>) -> CityParquetError {
 /// spec "Requirements depend on the file's role": a sidecar carries none of
 /// `source_format`/`attributes`/`primary_column`/`columns`, and this crate's
 /// sidecars hold no CRS-bearing coordinates of their own — materials/textures
-/// carry none at all, and `geometry_templates.parquet`'s own geometry is
-/// template-LOCAL, unplaced coordinates, so `city.crs` is correctly omitted
+/// carry none at all, and `implicit_geometries.parquet`'s own geometry is
+/// in local, unplaced coordinates, so `city.crs` is correctly omitted
 /// here too, per the spec's own worked example).
 fn sidecar_writer_properties() -> Result<WriterProperties> {
     let level = ZstdLevel::try_new(3)
@@ -146,7 +146,7 @@ fn push_opt_bool(b: &mut BooleanBuilder, v: Option<&Value>, field: &str) -> Resu
 /// field pinned to non-null `Float64` — a bare `ListBuilder::new(...)`'s
 /// default-derived item field is always nullable, which mismatches the
 /// schema's non-null item field at `RecordBatch::try_new` time (the same
-/// pitfall `crate::encode::RowWriter`'s `template_matrix` builder documents).
+/// pitfall `crate::encode::RowWriter`'s `implicit_geometry_matrix` builder documents).
 fn double_list_builder() -> ListBuilder<Float64Builder> {
     ListBuilder::new(Float64Builder::new()).with_field(Arc::new(Field::new(
         "item",
@@ -434,15 +434,15 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
     Ok(defs.len())
 }
 
-/// One row of `geometry_templates.parquet`: a geometry template's WKB (in
-/// its own template-local coordinate space, via [`crate::wkb_write::VertexPool::raw`]),
+/// One row of `implicit_geometries.parquet`: a relative geometry's WKB (in
+/// its own local coordinate space, via [`crate::wkb_write::VertexPool::raw`]),
 /// its `geometry_properties` (the same `STRUCT<type, surfaces, face_semantics,
 /// shells>` the main table uses — spec: "same struct, reused" — carried here
 /// as JSON `{"type", "surfaces"?, "face_semantics"?, "shells"?}` for
-/// call-site stability; [`write_templates`]/[`read_templates`] convert to/from
+/// call-site stability; [`write_implicit_geometries`]/[`read_implicit_geometries`] convert to/from
 /// the physical struct via the shared [`crate::geometry_properties`]
-/// machinery), its `lod` (a template is a single geometry at a single LoD —
-/// spec "geometry_templates.parquet" — so this is exactly one [`Lod`], never
+/// machinery), its `lod` (a relative geometry is a single geometry at a single LoD —
+/// spec "implicit_geometries.parquet" — so this is exactly one [`Lod`], never
 /// a per-row-optional value; that LoD picks WHICH physical `geometry_lod*`/
 /// `geometry_properties_lod*`/`material_lod*`/`texture_lod*` column set this
 /// row's data lands in, mirroring the main object table's own per-LoD
@@ -451,22 +451,22 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
 /// carrying the dataset-global ids the same
 /// [`crate::appearance::AppearanceInterner`] assigns the main table and the
 /// materials/textures sidecars. No `other`: spec
-/// "a geometry template is a plain geometry (WKB + properties + appearance)
+/// "a relative geometry is a plain geometry (WKB + properties + appearance)
 /// with no members left over to preserve".
 #[derive(Debug, Clone, PartialEq)]
-pub struct TemplateRow {
-    /// Dataset-global template identifier — what the object table's
-    /// `template.id` references. An integer, so a merge can shift a whole
-    /// package's template ids by one offset exactly as it does materials and
+pub struct ImplicitGeometryRow {
+    /// Dataset-global relative-geometry identifier — what the object table's
+    /// `implicit_geometry.id` references. An integer, so a merge can shift a whole
+    /// package's ids by one offset exactly as it does materials and
     /// textures. The writer assigns ordinal positions; a reader must NOT
     /// assume that, since a merged package's ids start wherever the offset
     /// put them.
     pub id: i64,
-    /// The template's identifier in the source document, when it had one.
+    /// The relative geometry's identifier in the source document, when it had one.
     /// Always `None` from a CityJSON source — `geometry-templates.templates`
     /// is a bare array whose entries carry no identifier — and the CityGML
-    /// reader emits no templates at all. The column exists so that a source
-    /// which does name its templates has somewhere to put it, now that `id`
+    /// reader emits no implicit geometries at all. The column exists so that a source
+    /// which does name its relative geometries has somewhere to put it, now that `id`
     /// is a remappable integer.
     pub name: Option<String>,
     pub lod: Lod,
@@ -476,18 +476,18 @@ pub struct TemplateRow {
     pub texture: Option<TextureCell>,
 }
 
-/// One LoD's worth of per-row column builders — the geometry-templates
+/// One LoD's worth of per-row column builders — the implicit-geometries
 /// sidecar's counterpart of `crate::encode::GeometrySlot`, driving the same
 /// [`crate::appearance_columns`] builders it does, so both tables' appearance
 /// columns are filled by one implementation.
-struct TemplateSlot {
+struct ImplicitGeometrySlot {
     geometry: BinaryBuilder,
     properties: GeometryPropertiesBuilder,
     material: MaterialCellBuilder,
     texture: TextureCellBuilder,
 }
 
-impl TemplateSlot {
+impl ImplicitGeometrySlot {
     fn new() -> Self {
         Self {
             geometry: BinaryBuilder::new(),
@@ -506,30 +506,32 @@ impl TemplateSlot {
 }
 
 /// Write one row per `rows[i]` to `path`, per
-/// [`cityparquet_schema::sidecar_schemas::geometry_templates_schema`]'s
+/// [`cityparquet_schema::sidecar_schemas::implicit_geometries_schema`]'s
 /// per-LoD-suffixed column mapping. The rendered schema covers exactly the
 /// distinct LoDs present in `rows` (never a wider, dataset-inherited set —
 /// mirrors the main object table's own `scan.lods`-driven column set, except
 /// here the "scan" is `rows` itself). Writes nothing and returns `0` when
 /// `rows` is empty. `id` and `name` are written verbatim — the caller assigns
-/// them, and the main-table `template.id` column carries the same `id` value,
+/// them, and the main-table `implicit_geometry.id` column carries the same `id` value,
 /// which is how a reader joins the two. Each row populates only its own
 /// `row.lod`'s column set, leaving
 /// every other LoD's columns null for that row (spec: "sparse by
-/// construction"). [`read_templates`] is the value-exact inverse.
-pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
+/// construction"). [`read_implicit_geometries`] is the value-exact inverse.
+pub fn write_implicit_geometries(path: &Path, rows: &[ImplicitGeometryRow]) -> Result<usize> {
     if rows.is_empty() {
         return Ok(0);
     }
     let mut lods: Vec<Lod> = rows.iter().map(|r| r.lod).collect();
     lods.sort();
     lods.dedup();
-    let schema = Arc::new(sidecar_schemas::geometry_templates_schema(&lods));
+    let schema = Arc::new(sidecar_schemas::implicit_geometries_schema(&lods));
 
     let mut id = Int64Builder::new();
     let mut name = StringBuilder::new();
-    let mut slots: Vec<(Lod, TemplateSlot)> =
-        lods.iter().map(|&lod| (lod, TemplateSlot::new())).collect();
+    let mut slots: Vec<(Lod, ImplicitGeometrySlot)> = lods
+        .iter()
+        .map(|&lod| (lod, ImplicitGeometrySlot::new()))
+        .collect();
 
     for row in rows {
         id.append_value(row.id);
@@ -569,9 +571,9 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
     Ok(rows.len())
 }
 
-/// Read `geometry_templates.parquet` at `path` back into one [`TemplateRow`]
+/// Read `implicit_geometries.parquet` at `path` back into one [`ImplicitGeometryRow`]
 /// per row, in file order. Missing file reads as empty (a dataset with no
-/// geometry templates never gets a sidecar written; whether an ABSENT-BUT-
+/// implicit geometries never gets a sidecar written; whether an ABSENT-BUT-
 /// MANIFEST-LISTED file is instead an error is `export`'s call to make, not
 /// this function's — see `crate::export`'s module doc for the M4 Codex-review
 /// Finding 1 gating).
@@ -584,7 +586,7 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
 /// (spec: "each row populates exactly the column set matching its own
 /// LoD") — zero or more than one is a `Schema` error naming the row.
 ///
-/// The join from a main-table `template.id` to a row here is BY VALUE, and
+/// The join from a main-table `implicit_geometry.id` to a row here is BY VALUE, and
 /// `id` is validated only for what the spec requires of it: "unique across
 /// rows". It is deliberately NOT checked against row position. This writer
 /// does assign dense ordinals, but a package whose sidecars have been merged
@@ -599,7 +601,7 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
 /// reason: `duckdb-cityjson`'s `OffsetSQL` is applied per sidecar,
 /// generically, so all three tables' ids shift together on a merge. All
 /// three resolve by value.
-pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
+pub fn read_implicit_geometries(path: &Path) -> Result<Vec<ImplicitGeometryRow>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -630,7 +632,7 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
         let id: &Int64Array = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
         let name: &StringArray = downcast(get_column(&batch, "name")?.as_ref(), "name")?;
 
-        let cols: Vec<(Lod, TemplateCols)> = lods
+        let cols: Vec<(Lod, ImplicitGeometryCols)> = lods
             .iter()
             .map(|&lod| {
                 let g = geometry_column_name("geometry", &lod);
@@ -639,7 +641,7 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
                 let t = geometry_column_name("texture", &lod);
                 Ok((
                     lod,
-                    TemplateCols {
+                    ImplicitGeometryCols {
                         geometry: downcast(get_column(&batch, &g)?.as_ref(), &g)?,
                         properties: downcast(get_column(&batch, &p)?.as_ref(), &p)?,
                         material: downcast(get_column(&batch, &m)?.as_ref(), &m)?,
@@ -658,45 +660,45 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
             // it has to be explicit.
             if !id.is_valid(row) {
                 return Err(schema_err(
-                    "geometry_templates.parquet: a row has a null id — every template row \
-                     must carry an id for the object table's template.id to resolve against"
+                    "implicit_geometries.parquet: a row has a null id — every row \
+                     must carry an id for the object table's implicit_geometry.id to resolve against"
                         .to_string(),
                 ));
             }
             // Uniqueness, not density — see this function's doc comment. A
-            // duplicate would make the object table's `template.id` join
+            // duplicate would make the object table's `implicit_geometry.id` join
             // ambiguous, which is the only thing the join actually needs
             // ruled out.
             if !seen_ids.insert(id.value(row)) {
                 return Err(schema_err(format!(
-                    "geometry_templates.parquet: id {} appears on more than one row — \
-                     template ids must be unique across rows, since the object table's \
-                     template.id resolves against them",
+                    "implicit_geometries.parquet: id {} appears on more than one row — \
+                     ids must be unique across rows, since the object table's \
+                     implicit_geometry.id resolves against them",
                     id.value(row)
                 )));
             }
 
-            let mut matched: Option<(Lod, &TemplateCols)> = None;
+            let mut matched: Option<(Lod, &ImplicitGeometryCols)> = None;
             for (lod, c) in &cols {
                 if c.geometry.is_null(row) {
                     continue;
                 }
                 if matched.is_some() {
                     return Err(schema_err(format!(
-                        "geometry_templates.parquet: row {row} has more than one populated \
-                         LoD geometry column — a template row must populate exactly one LoD"
+                        "implicit_geometries.parquet: row {row} has more than one populated \
+                         LoD geometry column — a row must populate exactly one LoD"
                     )));
                 }
                 matched = Some((*lod, c));
             }
             let (lod, c) = matched.ok_or_else(|| {
                 schema_err(format!(
-                    "geometry_templates.parquet: row {row} has no populated LoD geometry \
-                     column — a template row must populate exactly one LoD"
+                    "implicit_geometries.parquet: row {row} has no populated LoD geometry \
+                     column — a row must populate exactly one LoD"
                 ))
             })?;
 
-            out.push(TemplateRow {
+            out.push(ImplicitGeometryRow {
                 id: id.value(row),
                 name: name.is_valid(row).then(|| name.value(row).to_string()),
                 lod,
@@ -711,8 +713,8 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
 }
 
 /// One LoD's worth of column handles into an already-read `RecordBatch` —
-/// [`read_templates`]'s per-batch counterpart of [`TemplateSlot`].
-struct TemplateCols<'a> {
+/// [`read_implicit_geometries`]'s per-batch counterpart of [`ImplicitGeometrySlot`].
+struct ImplicitGeometryCols<'a> {
     geometry: &'a BinaryArray,
     properties: &'a StructArray,
     material: &'a MapArray,
@@ -1532,15 +1534,15 @@ mod tests {
     }
 
     /// Real railway geometry-templates (3 templates): build one
-    /// [`TemplateRow`] per template built by the PRODUCTION builder
-    /// (`crate::package::build_template_rows`, exercised directly so this
+    /// [`ImplicitGeometryRow`] per CityJSON template, built by the PRODUCTION builder
+    /// (`crate::package::build_implicit_geometry_rows`, exercised directly so this
     /// test cannot drift from what convert actually writes — a hand-built
     /// duplicate of its logic previously masked a missing `"lod"`),
     /// write/read round-trip.
     #[test]
-    fn railway_templates_round_trip() {
+    fn railway_implicit_geometries_round_trip() {
         use crate::appearance::AppearanceInterner;
-        use crate::package::build_template_rows;
+        use crate::package::build_implicit_geometry_rows;
         use crate::source::Source;
         use crate::wkb_read::wkb_to_geometry;
 
@@ -1553,18 +1555,24 @@ mod tests {
         assert_eq!(templates.templates.len(), 3);
 
         let mut interner = AppearanceInterner::new();
-        let rows = build_template_rows(&templates, &source, &mut interner).unwrap();
+        let rows = build_implicit_geometry_rows(
+            &templates,
+            &source,
+            &mut interner,
+            &cityparquet_schema::ExtensionNaming::default(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 3);
         for (i, (row, tpl)) in rows.iter().zip(&templates.templates).enumerate() {
             let props = row
                 .geometry_properties
                 .as_ref()
-                .expect("template rows carry geometry_properties");
+                .expect("implicit-geometry rows carry geometry_properties");
             assert!(props.get("type").is_some(), "template {i} missing type");
             // The struct itself carries no `lod` field (spec "same struct,
             // reused" — no `lod` field anywhere, main table or sidecar); a
             // template's LoD instead picks which physical per-LoD column set
-            // its row lands in (`TemplateRow::lod`).
+            // its row lands in (`ImplicitGeometryRow::lod`).
             assert!(
                 props.get("lod").is_none(),
                 "template {i}: geometry_properties must carry no lod field"
@@ -1581,11 +1589,11 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("geometry_templates.parquet");
-        let written = write_templates(&path, &rows).unwrap();
+        let path = dir.path().join("implicit_geometries.parquet");
+        let written = write_implicit_geometries(&path, &rows).unwrap();
         assert_eq!(written, 3);
 
-        let back = read_templates(&path).unwrap();
+        let back = read_implicit_geometries(&path).unwrap();
         assert_eq!(back.len(), 3);
         for (i, row) in back.iter().enumerate() {
             assert_eq!(row.id, i as i64);
@@ -1600,16 +1608,16 @@ mod tests {
 
     /// Real railway templates (still the PRODUCTION builder's output — every
     /// field beyond `lod` is genuine), but with row 0 reassigned to a second,
-    /// distinct LoD, so `write_templates`/`read_templates` are exercised
+    /// distinct LoD, so `write_implicit_geometries`/`read_implicit_geometries` are exercised
     /// against a per-LoD column layout with more than one populated LoD set
-    /// — the sparse-by-construction case `railway_templates_round_trip`
+    /// — the sparse-by-construction case `railway_implicit_geometries_round_trip`
     /// (all rows at the fixture's real LoD 3) never reaches. Confirms each
     /// row's data both round-trips through, and is physically stored in, its
     /// own LoD's column set, with the OTHER LoD's columns null for that row.
     #[test]
-    fn railway_templates_round_trip_at_two_lods() {
+    fn railway_implicit_geometries_round_trip_at_two_lods() {
         use crate::appearance::AppearanceInterner;
-        use crate::package::build_template_rows;
+        use crate::package::build_implicit_geometry_rows;
         use crate::source::Source;
         use crate::wkb_read::wkb_to_geometry;
 
@@ -1620,7 +1628,13 @@ mod tests {
             .clone()
             .expect("railway has geometry-templates");
         let mut interner = AppearanceInterner::new();
-        let mut rows = build_template_rows(&templates, &source, &mut interner).unwrap();
+        let mut rows = build_implicit_geometry_rows(
+            &templates,
+            &source,
+            &mut interner,
+            &cityparquet_schema::ExtensionNaming::default(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 3);
         let lod3 = Lod::parse("3").unwrap();
         let lod2 = Lod::parse("2").unwrap();
@@ -1631,8 +1645,8 @@ mod tests {
         rows[0].lod = lod2;
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("geometry_templates.parquet");
-        let written = write_templates(&path, &rows).unwrap();
+        let path = dir.path().join("implicit_geometries.parquet");
+        let written = write_implicit_geometries(&path, &rows).unwrap();
         assert_eq!(written, 3);
 
         // Physical layout: the rendered schema covers exactly the two LoDs
@@ -1674,7 +1688,7 @@ mod tests {
             assert!(!g3.is_null(row), "row {row} must populate geometry_lod3_0");
         }
 
-        let back = read_templates(&path).unwrap();
+        let back = read_implicit_geometries(&path).unwrap();
         assert_eq!(back.len(), 3);
         for (i, row) in back.iter().enumerate() {
             assert_eq!(row.id, i as i64);
@@ -1696,20 +1710,20 @@ mod tests {
         }
     }
 
-    /// `read_templates` must reject a duplicate `id`: the object table's
-    /// `template.id` resolves against this column by value, so two rows
+    /// `read_implicit_geometries` must reject a duplicate `id`: the object table's
+    /// `implicit_geometry.id` resolves against this column by value, so two rows
     /// sharing an id make that join ambiguous. Derived from the real railway
-    /// templates sidecar (3 rows, ids `0`, `1`, `2`) by corrupting row 1's id
+    /// implicit-geometries sidecar (3 rows, ids `0`, `1`, `2`) by corrupting row 1's id
     /// to `0`.
     ///
     /// Note this is uniqueness, NOT the dense `id == position` contract
     /// `read_materials`/`read_textures` still enforce — see
-    /// `read_templates`' doc comment and
-    /// `read_templates_accepts_non_dense_ids_from_a_merged_package` below.
+    /// `read_implicit_geometries`' doc comment and
+    /// `read_implicit_geometries_accepts_non_dense_ids_from_a_merged_package` below.
     #[test]
-    fn read_templates_rejects_a_duplicate_id() {
+    fn read_implicit_geometries_rejects_a_duplicate_id() {
         use crate::appearance::AppearanceInterner;
-        use crate::package::build_template_rows;
+        use crate::package::build_implicit_geometry_rows;
         use crate::source::Source;
 
         let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
@@ -1719,16 +1733,22 @@ mod tests {
             .clone()
             .expect("railway has geometry-templates");
         let mut interner = AppearanceInterner::new();
-        let mut rows = build_template_rows(&templates, &source, &mut interner).unwrap();
+        let mut rows = build_implicit_geometry_rows(
+            &templates,
+            &source,
+            &mut interner,
+            &cityparquet_schema::ExtensionNaming::default(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[1].id, 1, "precondition: row 1 starts as id 1");
         rows[1].id = 0;
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("geometry_templates.parquet");
-        write_templates(&path, &rows).unwrap();
+        let path = dir.path().join("implicit_geometries.parquet");
+        write_implicit_geometries(&path, &rows).unwrap();
 
-        let err = read_templates(&path).unwrap_err();
+        let err = read_implicit_geometries(&path).unwrap_err();
         assert!(
             matches!(err, CityParquetError::Schema(_)),
             "expected a Schema error, got {err:?}"
@@ -1739,10 +1759,10 @@ mod tests {
         );
     }
 
-    /// The reason template ids are BIGINT: when packages merge, a whole
+    /// The reason implicit-geometry ids are BIGINT: when packages merge, a whole
     /// sidecar's ids are shifted by one integer offset (`dst_max + 1 -
     /// src_min` — the rule `duckdb-cityjson`'s insert path applies), so a
-    /// merged package's template ids do NOT start at 0 and are not dense.
+    /// merged package's ids do NOT start at 0 and are not dense.
     /// Reading one back must work; requiring `id == position` would reject a
     /// valid package, and the spec says outright that an id "MUST NOT be
     /// interpreted as a row position".
@@ -1750,9 +1770,9 @@ mod tests {
     /// Derived from the real railway templates by applying exactly that shift
     /// to the production builder's own rows.
     #[test]
-    fn read_templates_accepts_non_dense_ids_from_a_merged_package() {
+    fn read_implicit_geometries_accepts_non_dense_ids_from_a_merged_package() {
         use crate::appearance::AppearanceInterner;
-        use crate::package::build_template_rows;
+        use crate::package::build_implicit_geometry_rows;
         use crate::source::Source;
 
         let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
@@ -1762,7 +1782,13 @@ mod tests {
             .clone()
             .expect("railway has geometry-templates");
         let mut interner = AppearanceInterner::new();
-        let mut rows = build_template_rows(&templates, &source, &mut interner).unwrap();
+        let mut rows = build_implicit_geometry_rows(
+            &templates,
+            &source,
+            &mut interner,
+            &cityparquet_schema::ExtensionNaming::default(),
+        )
+        .unwrap();
         assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), [0, 1, 2]);
 
         // Offset as if inserted into a destination whose max template id is 40.
@@ -1772,10 +1798,10 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("geometry_templates.parquet");
-        write_templates(&path, &rows).unwrap();
+        let path = dir.path().join("implicit_geometries.parquet");
+        write_implicit_geometries(&path, &rows).unwrap();
 
-        let back = read_templates(&path).unwrap();
+        let back = read_implicit_geometries(&path).unwrap();
         assert_eq!(
             back.iter().map(|r| r.id).collect::<Vec<_>>(),
             [41, 42, 43],
@@ -1793,12 +1819,12 @@ mod tests {
     /// without an explicit guard `id.value(row)` on a null slot invents an
     /// id — typically 0, silently colliding with a real row 0.
     #[test]
-    fn read_templates_rejects_a_null_id() {
+    fn read_implicit_geometries_rejects_a_null_id() {
         use arrow_schema::{DataType, Field, Schema};
 
-        let (a, _b) = two_real_templates();
+        let (a, _b) = two_real_rows();
         let lod = a.lod;
-        let spec_schema = sidecar_schemas::geometry_templates_schema(&[lod]);
+        let spec_schema = sidecar_schemas::implicit_geometries_schema(&[lod]);
         // The spec schema with `id` made nullable, everything else identical.
         let fields: Vec<Field> = spec_schema
             .fields()
@@ -1825,10 +1851,10 @@ mod tests {
         .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("geometry_templates.parquet");
+        let path = dir.path().join("implicit_geometries.parquet");
         write_batch(&path, schema, batch).unwrap();
 
-        let err = read_templates(&path).unwrap_err();
+        let err = read_implicit_geometries(&path).unwrap_err();
         assert!(
             matches!(err, CityParquetError::Schema(_)),
             "expected a Schema error, got {err:?}"
@@ -1843,9 +1869,9 @@ mod tests {
     /// no identifier (every CityJSON template) and verbatim where it did.
     /// Built by naming one of the real railway templates.
     #[test]
-    fn template_name_round_trips_and_stays_null_when_absent() {
+    fn implicit_geometry_name_round_trips_and_stays_null_when_absent() {
         use crate::appearance::AppearanceInterner;
-        use crate::package::build_template_rows;
+        use crate::package::build_implicit_geometry_rows;
         use crate::source::Source;
 
         let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
@@ -1855,7 +1881,13 @@ mod tests {
             .clone()
             .expect("railway has geometry-templates");
         let mut interner = AppearanceInterner::new();
-        let mut rows = build_template_rows(&templates, &source, &mut interner).unwrap();
+        let mut rows = build_implicit_geometry_rows(
+            &templates,
+            &source,
+            &mut interner,
+            &cityparquet_schema::ExtensionNaming::default(),
+        )
+        .unwrap();
         assert!(
             rows.iter().all(|r| r.name.is_none()),
             "a CityJSON source names no template — they are bare array entries"
@@ -1863,21 +1895,21 @@ mod tests {
         rows[1].name = Some("tree-conifer-01".to_string());
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("geometry_templates.parquet");
-        write_templates(&path, &rows).unwrap();
+        let path = dir.path().join("implicit_geometries.parquet");
+        write_implicit_geometries(&path, &rows).unwrap();
 
-        let back = read_templates(&path).unwrap();
+        let back = read_implicit_geometries(&path).unwrap();
         assert_eq!(
             back.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
             [None, Some("tree-conifer-01".to_string()), None]
         );
     }
 
-    /// Two real template rows (production-builder output), for the
+    /// Two real rows (production-builder output), for the
     /// malformed-file tests below to misplace across LoD columns by hand.
-    fn two_real_templates() -> (TemplateRow, TemplateRow) {
+    fn two_real_rows() -> (ImplicitGeometryRow, ImplicitGeometryRow) {
         use crate::appearance::AppearanceInterner;
-        use crate::package::build_template_rows;
+        use crate::package::build_implicit_geometry_rows;
         use crate::source::Source;
 
         let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
@@ -1887,21 +1919,24 @@ mod tests {
             .clone()
             .expect("railway has geometry-templates");
         let mut interner = AppearanceInterner::new();
-        let rows = build_template_rows(&templates, &source, &mut interner).unwrap();
-        assert!(
-            rows.len() >= 2,
-            "test needs at least two real template rows"
-        );
+        let rows = build_implicit_geometry_rows(
+            &templates,
+            &source,
+            &mut interner,
+            &cityparquet_schema::ExtensionNaming::default(),
+        )
+        .unwrap();
+        assert!(rows.len() >= 2, "test needs at least two real rows");
         (rows[0].clone(), rows[1].clone())
     }
 
     /// One LoD column set's worth of arrays for a single-row malformed
-    /// batch, built directly from a real [`TemplateRow`]'s content —
+    /// batch, built directly from a real [`ImplicitGeometryRow`]'s content —
     /// `include_geometry` controls only the `geometry_lod*` cell, so the
     /// resulting file is realistic everywhere except the specific invariant
     /// under test.
     fn malformed_slot_arrays(
-        row: &TemplateRow,
+        row: &ImplicitGeometryRow,
         include_geometry: bool,
     ) -> (ArrayRef, ArrayRef, ArrayRef, ArrayRef) {
         let mut geometry = BinaryBuilder::new();
@@ -1935,8 +1970,8 @@ mod tests {
         )
     }
 
-    /// Writes a single-row `geometry_templates.parquet` directly via Arrow
-    /// (never through [`write_templates`], which enforces "exactly one
+    /// Writes a single-row `implicit_geometries.parquet` directly via Arrow
+    /// (never through [`write_implicit_geometries`], which enforces "exactly one
     /// populated LoD" itself and so cannot produce this shape) with `lod_a`'s
     /// and `lod_b`'s column sets populated according to `include_a`/
     /// `include_b` — standing in for a corrupt or foreign-writer file that
@@ -1945,12 +1980,12 @@ mod tests {
         path: &Path,
         lod_a: Lod,
         lod_b: Lod,
-        content_a: &TemplateRow,
+        content_a: &ImplicitGeometryRow,
         include_a: bool,
-        content_b: &TemplateRow,
+        content_b: &ImplicitGeometryRow,
         include_b: bool,
     ) {
-        let schema = Arc::new(sidecar_schemas::geometry_templates_schema(&[lod_a, lod_b]));
+        let schema = Arc::new(sidecar_schemas::implicit_geometries_schema(&[lod_a, lod_b]));
         let mut id = Int64Builder::new();
         id.append_value(0);
         let mut name = StringBuilder::new();
@@ -1975,19 +2010,19 @@ mod tests {
 
     /// `sidecar.rs` ~lines 1000-1018 (pre-this-commit numbering): a row with
     /// NEITHER LoD's `geometry_lod*` column populated is rejected — a
-    /// template row must populate exactly one LoD, and zero is one of the
+    /// row must populate exactly one LoD, and zero is one of the
     /// two ways to violate that.
     #[test]
-    fn read_templates_rejects_a_row_with_no_populated_lod_column() {
-        let (a, b) = two_real_templates();
+    fn read_implicit_geometries_rejects_a_row_with_no_populated_lod_column() {
+        let (a, b) = two_real_rows();
         let lod2 = Lod::parse("2").unwrap();
         let lod3 = Lod::parse("3").unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("geometry_templates.parquet");
+        let path = dir.path().join("implicit_geometries.parquet");
         write_malformed_two_lod_row(&path, lod2, lod3, &a, false, &b, false);
 
-        let err = read_templates(&path).unwrap_err();
+        let err = read_implicit_geometries(&path).unwrap_err();
         assert!(
             matches!(err, CityParquetError::Schema(_)),
             "expected a Schema error, got {err:?}"
@@ -1999,20 +2034,20 @@ mod tests {
     }
 
     /// `sidecar.rs` ~lines 1000-1018 (pre-this-commit numbering): a row with
-    /// BOTH LoDs' `geometry_lod*` columns populated is rejected — a template
+    /// BOTH LoDs' `geometry_lod*` columns populated is rejected — a
     /// row must populate exactly one LoD, and two is the other way to
     /// violate that.
     #[test]
-    fn read_templates_rejects_a_row_with_two_populated_lod_columns() {
-        let (a, b) = two_real_templates();
+    fn read_implicit_geometries_rejects_a_row_with_two_populated_lod_columns() {
+        let (a, b) = two_real_rows();
         let lod2 = Lod::parse("2").unwrap();
         let lod3 = Lod::parse("3").unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("geometry_templates.parquet");
+        let path = dir.path().join("implicit_geometries.parquet");
         write_malformed_two_lod_row(&path, lod2, lod3, &a, true, &b, true);
 
-        let err = read_templates(&path).unwrap_err();
+        let err = read_implicit_geometries(&path).unwrap_err();
         assert!(
             matches!(err, CityParquetError::Schema(_)),
             "expected a Schema error, got {err:?}"

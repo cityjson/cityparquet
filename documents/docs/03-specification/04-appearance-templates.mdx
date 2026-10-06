@@ -1,15 +1,15 @@
 ---
-title: Appearance & templates
-description: Materials, textures, and geometry templates — the optional sidecar files.
+title: Appearance & implicit geometries
+description: Materials, textures, and implicit geometries — the optional sidecar files.
 sidebar:
-  label: Appearance & templates
+  label: Appearance & implicit geometries
 ---
 
 Appearance — material and texture — is separated from geometry and carried in per-LoD
 typed `MAP` columns aligned to the geometry's WKB faces, with the shared definitions
-deduplicated into sidecar files. Reusable geometry templates use the same geometry
-strategy as the object table. All three sidecars are optional: a source with no
-appearance produces none of them.
+deduplicated into sidecar files. The shared relative geometries of implicit geometries
+use the same geometry strategy as the object table. All three sidecars are optional: a
+source with no appearance and no implicit geometry produces none of them.
 
 ## material / texture columns
 
@@ -168,47 +168,50 @@ texture's *theme* is a property of the geometry's appearance mapping, not of the
 definition.
 :::
 
-## geometry_templates.parquet
+## implicit_geometries.parquet
 
-Reusable geometry templates are stored in `geometry_templates.parquet`, using the same
+An implicit geometry, following the CityGML `ImplicitGeometry`, places a shared
+geometry at an object by a **reference point** and a **transformation matrix**. The
+shared geometry — the *relative geometry*, in its own local coordinates — is stored once
+in `implicit_geometries.parquet`, one row per relative geometry, using the same
 geometry strategy as the object table — including the
-[per-LoD column grammar](/specification/geometry-semantics), so a template's LoD is
-carried by its column name here exactly as it is in an object table.
+[per-LoD column grammar](/specification/geometry-semantics), so a relative geometry's
+LoD is carried by its column name here exactly as it is in an object table.
 
 | Column | Type | Req. | Description |
 |---|---|:--:|---|
-| `id` | `BIGINT` | ✔ | Template identifier, unique across rows; the value the object table's `template.id` references |
-| `name` | `VARCHAR` |  | The template's identifier in the source document, when it had one. `id` is an integer so that templates remap like the other sidecars on merge, which leaves nowhere else for a meaningful source name to survive. |
-| `geometry_lod*` | `BLOB` |  | Template WKB in **local** template coordinates (raw doubles — template vertices are not subject to any dataset-level transform); one column per LoD |
-| `geometry_properties_lod*` | `STRUCT<type, surfaces, face_semantics, shells>` |  | Template geometry properties, the [same struct](/specification/geometry-semantics) as an object row's |
-| `material_lod*` | `MAP<VARCHAR, LIST<BIGINT>>` |  | Template material mapping, per LoD — the [same shape and invariants](#material--texture-columns) as an object row's |
-| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>` |  | Template texture mapping, per LoD — the same shape and invariants as an object row's |
+| `id` | `BIGINT` | ✔ | Relative-geometry identifier, unique across rows; the value the object table's `implicit_geometry.id` references |
+| `name` | `VARCHAR` |  | The relative geometry's identifier in the source document, when it had one. `id` is an integer so that relative geometries remap like the other sidecars on merge, which leaves nowhere else for a meaningful source name to survive. |
+| `geometry_lod*` | `BLOB` |  | Relative geometry as WKB in **local** coordinates (raw doubles — its vertices are not subject to any dataset-level transform); one column per LoD |
+| `geometry_properties_lod*` | `STRUCT<type, surfaces, face_semantics, shells>` |  | Geometry properties of the relative geometry, the [same struct](/specification/geometry-semantics) as an object row's |
+| `material_lod*` | `MAP<VARCHAR, LIST<BIGINT>>` |  | Material mapping of the relative geometry, per LoD — the [same shape and invariants](#material--texture-columns) as an object row's |
+| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>` |  | Texture mapping of the relative geometry, per LoD — the same shape and invariants as an object row's |
 
-A template is a single geometry at a single LoD, so each row populates exactly the
-column set matching its own LoD and leaves the others null. The table is sparse by
+A relative geometry is a single geometry at a single LoD, so each row populates exactly
+the column set matching its own LoD and leaves the others null. The table is sparse by
 construction; this is the cost of keeping one LoD-naming rule across the whole format
 rather than making the sidecar the sole place where an LoD rides in a value. There is
-no `other` column: a geometry template is a plain geometry (WKB + properties +
+no `other` column: a relative geometry is a plain geometry (WKB + properties +
 appearance) with no members left over to preserve.
 
-**Templates are in local coordinates, and are exempt from the file CRS.** Template
-`geometry_lod*` holds raw doubles in the template's own local frame — an instance's
-`transformationMatrix` and reference `point` place it into the world. So the
-[file-CRS invariant](/specification/geometry-semantics) that binds object geometry and
-`bbox` to one CRS does **not** apply to `geometry_templates.parquet`: it carries no
-`city.crs` key. (The instance `point` in the object table *is* in the file CRS, like
-any other object-table geometry.)
+**Relative geometries are in local coordinates, and are exempt from the file CRS.**
+`geometry_lod*` in this sidecar holds raw doubles in the relative geometry's own local
+frame — an object's `transformationMatrix` and reference `point` place it into the
+world. So the [file-CRS invariant](/specification/geometry-semantics) that binds object
+geometry and `bbox` to one CRS does **not** apply to `implicit_geometries.parquet`: it
+carries no `city.crs` key. (The reference `point` in the object table *is* in the file
+CRS, like any other object-table geometry.)
 
-An object that instantiates a template stores instance data in the object-table
-`template` column. The column is nullable, but a non-null instance **MUST** carry both
-`id` and `point` — an instance with neither a template to resolve nor a place to sit is
-meaningless:
+An object with an implicit geometry stores it in the object-table `implicit_geometry`
+column. The column is nullable, but a non-null value **MUST** carry both `id` and
+`point` — an implicit geometry with neither a relative geometry to resolve nor a place
+to sit is meaningless:
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `BIGINT` | Referenced template id (required when the struct is non-null) |
-| `point` | `BLOB` | WKB `PointZ` for the instance's reference point, in the file CRS (required when the struct is non-null) |
-| `transformationMatrix` | `LIST<DOUBLE>` | The instance's transformation matrix — a flat, **row-major** 4×4, so exactly **16** values when non-null (the CityJSON `transformationMatrix` layout, unchanged); absent ⇒ identity |
+| `id` | `BIGINT` | Referenced relative-geometry id in `implicit_geometries.parquet` (required when the struct is non-null) |
+| `point` | `BLOB` | WKB `PointZ` for the reference point, in the file CRS (required when the struct is non-null) |
+| `transformationMatrix` | `LIST<DOUBLE>` | The transformation matrix — a flat, **row-major** 4×4, so exactly **16** values when non-null (the CityJSON `transformationMatrix` layout, unchanged); absent ⇒ identity |
 
-🟡 An object that instantiates **several** templates cannot currently be represented,
-since `template` is a single struct — see the [open questions](/open-questions).
+🟡 An object with **several** implicit geometries cannot currently be represented,
+since `implicit_geometry` is a single struct — see the [open questions](/open-questions).

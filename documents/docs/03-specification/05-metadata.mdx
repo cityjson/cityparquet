@@ -55,19 +55,19 @@ file a reader has open.
 | `version` | ✔ | CityParquet [format version](/specification/dataset-package), e.g. `"0.1.0-draft"`. |
 | `source_format` |  | Provenance — one of `CityJSON`, `CityJSONSeq`, `CityGML`, or an open-ended other-source token (e.g. `"3DCityDB"`) for a source this document doesn't enumerate. Optional: a table may be authored natively, with no single source, and omits this field entirely — omission, not an `"Other"` placeholder value, is how "no source" is expressed. |
 | `source_version` |  | Source schema version (e.g. CityJSON 2.0), when there is a source. |
-| `crs` | cond. | The file CRS, following **GeoParquet's convention** for the key itself. Three states: a **PROJJSON** object when the CRS is known; an explicit **`null`** when the file holds CRS-bearing coordinates whose CRS is unknown or unresolvable ("no CRS / unknown", exactly GeoParquet's meaning for a null `crs`); **absent** only when the file holds no CRS-bearing coordinate at all (e.g. a `geometry_templates.parquet` sidecar whose templates are stored in purely local, unplaced coordinates) — per GeoParquet an absent key is read as **OGC:CRS84**, so a conforming writer never relies on the default. CRS-bearing coordinates are object geometry, an address `location`, a `bbox`, and a [geometry-template instance's `point`](/specification/object-table-schema). When present as an object, it is the one CRS every geometry and the `bbox` column share. |
+| `crs` | cond. | The file CRS, following **GeoParquet's convention** for the key itself. Three states: a **PROJJSON** object when the CRS is known; an explicit **`null`** when the file holds CRS-bearing coordinates whose CRS is unknown or unresolvable ("no CRS / unknown", exactly GeoParquet's meaning for a null `crs`); **absent** only when the file holds no CRS-bearing coordinate at all (e.g. an `implicit_geometries.parquet` sidecar whose relative geometries are stored in purely local, unplaced coordinates) — per GeoParquet an absent key is read as **OGC:CRS84**, so a conforming writer never relies on the default. CRS-bearing coordinates are object geometry, an address `location`, a `bbox`, and an [implicit geometry's reference `point`](/specification/object-table-schema). When present as an object, it is the one CRS every geometry and the `bbox` column share. |
 | `primary_column` | cond. | Name of the primary geometry column — the one a reader uses with no LoD preference. **Required whenever the table has any geometry column.** It **MAY** name a `Solid` column; it is **independent** of `geo.primary_column` (see the note under `geo`). A consumer **MUST** read this rather than assume a column name. |
 | `columns` | cond. | A **list** of column-metadata structs, one per geometry column — **every** geometry column, `Solid`-family included. See [below](#citycolumns-entries). Present whenever the table has any geometry column. |
 | `attributes` | cond. | The list of inferred attribute columns (object tables). Every other column is a reserved [structural column](/specification/object-table-schema). |
-| `extensions` |  | Extension / ADE declarations: the real declaration JSON plus a source-name ↔ class ↔ module mapping, consulted on export (see [extensions](/specification/extensions)). |
+| `extensions` | cond. | The extensions the file uses: a JSON object keyed by each extension's **namespace**, each value referencing the extension's schema document (`name`, `url`, optional `version` and `xmlns`). **Required whenever** the file carries any extension name (a prefixed attribute column, `object_type` value or semantic surface type); consulted to identify the extension behind a prefix and to restore the source names on export (see [extensions](/specification/extensions#the-extension-declaration-cityextensions)). |
 | `appearance_defaults` |  | Source default material / texture theme, when present. |
 | `other` |  | Free-form object for anything not covered above — the source `transform`, the source's own dataset-level metadata header, or any producer-defined field. **Informational only:** a reader **MUST NOT** need `other` to [decode the file](/specification/geometry-semantics). Mirrors the object-table `other` column. |
 
 **Requirements depend on the file's role.** The marks above are for an **object table**.
-A sidecar (`materials.parquet`, `textures.parquet`, `geometry_templates.parquet`)
+A sidecar (`materials.parquet`, `textures.parquet`, `implicit_geometries.parquet`)
 carries `city.version` plus only what is meaningful to it (`crs` when it has
-CRS-bearing coordinates), and none of `source_format`, `attributes`, `primary_column`
-or `columns`.
+CRS-bearing coordinates, `extensions` when it carries extension names), and none of
+`source_format`, `attributes`, `primary_column` or `columns`.
 
 The bbox column is always named `bbox`, so a reader checks the schema for it; a reader
 finds the package's files by listing the directory or reading the
@@ -168,19 +168,19 @@ A conformant per-LoD covering would need separate `bbox_lod*` columns null-align
 - `city.crs` is the **one CRS** every geometry column and the `bbox` column share; a per-column `crs` (in `city.columns` or `geo.columns`) is **optional**, and *when present* it mirrors the file-level state — including a `null`. An absent per-column `crs` defaults to the file-level `city.crs` (a sibling key in the same footer, so no CRS84 ambiguity arises). There is no per-row or per-column CRS escape hatch.
 - **The key is tri-state, exactly as in GeoParquet: object, `null`, or absent.** Per GeoParquet, an **absent** `crs` is assumed to be **OGC:CRS84** (WGS 84 lon/lat), and an explicit **`null`** means the CRS is unknown or unspecified. CityParquet adopts both readings for `city.crs`, so the `city` and `geo` objects carry one shared convention. The CRS84 default speaks to **interpreting coordinates**: in a conforming file the key is absent only when there are no CRS-bearing coordinates, so the default has nothing to apply to and such a file exports with no reference system. Only a *foreign* file that carries coordinates **and** an absent key — conforming GeoParquet, nonconforming CityParquet — is read as CRS84.
 - **A writer never relies on the absent-CRS default.** Because city models are almost always in a projected national CRS (e.g. EPSG:28992 / EPSG:7415), a file whose coordinates really were CRS84 would still declare it explicitly: whenever the file holds any CRS-bearing coordinate, a writer **MUST** write the key — as a PROJJSON object or as `null` — never omit it. Absence is legitimate only for files with no CRS-bearing coordinates at all.
-- **An unresolvable CRS is declared, not fatal.** A source that carries CRS-bearing coordinates (geometry, `bbox`, address `location`, template `point`) but declares no CRS the writer can resolve to PROJJSON is encoded with an explicit `city.crs: null`. A writer **MUST NOT** guess a CRS and **MUST NOT** omit the key in this situation (absence would assert CRS84, silently mis-georeferencing the data), and **SHOULD** surface a conversion diagnostic. A reader treats such a file's coordinates as bare Cartesian values with no georeference; on export the reconstructed model carries no reference system — matching the source. Any `geo` mirror uses the same `null`, which is GeoParquet-legal. *(This amends an earlier draft in which an unresolvable CRS was a hard conversion error.)*
+- **An unresolvable CRS is declared, not fatal.** A source that carries CRS-bearing coordinates (geometry, `bbox`, address `location`, implicit-geometry reference `point`) but declares no CRS the writer can resolve to PROJJSON is encoded with an explicit `city.crs: null`. A writer **MUST NOT** guess a CRS and **MUST NOT** omit the key in this situation (absence would assert CRS84, silently mis-georeferencing the data), and **SHOULD** surface a conversion diagnostic. A reader treats such a file's coordinates as bare Cartesian values with no georeference; on export the reconstructed model carries no reference system — matching the source. Any `geo` mirror uses the same `null`, which is GeoParquet-legal. *(This amends an earlier draft in which an unresolvable CRS was a hard conversion error.)*
 
 ## metadata.json — STAC Item
 
 The package-level `metadata.json` **MUST** be a valid **STAC Item** describing the dataset, and **MUST** use the 3D city models STAC extension (`city3d:*`) — [cityjson/stac-city3d](https://github.com/cityjson/stac-city3d). This makes CityParquet packages discoverable through the same STAC layer used elsewhere in the project.
 
-- Populate `city3d:` fields from the source where available: `city3d:version`, `city3d:lods`, `city3d:co_types`, `city3d:city_objects`, `city3d:semantic_surfaces`, `city3d:textures`, `city3d:materials`, `city3d:attributes`. These already signal whether semantics, textures and materials are present — which is why the footer needs no sidecar manifest. `city3d:co_types` uses the **source** type vocabulary — including CityJSON's `+` prefix on extension types — not `object_type`'s stripped, CityGML-class form; the STAC Item is a discovery mirror of the *source* model's type inventory, independent of how `object_type`/[`ModuleKey`](/specification/extensions) internally route rows to files.
+- Populate `city3d:` fields from the source where available: `city3d:version`, `city3d:lods`, `city3d:co_types`, `city3d:city_objects`, `city3d:semantic_surfaces`, `city3d:textures`, `city3d:materials`, `city3d:attributes`. These already signal whether semantics, textures and materials are present — which is why the footer needs no sidecar manifest. `city3d:co_types` uses the **source** type vocabulary — including CityJSON's `+` prefix on extension types — not `object_type`'s CityGML-class form with its [namespace-prefixed](/specification/extensions) extension types; the STAC Item is a discovery mirror of the *source* model's type inventory, independent of how `object_type`/[`ModuleKey`](/specification/extensions) internally route rows to files.
 - **`city3d:lods` is the opposite case: it carries the _normalised_ LoD spelling**, as produced by the [LoD suffix grammar](/specification/geometry-semantics) — a source LoD of `"0"` appears as `"0.0"`, matching the `geometry_lod0_0` column it names. Unlike `co_types`, the source spelling is **not** recoverable: a CityParquet package records an LoD only in a column name, so there is no second place the original string survives. Readers **MUST NOT** expect `city3d:lods` to reproduce the source file's LoD strings verbatim.
 - Each `.parquet` file **SHOULD** be a STAC **Asset**; the Item's `assets` map is the package's file inventory. The Item **SHOULD** also use the standard **Projection** (CRS) and **File** (checksums/sizes) extensions.
 - **Asset roles carry the package's file inventory.** Every `.parquet` asset **MUST**
   declare its role in the package: `cityparquet-objects` for an object table,
   `cityparquet-sidecar` for a sidecar (`materials.parquet`, `textures.parquet`,
-  `geometry_templates.parquet`), each alongside the conventional STAC `data` role.
+  `implicit_geometries.parquet`), each alongside the conventional STAC `data` role.
   This is how a reader separates object tables from sidecars without parsing
   filenames — which matters because the by-module layout means an object table's name
   is drawn from the CityGML module vocabulary and is not a closed set. A reader
@@ -193,3 +193,18 @@ The package-level `metadata.json` **MUST** be a valid **STAC Item** describing t
 ## Recommended writer defaults (informative)
 
 As implementation guidance, not a format requirement: **zstd level 3** compression and **65 536-row** row groups for the object table tend to balance size against spatial-pruning selectivity; smaller row groups prune better at some size cost (see [appearance & shared resources](/design-decisions/appearance-shared-resources) and the [metadata layout decision](/design-decisions/files-crs-metadata)). A conforming file may use any Parquet-legal compression and row-group sizing.
+
+Bloom filters, at a false-positive probability of **0.01**: on every object
+table's `id` and `feature_id`, and on each scalar `VARCHAR` attribute column
+(not JSON) that holds at least one non-null value and whose estimated distinct
+count — a HyperLogLog estimate is ample — reaches at least **0.2 ×** its
+non-null count across the dataset. An all-null column carries none. The rule
+is decided once for the whole dataset, before the first row group is written,
+so every file of a package — and every partition of a partitioned dataset —
+carries the same column set. All filters sit
+together after the last row group, before the page indexes and footer, with
+`bloom_filter_length` set, so a reader can ask for every filter of a column in
+one batched range read, which object storage coalesces into few requests. A
+filter whose column chunk declares no `bloom_filter_length` is not in that
+batch and is fetched separately. Low-cardinality strings, numeric, list, JSON
+and geometry columns, and the sidecars, carry none.

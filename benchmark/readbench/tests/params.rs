@@ -113,9 +113,17 @@ fn resolve_produces_three_populated_windows_and_four_id_probes() {
     }
 
     assert_eq!(resolved.id_probes.len(), 4, "three deciles plus a miss");
+    let attr_filter = resolved
+        .attr_filter
+        .as_ref()
+        .expect("delft has string attributes, so a predicate is derivable");
     assert!(
-        !resolved.object_type.is_empty(),
-        "an object_type was chosen"
+        !attr_filter.column.is_empty(),
+        "an attribute column was chosen"
+    );
+    assert!(
+        attr_filter.matched > 0,
+        "the predicate must match at least one row"
     );
     assert!(resolved.cp_object_total > 0, "a non-zero denominator");
 }
@@ -155,4 +163,99 @@ fn resolve_yields_no_id_probes_when_there_is_no_seq_artefact() {
     // Everything the cityparquet package alone can answer still resolves.
     assert_eq!(resolved.windows.len(), 3, "windows need only the package");
     assert!(resolved.cp_object_total > 0);
+}
+
+// --- attr-filter predicate derivation, against a real package -------------
+
+use cityparquet_readbench::params::{
+    AttrFilterPred, open_arrow_schema, open_metadata, pick_attr_filter,
+};
+
+fn meta_of(table: &Path) -> cityparquet_schema::CityMetadata {
+    open_metadata(table).expect("reading the package's city metadata")
+}
+
+fn schema_of(table: &Path) -> arrow_schema::Schema {
+    open_arrow_schema(table).expect("reading the package's arrow schema")
+}
+
+/// `delft.city.jsonl` is not named in `params::HAND_PICKED`, so its
+/// predicate comes from the derived rule: of its string attribute columns
+/// with between 2 and 1000 distinct values, `b3_dak_type`'s most frequent
+/// value (`slanted`) has the share of rows closest to 0.25 — 584 of 2231
+/// CityObjects, independently confirmed with DuckDB over the converted
+/// package. It is an attribute of the CityJSON `attributes` map, so
+/// FlatCityBuf's `fcb ser -A` B+-tree indexes it; the reserved
+/// `object_type` column this scenario used to be driven with is not, which
+/// is why every committed FlatCityBuf row carried `no-attr-index`.
+#[test]
+fn the_derived_rule_picks_an_indexable_attribute_near_the_target_share() {
+    let (_dir, table) = delft_table();
+    let picked = pick_attr_filter(
+        "delft.city.jsonl",
+        &meta_of(&table),
+        &schema_of(&table),
+        &table,
+    )
+    .expect("deriving the attr-filter predicate")
+    .expect("delft has string attribute columns");
+
+    assert_eq!(picked.column, "b3_dak_type");
+    assert_eq!(picked.pred, AttrFilterPred::Eq("slanted".to_string()));
+    assert_eq!(picked.matched, 584);
+    assert!(
+        !picked.hand_picked,
+        "delft is not in the hand-picked table; it must come from the derived rule"
+    );
+    assert!(
+        (picked.share - 584.0 / 2231.0).abs() < 1e-9,
+        "share must be the matched fraction of the table's rows, got {}",
+        picked.share
+    );
+}
+
+/// The same package, asked for under a 3DBAG slice's name: the hand-picked
+/// table wins over the derived rule, and says so. (`delft.city.jsonl` IS
+/// 3DBAG data, so the pick resolves against this table — which is what
+/// makes this checkable without the multi-gigabyte corpus.)
+#[test]
+fn the_hand_picked_table_wins_over_the_derived_rule_and_is_disclosed() {
+    let (_dir, table) = delft_table();
+    let picked = pick_attr_filter(
+        "3dbag_n1000.city.jsonl",
+        &meta_of(&table),
+        &schema_of(&table),
+        &table,
+    )
+    .expect("deriving the attr-filter predicate")
+    .expect("the hand-picked column is present in this package");
+
+    assert_eq!(picked.column, "b3_dak_type");
+    assert_eq!(picked.pred, AttrFilterPred::Eq("slanted".to_string()));
+    assert!(
+        picked.hand_picked,
+        "a hand-picked predicate must be disclosed as one in the sidecar"
+    );
+}
+
+/// A hand-picked entry naming a column this package does not carry must
+/// fall back to the derived rule rather than fail the run or measure a
+/// query that returns nothing.
+#[test]
+fn a_hand_picked_column_the_package_lacks_falls_back_to_the_derived_rule() {
+    let (_dir, table) = delft_table();
+    let picked = pick_attr_filter(
+        "rotterdam_delfshaven.city.jsonl",
+        &meta_of(&table),
+        &schema_of(&table),
+        &table,
+    )
+    .expect("a missing hand-picked column is not an error")
+    .expect("the derived rule still finds a predicate");
+
+    assert_eq!(
+        picked.column, "b3_dak_type",
+        "delft carries no TerrainHeight, so the derived rule must answer instead"
+    );
+    assert!(!picked.hand_picked);
 }

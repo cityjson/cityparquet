@@ -5,16 +5,12 @@ from benchviz import __main__ as cli
 
 
 def test_selection_filters_real_payload(tmp_path: Path, monkeypatch):
-    def fake_prep(inputs, out_path):
+    def fake_prep(inputs, out_path, statistic="median"):
         payload = {
             "datasets": [{"id": "rotterdam_delfshaven"}, {"id": "other"}],
             "read": [{"dataset": "rotterdam_delfshaven", "scenario_key": "write"}],
             "sizes": [{"dataset": "rotterdam_delfshaven", "bytes": 12}],
-            "scaling": {
-                "codec": {"records": [], "sizes": []},
-                "rowgroup": {"records": [], "sizes": []},
-                "datasets": [],
-            },
+            "bloom": {"records": [], "sizes": []},
             "databases": {
                 "dataset": "3dbag_n1000",
                 "records": [{"scenario": "count"}],
@@ -24,7 +20,7 @@ def test_selection_filters_real_payload(tmp_path: Path, monkeypatch):
         out_path.write_text(json.dumps(payload))
 
     monkeypatch.setattr(cli.prep, "main", fake_prep)
-    for family in ("sizes", "formats", "codec"):
+    for family in ("sizes", "formats", "bloom"):
         args = cli.build_parser().parse_args(
             [
                 "prep",

@@ -19,7 +19,7 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{SecondsFormat, TimeZone, Utc};
 use serde_json::{Map, Value};
 
-use cityparquet_schema::model::{address_data_type, template_data_type};
+use cityparquet_schema::model::{address_data_type, implicit_geometry_data_type};
 use cityparquet_schema::{CityMetadata, CityParquetError, Lod, Result};
 
 use crate::wkb_read::{self, DecodedGeometry};
@@ -29,12 +29,12 @@ use crate::wkb_read::{self, DecodedGeometry};
 /// [`crate::reader`]'s identical use of this tag.
 const ARROW_JSON_EXTENSION: &str = "arrow.json";
 
-/// A resolved `template` struct column entry: which `GeometryInstance`
-/// template an object references, at which point, with which (optional)
-/// transformation matrix.
+/// A resolved `implicit_geometry` struct column entry: which shared relative
+/// geometry an object references, at which reference point, with which
+/// (optional) transformation matrix.
 #[derive(Debug, Clone, PartialEq)]
-pub struct TemplateInstance {
-    /// The `geometry_templates.parquet` row this instance references, by
+pub struct ImplicitGeometry {
+    /// The `implicit_geometries.parquet` row this implicit geometry references, by
     /// `id` value — BIGINT, matching the sidecar's own `id` column.
     pub id: i64,
     pub point: [f64; 3],
@@ -62,7 +62,7 @@ pub struct AddressEntry {
 /// One decoded row: the reassembled `cjseq::CityObject` (attributes,
 /// parents/children, `type`; geometry deliberately excluded, see the module
 /// docs), its per-LoD geometries decoded from WKB alongside their
-/// `geometry_properties`, its `template` reference if any, and its
+/// `geometry_properties`, its `implicit_geometry` reference if any, and its
 /// `address` list if any.
 #[derive(Debug, Clone)]
 pub struct DecodedObject {
@@ -77,7 +77,7 @@ pub struct DecodedObject {
     /// that dataset the column is all-null, so this variant does not arise in
     /// practice.
     pub geometries: Vec<(Option<Lod>, DecodedGeometry, Option<Value>)>,
-    pub template: Option<TemplateInstance>,
+    pub implicit_geometry: Option<ImplicitGeometry>,
     /// `None` when the row's `address` cell is null (no address at all);
     /// `Some(vec![])`/`Some(entries)` otherwise (spec "Addresses").
     pub address: Option<Vec<AddressEntry>>,
@@ -141,7 +141,7 @@ fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a arrow_array:
 /// `name`'s column, tolerant of the WHOLE column being absent from `batch`.
 /// Robustness towards foreign writers, not a spec entitlement: the spec's
 /// "Optional data is `NULL`, not an omitted column" rule requires `address`/
-/// `template` (and by the same reasoning, any other nullable reserved
+/// `implicit_geometry` (and by the same reasoning, any other nullable reserved
 /// column, e.g. `other`/`children_roles`) to stay present as an all-null
 /// column, but duckdb-cityjson omits them outright — and an absent column
 /// carries identical information to an all-null one of `data_type` for
@@ -476,16 +476,19 @@ fn attribute_value(col: &AttributeColumn<'_>, row: usize) -> Result<Option<Value
 pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<DecodedObject>> {
     let schema = batch.schema();
 
-    let id_col = downcast::<StringArray>(get_column(batch, "id")?.as_ref(), "id")?;
-    let feature_id_col =
-        downcast::<StringArray>(get_column(batch, "feature_id")?.as_ref(), "feature_id")?;
+    // Plain `Utf8` or `Dictionary<Int32, Utf8>`: a writer's physical choice
+    // (spec "Physical encoding and conformance").
+    let id_array = get_column(batch, "id")?;
+    let id_col = crate::arrow_compat::string_view(id_array.as_ref(), "id")?;
+    let feature_id_array = get_column(batch, "feature_id")?;
+    let feature_id_col = crate::arrow_compat::string_view(feature_id_array.as_ref(), "feature_id")?;
 
     let object_type_array = get_column(batch, "object_type")?;
     let object_type_view =
         crate::arrow_compat::string_view(object_type_array.as_ref(), "object_type")?;
 
     // Every column below is nullable per spec, so its WHOLE column may be
-    // absent (duckdb-cityjson omits `children_roles`/`address`/`template`
+    // absent (duckdb-cityjson omits `children_roles`/`address`/`implicit_geometry`
     // outright) — `optional_column` synthesises an all-null fallback of the
     // right shape rather than erroring, per the module docs on
     // `optional_column`.
@@ -504,19 +507,21 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
     let bbox_array = optional_column(batch, "bbox", &cityparquet_schema::model::bbox_data_type());
     let bbox_col = downcast::<StructArray>(bbox_array.as_ref(), "bbox")?;
 
-    let template_array = optional_column(batch, "template", &template_data_type());
-    let template_col = downcast::<StructArray>(template_array.as_ref(), "template")?;
-    let template_id_col = downcast::<Int64Array>(
-        crate::arrow_compat::struct_child(template_col, "id")?.as_ref(),
-        "template.id",
+    let implicit_geometry_array =
+        optional_column(batch, "implicit_geometry", &implicit_geometry_data_type());
+    let implicit_geometry_col =
+        downcast::<StructArray>(implicit_geometry_array.as_ref(), "implicit_geometry")?;
+    let implicit_geometry_id_col = downcast::<Int64Array>(
+        crate::arrow_compat::struct_child(implicit_geometry_col, "id")?.as_ref(),
+        "implicit_geometry.id",
     )?;
-    let template_point_col = downcast::<BinaryArray>(
-        crate::arrow_compat::struct_child(template_col, "point")?.as_ref(),
-        "template.point",
+    let implicit_geometry_point_col = downcast::<BinaryArray>(
+        crate::arrow_compat::struct_child(implicit_geometry_col, "point")?.as_ref(),
+        "implicit_geometry.point",
     )?;
-    let template_matrix_col = downcast::<ListArray>(
-        crate::arrow_compat::struct_child(template_col, "transformationMatrix")?.as_ref(),
-        "template.transformationMatrix",
+    let implicit_geometry_matrix_col = downcast::<ListArray>(
+        crate::arrow_compat::struct_child(implicit_geometry_col, "transformationMatrix")?.as_ref(),
+        "implicit_geometry.transformationMatrix",
     )?;
 
     let geometry_cols = geometry_columns(&schema, meta)?;
@@ -626,24 +631,24 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
             geometries.push((*lod, decoded, props));
         }
 
-        let template = if template_col.is_null(row) {
+        let implicit_geometry = if implicit_geometry_col.is_null(row) {
             None
         } else {
-            let point = wkb_read::read_point(template_point_col.value(row))?;
-            let transformation_matrix = if template_matrix_col.is_null(row) {
+            let point = wkb_read::read_point(implicit_geometry_point_col.value(row))?;
+            let transformation_matrix = if implicit_geometry_matrix_col.is_null(row) {
                 None
             } else {
-                let values = template_matrix_col.value(row);
+                let values = implicit_geometry_matrix_col.value(row);
                 let floats = downcast::<Float64Array>(
                     values.as_ref(),
-                    "template.transformationMatrix item",
+                    "implicit_geometry.transformationMatrix item",
                 )?;
-                // spec "Appearance & templates": exactly 16 values when
+                // spec "Appearance & implicit geometries": exactly 16 values when
                 // non-null — a defensive check against a corrupt or foreign
                 // file, mirroring the encoder's own write-time validator.
                 if floats.len() != 16 {
                     return Err(err(format!(
-                        "object '{id}': template.transformationMatrix has {} values, expected \
+                        "object '{id}': implicit_geometry.transformationMatrix has {} values, expected \
                          exactly 16",
                         floats.len()
                     )));
@@ -654,8 +659,8 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
                         .collect::<Vec<f64>>(),
                 )?)
             };
-            Some(TemplateInstance {
-                id: template_id_col.value(row),
+            Some(ImplicitGeometry {
+                id: implicit_geometry_id_col.value(row),
                 point,
                 transformation_matrix,
             })
@@ -666,7 +671,7 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
             feature_id,
             object,
             geometries,
-            template,
+            implicit_geometry,
             address,
         });
     }

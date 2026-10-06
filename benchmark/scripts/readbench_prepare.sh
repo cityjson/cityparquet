@@ -8,10 +8,8 @@
 #   citygml              OUTDIR/<x>.gml               CityGML 2.0 — copied from a CityGML INPUT, else synthesised
 #   cityjson             OUTDIR/<x>.city.json         one whole-document CityJSON
 #   cityjsonseq          OUTDIR/<x>.city.jsonl        CityJSONSeq
-#   cityparquet          OUTDIR/<x>.parquet/          core-profile CityParquet package (source order)
-#   cityparquet-hilbert  OUTDIR/<x>-hilbert.parquet/  CityParquet package, Hilbert-ordered rows
+#   cityparquet          OUTDIR/<x>.parquet/          core-profile CityParquet package, Hilbert-ordered rows
 #   flatcitybuf          OUTDIR/<x>.fcb               FlatCityBuf, spatial index + ALL-attribute B+Tree index
-#   cityjsonseq-gz       OUTDIR/<x>.jsonl.gz          the CityJSONSeq, gzip -9
 #
 # EVERY ONE OF THOSE IS A REAL FILE IN OUTDIR, `cityjsonseq` included — from a
 # CityJSONSeq INPUT it is a copy, from a CityJSON INPUT it is cut with `cjseq
@@ -25,26 +23,29 @@
 # substituted.
 #
 # `<x>` is INPUT's basename minus its known input extension — see
-# `KNOWN_INPUT_EXTENSIONS` below, which is one of four implementations of the
-# same convention (this script, the justfile, the coordinator's Rust
-# `naming::strip_known_extension`, and `benchmark/scripts/readbench_duckdb.sh`'s
-# package-name counterpart), held in lockstep by
+# `KNOWN_INPUT_EXTENSIONS` below, which is one of three implementations of the
+# same convention (this script, the justfile and the coordinator's Rust
+# `naming::strip_known_extension`), held in lockstep by
 # `benchmark/readbench/tests/strip_extension.rs`.
 #
 # THE CONVERSION CHAIN, AND WHY IT RUNS FORWARDS ONLY:
 #
 #   CityGML --citygml-tools to-cityjson--> CityJSON --cjseq cat--> CityJSONSeq
-#                                                 |           |--fcb ser -A--------> FlatCityBuf
-#                                                 |           |--cityparquet convert-> CityParquet
+#                                                 |           |--fcb ser -A------------------------> FlatCityBuf
+#                                                 |           |--cityparquet convert --ordering hilbert--> CityParquet
 #                                                 |
 #                                                 |--citygml-tools from-cityjson -v 2.0--> CityGML
 #                                                    (only when INPUT is not itself CityGML)
 #
 # Each artefact derives from the one before it, and FlatCityBuf and
 # CityParquet derive from the SAME CityJSONSeq — that is what makes their
-# comparison fair. NOTHING derives from CityParquet: `cityparquet export`
-# could emit the CityJSON artefacts and it would be tempting, but deriving a
-# competitor's input from the format under test would favour it.
+# comparison fair. Within this chain NOTHING derives from CityParquet:
+# `cityparquet export` could emit the CityJSON artefacts and it would be
+# tempting, but deriving a competitor's input from the format under test would
+# favour it. One corpus SOURCE is the exception, by the author's decision: the
+# Montréal CityJSON was exported from published CityParquet packages before it
+# reached this script (benchmark/formats/corpus_urls.txt; READ_BENCHMARK.md,
+# Caveat 14).
 #
 # WHY `cjseq` CUTS THE SEQ, and not citygml-tools. citygml-tools 2.5.0 *can*
 # write CityJSONSeq directly (`-l/--json-lines`), so this is a choice, not a
@@ -75,7 +76,7 @@
 # for a reason that outweighs it:
 #
 #   The read benchmark's claim is a comparison BETWEEN formats. A dataset that
-#   produces seven artefacts and skips the eighth does not weaken that
+#   produces four artefacts and skips the fifth does not weaken that
 #   comparison, it removes the baseline from it — and under the previous
 #   corpus the skipped ones were exactly the datasets a reader recognises
 #   (3DBAG, Rotterdam, Vienna, NYC, Zurich all ship as CityJSON). Worse, the
@@ -84,7 +85,7 @@
 #   repository's reader accepts only 2.0.
 #
 # So every artefact, CityGML included, is now derived from ONE source
-# document, which is what makes the eight rows content-comparable in the first
+# document, which is what makes the five rows content-comparable in the first
 # place. The cost is real and must be quoted with the numbers: the `citygml`
 # row then measures citygml-tools' SERIALISATION, not a published file. Two
 # things bound that cost, both in benchmark/formats/READ_BENCHMARK.md's CityGML synthesis
@@ -96,10 +97,29 @@
 # A CityGML INPUT is still COPIED, never round-tripped: where the source data
 # is already CityGML, that is what gets measured.
 #
-# The `-A` (index-all-attributes) flag on `fcb ser` is REQUIRED, not
-# cosmetic: the later attribute-filter benchmark needs FCB's B+-tree
-# attribute index to exist, and the spatial (R-tree) index is on by default
-# so both of FCB's indexed-query paths are available for comparison.
+# THE FLATCITYBUF CONFIGURATION IS `fcb ser -A`, AND NOTHING ELSE — one
+# configuration, chosen once, not a swept axis. `-A` (index-all-attributes)
+# is REQUIRED, not cosmetic: the attribute-filter benchmark needs FCB's
+# B+-tree attribute index to exist, and the spatial (R-tree) index is on by
+# default, so both of FCB's indexed-query paths are available for
+# comparison. Every other index knob keeps its `fcb ser` default — attribute
+# B+-tree branching factor 256, R-tree node size 16 — and that is a measured
+# choice:
+#
+#   - Branching factor. `3dbag_n100000` was written at 16 / 64 / 128 / 256
+#     and read back with the read benchmark's own child (3 repeats each):
+#     `count`, all three `bbox-query` windows, the indexed `attr-filter`
+#     (`b3_dak_type == slanted`) and the `id-lookup` miss were within noise
+#     of one another at every factor (the indexed filter sits at ~5.3 ms on
+#     all four, the file sizes within 0.5%). No factor wins, so the default
+#     stands.
+#   - R-tree node size. `--index-node-size` MUST be left alone. `fcb_core`
+#     0.7.6's own `FcbReader::select_query` — the seekable path this
+#     benchmark reads through — passes `PackedRTree::DEFAULT_NODE_SIZE`
+#     instead of the header's `index_node_size` (its streaming sibling
+#     `select_query_seq` reads the header correctly), so a file written
+#     `--index-node-size 64` panics on every `bbox-query` with a capacity
+#     overflow. Measured, not assumed.
 #
 # EXTERNAL TOOLS ARE GUARDED PER FORMAT, not up front: `fcb` is only required
 # when `flatcitybuf` was requested, `citygml-tools`/`cjseq`/`jq` only when the
@@ -132,22 +152,15 @@ set -euo pipefail
 # lists out of their own sources and fails if they disagree (a duplicated
 # vocabulary drifting apart is exactly how this benchmark's CSV header
 # contract ended up with three incompatible versions).
-#
-# `duckdb-parquet` is deliberately absent: it is an SQL-engine baseline that
-# `benchmark/scripts/readbench_duckdb.sh` runs over an already-prepared CityParquet
-# package, so there is no artefact for this script to build (the Rust side
-# says the same with `Artefact::NotCoordinated`).
-VALID_FORMATS=(citygml cityjson cityjsonseq cityjsonseq-gz flatcitybuf cityparquet cityparquet-hilbert)
+VALID_FORMATS=(citygml cityjson cityjsonseq flatcitybuf cityparquet)
 
 # What `--formats` defaults to: the full format-comparison set, i.e. every
-# artefact this script can produce. `duckdb-parquet` is absent for the reason
-# given above (no artefact of its own); `citygml` is present but is skipped
-# with a report, not built, when INPUT is not CityGML.
+# artefact this script can produce.
 # NOT the same list as the coordinator's `DEFAULT_FORMATS` (which is what the
 # benchmark MEASURES by default) — this one can only ever name formats a
 # build step below exists for, so that a bare run never fails on its own
 # default.
-DEFAULT_BUILD_FORMATS=(citygml cityjson cityjsonseq cityjsonseq-gz flatcitybuf cityparquet cityparquet-hilbert)
+DEFAULT_BUILD_FORMATS=(citygml cityjson cityjsonseq flatcitybuf cityparquet)
 
 # The INPUT-EXTENSION CONVENTION, most specific first — the same list, in the
 # same order, as `KNOWN_INPUT_EXTENSIONS` in
@@ -279,6 +292,21 @@ require_tool() {
   fi
 }
 
+# Warns, loudly and on every run, when TOOL reports a version other than the
+# pin PIN_NAME holds in benchmark/scripts/fetch_tools.sh — the one place the
+# cjseq and fcb pins live. A warning, not a refusal: the version actually used
+# is what the run records, and a run on a drifted tool must say so beside any
+# number quoted from it.
+warn_unless_pinned() {
+  local tool=$1 pin_name=$2 pin have
+  pin="$(sed -n "s/^${pin_name}=\"\(.*\)\"$/\1/p" "$BENCHMARK_DIR/scripts/fetch_tools.sh" 2>/dev/null)" || true
+  have="$("$tool" --version 2>/dev/null | awk 'NR == 1 {print $2}')" || true
+  if [[ -n "$pin" && "$have" != "$pin" ]]; then
+    echo "warn: $tool reports version '${have:-unknown}', but the pinned version is $pin" \
+      "(benchmark/scripts/fetch_tools.sh); the artefacts it writes are not the pinned chain's" >&2
+  fi
+}
+
 # --- preflight -------------------------------------------------------------
 # One pass over the request: reject what cannot be built, and require only
 # the tools the request actually needs. Everything below this point is
@@ -381,13 +409,12 @@ fi
 # Which hops of the chain this request needs.
 #
 # NEED_SEQ: a CityJSONSeq artefact must exist in OUTDIR — either because
-# something downstream of it (gz / fcb / cityparquet) is cut from it and the
+# something downstream of it (fcb / cityparquet) is cut from it and the
 # input carries no CityJSONSeq of its own, or because `cityjsonseq` itself was
 # requested, which is a REAL artefact for every input kind (see the header).
 NEED_SEQ=0
 if [[ "$INPUT_KIND" == "citygml" ]]; then
-  if want cityjsonseq || want cityjsonseq-gz || want flatcitybuf \
-    || want cityparquet || want cityparquet-hilbert; then
+  if want cityjsonseq || want flatcitybuf || want cityparquet; then
     NEED_SEQ=1
   fi
 elif want cityjsonseq; then
@@ -450,6 +477,7 @@ fi
 if [[ "$SEQ_FROM" == "cjseq-cat" ]] \
   || [[ "$NEED_CITYJSON" -eq 1 && "$INPUT_KIND" == "cityjsonseq" ]]; then
   require_tool cjseq "the CityJSON <-> CityJSONSeq conversion"
+  warn_unless_pinned cjseq CJSEQ_VERSION
 fi
 # jq reads the CityJSON artefact's object count back out; a converter that
 # writes a well-formed but object-less document is worse than one that fails.
@@ -519,14 +547,12 @@ if [[ "$INPUT_KIND" == "citygml" ]] \
 fi
 
 NEED_CLI=0
-if want cityparquet || want cityparquet-hilbert; then
+if want cityparquet; then
   NEED_CLI=1
 fi
 if want flatcitybuf; then
   require_tool fcb "the FlatCityBuf artefact"
-fi
-if want cityjsonseq-gz; then
-  require_tool gzip "the gzipped CityJSONSeq artefact"
+  warn_unless_pinned fcb FCB_CLI_VERSION
 fi
 
 mkdir -p "$OUTDIR"
@@ -540,9 +566,7 @@ GML_OUT="$OUTDIR/${BASE}.gml"
 CITYJSON_OUT="$OUTDIR/${BASE}.city.json"
 SEQ_OUT="$OUTDIR/${BASE}.city.jsonl"
 PARQUET_OUT="$OUTDIR/${BASE}.parquet"
-HILBERT_OUT="$OUTDIR/${BASE}-hilbert.parquet"
 FCB_OUT="$OUTDIR/${BASE}.fcb"
-GZ_OUT="$OUTDIR/${BASE}.jsonl.gz"
 
 # Non-empty directory: at least one file inside (a CityParquet package is
 # always a directory of one or more Parquet files + metadata.json; the
@@ -571,12 +595,12 @@ same_file() {
 # check, and OUTDIR (benchmark/runs/data/readbench by default) persists across runs and
 # across checkouts. So a directory prepared before the derivation chain
 # changed keeps serving artefacts derived from a stage that no longer exists —
-# silently, under the same names, with nothing to look at. The sharp case is
-# the gz baseline: before `cityjsonseq` became a real artefact for every input
-# kind, a `.city.json` input's `<x>.jsonl.gz` was a gzip of the WHOLE CityJSON
-# DOCUMENT, and the gz runner reads one happily (0.254909 s / 61,192,614 B
-# against the real seq-gz's 0.092799 s / 1,798,710 B — 2.75x too slow, 34x too
-# heavy). A documentation line is missed by exactly the person who most needs
+# silently, under the same names, with nothing to look at. The sharp case was
+# a gzipped-CityJSONSeq baseline the benchmark once measured: before
+# `cityjsonseq` became a real artefact for every input kind, a `.city.json`
+# input's gzip was a gzip of the WHOLE CityJSON DOCUMENT, and its runner read
+# one happily (0.254909 s / 61,192,614 B against the real stream's 0.092799 s
+# / 1,798,710 B — 2.75x too slow, 34x too heavy). A documentation line is missed by exactly the person who most needs
 # it, and this failure publishes plausible-looking numbers.
 #
 # So each dataset's artefacts carry the version of the chain that built them,
@@ -594,15 +618,39 @@ same_file() {
 #      all, and fcb/cityparquet/gz were derived from INPUT itself.
 #   2  the CityJSONSeq artefact is always materialised, and everything
 #      downstream derives from IT.
-CHAIN_VERSION=2
+#   3  `cityparquet convert` writes bloom filters by default.
+#   4  the 3DBAG slices are cut without LoD 1.2, under unchanged names, and
+#      the corpus changed; every stage of every dataset is rebuilt.
+#   5  `<x>.parquet` is written in Hilbert order (`--ordering hilbert`), the
+#      benchmark's one CityParquet configuration.
+CHAIN_VERSION=5
+# The chain version at which each STAGE last changed what it writes. An
+# artefact is stale when its stage changed after the version that built it,
+# so a bump that touches one stage does not force the hours-long stages it
+# left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#   5  the CityParquet stage: a package built before holds the same rows in
+#      source order, and every bbox row measured on it is a different
+#      artefact.
+#   4  every stage: a re-cut slice has new content under its old name, so no
+#      artefact built from it before is current.
+#   3  `cityparquet convert` writes bloom filters by default (id, feature_id,
+#      high-cardinality string attributes). A package built before carries
+#      none, and every lookup row measured on it is a different artefact.
+#   2  the CityJSONSeq stage became a real artefact for every input kind
+#      (the gzip case above); FlatCityBuf and CityGML derive from it.
+stage_version() {
+  case "$1" in
+    "$PARQUET_OUT") echo 5 ;;
+    *) echo 4 ;;
+  esac
+}
 CHAIN_DIR="$OUTDIR/.readbench-chain"
 CHAIN_STAMP="$CHAIN_DIR/$BASE"
 
 # Every artefact path this script owns for this dataset, whatever was
 # requested: a stale artefact nobody asked for today is still one the
 # coordinator will measure tomorrow.
-ALL_OUTPUTS=("$GML_OUT" "$CITYJSON_OUT" "$SEQ_OUT" "$PARQUET_OUT" "$HILBERT_OUT" \
-  "$FCB_OUT" "$GZ_OUT")
+ALL_OUTPUTS=("$GML_OUT" "$CITYJSON_OUT" "$SEQ_OUT" "$PARQUET_OUT" "$FCB_OUT")
 
 STALE=()
 STAMPED=""
@@ -610,12 +658,24 @@ if [[ -f "$CHAIN_STAMP" ]]; then
   STAMPED="$(cat "$CHAIN_STAMP")"
   STAMPED=${STAMPED%%$'\n'*}
 fi
-if [[ "$STAMPED" != "$CHAIN_VERSION" ]]; then
+# An absent or unparseable stamp is version 0: unknown provenance is stale
+# for every stage, exactly as before.
+STAMPED_NUM=0
+if [[ "$STAMPED" =~ ^[0-9]+$ ]]; then
+  STAMPED_NUM=$STAMPED
+fi
+if [[ "$STAMPED_NUM" != "$CHAIN_VERSION" ]]; then
   for out in "${ALL_OUTPUTS[@]}"; do
     # INPUT sitting in OUTDIR under an artefact's own name was not built by
     # any run of this script, so it is not evidence of an older chain (block
     # 1/2/3 each report it as "the input is already the artefact").
     if same_file "$INPUT" "$out"; then
+      continue
+    fi
+    # Only the stages that changed since the stamped version are stale; an
+    # artefact of an unchanged stage is byte-for-byte what this chain would
+    # write again.
+    if [[ "$(stage_version "$out")" -le "$STAMPED_NUM" ]]; then
       continue
     fi
     if file_is_valid "$out" || dir_is_valid "$out"; then
@@ -627,8 +687,9 @@ if [[ ${#STALE[@]} -gt 0 ]]; then
   echo "error: $OUTDIR holds artefacts for '$BASE' built by an older derivation chain" >&2
   echo "       (chain version ${STAMPED:-none recorded}; this script builds version $CHAIN_VERSION)." >&2
   echo "       Reusing them would measure a stage this chain no longer produces, and the" >&2
-  echo "       numbers would look entirely plausible. Delete them and re-run:" >&2
-  echo "         rm -rf ${STALE[*]} $CHAIN_STAMP" >&2
+  echo "       numbers would look entirely plausible. Delete them and re-run (the stamp is" >&2
+  echo "       rewritten by the run; artefacts of unchanged stages are kept):" >&2
+  echo "         rm -rf ${STALE[*]}" >&2
   exit 1
 fi
 
@@ -704,7 +765,7 @@ BUILT=()
 # in OUTDIR, where they would look like artefacts this run measured.
 INTERMEDIATES=()
 
-# The CityJSONSeq every downstream artefact (gz / fcb / cityparquet) is cut
+# The CityJSONSeq every downstream artefact (fcb / cityparquet) is cut
 # from. It is INPUT itself unless block 3 below materialises a `.city.jsonl`
 # artefact (whenever NEED_SEQ), in which case all of them read THAT — the
 # same bytes the `cityjsonseq` row is measured on, which is what makes their
@@ -879,12 +940,13 @@ if [[ "$NEED_SEQ" -eq 1 ]]; then
   fi
 fi
 
-# 4. Core-profile CityParquet package (source row order).
+# 4. Core-profile CityParquet package, rows in Hilbert-curve order — the
+#    configuration CityParquet would ship with, and the benchmark's only one.
 if want cityparquet; then
   if dir_is_valid "$PARQUET_OUT"; then
     echo "skip $PARQUET_OUT (already present)"
   else
-    echo "-- convert $SEQ_INPUT -> $PARQUET_OUT"
+    echo "-- convert --ordering hilbert $SEQ_INPUT -> $PARQUET_OUT"
     # By-type is the only, mandatory table layout (2026-07-21): one
     # `<snake>.parquet` table per 1st-level CityObject family. The
     # read-benchmark's CityParquetRunner only supports a package whose
@@ -892,23 +954,12 @@ if want cityparquet; then
     # single-family dataset (e.g. a Building-only 3D BAG tile) — a
     # multi-family INPUT prepares fine here but the read-benchmark itself
     # rejects it later with a clear error.
-    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --overwrite
+    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --ordering hilbert --overwrite
   fi
   BUILT+=("$PARQUET_OUT")
 fi
 
-# 5. Hilbert-ordered CityParquet package.
-if want cityparquet-hilbert; then
-  if dir_is_valid "$HILBERT_OUT"; then
-    echo "skip $HILBERT_OUT (already present)"
-  else
-    echo "-- convert --ordering hilbert $SEQ_INPUT -> $HILBERT_OUT"
-    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$HILBERT_OUT" --ordering hilbert --overwrite
-  fi
-  BUILT+=("$HILBERT_OUT")
-fi
-
-# 6. FlatCityBuf, spatial index (default-on) + all-attribute B+Tree index.
+# 5. FlatCityBuf, spatial index (default-on) + all-attribute B+Tree index.
 if want flatcitybuf; then
   if file_is_valid "$FCB_OUT"; then
     echo "skip $FCB_OUT (already present)"
@@ -919,20 +970,8 @@ if want flatcitybuf; then
   BUILT+=("$FCB_OUT")
 fi
 
-# 7. Gzip of the CityJSONSeq, for a whole-document-gzip baseline.
-if want cityjsonseq-gz; then
-  if file_is_valid "$GZ_OUT"; then
-    echo "skip $GZ_OUT (already present)"
-  else
-    echo "-- gzip -9 $SEQ_INPUT -> $GZ_OUT"
-    gzip -9 -c "$SEQ_INPUT" > "$GZ_OUT"
-  fi
-  BUILT+=("$GZ_OUT")
-fi
-
-# (There is no block 8: `cityjsonseq` is built by block 3 for EVERY input
-# kind. It used to be a documented no-op here — see the header for what that
-# cost.)
+# (There is no separate block for `cityjsonseq`: block 3 builds it for EVERY
+# input kind — see the header.)
 
 # Sanity checks: every artefact this run was responsible for exists and is
 # non-empty, and — when FlatCityBuf was built — the FCB file reports a
@@ -1013,12 +1052,6 @@ fi
 
 if want cityparquet; then
   dir_is_valid "$PARQUET_OUT" || { echo "error: missing/empty package: $PARQUET_OUT" >&2; exit 1; }
-fi
-if want cityparquet-hilbert; then
-  dir_is_valid "$HILBERT_OUT" || { echo "error: missing/empty package: $HILBERT_OUT" >&2; exit 1; }
-fi
-if want cityjsonseq-gz; then
-  file_is_valid "$GZ_OUT" || { echo "error: missing/empty file: $GZ_OUT" >&2; exit 1; }
 fi
 if want flatcitybuf; then
   file_is_valid "$FCB_OUT" || { echo "error: missing/empty file: $FCB_OUT" >&2; exit 1; }

@@ -40,7 +40,7 @@ async fn the_real_feed_ingests_every_object() {
         .expect("ingest the published Delft feed");
 
     // Filter to object tables: describe_dataset also reports sidecar tables
-    // (materials, textures, geometry_templates) alongside object tables, and
+    // (materials, textures, implicit_geometries) alongside object tables, and
     // TOTAL_OBJECTS counts objects only. Summing every module regardless of
     // role would pass today and fail the moment this feed carries appearance
     // data, for a reason that has nothing to do with an ingest bug.

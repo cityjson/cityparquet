@@ -70,8 +70,29 @@
       "substituted": false
     }
   ],
-  "object_type": "Building",
-  "object_type_count": 23777,
+  "attr_filter": {
+    "column": "BIN",
+    "pred": {
+      "eq": "1000000"
+    },
+    "matched": 173,
+    "share": 0.007275938932581907,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "gml_ZTXMKABOS30HR82DJNCDARV9MIMJP09QZ6TY",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "gml_ZTXMKABOS30HR82DJNCDARV9MIMJP09QZ6TY-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
   "numeric_attr": null,
   "cp_object_total": 23777
 }

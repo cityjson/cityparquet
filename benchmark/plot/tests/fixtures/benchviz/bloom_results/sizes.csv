@@ -1,0 +1,3 @@
+dataset,format,bytes,mb,ratio_vs_cityjsonseq,baseline_format,ratio_vs_baseline
+delft,cityparquet,2412000,2.300262,2.738806,cityparquet,1.000000
+delft,cityparquet+nobloom,2392201,2.281381,2.761358,cityparquet,1.008276

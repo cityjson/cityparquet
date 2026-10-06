@@ -14,9 +14,11 @@ spatial pruning. This page defines all four.
 
 The geometry column stores **ISO WKB** as `BLOB`, in the file CRS. This is the same WKB
 serialisation GeoParquet uses, but not the same *vocabulary*: GeoParquet admits only the
-OGC **Simple Feature** types, whereas CityParquet also stores the solid-family geometry
-(`PolyhedralSurfaceZ`) a 3D city model needs, which lies outside Simple Features — so the
-two are only partially interchangeable (see the note on GeoParquet-legal types below).
+seven basic OGC **Simple Feature** types (`Point` to `GeometryCollection`), whereas
+CityParquet also stores the solid-family geometry (`PolyhedralSurfaceZ`) a 3D city model
+needs. Simple Features 1.2 defines `PolyhedralSurface`, but GeoParquet does not permit it
+— so the two are only partially interchangeable (see the note on GeoParquet-legal types
+below).
 Specifically:
 
 - **ISO WKB** with 1000-series Z type codes (`PointZ` = 1001, `LineStringZ` = 1002,
@@ -64,7 +66,8 @@ geometry column — solids included — this field has a home even for the colum
 from `geo`.
 
 Empty or absent geometry, and [implicit geometries](/specification/appearance-templates)
-(whose geometry lives in a template), produce a **null** geometry cell.
+(whose relative geometry lives in `implicit_geometries.parquet`), produce a **null**
+geometry cell.
 
 **Example (real record).** The `geometry_lod2_2` blob of the `BuildingPart` from the
 [object-table schema](/specification/object-table-schema) (via DuckDB on the 3DBAG
@@ -85,7 +88,7 @@ subset):
 | `Solid` | `Solid` | `PolyhedralSurfaceZ` |
 | `MultiSolid` | `MultiSolid` | `GeometryCollectionZ` (one `PolyhedralSurfaceZ` per solid) |
 | `CompositeSolid` | `CompositeSolid` | `GeometryCollectionZ` (one `PolyhedralSurfaceZ` per solid) |
-| `ImplicitGeometry` | `GeometryInstance` | `template` struct + referenced geometry template; geometry cell is null |
+| `ImplicitGeometry` | `GeometryInstance` | `implicit_geometry` struct + referenced relative geometry in `implicit_geometries.parquet`; geometry cell is null |
 
 `MultiSurface` and `CompositeSurface` both encode to `MultiPolygonZ`; the distinction
 between them is recorded in `geometry_properties_lod*.type`, as is the distinction
@@ -108,8 +111,8 @@ volumetric identity the format exists to carry.
 :::
 
 The WKB is the *analysis geometry*. It does not encode semantic surfaces,
-material/texture mappings, or template references; those live in separate columns or
-sidecar files.
+material/texture mappings, or implicit-geometry references; those live in separate
+columns or sidecar files.
 
 ## Geometry properties and semantics
 
@@ -134,10 +137,20 @@ STRUCT<
 | `type` | `VARCHAR` | The CM geometry type (`Solid`, `MultiSurface`, …), disambiguating the encodings that share a WKB type. Non-null; **SHOULD** be dictionary-encoded. |
 | `surfaces` | `JSON` | The semantic surface definitions — each an object with a `type` plus any surface attributes (slope, azimuth, extension attributes, …). Kept as `JSON` because surfaces do **not** share a fixed shape (each may carry different attributes). A writer **MUST** preserve the array's **order and member content**, and **MUST NOT** deduplicate entries or drop unreferenced ones: a semantic surface's `parent` / `children` members are *indices into this array*, so any reordering or removal dangles them. Null when the geometry carries no semantics. |
 | `face_semantics` | `LIST<INT>` | One entry per WKB face, in WKB face order; each entry is the index of that face's surface in `surfaces`, or `null` for a face with no semantics. Null when the geometry carries no semantics. |
-| `shells` | `LIST<LIST<INT>>` | Per-solid, then per-shell, face counts, so the shell nesting the WKB flattens can be reconstructed — **one inner list per solid** (a `Solid` has exactly one; `MultiSolid` / `CompositeSolid` one per member, in WKB order), each inner list the face count of each shell, outer shell first: `[[12]]`, `[[12, 4]]`, `[[12], [8, 4]]`. Null for the non-solid types. |
+| `shells` | `LIST<LIST<INT>>` | Per-solid, then per-shell, face counts, so the shell nesting the WKB flattens can be reconstructed — **one inner list per solid** (a `Solid` has exactly one; `MultiSolid` / `CompositeSolid` one per member, in WKB order), each inner list the face count of each shell, outer (exterior) shell first and any interior shells after it: `[[12]]`, `[[12, 4]]`, `[[12], [8, 4]]`. Null for the non-solid types. |
 
 There is no `lod` field: the level of detail is carried by the **column name**
 (`geometry_properties_lod2_2`), so storing it again would be redundant.
+
+:::note[Interior shells are a stated departure from CityGML 3.0]
+CityGML 3.0 Requirement 2 (`/req/core/isorestrictions`) restricts a solid to its
+exterior boundary. CityJSON 2.0.1 (§3.2: "the first shell being the exterior shell of
+the solid, and the others the interior shells") and CityGML 2.0 permit interior shells,
+for example the boundary of a cavity. CityParquet carries interior shells, departing
+from the 3.0 conceptual model so that such sources round-trip: a solid's inner list in
+`shells` records its exterior shell first and each interior shell after it, so a solid
+with one cavity is `[[6, 6]]`.
+:::
 
 The key property: **`face_semantics[i]` is the semantic surface of WKB face `i`**. So
 "the roof faces of this solid" is a positional filter over `face_semantics` (now a
@@ -209,8 +222,10 @@ rather than the source's shorthand; the two are semantically equal but not byte-
 and [round-trip losslessness](/specification/dataset-package) is defined up to this
 canonicalisation.
 
-Extended semantic surfaces keep their CityJSON `+` prefix **inside** the surface
-object — they are not promoted to column names, so the `ex_` rule does not apply here.
+Extended semantic surfaces carry their extension's namespace as a prefix in the
+surface object's `type`, exactly as extension attributes do in column names: the
+`+PartyWallSurface` of the Energy ADE (namespace `energy`) is stored as
+`{ "type": "energy_PartyWallSurface" }` — see [extensions](/specification/extensions).
 
 **Example.** The `geometry_properties_lod2_2` struct of a `Solid` whose 12 faces carry
 ground, wall and roof semantics, with reconstruction attributes on the roof surface
@@ -279,26 +294,6 @@ an LoD being supplied for it; how a tool obtains one is out of scope.)
 only implicit geometries, or none at all — simply carries no geometry column, and
 declares no `city.primary_column`.
 
-### LoD0 synthesis (writer feature)
-
-A writer **MAY** synthesise an LoD0 footprint for an object whose source provides no
-LoD0 geometry, by flattening its highest available LoD (typically a `Solid` or
-`MultiSurface`) to a 2D footprint at a representative elevation. This is an opt-in
-**enrichment**, not a decoding of anything the source carried: the exported model gains
-a footprint the source model lacked.
-
-- The synthesised footprint follows the ordinary [suffix grammar](#levels-of-detail)
-  like any other LoD — it lands in `geometry_lod0_0`, never a bare `geometry` column —
-  and gets its own `geometry_properties_lod0_0` (`type: "MultiSurface"`).
-- It is **kept on export** back to CityJSON/CityGML (see
-  [round-trip losslessness](/specification/dataset-package#round-trip-losslessness)):
-  because the source lacked this footprint, the round trip for that object is an
-  enrichment, not an exact reproduction of the source.
-- **Synthesis provenance is distinct from degenerate-geometry diagnostics.** Some
-  inputs project to a degenerate (zero-area) footprint; a writer that drops these rather
-  than writing them logs the fact as a diagnostic — this affects write-time reporting,
-  not the encoding or round-trip contract.
-
 ## CRS
 
 The CRS is defined once per file, as **PROJJSON**, in the
@@ -335,5 +330,7 @@ Every object row **SHOULD** carry a `bbox` in the same CRS as the geometry — a
 
 Rows **MAY** be written in **[Hilbert-curve order](/design-decisions/spatial-access)**
 on the `bbox` centroid to improve spatial locality for object-storage range reads and
-row-group pruning. Row-group sizing interacts with pruning selectivity; see the
+row-group pruning. The cost falls on the writer: it must hold every row before it can
+write the first, whereas rows in source order can be streamed one at a time. Either
+order is conformant. Row-group sizing interacts with pruning selectivity; see the
 [dataset metadata](/specification/metadata).

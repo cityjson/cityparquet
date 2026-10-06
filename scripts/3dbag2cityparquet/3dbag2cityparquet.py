@@ -8,9 +8,10 @@ resident memory. Too big.
 
 The CityJSONSeq path, by contrast, STREAMS -- `Source::features()` reopens the
 file and yields line by line, and the writer makes two such passes (scan, then
-encode). Only `--ordering hilbert` buffers. So the whole dataset can be handed
-to the reference writer as ONE CityJSONSeq file, and the writer computes the
-footer itself rather than us grafting one on.
+encode) -- as long as it is told `--ordering source`; the writer's default,
+Hilbert ordering, buffers every feature to sort them. So the whole dataset can
+be handed to the reference writer as ONE CityJSONSeq file, and the writer
+computes the footer itself rather than us grafting one on.
 
 Turning 8,941 separately-quantised tiles into one CityJSONSeq is exactly what
 `merge_sources` does in memory, so this reimplements ITS arithmetic:
@@ -71,8 +72,9 @@ def tile_id(url: str) -> str:
 
 def tile_sort_key(tid: str) -> tuple:
     """Quadtree order (z, x, y), so the one big file is spatially coherent and
-    the writer's row groups get tight bboxes for free. `--ordering hilbert`
-    would do better but buffers every feature -- the 1.1 TB this avoids."""
+    the writer's row groups get tight bboxes for free. Hilbert ordering, the
+    writer's default, would do better but buffers every feature -- the 1.1 TB
+    this avoids, which is why the convert stage passes `--ordering source`."""
     parts = tid.split("-")
     try:
         return (0, tuple(int(p) for p in parts))
@@ -355,7 +357,9 @@ def stage_merge(plan: dict, work: Path) -> Path:
 
 def stage_convert(big: Path, dest: Path, extra: list[str]) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [str(CITYPARQUET), "convert", str(big), "-o", str(dest), "--overwrite", *extra]
+    # Source order is what lets the one big CityJSONSeq stream; the writer's
+    # default (Hilbert) would buffer the whole dataset.
+    cmd = [str(CITYPARQUET), "convert", str(big), "-o", str(dest), "--overwrite", "--ordering", "source", *extra]
     log("convert: " + " ".join(cmd))
     t0 = time.time()
     rc = subprocess.run(cmd)

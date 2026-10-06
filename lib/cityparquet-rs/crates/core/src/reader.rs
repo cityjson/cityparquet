@@ -325,7 +325,7 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             // `material_lod<suffix>`, never the bare name — would spuriously
             // collide and error out (proven by the real-fixture regression
             // `attributes_named_like_appearance_columns_do_not_corrupt_export`).
-            // So: render the reserved/template/other shape with NO attributes
+            // So: render the reserved/implicit_geometry/other shape with NO attributes
             // (nothing to collide with), strip the synthesised bare quartet
             // `to_arrow_schema` always adds for empty `lods` (the ONLY shape
             // it knows for that case — never teach `CityParquetSchema` a
@@ -340,6 +340,7 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
                 geoparquet_lods: Vec::new(),
                 attributes: Vec::new(),
                 crs: None,
+                extension_namespaces: Vec::new(),
             }
             .to_arrow_schema()?;
             const BARE_GEOMETRY_NAMES: [&str; 4] =
@@ -370,6 +371,12 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             lods,
             attributes,
             crs: None,
+            extension_namespaces: meta
+                .extensions
+                .iter()
+                .flatten()
+                .map(|(ns, _)| ns.clone())
+                .collect(),
         };
         // Encoding-aware (this plan's Task 8 — `to_arrow_schema`'s own doc
         // comment: "Task 6+ gives them their own encoding-aware entry

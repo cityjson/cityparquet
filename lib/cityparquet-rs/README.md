@@ -7,8 +7,8 @@ in-memory representation. Part of the CityParquet + CityLake research stack
 
 CityParquet stores a city model as a **directory of Parquet files** — one row
 per city object, WKB geometry per LoD, typed attribute columns, and optional
-sidecar tables for materials, textures, and geometry templates — so national-
-to-global 3D city models can be filtered, pruned, and queried directly from
+sidecar tables for materials, textures, and implicit geometries — so
+national-to-global 3D city models can be filtered, pruned, and queried directly from
 cloud object storage. It round-trips back to CityJSON/CityJSONSeq with
 semantic losslessness.
 
@@ -38,7 +38,7 @@ they measure.
 | `cityparquet-cli`    | The `cityparquet` binary and the benchmark harness                                                                 |
 
 Status: milestones **M1–M5 complete** — schema, native writer, reader
-& round-trip, content-gated appearance/template sidecars, and the benchmark
+& round-trip, content-gated appearance/implicit-geometry sidecars, and the benchmark
 suite. Every LoD,
 **including LoD0, is a suffixed geometry column** (`geometry_lod0_0`, `geometry_lod2_2`, …);
 the writer can **synthesise** an LoD0 footprint from higher-LoD geometry when
@@ -82,9 +82,11 @@ a meaningless single-Item Collection.
 | ------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--overwrite`                   | off           | purge an existing package in the target dir first                                                                                                                      |
 | `--recipe`                      | `cityparquet` | writer preset: `cityparquet`, `parquet-defaults`, `no-dictionary`, `no-bss`, `no-delta`, `snappy`                                                                      |
-| `--ordering`                    | `source`      | `source` or `hilbert` (spatial row ordering for better bbox pruning)                                                                                                   |
+| `--ordering`                    | `hilbert`     | `hilbert` (spatial row ordering for better bbox pruning; holds every feature in memory) or `source` (streams one feature at a time: the low-memory path)               |
 | `--row-group-size`              | `65536`       | Parquet row-group size                                                                                                                                                 |
 | `--zstd-level`                  | `3`           | zstd level (ignored by `--recipe snappy`)                                                                                                                              |
+| `--no-bloom`                    | off           | write no Parquet bloom filter (by default `id`, `feature_id` and high-cardinality string attributes carry one)                                                         |
+| `--bloom-fpp`                   | `0.01`        | target false-positive probability of every bloom filter, strictly between 0 and 1                                                                                      |
 | `--batch-size`                  | `4096`        | encode batch size                                                                                                                                                      |
 | `--crs`                         | unset         | operator-supplied CRS (`EPSG:25832` or bare `25832`) for a source that declares none; ignored for a source that declares its own                                       |
 | `--tolerate-invalid-appearance` | off           | drop a material/texture index that falls outside its local definitions array instead of aborting; counted in the report's trailing field, never silent                 |
@@ -131,7 +133,7 @@ module, so a `CityObjectGroup` in `generics.parquet` may have its members in
 `vegetation.parquet`. That is the by-module layout, not a partition boundary:
 the guarantee is that the references resolve inside the package.
 
-Sidecars (`materials.parquet`/`textures.parquet`/`geometry_templates.parquet`)
+Sidecars (`materials.parquet`/`textures.parquet`/`implicit_geometries.parquet`)
 are written automatically whenever the source has that kind of content —
 there is no profile flag to opt into them:
 
@@ -143,9 +145,9 @@ cargo run -p cityparquet-cli -- convert tests/fixtures/lod3_railway.city.json \
 `convert` prints a space-separated report: `object_count files_count
 skipped_same_lod_geometries attribute_coercion_nulls degenerate_rings_dropped
 degenerate_surfaces_dropped materials_written textures_written
-templates_written invalid_appearance_refs_dropped` (`materials_written`
-through `templates_written` are `0` when the source has no appearance/
-templates for that sidecar to write; `invalid_appearance_refs_dropped` is `0`
+implicit_geometries_written invalid_appearance_refs_dropped`
+(`materials_written` through `implicit_geometries_written` are `0` when the
+source has no appearance/implicit geometries for that sidecar to write; `invalid_appearance_refs_dropped` is `0`
 unless `--tolerate-invalid-appearance` actually dropped a dangling
 material/texture reference).
 
@@ -178,8 +180,9 @@ cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 ```
 
 Appends one CSV row per variant. `--variants` takes a comma-separated list in
-the grammar `<preset>[+hilbert][+rg<N>]` (omit for the default
-9-variant set); `--repeat` (default 5) reports the median; `--window-frac`
+the grammar `<preset>[+source][+rg<N>][+<codec>[<level>]][+nobloom]`, where
+every variant is Hilbert-ordered unless it carries `+source` (omit for the
+default 9-variant set); `--repeat` (default 5) reports the median; `--window-frac`
 (default 0.05) sizes the spatial window query; `--skip-roundtrip` skips the
 export+compare check. See
 [benchmark/formats/README.md](../../benchmark/formats/README.md).
@@ -200,18 +203,14 @@ export+compare check. See
 **From the repository root** — everything that reaches both this crate and the
 `benchmark/` tree:
 
-| Recipe                                        | What it does                                                                                                                                                                                                                        |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just convert-all FOLDER [OUT]`               | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`)                                                                                                                                |
-| `just fetch-data [DEST] [ONLY]`               | fetch the read benchmark's corpus (six real CityJSON datasets, 423 MB) into `DEST` (default `benchmark/formats/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, `all` |
-| `just fetch-tools`                            | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq)                                                                                                                             |
-| `just bench FOLDER [OUT] [FORMATS]`           | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `benchmark/formats/read_results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set      |
-| `just ordering-bench FOLDER [OUT]`            | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `benchmark/formats/ordering_results`)                                                                                       |
-| `just write-bench FOLDER [OUT]`               | encoding-variant WRITE benchmark + the DuckDB `COPY` baseline, one CSV per input                                                                                                                                                    |
-| `just codec-bench FOLDER [OUT] [PREPARED]`    | codec axis over every input under `FOLDER` on the read harness: a timed write per variant (peak RSS), then a full read and the bbox windows; `OUT` default `benchmark/formats/scaling_codec_results`                                |
-| `just rowgroup-bench FOLDER [OUT] [PREPARED]` | the same for the row-group axis, `OUT` default `benchmark/formats/scaling_rowgroup_results`                                                                                                                                         |
-| `just plot` / `just plot-pretty`              | render charts and the cross-dataset summary page from CSVs already measured                                                                                                                                                         |
-| `just plot-test` / `just scripts-test`        | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, `benchmark/scripts/`'s bash suite) — outside `just check`, which is the Rust gate                                                                                |
+| Recipe                                 | What it does                                                                                                                                                                                                                        |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just convert-all FOLDER [OUT]`        | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`)                                                                                                                                |
+| `just fetch-data [DEST] [ONLY]`        | fetch the read benchmark's corpus (seven CityJSON datasets, about 1.2 GB) into `DEST` (default `benchmark/runs/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, `all` |
+| `just fetch-tools`                     | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq)                                                                                                                             |
+| `just bench FOLDER [OUT] [FORMATS]`    | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `benchmark/runs/formats/results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set      |
+| `just bench-summary`                   | render the figures, ratio tables and summary page from results already measured                                                                                                                                                     |
+| `just plot-test` / `just scripts-test` | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, `benchmark/scripts/`'s bash suite) — outside `just check`, which is the Rust gate                                                                                |
 
 Every recipe that walks a `FOLDER` discovers and names its inputs through the
 one input-extension convention at the top of the **root** `justfile`
@@ -219,14 +218,12 @@ one input-extension convention at the top of the **root** `justfile`
 of; `benchmark/readbench/tests/strip_extension.rs` holds it in
 lockstep with the Rust and shell implementations of the same rule.
 
-Downloaded benchmark data (`benchmark/formats/data/`) and generated packages
-(`out/`) are gitignored. The committed measurement artefacts are the
-configuration-axis CSVs (`benchmark/formats/scaling_*_results/`) and the two
-methodology documents beside them
-(`benchmark/formats/READ_BENCHMARK.md`, `benchmark/formats/README.md`); the
-read-side CSVs are not currently committed — see
-[benchmark/README.md](../../benchmark/README.md) for which evidence is in git
-and which is re-measured.
+Downloaded benchmark data (`benchmark/runs/data/`) and generated packages
+(`out/`) are gitignored. The committed measurement artefacts are under
+`benchmark/runs/` (`benchmark/runs/RESULTS.md` lists them), and their
+methodology is in `benchmark/formats/READ_BENCHMARK.md` and
+`benchmark/formats/README.md` — see
+[benchmark/README.md](../../benchmark/README.md).
 
 ## Development
 

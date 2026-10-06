@@ -31,11 +31,8 @@ fn the_canonical_spellings_are_the_documented_tags() {
             "citygml",
             "cityjson",
             "cityjsonseq",
-            "cityjsonseq-gz",
             "flatcitybuf",
             "cityparquet",
-            "cityparquet-hilbert",
-            "duckdb-parquet",
         ]
     );
 }
@@ -48,8 +45,5 @@ fn an_unknown_name_names_every_valid_one() {
     }
 }
 
-// Which formats the `--child` path will run is asserted where the dispatch
-// itself lives: `formats::resolve`'s own unit test enumerates `Format::ALL`
-// and requires a runner for every variant except `duckdb-parquet`, which must
-// error cleanly. That is the production statement of the same fact, so it is
-// tested there rather than against a second, parallel classifier here.
+// That every format has a `--child` runner is asserted where the dispatch
+// itself lives: `formats::resolve`'s own unit test enumerates `Format::ALL`.

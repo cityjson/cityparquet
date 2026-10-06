@@ -1,0 +1,105 @@
+{
+ "append": {
+  "object_count": 2,
+  "path": "3dbag_n10000.append.city.jsonl",
+  "source_feature_id": "NL.IMBAG.Pand.0282100000007460",
+  "suffix": "-appended",
+  "unmapped_references": 0
+ },
+ "attr_filter": {
+  "column": "b3_dak_type",
+  "eq_value": "slanted",
+  "ge_bound": null,
+  "hand_picked": true,
+  "matched": 3561,
+  "op": "eq",
+  "share": 0.356
+ },
+ "attr_range": {
+  "column": "b3_h_dak_max",
+  "matched": 1000,
+  "quantile": 0.8,
+  "threshold": 20.054999923706056
+ },
+ "bbox_full": {
+  "maxx": 196663.541,
+  "maxy": 428913.102,
+  "maxz": 23.860347747802734,
+  "minx": 195505.898,
+  "miny": 427493.73898999026,
+  "minz": 0.0
+ },
+ "id_probes": [
+  {
+   "id": "NL.IMBAG.Pand.1945100000202664",
+   "present": true,
+   "tag": "id-10pct"
+  },
+  {
+   "id": "NL.IMBAG.Pand.0282100000007365",
+   "present": true,
+   "tag": "id-50pct"
+  },
+  {
+   "id": "NL.IMBAG.Pand.0282100000005762",
+   "present": true,
+   "tag": "id-90pct"
+  },
+  {
+   "id": "NL.IMBAG.Pand.0282100000007365-absent",
+   "present": false,
+   "tag": "id-miss"
+  }
+ ],
+ "numeric_column": "b3_extrusie",
+ "point_xy": [
+  196404.16101049806,
+  427967.4069990692
+ ],
+ "total_city_objects": 10004,
+ "window_rows": 10004,
+ "windows": [
+  {
+   "achieved": 0.009996001599360257,
+   "approx": false,
+   "tag": "bbox-1pct",
+   "target": 0.01,
+   "window": {
+    "maxx": 196410.9870209961,
+    "maxy": 427975.77623449574,
+    "maxz": 23.860347747802734,
+    "minx": 196397.33500000002,
+    "miny": 427959.0377636427,
+    "minz": 0.0
+   }
+  },
+  {
+   "achieved": 0.04998000799680128,
+   "approx": false,
+   "tag": "bbox-5pct",
+   "target": 0.05,
+   "window": {
+    "maxx": 196437.51609071123,
+    "maxy": 428008.3029981384,
+    "maxz": 23.860347747802734,
+    "minx": 196370.8059302849,
+    "miny": 427926.511,
+    "minz": 0.0
+   }
+  },
+  {
+   "achieved": 0.25,
+   "approx": false,
+   "tag": "bbox-25pct",
+   "target": 0.25,
+   "window": {
+    "maxx": 196478.767,
+    "maxy": 428058.87991587014,
+    "maxz": 23.860347747802734,
+    "minx": 196329.55502099614,
+    "miny": 427875.9340822683,
+    "minz": 0.0
+   }
+  }
+ ]
+}

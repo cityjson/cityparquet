@@ -101,6 +101,19 @@ pub fn xml_err(e: impl std::fmt::Display) -> CityParquetError {
     CityParquetError::Schema(format!("CityGML XML parse error: {e}"))
 }
 
+/// The decoded, entity-unescaped content of a `BytesText` event.
+///
+/// quick-xml 0.39 split `BytesText::unescape` into `decode` (encoding only)
+/// and `escape::unescape` (entities); a CityGML text node needs both, and
+/// neither normalises line endings — the reader does not depend on an
+/// XML-1.0/1.1 EOL distinction.
+pub fn unescaped_text(t: &quick_xml::events::BytesText<'_>) -> Result<String> {
+    let decoded = t.decode().map_err(xml_err)?;
+    Ok(quick_xml::escape::unescape(&decoded)
+        .map_err(xml_err)?
+        .into_owned())
+}
+
 fn eof_err(ctx: &str) -> CityParquetError {
     CityParquetError::Schema(format!("unexpected end of CityGML document inside <{ctx}>"))
 }
@@ -132,7 +145,7 @@ pub fn read_text<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Res
     loop {
         buf.clear();
         match reader.read_event_into(buf).map_err(xml_err)? {
-            Event::Text(t) => s.push_str(&t.unescape().map_err(xml_err)?),
+            Event::Text(t) => s.push_str(&unescaped_text(&t)?),
             Event::CData(t) => s.push_str(&String::from_utf8_lossy(&t)),
             Event::End(_) => return Ok(s),
             Event::Eof => return Err(eof_err("text")),

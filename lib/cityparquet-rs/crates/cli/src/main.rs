@@ -5,7 +5,7 @@ use cityparquet::inputs::resolve_inputs;
 use cityparquet::merge::merge_sources;
 use cityparquet::package::{ConvertOptions, RowOrder, convert_source};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
-use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
+use cityparquet::recipe::{BloomPolicy, Codec, RecipePreset, WriterRecipe};
 use cityparquet::source::{Source, SourceFormat};
 use cityparquet_cli::bench::{self, BenchOptions};
 use cityparquet_schema::Result as CpResult;
@@ -88,11 +88,24 @@ enum Commands {
         #[arg(long)]
         compression: Option<String>,
 
-        /// Row-emission order for the main table: "source" (as the input
-        /// stream yields features) or "hilbert" (buffer every feature and
-        /// sort by bbox-centroid Hilbert index, improving bbox row-group
-        /// pruning at the cost of holding the whole dataset in memory).
-        #[arg(long, value_enum, default_value = "source")]
+        /// Write no Parquet bloom filter. By default every object table
+        /// carries filters on `id`, `feature_id` and its high-cardinality
+        /// string attributes, placed after the last row group.
+        #[arg(long, default_value_t = false)]
+        no_bloom: bool,
+
+        /// Target false-positive probability of every bloom filter, strictly
+        /// between 0 and 1.
+        #[arg(long, default_value_t = BloomPolicy::DEFAULT_FPP)]
+        bloom_fpp: f64,
+
+        /// Row-emission order for the main table: "hilbert" (the default:
+        /// buffer every feature and sort by bbox-centroid Hilbert index,
+        /// improving bbox row-group pruning at the cost of holding the whole
+        /// dataset in memory) or "source" (stream features as the input
+        /// yields them, one at a time — the low-memory path for an input too
+        /// large to hold).
+        #[arg(long, value_enum, default_value = "hilbert")]
         ordering: OrderingArg,
 
         /// Do NOT synthesise an LoD0 footprint into the primary `geometry`
@@ -127,13 +140,13 @@ enum Commands {
         tolerate_invalid_appearance: bool,
     },
 
-    /// Export CityParquet package back to CityJSON/CityJSONSeq
+    /// Export CityParquet package back to CityJSON, CityJSONSeq, or CityGML
     Export {
         /// Input CityParquet package directory
         #[arg(value_name = "PACKAGE_DIR")]
         package_dir: PathBuf,
 
-        /// Output file (.city.jsonl for Seq, .city.json for doc)
+        /// Output file (.city.jsonl for Seq, .city.json for doc, .gml for CityGML)
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
     },
@@ -175,9 +188,10 @@ enum Commands {
         repeat: usize,
 
         /// Comma-separated variant identifiers
-        /// (`<preset>[+hilbert][+rg<N>][+<codec>[<level>]]`, e.g.
-        /// `cityparquet+hilbert`, `cityparquet+rg512`, `cityparquet+zstd9`;
-        /// see `cityparquet::variant`); omit for the default 9-variant set
+        /// (`<preset>[+source][+rg<N>][+<codec>[<level>]][+nobloom]`, e.g.
+        /// `cityparquet+source`, `cityparquet+rg512`, `cityparquet+zstd9`;
+        /// every variant is Hilbert-ordered unless it says `+source`; see
+        /// `cityparquet::variant`); omit for the default 9-variant set
         #[arg(long)]
         variants: Option<String>,
 
@@ -391,6 +405,8 @@ fn main() -> std::process::ExitCode {
             zstd_level,
             recipe,
             compression,
+            no_bloom,
+            bloom_fpp,
             ordering,
             no_lod0,
             crs,
@@ -417,12 +433,21 @@ fn main() -> std::process::ExitCode {
                 None => None,
             };
 
+            let bloom = BloomPolicy {
+                enabled: !no_bloom,
+                fpp: bloom_fpp,
+            };
+            if let Err(e) = bloom.validate() {
+                eprintln!("error: --bloom-fpp: {}", render_error(&e));
+                return std::process::ExitCode::FAILURE;
+            }
             let recipe = WriterRecipe {
                 row_group_size,
                 zstd_level,
                 statistics_for_json: false,
                 preset: recipe.preset(),
                 compression,
+                bloom,
             };
             let ordering = ordering.row_order();
 
@@ -602,7 +627,7 @@ fn main() -> std::process::ExitCode {
                                 report.degenerate_surfaces_dropped,
                                 report.materials_written,
                                 report.textures_written,
-                                report.templates_written,
+                                report.implicit_geometries_written,
                                 report.invalid_appearance_refs_dropped
                             );
                             std::process::ExitCode::SUCCESS

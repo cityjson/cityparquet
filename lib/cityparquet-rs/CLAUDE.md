@@ -4,7 +4,7 @@
 encoding. Part of the CityParquet + CityLake research stack (TU Delft 3D
 Geoinformation). It stores a 3D city model as a **directory of Parquet files** (one row
 per city object, WKB geometry per LoD, typed attribute columns, optional
-material/texture/geometry-template sidecars), with an Arrow in-memory representation,
+material/texture/implicit-geometry sidecars), with an Arrow in-memory representation,
 and round-trips back to CityJSON / CityJSONSeq with **semantic** losslessness.
 
 ## Where you are
@@ -18,8 +18,8 @@ and round-trips back to CityJSON / CityJSONSeq with **semantic** losslessness.
 - **The catalogue driver is not here either**: `../../scripts/catalog2cityparquet`.
 - **`just check` here gates the library alone**, and is self-contained: no `uv`,
   no `jq`, no corpus. Recipes that reach both the library and the benchmark —
-  `bench`, `convert-all`, `write-bench`, `variant-bench`, the fetchers, the
-  renderers, `plot-test`, `scripts-test`, `catalog-*` — are in the **root**
+  `bench`, `convert-all`, `variant-bench`, the fetchers, the renderers,
+  `plot-test`, `scripts-test`, `catalog-*` — are in the **root**
   `justfile` and run from the repository root.
 - **Directory names under `crates/` are short** (`core`, `schema`, `cli`); the
   package names stay namespaced (`cityparquet`, `cityparquet-schema`,
@@ -78,7 +78,9 @@ cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 ```
 
 `convert` takes the output directory as the **required `-o`/`--output` flag**, not
-positionally. Other flags include `--recipe`, `--ordering source|hilbert`,
+positionally. Other flags include `--recipe`, `--ordering hilbert|source`
+(Hilbert by default, which holds every feature in memory to sort; `source`
+streams, the low-memory path),
 `--row-group-size`, `--zstd-level`,
 `--partition`, `--no-lod0`, `--crs` (an operator-supplied CRS for a source that
 declares none — without it such a source still converts, writing `city.crs: null`), and
@@ -115,4 +117,4 @@ round-trip is proven by `convert` → `export` → `compare` against the source.
 - `docs/architecture.md` — the code: crates, the two-pass conversion pipeline, reader/export/compare, the benchmark harness.
 - `../../benchmark/README.md` — what the three benchmark families measure, which evidence is committed and which is re-measured, and the caveats that are load-bearing.
 - `../../benchmark/formats/README.md` — the write/compression benchmark's methodology and comparability caveats (no CSVs committed).
-- `../../benchmark/formats/READ_BENCHMARK.md` — the cross-format read benchmark: methodology, the six-dataset cityjson.org corpus, the two benchmark sets, and 18 fairness caveats. No CSVs are committed; `benchmark/formats/read_results/` and `benchmark/formats/ordering_results/` are populated by `just bench` / `just ordering-bench` from the repository root.
+- `../../benchmark/formats/READ_BENCHMARK.md` — the cross-format read benchmark: methodology, the six-dataset cityjson.org corpus, the two benchmark sets, and 35 fairness caveats. The committed results are in `benchmark/runs/formats/results/`, populated by `just bench-run --families formats` from the repository root.

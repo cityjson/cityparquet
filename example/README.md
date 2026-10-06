@@ -10,7 +10,7 @@ both fetch-driven, and deliberately so:
 | Corpus | Where it comes from | How to get it |
 |---|---|---|
 | Reader/writer fixtures (Delft, an LoD3 railway, five CityGML 2.0 samples) | pinned public URLs | `just fixtures` in `lib/cityparquet-rs/` |
-| Benchmark corpora (3DBAG tiles, scaling subsets, ~24 GB) | pinned public URLs, byte sizes checked | `just fetch-data` / `just fetch-scaling-data` from the repo root |
+| Benchmark corpora (city models and a 3DBAG slice, ~24 GB) | pinned public URLs, byte sizes checked | `just fetch-data` / `just fetch-3dbag` from the repo root |
 
 Nothing here is a fixture *copy*: a committed duplicate of a pinned download is
 a second thing to keep in sync, and the pins already make the originals

@@ -10,14 +10,13 @@
 //! so `lod3_railway.city.json` (121 CityObjects in its single CityJSON
 //! document) becomes an `.fcb` file with 38 features (confirmed via `fcb
 //! info`) — `Count`/`FullRead`/`BBoxQuery` count at that feature level.
-//! `AttrFilter`/`AttrStats`/`Project` count at CityObject level instead:
+//! `AttrFilter`/`AttrStats` count at CityObject level instead:
 //! FCB's own B+-tree attribute index returns one match per matching
 //! CityObject occurrence (not deduplicated by feature), and this runner's
 //! own `select_all`-walk fallback deliberately matches that same
 //! granularity. Independently verified against the fixture with Python
 //! (`python3` over the raw CityJSON): 65 of 121 CityObjects have
-//! `function == "1070"`, and 94 of 121 carry a `function` value at all —
-//! matched exactly below. None of this tries to reproduce CityParquet's own
+//! `function == "1070"` — matched exactly below. None of this tries to reproduce CityParquet's own
 //! CityObject-ROW counts (CityParquet counts parents AND children as table
 //! rows directly; this fixture's own CityParquet ingestion is out of scope
 //! here).
@@ -203,32 +202,6 @@ fn attr_filter_on_an_indexed_string_column_matches_the_known_cityobject_count() 
         "attr-filter on function == '1070' must match the fixture's own \
          known 65 CityObjects exactly (FCB's B+-tree is CityObject-level, \
          not feature-level, for this scenario)"
-    );
-}
-
-#[test]
-fn project_on_the_same_indexed_column_matches_the_known_cityobject_count() {
-    if fcb_cli_missing() {
-        eprintln!("skipping: `fcb` CLI not found on PATH");
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let input = generate_fcb("lod3_railway.city.json", tmp.path());
-
-    // project always takes the full `select_all` walk (no columnar
-    // aggregation in FCB); independently counted with Python: 94 of 121
-    // CityObjects carry a `function` value at all.
-    let projected = run_child(
-        "flatcitybuf",
-        "project",
-        &input,
-        &["--attr-column", "function"],
-    );
-    assert_eq!(
-        projected, 94,
-        "project on function must match the fixture's own known 94 \
-         CityObjects exactly (CityObject-level, matching attr-filter's own \
-         granularity)"
     );
 }
 

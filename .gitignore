@@ -10,7 +10,7 @@
 # --- benchmark corpora and derived artefacts -------------------------------
 #
 # ~24 GB of city models, all fetched from pinned URLs with pinned byte sizes
-# by `just fetch-data` / `just fetch-scaling-data`. The pins live in
+# by `just fetch-data` / `just fetch-3dbag`. The pins live in
 # benchmark/scripts/fetch_benchmark.sh and benchmark/formats/
 # corpus_urls.txt, both committed — the bytes themselves never were.
 #
@@ -27,13 +27,9 @@
 # unpacked ~28 MB of JARs is not.
 /benchmark/formats/tools/
 
-# Generated charts (`just plot`, `just sizes`) — the inputs are the CSVs beside
-# them, not these PNGs. `just plot-pretty` writes the summary output instead,
-# which the rule below covers.
-/benchmark/**/plots/
-
-# `just plot-pretty` output (bench_data.json, bench-summary.html, figures/):
-# all three are derived from the results CSVs and regenerate in seconds.
+# benchviz's default output directory when run without `--out`
+# (bench_data.json, index.html, figures/): all of it is derived from the
+# results CSVs and regenerates in seconds.
 /benchmark/summary/
 
 # benchmark/plot's own uv-managed venv + Python bytecode cache — its source
@@ -69,6 +65,15 @@ ai/skills/
 # evidence is committed (see benchmark/runs/RESULTS.md); the database results
 # directory is re-included here so new result files show up in git status.
 /benchmark/runs/*
+!/benchmark/runs/RESULTS.md
+!/benchmark/runs/EVIDENCE_SHA256SUMS
 !/benchmark/runs/databases/
 /benchmark/runs/databases/*
 !/benchmark/runs/databases/results/
+!/benchmark/runs/formats/
+/benchmark/runs/formats/*
+!/benchmark/runs/formats/results/
+!/benchmark/runs/formats/bloom_results/
+!/benchmark/runs/summary/
+/benchmark/runs/summary/*
+!/benchmark/runs/summary/full/
