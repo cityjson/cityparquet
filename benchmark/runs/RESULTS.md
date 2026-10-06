@@ -53,10 +53,12 @@ changed.
 
 The `*.run.json` manifests and the database `3dbag_n1000000.manifest.json`
 record the run as it was made, and stay as that record: the run manifests'
-`write_repeat`, `fixed_configuration`, source paths (`data/scaling/`) and
-`files_sha256` (the CSVs as the run wrote them, and the deleted
-write-samples files), and the database manifest's
-`duckdb-cityparquet-source` entries, no longer match the committed files.
+`write_repeat`, `fixed_configuration` (which names the format by its old
+label, `cityparquet-hilbert`), source paths (`data/scaling/`), result paths
+(`formats/scaling_bloom_results/`) and `files_sha256` (the CSVs as the run
+wrote them, and the deleted write-samples files), and the database
+manifest's `duckdb-cityparquet-source` entries, no longer match the
+committed files.
 `EVIDENCE_SHA256SUMS` is current.
 
 ## Coverage and limitations
