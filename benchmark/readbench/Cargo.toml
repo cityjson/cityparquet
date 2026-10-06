@@ -62,6 +62,11 @@ name = "variant-package"
 path = "src/bin/variant_package.rs"
 doc = false
 
+[[bin]]
+name = "net-sim"
+path = "src/bin/net_sim.rs"
+doc = false
+
 # Versions are written out rather than inherited: a one-package workspace has
 # nothing to share them with, and they must stay in step with
 # ../../lib/cityparquet-rs/Cargo.toml's [workspace.dependencies] by hand — the
@@ -100,7 +105,7 @@ arrow-schema = "58"
 parquet = { version = "58", features = ["zstd"] }
 libc = "0.2"
 anyhow = "1"
-tokio = { version = "1.53.1", features = ["rt", "macros", "rt-multi-thread"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "rt-multi-thread", "net", "io-util", "time", "sync", "fs"] }
 object_store = { version = "0.13", features = ["http"] }
 bytes = "1.12.1"
 async-trait = "0.1.91"

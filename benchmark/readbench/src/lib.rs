@@ -13,6 +13,7 @@ pub mod format;
 pub mod isolation;
 pub mod lod;
 pub mod naming;
+pub mod netsim;
 pub mod params;
 pub mod sampling;
 pub mod seq_order;
