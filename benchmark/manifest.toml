@@ -14,6 +14,14 @@ small_database_dataset = "rotterdam"
 
 # The network family's simulated profiles: a bandwidth shared by every
 # connection and a latency paid by every request. `typical` is the default.
+# The network family's whole-file formats (citygml, cityjson, cityjsonseq)
+# answer every query with one whole-object GET, so they are measured only on
+# these scenarios and every other scenario is a derived row (read all's bytes
+# and requests, no time). `full-read,id-lookup`, `full-read` or `all`;
+# `--network-whole-file-scenarios` overrides it.
+[network]
+whole_file_scenarios = "full-read,id-lookup"
+
 [network_profiles.fast]
 bandwidth_mbps = 1000.0
 latency_ms = 5.0

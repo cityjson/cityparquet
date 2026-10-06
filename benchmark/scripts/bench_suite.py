@@ -485,6 +485,17 @@ def network_profiles(manifest: dict, requested: str, bandwidth_mbps: float | Non
     return [(name, float(known[name]["bandwidth_mbps"]), float(known[name]["latency_ms"])) for name in names]
 
 
+WHOLE_FILE_SCENARIOS = ("full-read,id-lookup", "full-read", "all")
+
+
+def whole_file_scenarios(manifest: dict, override: str | None) -> str:
+    """The scenarios the whole-file formats are measured on in the network family (the rest are derived from read all)."""
+    value = override or manifest.get("network", {}).get("whole_file_scenarios", WHOLE_FILE_SCENARIOS[0])
+    if value not in WHOLE_FILE_SCENARIOS:
+        raise SystemExit(f"unknown whole-file scenarios {value!r}; accepted: {', '.join(WHOLE_FILE_SCENARIOS)}")
+    return value
+
+
 def network_dir(locations: dict[str, Path], profile: str, network_profile: str) -> Path:
     return locations["network"] / profile / network_profile
 
@@ -622,6 +633,7 @@ def run_network(manifest: dict, locations: dict[str, Path], selected: dict, inpu
     """The format comparison (and, on the slice, the bloom pair) over HTTP, per network profile."""
     repeat = int(network.get("repeat", 3))
     target = network.get("target", "simulated")
+    whole_file = whole_file_scenarios(manifest, network.get("whole_file_scenarios"))
     bloom_inputs = [source(entry, locations) for entry in selected.values() if entry["role"] == "slice"]
     attributes = ",".join(bloom_attributes or next((entry.get("bloom_attributes", []) for entry in selected.values() if entry["role"] == "slice"), []))
     if target == "real":
@@ -636,11 +648,13 @@ def run_network(manifest: dict, locations: dict[str, Path], selected: dict, inpu
             net_args = f"--transport http --network-profile real --base-url {network['base_url']} --key-layout {network.get('key_layout', 'bucket')}"
         else:
             net_args = f"--transport http --network-profile {name} --network-bandwidth-mbps {bandwidth} --network-latency-ms {latency}"
+        net_args += f" --whole-file-scenarios {whole_file}"
         just("bench", str(stage(locations, "network", inputs)), str(output), read_formats, str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args, net_args)
         if bloom_inputs:
             just("variant-bench", str(stage(locations, "network-bloom", bloom_inputs)), str(output / "bloom"), "cityparquet,cityparquet+nobloom", str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args,
                  "id-lookup,feature-lookup,attr-lookup", "id-50pct,id-miss", "feature-50pct,feature-miss", attributes, "", net_args)
         configuration = f"network={name}; target={target}" + ("" if target == "real" else f"; bandwidth_mbps={bandwidth}; latency_ms={latency}")
+        configuration += f"; whole_file_scenarios={whole_file}"
         for input_path in inputs:
             result_csv = output / f"{dataset_stem(input_path)}.csv"
             write_model_times(result_csv)
@@ -667,6 +681,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--network-bandwidth-mbps", type=float, default=None, help="run only: a custom simulated profile's bandwidth, shared by all connections (needs --network-latency-ms)")
     result.add_argument("--network-latency-ms", type=float, default=None, help="run only: a custom simulated profile's latency per request (needs --network-bandwidth-mbps)")
     result.add_argument("--network-target", choices=("simulated", "real"), default="simulated", help="run only: simulated (the local net-sim server; the primary measurement) or real (--base-url; a snapshot of one path at one time)")
+    result.add_argument("--network-whole-file-scenarios", choices=WHOLE_FILE_SCENARIOS, help="run only: the scenarios the whole-file formats (citygml, cityjson, cityjsonseq) are measured on in the network family; the rest are derived from their read all (default: the manifest's [network] whole_file_scenarios, else full-read,id-lookup)")
     result.add_argument("--network-repeat", type=int, default=3, help="run only: the network family's timed samples per cell, after one discarded warm-up (default 3; the simulated network is deterministic)")
     result.add_argument("--base-url", default="", help="run only: the object-storage base URL for --network-target real")
     result.add_argument("--key-layout", choices=("flat", "bucket"), default="bucket", help="run only: the key layout under --base-url (default bucket, the hosted corpus)")
@@ -697,7 +712,7 @@ def main() -> None:
     if args.command == "prep":
         prepare(data, locations, families, datasets, profile, prep_mode(local=args.local, no_cache=args.no_cache, rebuild_sources=args.rebuild_sources, profile=profile), args.force_upload)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s}, args.database_datasets, [c for c in args.bloom_attributes.split(",") if c] if args.bloom_attributes else None, network={"profiles": args.network_profile, "bandwidth_mbps": args.network_bandwidth_mbps, "latency_ms": args.network_latency_ms, "target": args.network_target, "repeat": args.network_repeat, "base_url": args.base_url, "key_layout": args.key_layout})
+        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s}, args.database_datasets, [c for c in args.bloom_attributes.split(",") if c] if args.bloom_attributes else None, network={"profiles": args.network_profile, "bandwidth_mbps": args.network_bandwidth_mbps, "latency_ms": args.network_latency_ms, "target": args.network_target, "repeat": args.network_repeat, "whole_file_scenarios": args.network_whole_file_scenarios, "base_url": args.base_url, "key_layout": args.key_layout})
     else:
         output = (args.out or locations["summary"] / profile).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None

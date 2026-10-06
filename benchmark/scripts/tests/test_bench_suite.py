@@ -375,6 +375,30 @@ class NetworkFamilyTest(unittest.TestCase):
         self.assertEqual(bloom[0][1], "s.city.jsonl")
         self.assertIn("--network-latency-ms 50.0", bloom[0][-1])
 
+    def test_the_whole_file_scenarios_come_from_the_manifest_unless_overridden(self):
+        from unittest import mock
+
+        def net_args(manifest_network, override):
+            calls = []
+            with mock.patch.object(bench_suite, "just", lambda *a: calls.append(a)), \
+                 mock.patch.object(bench_suite, "require_prepared", lambda *a: None), \
+                 mock.patch.object(bench_suite, "source", lambda entry, locations: Path(entry["file"])), \
+                 mock.patch.object(bench_suite, "stage", lambda locations, name, inputs: Path("+".join(str(i) for i in inputs))), \
+                 mock.patch.object(bench_suite, "write_model_times", lambda *a: None), \
+                 mock.patch.object(bench_suite, "write_run_manifest", lambda *a, **k: None):
+                manifest = {"suite": {}, "network_profiles": self.manifest["network_profiles"],
+                            "datasets": {"c": {"role": "corpus", "file": "c.city.json"}}, **manifest_network}
+                network = {"profiles": "typical", **({"whole_file_scenarios": override} if override else {})}
+                bench_suite.run_suite(manifest, {"prepared": Path("p"), "network": Path("n")}, ["network"], ["c"], "full", network=network)
+            return [c for c in calls if c[0] == "bench"][0][-1]
+
+        self.assertIn("--whole-file-scenarios full-read,id-lookup", net_args({}, None))
+        self.assertIn("--whole-file-scenarios full-read", net_args({"network": {"whole_file_scenarios": "full-read"}}, None))
+        self.assertIn("--whole-file-scenarios all", net_args({"network": {"whole_file_scenarios": "full-read"}}, "all"))
+        self.assertEqual(bench_suite.whole_file_scenarios({"network": {"whole_file_scenarios": "full-read,id-lookup"}}, None), "full-read,id-lookup")
+        with self.assertRaises(SystemExit):
+            bench_suite.whole_file_scenarios({}, "count")
+
     def test_the_model_time_is_transfer_plus_latency_per_request(self):
         import csv, json, tempfile
         with tempfile.TemporaryDirectory() as tmp:
