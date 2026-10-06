@@ -1446,19 +1446,19 @@ CSV columns (empty for every local row). Upload steps and methodology are in
 ### 5.4 Aggregate results into one page
 
 ```sh
-just plot-pretty
+just bench-summary
 ```
 
 The renderer (`benchmark/plot/benchviz`) reads what the runs above left under
-`benchmark/formats/` and writes `benchmark/summary/` — `bench_data.json`, a
-self-contained `bench-summary.html`, and the static print figures. It measures
-nothing, so re-running it is free. Read the messages it prints: the figures step
-can refuse (existing print-sheet captions are tied to the corpus they were drawn
-from) while still writing the HTML page.
+`benchmark/runs/` and writes `benchmark/runs/summary/<profile>/` —
+`bench_data.json`, `completeness.json`, a self-contained `index.html`, and the
+static figures. It measures nothing, so re-running it is free. Read the
+messages it prints: the figures step can refuse (existing print-sheet captions
+are tied to the corpus they were drawn from) while still writing the HTML page.
 
-The **paper** repository runs the same renderer against this repository as a
-submodule, pointing its figure output at `paper/assets/bench/` — that is
-`just bench-summary` there, not here.
+The **paper** repository runs the same recipe against this repository as a
+submodule, with `--figures` pointing the figure output at
+`paper/assets/bench/`.
 
 ---
 
