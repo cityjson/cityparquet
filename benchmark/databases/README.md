@@ -586,7 +586,11 @@ in their schema (`pg.vacuum_analyze`) before any timed scenario runs.
 ### The warm protocol
 
 Every `run()` performs **one discarded warm-up** call followed by `repeat`
-timed samples of the same query; `--repeat` defaults to **7**.
+timed samples of the same query; `--repeat` defaults to **25**. A cell's
+samples run back to back, not interleaved across systems. The format
+family's optional cell time budget (`--cell-budget-s`, `--min-repeat`) is
+not applied to the database family: every read cell takes exactly
+`--repeat` samples.
 
 - Each row reports the seven-column timing block shared with the format
   harness: `time_mean_s` (**arithmetic mean**), `time_std_s` (**population
@@ -1128,7 +1132,7 @@ uv run python -m citybench.cli run \
   --prepared-dir ../runs/data/readbench \
   --dataset <path/to/dataset>.city.jsonl \
   [--systems duckdb-cityparquet,duckdb-cityparquet-writeback,cjdb,3dcitydb] \
-  [--repeat 7] [--srid 7415] [--count-tolerance 0.001] \
+  [--repeat 25] [--srid 7415] [--count-tolerance 0.001] \
   [--output-dir <dir>]
 ```
 

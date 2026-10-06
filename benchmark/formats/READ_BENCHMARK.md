@@ -302,8 +302,8 @@ dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_med
 - `time_mean_s` / `time_std_s` / `time_median_s` / `time_min_s` /
   `time_max_s` / `time_q1_s` / `time_q3_s` — **warm-cache** arithmetic mean,
   population standard deviation, median, extremes and quartiles (linear
-  interpolation at `p * (n - 1)` on the sorted samples) of `repeat` samples (default 7; one further, discarded
-  warmup precedes them), 6-decimal precision. The mean is the statistic
+  interpolation at `p * (n - 1)` on the sorted samples) of `repeat` samples (default 25; one further, discarded
+  warmup precedes them; see "Sampling" below), 6-decimal precision. The mean is the statistic
   `benchmark/databases` reports too, so a timing quoted from either CSV is the
   same statistic; the standard deviation is the population one because the
   warm repeats are the whole measured set, not a draw used to infer a wider
@@ -335,7 +335,9 @@ dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_med
   - `no-attr-index` / `attr-index-failed` — FlatCityBuf answered this row by
     a full scan, not by its B+-tree (Caveat 11);
   - `count-mismatch` — this row's `result_count` disagreed with the
-    reference or with the other formats, and the run failed (Caveat 2).
+    reference or with the other formats, and the run failed (Caveat 2);
+  - `budget` (always last) — the cell time budget stopped sampling before
+    `--repeat` samples (see "Sampling" below).
 - `bytes_read` / `http_requests` — **empty for every `--transport local`
   row** (no HTTP concept locally); for a `--transport http` row, the total
   bytes transferred and HTTP request count that scenario's own
@@ -349,10 +351,30 @@ dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_med
   first match. Deterministic across repeats; the first warm sample's values
   are recorded.
 
+## Sampling
+
+A cell is one (dataset, format, scenario, query) measurement. Its samples
+run back to back: one discarded warm-up, then up to `--repeat` timed samples
+(default 25), before the next cell starts. Samples are not interleaved
+across formats, so a slow drift in the host's state lands on whichever cells
+run while it lasts.
+
+`--cell-budget-s <seconds>` (off by default) caps the time a cell spends
+sampling. After each timed sample the coordinator stops when the cell's runs
+so far, warm-up included, have taken at least the budget and at least
+`--min-repeat` timed samples exist (default 7); it always stops at
+`--repeat`. A `--min-repeat` above `--repeat` is clamped to `--repeat`. The
+row's `repeat` column records the samples actually taken, a cell that stopped
+early carries the `budget` tag in `notes`, and both the `<csv>.params.json`
+(`sampling`) and the `<csv>.samples.json` sidecars record the budget and the
+effective floor. The root recipes `bench`, `bloom-bench` and
+`bloom-bench-http` take the two as `CELL_BUDGET_S` (empty: off) and
+`MIN_REPEAT`; `just bench-run` takes `--cell-budget-s` and `--min-repeat`.
+
 ## Warm vs cold protocol
 
 The **headline number is the warm-cache mean**: `repeat` fresh child
-processes (default 7), a further discarded warmup beforehand, OS page cache
+processes (default 25), a further discarded warmup beforehand, OS page cache
 and (for the in-process formats) allocator state left however the previous
 sample left them — i.e. "warm" describes the OS/filesystem cache, not a
 long-lived process, since every sample is already a brand-new process (see
@@ -537,7 +559,9 @@ each cold number stands alone, one per format, one `full-read` only.
 8. **Sub-millisecond deltas are noise; single-threaded reads are pinned.**
    As in `benchmark/formats/README.md`'s own methodology, deltas under roughly 10 ms at
    `repeat = 7` are within scheduler/filesystem-cache noise and are not
-   cited as a finding by themselves. Every format's reads here run
+   cited as a finding by themselves. That threshold describes the committed
+   evidence, which was taken at `repeat = 7`; the default is 25, and a run at
+   25 samples is read against its own spread, not against this figure. Every format's reads here run
    single-threaded (no Parquet multi-threaded row-group decode) — a
    deliberate, disclosed choice so timing differences reflect the
    format/mechanism, not thread-count parallelism a production deployment

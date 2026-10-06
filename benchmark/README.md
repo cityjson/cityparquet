@@ -46,7 +46,7 @@ inputs and fewer repetitions; their results are not publication runs.
 Three run profiles decide which datasets are measured, how many repetitions
 and where results land, so a test run can never overwrite the paper's
 evidence: `--profile full` (the default; the seven corpus datasets and the
-3DBAG slice, seven read repetitions, each family's own results directory, and
+3DBAG slice, 25 read repetitions, each family's own results directory, and
 the database family measures the slice), `--profile short` (the corpus
 without the slice, the same repetitions, results under `<family>/short/`; for
 iterating on the harness in about an hour rather than a day) and `--profile
@@ -55,6 +55,16 @@ pipeline check, not a measurement). Under `short` and `smoke` the database
 family measures Rotterdam (the manifest's `small_database_dataset`) through
 its prepared `rotterdam_delfshaven.city.jsonl`. Every run manifest records its
 profile.
+
+Each measured cell takes one discarded warm-up and then 25 timed samples by
+default, run back to back; samples are not interleaved across formats or
+systems. For the formats and bloom families, `just bench-run
+--cell-budget-s <seconds>` (off by default) stops a cell's sampling once its
+runs, warm-up included, have taken that long and at least `--min-repeat`
+samples exist (default 7); such a row records the samples taken in `repeat`
+and carries the `budget` tag in `notes`. The database family always takes
+`--repeat` samples. `benchmark/formats/READ_BENCHMARK.md` ("Sampling") has
+the rule.
 
 ## Full run
 
