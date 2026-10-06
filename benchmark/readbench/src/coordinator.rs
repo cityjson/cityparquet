@@ -934,10 +934,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     write_params(&sidecar, &sidecar_json)?;
 
     if variants.is_some() && opts.transport == Transport::Local {
-        let seq = variant_seq
-            .as_deref()
-            .expect("set for every local variants run");
-        write_sizes(&opts.out, base, seq, &sizes)?;
+        write_sizes(&opts.out, base, &sizes)?;
     }
 
     if !failures.is_empty() {
@@ -1761,14 +1758,15 @@ fn dir_bytes(dir: &Path) -> Result<u64> {
     Ok(total)
 }
 
-/// The size table's own header, in the read run's columns.
-const SIZES_HEADER: &str =
-    "dataset,format,bytes,mb,ratio_vs_cityjsonseq,baseline_format,ratio_vs_baseline";
+/// The size table's header, shared with `benchmark/scripts/measure_sizes.py`:
+/// bytes are the source of truth and `mb_decimal` is bytes / 10^6. Ratios are
+/// left to the renderer, which derives them from the byte column.
+const SIZES_HEADER: &str = "dataset,format,bytes,mb_decimal";
 
-/// `sizes.csv` beside `out`, in the read run's columns. Rows for THIS dataset
-/// are replaced; other datasets' rows are kept, so one recipe walking many
-/// slices builds up one file and a re-run of one slice never duplicates.
-fn write_sizes(out: &Path, base: &str, seq: &Path, sizes: &[SizeRow]) -> Result<()> {
+/// `sizes.csv` beside `out`. Rows for THIS dataset are replaced; other
+/// datasets' rows are kept, so one recipe walking many slices builds up one
+/// file and a re-run of one slice never duplicates.
+fn write_sizes(out: &Path, base: &str, sizes: &[SizeRow]) -> Result<()> {
     let path = out
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -1792,24 +1790,13 @@ fn write_sizes(out: &Path, base: &str, seq: &Path, sizes: &[SizeRow]) -> Result<
                 .map(str::to_string),
         );
     }
-    let seq_bytes = fs::metadata(seq)
-        .with_context(|| format!("stat {}", seq.display()))?
-        .len() as f64;
-    let baseline_bytes = sizes
-        .iter()
-        .find(|s| s.label == VARIANT_BASELINE)
-        .map(|s| s.bytes as f64)
-        .expect("parse_variant_list guarantees the baseline");
     for s in sizes {
-        let bytes = s.bytes as f64;
         kept.push(format!(
-            "{},{},{},{:.6},{:.6},{VARIANT_BASELINE},{:.6}",
+            "{},{},{},{:.6}",
             s.dataset,
             s.label,
             s.bytes,
-            bytes / (1024.0 * 1024.0),
-            seq_bytes / bytes,
-            baseline_bytes / bytes,
+            s.bytes as f64 / 1_000_000.0,
         ));
     }
     let mut text = String::from(SIZES_HEADER);

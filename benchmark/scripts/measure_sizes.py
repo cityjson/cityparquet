@@ -68,7 +68,7 @@ def write_sizes(out: Path, dataset: str, sizes: list[tuple[str, int]]) -> None:
     kept = kept_rows(out, dataset)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="") as stream:
-        writer = csv.writer(stream)
+        writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(HEADER)
         writer.writerows(kept)
         for fmt, size in sizes:

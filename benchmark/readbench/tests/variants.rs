@@ -320,30 +320,28 @@ fn a_variants_run_builds_reads_keeps_the_packages_and_records_sizes() {
 
     let sizes = std::fs::read_to_string(prepared.path().join("sizes.csv")).unwrap();
     let mut sizes = sizes.lines();
-    assert_eq!(
-        sizes.next().unwrap(),
-        "dataset,format,bytes,mb,ratio_vs_cityjsonseq,baseline_format,ratio_vs_baseline"
-    );
+    assert_eq!(sizes.next().unwrap(), "dataset,format,bytes,mb_decimal");
     let size_rows: Vec<&str> = sizes.collect();
     assert_eq!(size_rows.len(), 3);
     for (row, id) in size_rows
         .iter()
         .zip(["cityparquet", "cityparquet+rg512", "cityparquet+zstd1"])
     {
+        assert_eq!(
+            row.split(',').count(),
+            4,
+            "bytes and decimal MB only: {row}"
+        );
         assert_eq!(field(row, 0), "delft");
         assert_eq!(field(row, 1), id);
-        assert!(field(row, 2).parse::<u64>().unwrap() > 0);
-        assert!(
-            field(row, 4).parse::<f64>().unwrap() > 0.0,
-            "ratio_vs_cityjsonseq: {row}"
+        let bytes = field(row, 2).parse::<u64>().unwrap();
+        assert!(bytes > 0);
+        assert_eq!(
+            field(row, 3),
+            format!("{:.6}", bytes as f64 / 1_000_000.0),
+            "mb_decimal is bytes / 10^6: {row}"
         );
-        assert_eq!(field(row, 5), "cityparquet");
     }
-    assert_eq!(
-        field(size_rows[0], 6),
-        "1.000000",
-        "the baseline is 1x against itself"
-    );
     assert!(prepared.path().join("out.csv.params.json").is_file());
 }
 

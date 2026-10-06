@@ -56,14 +56,14 @@ def _bench(tmp_path: Path) -> Path:
                     continue
                 lines.append(_row(name, fmt, scenario, count, times[fmt], rss[fmt], notes))
         (results / f"{name}.csv").write_text("\n".join(lines) + "\n")
-    sizes = ["dataset,format,bytes,mb,ratio_vs_cityjsonseq,baseline_format,ratio_vs_baseline"]
+    sizes = ["dataset,format,bytes,mb_decimal"]
     for name, scale in (("alpha", 10), ("beta", 5), ("gamma", 1)):
         for i, fmt in enumerate(FORMATS):
             if name == "beta" and fmt == "citygml":
                 continue
             factor = 8 if name == "gamma" else 4
             size = scale * 1000 * (factor if fmt == "citygml" else len(FORMATS) - i)
-            sizes.append(f"{name},{fmt},{size},0.1,1.0,cityjsonseq,1.0")
+            sizes.append(f"{name},{fmt},{size},0.000001")
     (results / "sizes.csv").write_text("\n".join(sizes) + "\n")
     return bench
 

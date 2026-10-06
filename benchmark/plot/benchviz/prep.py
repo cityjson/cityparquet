@@ -187,7 +187,9 @@ READ_COLUMNS = [
     "repeat",
     "notes",
 ]
-SIZES_COLUMNS = ["dataset", "format", "bytes", "mb", "ratio_vs_cityjsonseq"]
+# Bytes are the source of truth; `mb_decimal` is bytes / 10^6, written for
+# people reading the CSV and never read back here.
+SIZES_COLUMNS = ["dataset", "format", "bytes", "mb_decimal"]
 
 # Scenarios the format harness no longer runs. An older CSV may still carry
 # their rows; they are ignored (and counted), never charted and never fatal.
@@ -265,7 +267,7 @@ def _check_columns(path: Path, got: list[str] | None, want: list[str]) -> list[s
 
     The benchmark harness APPENDS columns as it grows — `bytes_read` and
     `http_requests` arrived on the read CSVs with the HTTP transport, and
-    sizes.csv grew `baseline_format`/`ratio_vs_baseline` — and every appended
+    sizes.csv once grew ratio columns — and every appended
     column used to break this reader outright. What must still fail is a
     column that moved, was renamed or disappeared: then the columns this code
     reads by name no longer hold what it believes, and a chart built from them
@@ -707,8 +709,6 @@ def load_bloom_axis(
                         "objects": objects_by.get(ds),
                         "variant": fmt,
                         "bytes": b,
-                        "mb": _float(row["mb"]),
-                        "ratio_vs_cityjsonseq": _float(row["ratio_vs_cityjsonseq"]),
                         "size_ratio": _ratio(
                             float(base_b) if base_b is not None else None,
                             float(b) if b is not None else None,
@@ -734,7 +734,7 @@ def read_machine(directory: Path) -> str | None:
 
 
 def load_sizes(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], dict[str, float]]:
-    """Return (size records, {dataset: baseline MB})."""
+    """Return (size records, {dataset: CityJSONSeq size in decimal MB})."""
     sizes_csv = inputs.sizes_csv
     rows = _read_rows(sizes_csv, SIZES_COLUMNS)
     by_dataset: dict[str, list[dict[str, str]]] = {}
@@ -749,7 +749,7 @@ def load_sizes(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], d
         base_bytes = _float(base["bytes"]) if base else None
         stream = next((r for r in group if r["format"] == STREAM_FORMAT), None)
         if stream is not None:
-            raw_mb[dataset] = float(stream["mb"])
+            raw_mb[dataset] = int(stream["bytes"]) / 1_000_000
         for row in group:
             if row["format"] not in FORMATS:
                 excluded.record(row["format"], "sizes")

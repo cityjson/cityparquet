@@ -242,7 +242,7 @@ def _mixed_bloom_fixture(bench: Path) -> None:
     (directory / "delft.csv").unlink()
     (directory / "delft.csv.params.json").unlink()
     counts = {SLICE: 1_000_004, "rotterdam_delfshaven": 2231, "ingolstadt": 379}
-    sizes = ["dataset,format,bytes,mb,ratio_vs_cityjsonseq,baseline_format,ratio_vs_baseline"]
+    sizes = ["dataset,format,bytes,mb_decimal"]
     for i, (name, count) in enumerate(counts.items()):
         rows = [template[0]]
         for line in template[1:]:
@@ -252,8 +252,8 @@ def _mixed_bloom_fixture(bench: Path) -> None:
             rows.append(",".join(cells))
         (directory / f"{name}.csv").write_text("\n".join(rows) + "\n")
         (directory / f"{name}.csv.params.json").write_text(f'{{"cp_object_total": {count}}}')
-        sizes.append(f"{name},cityparquet,{1000 * (i + 1)},0.1,1.0,cityparquet,1.0")
-        sizes.append(f"{name},cityparquet+nobloom,{900 * (i + 1)},0.1,1.0,cityparquet,0.9")
+        sizes.append(f"{name},cityparquet,{1000 * (i + 1)},0.000001")
+        sizes.append(f"{name},cityparquet+nobloom,{900 * (i + 1)},0.000001")
     (directory / "sizes.csv").write_text("\n".join(sizes) + "\n")
 
 
