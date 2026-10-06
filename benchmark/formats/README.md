@@ -48,6 +48,15 @@ citygml-tools, identical once the tool's random `ID_<uuid>`s are masked).
 | `montreal`             | Montréal            | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json>           | `measuredHeight >=` its 0.75 quantile (15.543) | `measuredHeight`                               |
 | `3dbag_n1000000`       | 3DBAG (Netherlands) | cut by `just fetch-3dbag` from <https://flatcitybuf.open3d.city/data/3dbag_subset2_all_index.fcb>, without LoD 1.2 | `b3_dak_type == "slanted"`                     | `b3_bag_bag_overlap`                           |
 
+Every CityJSON/CityJSONSeq source is normalised before any artefact is built,
+so that each CityObject holds at most one geometry per LoD (the first in source
+order) and all five formats hold the same geometries (`READ_BENCHMARK.md`,
+Caveat 41). Two datasets change: `vienna_102081` loses 1,102 of its 2,204
+geometries (each LoD 2 object carries a MultiSurface and a Solid) and
+`ingolstadt` 26 of its 405. The other five are used byte for byte, and the 3DBAG
+slice, already cut without LoD 1.2, needs no change either. A CityGML source
+would not be normalised; none is in the corpus.
+
 The predicates are declared in `benchmark/readbench/src/params.rs`
 (`HAND_PICKED`, `HAND_PICKED_STATS`); a quantile is computed from the data when
 the parameters are derived, and the run's parameter sidecar records the value.

@@ -789,7 +789,9 @@ each cold number stands alone, one per format, one `full-read` only.
       carries at most one geometry per integer LoD, which is what CityGML 2.0
       can hold. A source with two fractional LoDs at one integer level needs
       the same treatment before its `citygml` row is content-equivalent to
-      the others.
+      the others. Two geometries at the SAME LoD on one object are a
+      different matter, and the whole corpus is normalised against them
+      before any artefact is built (Caveat 41).
 
     The synthesised artefact is verified after it is written, not trusted:
     `readbench_prepare.sh` re-reads it for a 2.0 declaration and for a
@@ -1256,13 +1258,42 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     is unchanged. A JSON parser and serialiser would not do: `jq -c` (1.7.1)
     respells numbers (Tokyo's `1e-10` scale becomes `1E-10`, which shrinks
     Tokyo by 986 B and grows Ingolstadt by 104 B), though every value
-    survives. All seven corpus sources are compact as published, so on the
-    current corpus the step is a no-op: each `cityjson` artefact is byte
-    identical to its source (ingolstadt 5,051,369 B, montreal 498,371,022 B,
-    nyc_da13_buildings 110,083,137 B, rotterdam_delfshaven 2,731,804 B, tokyo
-    315,968,009 B, vienna_102081 5,635,634 B, zurich_building_lod2
-    292,500,409 B). A size or parse-time gap against CityJSON therefore
+    survives. All seven corpus sources are compact as published (ingolstadt
+    5,051,369 B, montreal 498,371,022 B, nyc_da13_buildings 110,083,137 B,
+    rotterdam_delfshaven 2,731,804 B, tokyo 315,968,009 B, vienna_102081
+    5,635,634 B, zurich_building_lod2 292,500,409 B), and so is the
+    normalised source Caveat 41 derives from two of them, so on the current
+    corpus the step is a no-op: each `cityjson` artefact is byte identical
+    to the source the chain builds from — the published one for five
+    datasets, and for vienna_102081 (4,731,370 B) and ingolstadt
+    (3,922,339 B) the normalised one. A size or parse-time gap against CityJSON therefore
     cannot be dismissed as whitespace.
+
+41. **The corpus holds at most one geometry per LoD and object.** Before any
+    artefact is built, `readbench_prepare.sh` normalises a CityJSON or
+    CityJSONSeq source with `lod-normalise`
+    (`benchmark/readbench/src/lod.rs`, `keep_first_per_lod`): each
+    CityObject keeps the first geometry at each LoD in source order, the
+    vertices nothing references any more are removed and the boundaries
+    re-indexed, and every CityObject is kept, with or without geometry. The
+    kept geometries' semantics, `material` and `texture` are unchanged;
+    texture coordinates (`vertices-texture`) and the `appearance` arrays are
+    left as they are, so every kept reference still resolves and a dropped
+    geometry's texture coordinates stay in the shared array. A changed
+    source is re-serialised compactly; an unchanged one is used byte for
+    byte. This is a property of the CORPUS, chosen because CityParquet
+    stores one geometry column per LoD: its writer keeps the first geometry
+    at a LoD and drops the rest (`skipped_same_lod_geometries`), so without
+    the normalisation the package would hold fewer geometries than the other
+    four formats. "The same LoD" is the writer's key exactly — the `lod`
+    string as `Lod::parse` reads it, so `2` and `2.0` are one LoD — and a
+    GeometryInstance never claims a LoD. The CityParquet stage then asserts
+    that the writer skipped nothing, and fails the dataset otherwise. On the
+    corpus, vienna_102081 loses 1,102 of its 2,204 geometries (each LoD 2
+    object carries a MultiSurface, kept, and a Solid, dropped; no vertex is
+    orphaned) and ingolstadt 26 of 405 geometries and 25,262 of 87,972
+    vertices; the other five sources and the 3DBAG slice are unchanged. A
+    CityGML source is not normalised; none is in the corpus.
 
 ## Environment
 

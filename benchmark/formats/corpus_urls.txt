@@ -23,7 +23,18 @@
 # The mirror's CityJSON is byte-identical to the pinned file. Its CityGML is a
 # convenience copy: the benchmark keeps synthesising its own `.gml` with the
 # pinned citygml-tools, and the two are identical once the tool's per-run
-# random `ID_<uuid>` identifiers are masked.
+# random `ID_<uuid>` identifiers are masked — except for Vienna and Ingolstadt,
+# whose mirrored CityGML was synthesised from the published CityJSON and so
+# still holds the geometries the normalisation below removes.
+#
+# NORMALISED BEFORE USE. The pinned files are the published ones, but the
+# benchmark does not measure them as published: `readbench_prepare.sh` first
+# leaves every CityObject with at most one geometry per LoD (the first in
+# source order; see READ_BENCHMARK.md, Caveat 41), and every artefact derives
+# from that normalised source. Five datasets need no change and are used byte
+# for byte. vienna_102081 loses 1,102 of 2,204 geometries (each LoD 2 object
+# carries a MultiSurface and a Solid; the MultiSurface comes first and is
+# kept) and ingolstadt 26 of 405 geometries and 25,262 of 87,972 vertices.
 #
 # WHY THIS CORPUS. The read benchmark compares FIVE formats — CityGML,
 # CityJSON, CityJSONSeq, FlatCityBuf and CityParquet — and a dataset that
