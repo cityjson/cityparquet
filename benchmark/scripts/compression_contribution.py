@@ -235,7 +235,7 @@ def discover(prepared: Path) -> list[str]:
 
 def print_table(rows: list[dict]) -> None:
     """The group and part rows of each dataset, readable on a terminal."""
-    print(f"{'dataset':<24} {'level':<7} {'name':<24} {'MB':>10} {'share':>7} {'ratio':>7}")
+    print(f"{'dataset':<24} {'level':<7} {'name':<24} {'MB':>10} {'of pkg':>7} {'ratio':>7}")
     for row in rows:
         if row["status"] == "missing":
             print(f"{row['dataset']:<24} MISSING")

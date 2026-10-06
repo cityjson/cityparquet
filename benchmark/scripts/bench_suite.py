@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -140,6 +141,28 @@ def dataset_stem(path: Path) -> str:
 def sizes_command(input_path: Path, prepared: Path, output: Path) -> list[str]:
     """The size script's argv; the suite names the dataset, the script never re-derives it."""
     return [sys.executable, "benchmark/scripts/measure_sizes.py", "--dataset", dataset_stem(input_path), "--prepared", str(prepared), "--out", str(output)]
+
+
+COMPRESSION_TABLE = "compression.csv"
+
+
+def compression_command(inputs: list[Path], prepared: Path, output: Path) -> list[str]:
+    """The compression breakdown's argv: DuckDB comes from benchmark/databases' uv project."""
+    argv = ["uv", "run", "--project", "benchmark/databases", "python", "benchmark/scripts/compression_contribution.py", "--prepared", str(prepared), "--out", str(output)]
+    for input_path in inputs:
+        argv.extend(["--dataset", dataset_stem(input_path)])
+    return argv
+
+
+def place_compression_table(results: Path, figures: Path) -> Path | None:
+    """Copy the measured breakdown beside the renderer's ``formats/size_factors.csv``."""
+    source_table = results / COMPRESSION_TABLE
+    if not source_table.is_file():
+        return None
+    target = figures / "formats" / COMPRESSION_TABLE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_table, target)
+    return target
 
 
 def renderer_dataset_ids(manifest: dict, selected: list[str]) -> list[str]:
@@ -309,6 +332,9 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         output = result_dir(locations, "sizes", profile) / "sizes.csv"
         for input_path in inputs:
             command(*sizes_command(input_path, locations["prepared"], output))
+        # Where each package's bytes go, by column group and column; it reads
+        # the same prepared packages the size rows above measured.
+        command(*compression_command(inputs, locations["prepared"], output.parent))
     if "bloom" in families:
         output = result_dir(locations, "bloom", profile)
         just("bloom-bench", str(stage(locations, "bloom", inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args)
@@ -394,6 +420,11 @@ def main() -> None:
         if figures:
             cmd.extend(["--figures", str(figures)])
         command(*cmd)
+        # The renderer derives its tables from results; the compression
+        # breakdown is measured from the packages, so it is copied beside
+        # them (the renderer's figures directory defaults to OUT/figures).
+        placed = place_compression_table(result_dir(locations, "sizes", profile), figures or output / "figures")
+        print(f"compression breakdown: {placed}" if placed else "compression breakdown: not measured (bench-run --families sizes writes it)")
 
 
 if __name__ == "__main__":

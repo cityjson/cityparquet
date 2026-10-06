@@ -108,6 +108,37 @@ class SummaryStatisticTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--statistic") + 1], "mean")
 
 
+class CompressionTests(unittest.TestCase):
+    def test_the_suite_names_every_dataset_for_the_compression_script(self):
+        inputs = [Path("/corpus/tokyo.city.json"), Path("/3dbag/3dbag_n1000000.city.jsonl")]
+        argv = bench_suite.compression_command(inputs, Path("/prepared"), Path("/out"))
+        self.assertEqual(argv[:5], ["uv", "run", "--project", "benchmark/databases", "python"])
+        self.assertEqual(argv[5], "benchmark/scripts/compression_contribution.py")
+        datasets = [argv[index + 1] for index, item in enumerate(argv) if item == "--dataset"]
+        self.assertEqual(datasets, ["tokyo", "3dbag_n1000000"])
+        self.assertEqual(argv[argv.index("--prepared") + 1], "/prepared")
+        self.assertEqual(argv[argv.index("--out") + 1], "/out")
+
+    def test_the_summary_places_the_breakdown_beside_the_size_factors(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp) / "results"
+            results.mkdir()
+            (results / "compression.csv").write_text("dataset\n", encoding="utf-8")
+            figures = Path(tmp) / "figures"
+            placed = bench_suite.place_compression_table(results, figures)
+            self.assertEqual(placed, figures / "formats" / "compression.csv")
+            self.assertEqual(placed.read_text(encoding="utf-8"), "dataset\n")
+
+    def test_the_summary_skips_a_breakdown_that_was_not_measured(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(bench_suite.place_compression_table(Path(tmp) / "results", Path(tmp) / "figures"))
+            self.assertFalse((Path(tmp) / "figures").exists())
+
+
 class SizesCommandTests(unittest.TestCase):
     def test_the_suite_names_the_dataset_for_the_size_script(self):
         argv = bench_suite.sizes_command(Path("/corpus/tokyo.city.json"), Path("/prepared"), Path("/out/sizes.csv"))

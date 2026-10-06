@@ -531,7 +531,11 @@ plot-test:
 # profile selection against the real manifest, and `cityjson_merge.py` on a
 # real fixture (`just fixtures` in lib/cityparquet-rs); they run in
 # benchmark/plot's uv environment, as `bench-run` does, for its Python 3.11+
-# (`tomllib`). Needs `jq`, `zip`/`unzip` and `uv`.
+# (`tomllib`). The compression breakdown's tests read a package the release
+# `cityparquet` CLI writes from the same fixture (`cargo build --release -p
+# cityparquet-cli` in lib/cityparquet-rs) and run the script in
+# benchmark/databases' uv environment, which provides DuckDB. Needs `jq`,
+# `zip`/`unzip` and `uv`.
 [doc("The benchmark scripts' own suites (needs jq and uv)")]
 scripts-test:
     ./{{BENCH_SCRIPTS}}/tests/readbench_prepare_test.sh
@@ -676,6 +680,17 @@ bench-prep *ARGS:
 [positional-arguments]
 bench-run *ARGS:
     uv run --project {{PLOT}} python benchmark/scripts/bench_suite.py run "$@"
+
+# Where the bytes of each prepared CityParquet package go: one row per column
+# group, per column (with its encodings) and per non-column part (Bloom
+# filters, footer and page indexes, sidecar tables, metadata.json), written to
+# OUT/compression.csv with a readable table on stdout. It measures nothing:
+# it reads the Parquet footers of packages `bench-prep` already wrote, with
+# DuckDB from benchmark/databases' uv project. `bench-run --families sizes`
+# runs it for the selected datasets.
+[doc("Column-group and column breakdown of every prepared CityParquet package (DuckDB)")]
+bench-compression PREPARED=(BENCH / "runs/data/readbench") OUT=(BENCH / "runs/formats/results"):
+    uv run --project {{BENCH}}/databases python {{BENCH_SCRIPTS}}/compression_contribution.py --prepared '{{PREPARED}}' --out '{{OUT}}'
 
 [doc("Render paper figures and one combined HTML page from existing results; --statistic median|mean (default median)")]
 [positional-arguments]
