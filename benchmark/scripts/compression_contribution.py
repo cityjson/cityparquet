@@ -53,7 +53,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from measure_sizes import artefact_bytes
+from measure_sizes import artefact_bytes, units
 
 OUTPUT_NAME = "compression.csv"
 HEADER = [
@@ -73,7 +73,6 @@ HEADER = [
 GROUPS = ["geometry", "geometry_properties", "appearance", "attributes", "identifiers_structure", "bbox", "other"]
 PARTS = ["bloom_filters", "footer_and_page_indexes", "sidecar_tables", "metadata", "other_files"]
 IDENTIFIERS_STRUCTURE = {"id", "feature_id", "object_type", "parents", "children", "children_roles"}
-BYTES_PER_MB = 1_000_000
 OBJECTS_ROLE = "cityparquet-objects"
 SIDECAR_ROLE = "cityparquet-sidecar"
 # DuckDB joins the names along a leaf's path with ", ".
@@ -146,10 +145,6 @@ def share(part: int, whole: int) -> str:
     return f"{part / whole:.6f}" if whole else ""
 
 
-def mb_decimal(count: int) -> str:
-    return f"{count / BYTES_PER_MB:.6f}"
-
-
 def package_rows(dataset: str, package: Path) -> list[dict]:
     """Group, column, part and package rows for one package."""
     import duckdb
@@ -197,7 +192,7 @@ def package_rows(dataset: str, package: Path) -> list[dict]:
             "encodings": encodings,
             "compressed_bytes": compressed,
             "uncompressed_bytes": uncompressed if is_column else "",
-            "compressed_mb_decimal": mb_decimal(compressed),
+            "compressed_mb_decimal": units.mb_decimal(compressed),
             "share_of_column_bytes": share(compressed, column_bytes) if is_column else "",
             "share_of_package_bytes": share(compressed, total),
             "compression_ratio": ratio(uncompressed, compressed) if is_column else "",

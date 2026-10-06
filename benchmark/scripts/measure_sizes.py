@@ -17,7 +17,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from pathlib import Path
+
+# The decimal-unit helper lives in the plotting project and is standard-library only.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plot"))
+from benchviz import units
 
 HEADER = ["dataset", "format", "bytes", "mb_decimal"]
 FORMATS = {
@@ -27,7 +32,6 @@ FORMATS = {
     "flatcitybuf": ".fcb",
     "cityparquet": ".parquet",
 }
-BYTES_PER_MB = 1_000_000
 
 
 def artefact_bytes(path: Path) -> int:
@@ -72,7 +76,7 @@ def write_sizes(out: Path, dataset: str, sizes: list[tuple[str, int]]) -> None:
         writer.writerow(HEADER)
         writer.writerows(kept)
         for fmt, size in sizes:
-            writer.writerow([dataset, fmt, size, f"{size / BYTES_PER_MB:.6f}"])
+            writer.writerow([dataset, fmt, size, units.mb_decimal(size)])
 
 
 def main(argv: list[str] | None = None) -> None:
