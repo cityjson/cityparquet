@@ -278,28 +278,6 @@ def test_id_lookup_does_not_reference_the_granularity_predicate_at_all():
     assert "is_toplevel" not in sql
 
 
-def test_geometry_scan_selects_a_cityobject_grain_count_first():
-    """count_mode("geometry-scan") == "first-column", and the count must be
-    CityObject-grain. One CityObject owns several `geometry_data` rows (one
-    per LoD), so a plain `count(*)` over this join would report geometry
-    rows and every row of the scenario would be a false count-mismatch."""
-    sql, args = sql_for("geometry-scan", _params(), cityobject_class_ids=IDS)
-    assert sql.strip().upper().startswith("SELECT COUNT(DISTINCT F.ID)")
-    assert args == ()
-
-
-def test_geometry_scan_touches_the_geometry_and_not_the_property_records():
-    """The retired `full-read` cast every `property` row's whole COMPOSITE
-    RECORD to text through two GROUP BY CTEs over the entire tables — ~20
-    NULL fields per row, and 276 s against DuckDB's 1.2 s. That was largely
-    artefact, not architecture."""
-    sql, _ = sql_for("geometry-scan", _params(), cityobject_class_ids=IDS)
-    assert "length(gd.geometry::text)" in sql
-    assert "citydb.property" not in sql
-    assert "WITH " not in sql.upper()          # no CTEs at all
-    assert "envelope::text" not in sql
-
-
 def test_bbox_query_parameterises_the_window_and_srid_in_order():
     params = _params()
     window = _window(params)
@@ -535,3 +513,19 @@ def test_index_ddl_takes_no_arguments():
     ddl = index_ddl()
     assert isinstance(ddl, list)
     assert all(isinstance(stmt, str) for stmt in ddl)
+
+
+def test_geometry_scan_returns_ids_and_binary_geometry_one_row_per_object():
+    from citybench.scenarios.sql_citydb import sql_for
+    sql, _ = sql_for("geometry-scan", make_params(), cityobject_class_ids=(1, 2))
+    assert sql.startswith("SELECT f.objectid, array_agg(gd.geometry)")
+    assert "GROUP BY f.id, f.objectid" in sql
+    assert "::text" not in sql and "length(" not in sql
+
+
+def test_bbox_query_returns_ids_and_the_highest_lod_geometry_data_row():
+    from citybench.scenarios.sql_citydb import sql_for
+    sql, _ = sql_for("bbox-query", make_params(), make_params().window("bbox-25pct"), cityobject_class_ids=(1, 2))
+    assert sql.startswith("SELECT f.objectid, g.geometry FROM")
+    assert "ORDER BY NULLIF(pr.val_lod, '')::int DESC NULLS LAST" in sql
+    assert "LEFT JOIN LATERAL" in sql and "count(" not in sql

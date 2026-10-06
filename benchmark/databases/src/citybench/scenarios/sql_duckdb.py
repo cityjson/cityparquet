@@ -26,6 +26,8 @@ because the real schema differs from what that draft assumed:
 
 from __future__ import annotations
 
+import re
+
 from citybench.config import AppendSpec, BBox, BboxWindow, IdProbe, Params
 from citybench.scenarios.registry import ScenarioUnavailable
 
@@ -41,21 +43,28 @@ BUILDING_PART_TYPE = "BuildingPart"
 FOOTPRINT_COLUMN = "geometry_lod0_0"
 
 
-def geometry_byte_length(column: str, duck_type: str) -> str:
-    """The stored byte length of one geometry column.
+def geometry_columns(columns: dict[str, str] | None) -> list[str]:
+    """The package's per-LoD geometry columns, most detailed first."""
+    def lod(column: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in re.findall(r"\d+", column.removeprefix("geometry_lod")))
+    found = [c for c in (columns or {}) if c.startswith("geometry_lod")]
+    return sorted(found, key=lod, reverse=True) or ["geometry_lod2_2"]
 
-    Most `geometry_lod*` columns come back as BLOB and `octet_length` reads
-    their stored WKB directly. `geometry_lod0_0` does NOT: a CityParquet
-    footprint is written with Parquet's own GEOMETRY logical type, which
-    DuckDB 1.5 decodes to its native `GEOMETRY` regardless of
-    `enable_geoparquet_conversion` (measured — the setting governs the
-    `geo`-footer path, not the logical type), and `octet_length` does not
-    bind against it. `ST_AsWKB` re-encodes it, so that one column's term is
-    a re-serialisation rather than a stored length. Disclosed in README
-    Caveat 18 rather than papered over.
+
+def highest_lod_geometry(columns: dict[str, str] | None) -> str:
+    """Each object's most detailed geometry, as WKB.
+
+    Per object, not per dataset: a 3DBAG BuildingPart yields its LoD 2.2
+    solid and its parent Building its LoD 0 footprint, the only geometry it
+    has. The per-LoD columns are BLOB (WKB) except a footprint written with
+    Parquet's GEOMETRY logical type, which DuckDB decodes to its native
+    `GEOMETRY` whatever `enable_geoparquet_conversion` says; `ST_AsWKB`
+    gives that one term the same binary type so `coalesce` binds.
     """
-    expression = column if duck_type.upper().startswith("BLOB") else f"ST_AsWKB({column})"
-    return f"coalesce(octet_length({expression}), 0)"
+    types = columns or {}
+    terms = [c if types.get(c, "BLOB").upper().startswith("BLOB") else f"ST_AsWKB({c})"
+             for c in geometry_columns(columns)]
+    return f"coalesce({', '.join(terms)})"
 
 
 def sql_for(scenario: str, params: Params, table: str,
@@ -93,31 +102,15 @@ def sql_for(scenario: str, params: Params, table: str,
         return f"SELECT count(*) FROM {table}", ()
 
     if scenario == "geometry-scan":
-        # Replaces `full-read`, which was three different operations under
-        # one name: 84 hashed columns here, a JSONB text serialisation on
-        # cjdb, and whole-record text casts through two CTEs on 3DCityDB
-        # (`notes/benchmark-fairness-review-2026-09-22.md` §4.2). All three
-        # now scan the same thing — every object's geometry — and report
-        # `(count, bytes)`.
-        #
-        # This is FAIRER but it is not NEUTRAL, and the README says so
-        # (Caveat 18): DuckDB reads stored binary lengths (bar the LoD0
-        # column, see `geometry_byte_length`) while both PostgreSQL sides
-        # serialise to text first. A byte length also does not prove a
-        # geometry was decoded. The asymmetry is disclosed, not removed.
-        geometry_columns = sorted(
-            c for c in (columns or {}) if c.startswith("geometry_lod")
-        ) or ["geometry_lod1_2"]
-        types = columns or {}
-        terms = " + ".join(
-            geometry_byte_length(c, types.get(c, "BLOB")) for c in geometry_columns
-        )
-        return (f"SELECT count(*), sum({terms})::HUGEINT FROM {table}", ())
+        # Every object's id and geometry, every LoD, fetched as WKB (the
+        # connection keeps `enable_geoparquet_conversion = false`).
+        return (f"SELECT id, {', '.join(geometry_columns(columns))} FROM {table}", ())
 
     if scenario == "bbox-query":
+        # Ids plus each matching object's highest-LoD geometry as WKB.
         win = _window(window)
         return (
-            f"SELECT count(*) FROM {table} "
+            f"SELECT id, {highest_lod_geometry(columns)} AS geometry FROM {table} "
             "WHERE bbox.xmax >= ? AND bbox.xmin <= ? "
             "AND bbox.ymax >= ? AND bbox.ymin <= ?",
             (win.minx, win.maxx, win.miny, win.maxy),

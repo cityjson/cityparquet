@@ -112,7 +112,7 @@ def systems_for(scenario: str) -> tuple[str, ...]:
 # object count, with any forcing or aggregate work in later columns.
 # Everything else reports the number of rows materialised.
 COUNT_FROM_FIRST_COLUMN: frozenset[str] = frozenset({
-    "geometry-scan", "count", "bbox-query", "attr-stats",
+    "count", "attr-stats",
 })
 
 # Scenarios that RETURN ROWS — ids, or whole objects — the way the CJDB
@@ -120,6 +120,7 @@ COUNT_FROM_FIRST_COLUMN: frozenset[str] = frozenset({
 # rows materialised. Every one of these fetches its rows inside the timed
 # window on every system, so no engine wins by handing back a lazy cursor.
 COUNT_FROM_ROWCOUNT: frozenset[str] = frozenset({
+    "geometry-scan", "bbox-query",
     "id-lookup", "attr-filter", "attr-range",
     "lod-query", "parts-per-building", "parts-per-building-join",
 })

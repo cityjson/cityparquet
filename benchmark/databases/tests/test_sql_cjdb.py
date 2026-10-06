@@ -36,13 +36,6 @@ def test_bbox_query_uses_postgis_operator_for_index_use():
     assert len(args) == 5  # four ordinates plus the SRID
 
 
-def test_attr_stats_casts_jsonb_to_numeric():
-    sql, args = sql_for("attr-stats", PARAMS)
-    assert "attributes ->> 'h_dak_max'" in sql
-    assert "::numeric" in sql
-    assert args == ()
-
-
 def test_unknown_scenario_raises():
     with pytest.raises(KeyError):
         sql_for("nonsense", PARAMS)
@@ -69,26 +62,6 @@ def test_attr_stats_raises_scenario_unavailable_when_dataset_has_no_numeric_colu
     # see params.py) is a legitimate dataset property, not a query bug.
     with pytest.raises(ScenarioUnavailable, match="dataset has no numeric attribute"):
         sql_for("attr-stats", _params(numeric_column=None))
-
-
-def test_geometry_scan_selects_count_first_then_the_serialised_length():
-    # count_mode("geometry-scan") == "first-column": the registry's
-    # cross-system comparison depends on count(*) being the FIRST column.
-    sql, args = sql_for("geometry-scan", _params())
-    assert sql.strip().upper().startswith("SELECT COUNT(*)")
-    assert args == ()
-
-
-def test_geometry_scan_touches_the_geometry_alone():
-    """All three systems now scan the same thing. The retired `full-read`
-    also summed `attributes` and `ground_geometry` here, which was a
-    different amount of work from the other two systems' rows."""
-    sql, _ = sql_for("geometry-scan", _params())
-    assert "length(geometry::text)" in sql
-    assert "attributes::text" not in sql
-    assert "ground_geometry::text" not in sql
-    # A NULL geometry must still leave its row in the count.
-    assert sql.count("coalesce(") == 1
 
 
 def test_bbox_query_parameterises_the_window_and_srid_in_order():
@@ -289,3 +262,24 @@ def test_index_ddl_takes_no_arguments():
     ddl = index_ddl()
     assert isinstance(ddl, list)
     assert all(isinstance(stmt, str) for stmt in ddl)
+
+
+def test_geometry_scan_returns_ids_and_the_geometry_document_without_text():
+    from citybench.scenarios.sql_cjdb import sql_for
+    sql, _ = sql_for("geometry-scan", make_params())
+    assert sql.startswith("SELECT object_id, geometry FROM")
+    assert "::text" not in sql and "length(" not in sql and "sum(" not in sql
+
+
+def test_bbox_query_returns_ids_and_the_highest_lod_geometry_element():
+    from citybench.scenarios.sql_cjdb import sql_for
+    sql, _ = sql_for("bbox-query", make_params(), make_params().window("bbox-25pct"))
+    assert sql.startswith("SELECT object_id, (SELECT g FROM jsonb_array_elements(geometry) g")
+    assert "string_to_array(g ->> 'lod', '.')::int[] DESC" in sql
+    assert "count(" not in sql
+
+
+def test_attr_stats_casts_to_float8_like_attr_range():
+    from citybench.scenarios.sql_cjdb import sql_for
+    sql, _ = sql_for("attr-stats", make_params())
+    assert "::float8" in sql and "::numeric" not in sql

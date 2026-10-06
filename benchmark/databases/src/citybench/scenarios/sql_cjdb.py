@@ -35,26 +35,19 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         return f"SELECT count(*) FROM {t}", ()
 
     if scenario == "geometry-scan":
-        # The geometry column only, matching `sql_duckdb`'s own
-        # `geometry-scan`: every object's geometry, once, reported as
-        # `(count, bytes)`. The old `full-read` also summed `attributes`
-        # and `ground_geometry`, which was a different amount of work from
-        # the other two systems' rows.
-        #
-        # `length(geometry::text)` is a JSONB-to-text serialisation, not a
-        # stored byte length: a client reading JSONB genuinely pays this,
-        # but it is NOT the same operation DuckDB's `octet_length` performs
-        # (README Caveat 18). `length()` then throws the string away.
-        return (
-            f"SELECT count(*), sum(coalesce(length(geometry::text), 0))::bigint "
-            f"FROM {t}",
-            (),
-        )
+        # Every object's id and its whole geometry JSONB, fetched in
+        # PostgreSQL's binary wire format (no text cast, no byte sum).
+        return f"SELECT object_id, geometry FROM {t}", ()
 
     if scenario == "bbox-query":
+        # Ids plus the highest-LoD element of each matching object's
+        # geometry array, ordered numerically on the dotted LoD ("2.2" >
+        # "1.3" > "0").
         win = _window(window)
         return (
-            f"SELECT count(*) FROM {t} "
+            "SELECT object_id, (SELECT g FROM jsonb_array_elements(geometry) g "
+            "ORDER BY string_to_array(g ->> 'lod', '.')::int[] DESC LIMIT 1) AS geometry "
+            f"FROM {t} "
             "WHERE ground_geometry && ST_MakeEnvelope(%s, %s, %s, %s, %s)",
             (win.minx, win.miny, win.maxx, win.maxy, srid),
         )
@@ -99,7 +92,7 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         # raised before `None` could be interpolated into the JSONB key.
         if p.numeric_column is None:
             raise ScenarioUnavailable("dataset has no numeric attribute")
-        col = f"(attributes ->> '{p.numeric_column}')::numeric"
+        col = f"(attributes ->> '{p.numeric_column}')::float8"
         # count first, per the registry's first-column convention.
         return (
             f"SELECT count({col}), min({col}), max({col}), sum({col}) FROM {t}",

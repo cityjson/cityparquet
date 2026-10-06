@@ -71,11 +71,15 @@ def register_text_passthrough(conn: psycopg.Connection) -> None:
     inside the timed window — the server does all of its own work, and the
     bytes all cross the socket. Only the client-side object construction is
     skipped, on the side that would otherwise be the only one paying it.
-    Disclosed as `fetch: text` in every PostgreSQL row's `notes`, beside
+    The timed query cursor fetches in PostgreSQL's BINARY wire format, so
+    geometry arrives as the server's binary representation, never text.
+    Disclosed as `fetch: binary` in every PostgreSQL row's `notes`, beside
     the DuckDB rows' `fetch: arrow`.
     """
     for name in ("json", "jsonb"):
         conn.adapters.register_loader(name, psycopg.types.string.TextLoader)
+        # The timed cursor fetches in binary format: JSON stays raw bytes.
+        conn.adapters.register_loader(name, psycopg.types.string.ByteaBinaryLoader)
 
 
 def parse_explain_execution_time(plan: list | str) -> float:
@@ -118,7 +122,7 @@ def time_query(conn: psycopg.Connection, sql: str, args: tuple = (),
     pid = backend_pid(conn)
 
     def execute() -> tuple[list, float]:
-        with conn.cursor() as cur:
+        with conn.cursor(binary=True) as cur:
             start = time.perf_counter()
             cur.execute(sql, args)
             rows = cur.fetchall() if cur.description is not None else []

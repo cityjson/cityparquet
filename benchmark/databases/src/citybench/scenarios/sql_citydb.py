@@ -273,35 +273,29 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         return f"SELECT count(*) FROM {_F} WHERE {_static_predicate(cityobject_class_ids)}", ()
 
     if scenario == "geometry-scan":
-        # The geometry only, matching the other two systems' own
-        # `geometry-scan`. The retired `full-read` also cast every
-        # `property` row's whole COMPOSITE RECORD to text through two
-        # `GROUP BY` CTEs over the entire tables — ~20 NULL fields per row,
-        # the only CTEs in the set, and 276 s against DuckDB's 1.2 s
-        # (`notes/benchmark-fairness-review-2026-09-22.md` §4.2). That was
-        # largely artefact, not architecture.
-        #
-        # `count(DISTINCT f.id)`, not `count(*)`: one CityObject owns
-        # several `geometry_data` rows (one per LoD), so a plain `count(*)`
-        # over the join would report geometry rows and every row of this
-        # scenario would be a false count-mismatch.
-        #
-        # `length(gd.geometry::text)` is a PostGIS-to-EWKT serialisation
-        # (README Caveat 18), not a stored byte length.
+        # Every object's id and all its `geometry_data` geometries, one row
+        # per object, in PostgreSQL's binary wire format.
         return (
-            f"SELECT count(DISTINCT f.id), "
-            f"sum(coalesce(length(gd.geometry::text), 0))::bigint "
+            f"SELECT f.objectid, array_agg(gd.geometry) FILTER (WHERE gd.geometry IS NOT NULL) "
             f"FROM {_F} f "
-            f"JOIN {SCHEMA}.geometry_data gd ON gd.feature_id = f.id "
-            f"WHERE {_static_predicate(cityobject_class_ids)}",
+            f"LEFT JOIN {SCHEMA}.geometry_data gd ON gd.feature_id = f.id "
+            f"WHERE {_static_predicate(cityobject_class_ids)} "
+            "GROUP BY f.id, f.objectid",
             (),
         )
 
     if scenario == "bbox-query":
+        # Ids plus the `geometry_data` row of each matching object's highest
+        # LoD. `property.val_lod` holds the integer tier only ("2.2" is
+        # stored as "2"), so a tie inside one tier falls to the newest row.
         win = _window(window)
         return (
-            f"SELECT count(*) FROM {_F} "
-            f"WHERE {_static_predicate(cityobject_class_ids)} AND {CAPTURED_ENVELOPE_COLUMN} "
+            f"SELECT f.objectid, g.geometry FROM {_F} f "
+            "LEFT JOIN LATERAL (SELECT gd.geometry "
+            f"FROM {SCHEMA}.property pr JOIN {SCHEMA}.geometry_data gd ON gd.id = pr.val_geometry_id "
+            "WHERE pr.feature_id = f.id AND pr.val_geometry_id IS NOT NULL "
+            "ORDER BY NULLIF(pr.val_lod, '')::int DESC NULLS LAST, gd.id DESC LIMIT 1) g ON true "
+            f"WHERE {_static_predicate(cityobject_class_ids)} AND f.{CAPTURED_ENVELOPE_COLUMN} "
             "&& ST_MakeEnvelope(%s, %s, %s, %s, %s)",
             (win.minx, win.miny, win.maxx, win.maxy, srid),
         )

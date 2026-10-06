@@ -9,7 +9,7 @@ import pytest
 from citybench.config import Params
 from citybench.scenarios.registry import ScenarioUnavailable
 from citybench.scenarios.sql_duckdb import (
-    BUILDING_PART_TYPE, BUILDING_TYPE, geometry_byte_length, sql_for,
+    BUILDING_PART_TYPE, BUILDING_TYPE, highest_lod_geometry, sql_for,
     write_reset_statements, write_statements,
 )
 from conftest import ge_attr_filter, make_params, make_probes
@@ -76,12 +76,7 @@ def test_parts_per_building_join_form_left_joins_so_no_building_is_dropped():
     assert args == (BUILDING_PART_TYPE, BUILDING_TYPE)
 
 
-def test_count_from_first_column_scenarios_select_count_as_first_column():
-    # The registry's cross-system count comparison depends on this shape:
-    # geometry-scan and attr-stats must not put the aggregate first.
-    sql, _ = sql_for("geometry-scan", _params(), TABLE, columns=COLUMNS)
-    assert sql.strip().upper().startswith("SELECT COUNT(*)")
-
+def test_attr_stats_puts_the_count_first():
     sql, _ = sql_for("attr-stats", _params(), TABLE)
     assert sql.strip().upper().startswith("SELECT COUNT(")
 
@@ -96,33 +91,31 @@ def test_attr_stats_references_the_column_bare_not_under_an_attributes_struct():
     assert "attributes." not in sql
 
 
-def test_geometry_scan_sums_every_geometry_column_and_no_attribute_column():
-    """The replacement for `full-read`, which hashed all 84 columns on this
-    side while cjdb serialised three and 3DCityDB cast whole records through
-    two CTEs. All three now scan the same thing: the geometry."""
+def test_geometry_scan_returns_every_id_and_every_geometry_column_as_wkb():
+    """Every object's id and geometry, in DuckDB's native binary: no byte
+    lengths summed, no text, no attribute column."""
     sql, args = sql_for("geometry-scan", _params(), TABLE, columns=COLUMNS)
-    for column in ("geometry_lod0_0", "geometry_lod1_2", "geometry_lod1_3",
-                   "geometry_lod2_2"):
+    assert sql.startswith("SELECT id, ")
+    for column in ("geometry_lod0_0", "geometry_lod1_2", "geometry_lod1_3", "geometry_lod2_2"):
         assert column in sql
-    assert "hash(" not in sql
-    assert "b3_dak_type" not in sql
-    assert "::HUGEINT" in sql
+    for absent in ("octet_length", "sum(", "count(", "hash(", "b3_dak_type", "geometry_properties"):
+        assert absent not in sql
     assert args == ()
 
 
-def test_geometry_scan_re_encodes_only_the_native_geometry_column():
-    """`octet_length` does not bind against DuckDB's native `GEOMETRY`, which
-    is what CityParquet's LoD0 footprint decodes to whatever
-    `enable_geoparquet_conversion` says. That one term is therefore a
-    re-serialisation, and the rest are stored lengths — README Caveat 18."""
-    assert geometry_byte_length("geometry_lod1_2", "BLOB") == (
-        "coalesce(octet_length(geometry_lod1_2), 0)"
-    )
-    assert geometry_byte_length("geometry_lod0_0", "GEOMETRY('EPSG:7415')") == (
-        "coalesce(octet_length(ST_AsWKB(geometry_lod0_0)), 0)"
-    )
-    sql, _ = sql_for("geometry-scan", _params(), TABLE, columns=COLUMNS)
-    assert sql.count("ST_AsWKB(") == 1
+def test_highest_lod_geometry_prefers_the_most_detailed_column():
+    expr = highest_lod_geometry(COLUMNS)
+    assert expr == ("coalesce(geometry_lod2_2, geometry_lod1_3, geometry_lod1_2, "
+                    "ST_AsWKB(geometry_lod0_0))")
+
+
+def test_bbox_query_returns_ids_and_the_highest_lod_geometry():
+    sql, args = sql_for("bbox-query", _params(), TABLE, _window(_params()), columns=COLUMNS)
+    assert sql.startswith("SELECT id, coalesce(geometry_lod2_2,")
+    assert "count(" not in sql
+    assert "bbox.xmax >= ?" in sql
+
+
 def test_count_counts_every_row_unconditionally():
     sql, args = sql_for("count", _params(), TABLE)
     assert "count(*)" in sql

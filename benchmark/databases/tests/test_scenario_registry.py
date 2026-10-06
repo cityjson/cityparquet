@@ -259,8 +259,8 @@ def test_scenarios_returning_rows_use_rowcount_not_a_first_column():
     """Every scenario that returns rows — as CJDB's own queries do — is
     counted by the rows it materialised, so no engine can win by returning
     a lazy cursor or by answering a count from metadata."""
-    for scenario in ("attr-filter", "attr-range", "id-lookup", "lod-query",
-                     "parts-per-building", "parts-per-building-join"):
+    for scenario in ("geometry-scan", "bbox-query", "attr-filter", "attr-range",
+                     "id-lookup", "lod-query", "parts-per-building", "parts-per-building-join"):
         assert count_mode(scenario) == "rowcount", scenario
-    for scenario in ("count", "geometry-scan", "bbox-query", "attr-stats"):
+    for scenario in ("count", "attr-stats"):
         assert count_mode(scenario) == "first-column", scenario

@@ -124,7 +124,7 @@ def test_the_benchmark_connection_hands_json_back_as_text():
             self.registered = {}
 
         def register_loader(self, name, loader):
-            self.registered[name] = loader
+            self.registered.setdefault(name, []).append(loader)
 
     class FakeConn:
         def __init__(self):
@@ -133,8 +133,9 @@ def test_the_benchmark_connection_hands_json_back_as_text():
     conn = FakeConn()
     pg.register_text_passthrough(conn)
     assert set(conn.adapters.registered) == {"json", "jsonb"}
-    assert all(loader is psycopg.types.string.TextLoader
-               for loader in conn.adapters.registered.values())
+    # Raw text for a text-format fetch, raw bytes for the binary timed fetch.
+    assert all(loaders == [psycopg.types.string.TextLoader, psycopg.types.string.ByteaBinaryLoader]
+               for loaders in conn.adapters.registered.values())
 
 
 def test_parses_execution_time_from_a_text_explain_payload():
@@ -144,3 +145,31 @@ def test_parses_execution_time_from_a_text_explain_payload():
     from citybench.systems.pg import parse_explain_execution_time
     payload = '[{"Plan": {"Node Type": "Seq Scan"}, "Execution Time": 12.5}]'
     assert parse_explain_execution_time(payload) == 0.0125
+
+
+def test_time_query_fetches_in_binary_wire_format(monkeypatch):
+    """Geometry is returned in PostgreSQL's binary form, never converted to text."""
+    from citybench.systems import pg
+    seen = {}
+
+    class Cur:
+        description = [("a",)]
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, sql, args=()): pass
+        def fetchall(self): return [(1,)]
+        def fetchone(self): return [[{"Plan": {}, "Execution Time": 1.0}]]
+
+    class Conn:
+        info = None
+        def cursor(self, binary=False):
+            seen.setdefault("binary", []).append(binary)
+            return Cur()
+
+    monkeypatch.setattr(pg, "backend_pid", lambda conn: 1)
+    monkeypatch.setattr(pg, "host_pid_of", lambda conn, pid: None)
+    try:
+        pg.time_query(Conn(), "SELECT 1")
+    except Exception:
+        pass
+    assert True in seen["binary"]
