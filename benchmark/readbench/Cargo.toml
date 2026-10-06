@@ -49,6 +49,11 @@ name = "fcb-slice"
 path = "src/bin/fcb_slice.rs"
 doc = false
 
+[[bin]]
+name = "lod-normalise"
+path = "src/bin/lod_normalise.rs"
+doc = false
+
 # Versions are written out rather than inherited: a one-package workspace has
 # nothing to share them with, and they must stay in step with
 # ../../lib/cityparquet-rs/Cargo.toml's [workspace.dependencies] by hand — the
