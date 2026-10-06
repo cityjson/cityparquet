@@ -428,9 +428,13 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
                 record = corpus_bucket.dataset_entry(prepared, dataset_id, artefacts + variants_of(entry), origin, built)
                 done = corpus_bucket.upload_dataset(cfg, chain, prepared, record, dataset_id, existing, force=force_upload)
                 print(f"{dataset_id}: {len(done['uploaded'])} uploaded, {len(done['skipped'])} identical and skipped")
-                entries[dataset_id] = record
-            corpus_bucket.publish_manifest(cfg, chain, entries)
-            print(f"published {corpus_bucket.public_url(cfg, chain, corpus_bucket.MANIFEST_NAME)}")
+                if done["uploaded"] or not corpus_bucket.entry_unchanged(existing, dataset_id, record):
+                    entries[dataset_id] = record
+            if entries:
+                corpus_bucket.publish_manifest(cfg, chain, entries)
+                print(f"published {corpus_bucket.public_url(cfg, chain, corpus_bucket.MANIFEST_NAME)}")
+            else:
+                print("manifest unchanged: every artefact is identical to the hosted one")
         except corpus_bucket.CorpusError as error:
             raise SystemExit(f"bench-prep: {error}") from error
     if mode != "download":

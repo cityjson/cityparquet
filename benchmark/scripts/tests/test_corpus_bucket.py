@@ -124,6 +124,19 @@ class CorpusBucketTest(unittest.TestCase):
         self.assertEqual(sorted(record["files"]), ["building/part.parquet", "metadata.json"])
         self.assertEqual(record["key"], "cityparquet/rdam.parquet")
 
+    def test_an_entry_whose_content_matches_the_hosted_one_is_unchanged(self):
+        hosted = {"chain_version": 8, "datasets": {"rotterdam": {
+            "source": {"url": "u", "sha256": "s"},
+            "built": {"created_at": "2026-10-06T16:30:16+00:00"},
+            "artefacts": {"cityjson": {"key": "cityjson/r.city.json", "bytes": 1, "sha256": "a"}}}}}
+        rebuilt = json.loads(json.dumps(hosted["datasets"]["rotterdam"]))
+        rebuilt["built"]["created_at"] = "2026-10-06T17:41:48+00:00"
+        self.assertTrue(cb.entry_unchanged(hosted, "rotterdam", rebuilt))
+        rebuilt["artefacts"]["cityjson"]["sha256"] = "b"
+        self.assertFalse(cb.entry_unchanged(hosted, "rotterdam", rebuilt))
+        self.assertFalse(cb.entry_unchanged(hosted, "vienna", rebuilt))
+        self.assertFalse(cb.entry_unchanged(None, "rotterdam", rebuilt))
+
     def test_merge_keeps_other_datasets_and_refuses_another_chain(self):
         first = cb.merge(None, 7, {"a": {"x": 1}})
         second = cb.merge(first, 7, {"b": {"x": 2}})

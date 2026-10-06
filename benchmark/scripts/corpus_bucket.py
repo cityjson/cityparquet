@@ -309,6 +309,15 @@ def upload_dataset(cfg: dict[str, str], chain: int, prepared: Path, entry: dict,
     return done
 
 
+def entry_unchanged(existing: dict | None, dataset_id: str, entry: dict) -> bool:
+    """Whether the hosted manifest already records this dataset with the same
+    source and artefacts. Only `built` (when and by what it was built) may
+    differ: a rebuild that reproduced every hosted byte leaves the manifest
+    as it is, so the run uploads nothing at all."""
+    hosted = ((existing or {}).get("datasets") or {}).get(dataset_id)
+    return hosted is not None and all(hosted.get(k) == entry.get(k) for k in ("source", "artefacts"))
+
+
 def publish_manifest(cfg: dict[str, str], chain: int, entries: dict[str, dict]) -> dict:
     """Merge entries into the hosted manifest and write it LAST."""
     manifest = merge(remote_manifest(cfg, chain), chain, entries)
