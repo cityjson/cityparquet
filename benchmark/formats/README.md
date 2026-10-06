@@ -94,8 +94,9 @@ lookups described under "The bloom family" below.
 The format comparison measures five formats — CityGML, CityJSON, CityJSONSeq,
 FlatCityBuf and CityParquet — with one artefact each per dataset. The
 CityParquet artefact is one package written in Hilbert-curve order
-(`cityparquet convert --ordering hilbert`; the CLI's own default is source
-order), displayed as **CityParquet** in figures. The bloom figures are `bloom`,
+(`cityparquet convert --ordering hilbert`: the writer's default, pinned
+explicitly so the benchmark states its configuration), displayed as
+**CityParquet** in figures. The bloom figures are `bloom`,
 for the 3DBAG slice, and `bloom-corpus`, for the corpus datasets.
 See [`../README.md`](../README.md) for the experimental matrix and figure list.
 
@@ -123,7 +124,7 @@ from each input, untimed — `cityparquet`, which carries bloom filters, and
 both. Package bytes go to `sizes.csv`. Every lookup row carries `row_groups_total`, `bloom_pruned` and `filter_bytes` (the
 bitset bytes of the filters examined). Both packages are written in Hilbert
 order: the coordinator builds every variant package that way and refuses a
-`+hilbert` suffix as redundant, so the two differ in their bloom filters alone.
+`+source` suffix, so the two differ in their bloom filters alone.
 The 3DBAG slice is drawn in `bloom`; the corpus datasets are drawn per dataset
 in `bloom-corpus`.
 

@@ -57,17 +57,20 @@ with dataset size while CityParquet's stays flat.
 The format comparison measures one configuration per format, so each of the
 five tags names exactly one artefact per dataset. For CityParquet that
 artefact is a package whose rows `readbench_prepare.sh` writes in Hilbert-curve
-order. Hilbert order is the benchmark's choice, not the writer's default: the
-`cityparquet convert` CLI writes rows in source order unless `--ordering` says
-otherwise. Row order changes how tightly each row group's bbox statistics
-enclose its rows, and so how much a `bbox-query` can prune; it changes neither
-the package's schema nor what a reader must understand to read it.
+order. Hilbert order is the `cityparquet convert` default, and the prepare
+script and the coordinator pin it explicitly (`--ordering hilbert`,
+`RowOrder::Hilbert`) so the benchmark states its configuration rather than
+inheriting it. It costs memory: the writer holds every feature before it
+writes the first row, where `--ordering source` streams. Row order changes how
+tightly each row group's bbox statistics enclose its rows, and so how much a
+`bbox-query` can prune; it changes neither the package's schema nor what a
+reader must understand to read it.
 
 The only configuration axis is the `bloom` family's: `cityparquet` against
 `cityparquet+nobloom`, both written in Hilbert order (see "The bloom family"
 in `README.md`). The coordinator builds every variant package in Hilbert order
-and refuses a `+hilbert` suffix on a variant as redundant, so the two packages
-differ in their bloom filters alone.
+and refuses a `+source` suffix on a variant, so the two packages differ in
+their bloom filters alone.
 
 DuckDB reading a CityParquet package is not a format in this comparison: it is
 a query engine, and the database comparison measures it beside cjdb and

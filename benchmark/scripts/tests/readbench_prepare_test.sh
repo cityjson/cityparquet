@@ -1200,12 +1200,13 @@ case_cityjson_input_builds_a_real_seq_artefact() {
 # Each of these is one word in one line of the prepare script, and dropping
 # any of them leaves an artefact that is still non-empty, still counts
 # correctly, and still passes every other case here — while silently changing
-# what the benchmark measures:
+# what the benchmark measures, or leaving it to a tool's default:
 #
-#   --ordering hilbert  without it the package is written in source order,
-#                       and the format comparison publishes a configuration
-#                       CityParquet would not ship with — with bbox rows that
-#                       prune far fewer row groups.
+#   --ordering hilbert  Hilbert is the writer's default as well, so dropping
+#                       it changes nothing today; the pin is what keeps a
+#                       later change of default from publishing, under the
+#                       same name, a package whose bbox rows prune far fewer
+#                       row groups.
 #   fcb ser -A          without it there is no B+-tree attribute index, so
 #                       FlatCityBuf falls back to a full scan on
 #                       attr-filter/id-lookup and the row is published as an
