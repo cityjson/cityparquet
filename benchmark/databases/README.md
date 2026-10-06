@@ -1215,7 +1215,7 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     system then runs a query that DuckDB could fold at plan time into an
     empty result: the count cross-check compares answers, not work, and
     would not tell such a row from one that scanned the data. The committed
-    run's `lod-query` rows (all three systems count 500,296) answer an LoD
+    evidence's `lod-query` rows (all three systems count 500,296) answer an LoD
     1.2 form of the scenario and are not comparable with an LoD 2.2 run.
 
 16. **CityParquet's `bbox` is NULL for an object whose only geometry is a
@@ -1261,7 +1261,7 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     other geometry processing. That walk and collection is work the other
     two systems do not do, and it is inside the timed query.
 
-    The scenario is one CityParquet loses heavily in any case, for a
+    `id-lookup` is a scenario CityParquet loses heavily in any case, for a
     reason Caveat 22 isolates (a row-group decode, not a missing index).
     `lod-query` on 3DCityDB targets the integer LoD tier 2
     (`CITYDB_LOD_TIER`), because the importer stores only the integer tier
@@ -1271,9 +1271,9 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
 
 18. **`geometry-scan` and `bbox-query` return geometry in each system's
     native binary form, which is not one form.** DuckDB hands back the
-    stored WKB of the per-LoD columns (a LoD 0 footprint typed with Parquet's
-    GEOMETRY logical type is re-encoded by `ST_AsWKB` in `bbox-query`, so
-    `coalesce` binds). cjdb returns its geometry JSONB, whose binary wire
+    stored WKB of the per-LoD columns (a column typed with Parquet's GEOMETRY
+    logical type, such as a LoD 0 footprint in a package that carries one,
+    is re-encoded by `ST_AsWKB` in `bbox-query`, so `coalesce` binds). cjdb returns its geometry JSONB, whose binary wire
     form is still JSON text with a version byte. 3DCityDB returns PostGIS's
     binary geometry. No system converts geometry to text and no byte sizes
     are summed, but the amount transferred per object differs with each
