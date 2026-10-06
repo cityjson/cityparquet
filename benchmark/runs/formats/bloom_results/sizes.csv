@@ -1,13 +1,3 @@
 dataset,format,bytes,mb_decimal
 3dbag_n1000000,cityparquet,783700592,783.700592
 3dbag_n1000000,cityparquet+nobloom,779701600,779.701600
-ingolstadt,cityparquet,1026498,1.026498
-ingolstadt,cityparquet+nobloom,1024646,1.024646
-nyc_da13_buildings,cityparquet,22767613,22.767613
-nyc_da13_buildings,cityparquet+nobloom,22603643,22.603643
-rotterdam_delfshaven,cityparquet,794307,0.794307
-rotterdam_delfshaven,cityparquet+nobloom,790165,0.790165
-vienna_102081,cityparquet,1600191,1.600191
-vienna_102081,cityparquet+nobloom,1597583,1.597583
-zurich_building_lod2,cityparquet,84409064,84.409064
-zurich_building_lod2,cityparquet+nobloom,83912220,83.912220

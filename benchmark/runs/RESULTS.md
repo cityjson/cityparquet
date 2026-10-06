@@ -22,8 +22,8 @@ mix the two.
   preparation (CityParquet packages carry bloom filters; `MACHINE.md`
   records the host, the commit and the tool versions). Seven read
   repetitions.
-- **Bloom** (`formats/bloom_results/`): the 1,000,001-object 3DBAG slice
-  and the five city datasets, `cityparquet` against `cityparquet+nobloom`:
+- **Bloom** (`formats/bloom_results/`): the 1,000,001-object 3DBAG slice,
+  `cityparquet` against `cityparquet+nobloom`:
   lookup reads and package sizes. These two packages were written in source
   order; the present harness writes every bloom package in Hilbert order.
 - **Databases** (`databases/results/`): the 1,000,001-object slice, both
@@ -52,6 +52,14 @@ The run also timed writes. The suite no longer measures them, so the
 `write` rows were removed from the format and bloom CSVs and the bloom
 samples, and the format family's `*.write.samples.csv` files were deleted;
 every read row, read sample and size is unchanged.
+
+The run also measured the bloom axis on the five city datasets (Ingolstadt,
+NYC DA13, Rotterdam Delfshaven, Vienna 102081, Zurich). Their files
+(`.csv`, `.csv.params.json`, `.csv.samples.json`, `.run.json`), their rows in
+`formats/bloom_results/sizes.csv` and the `bloom-corpus` figure were removed:
+a filter rules out whole row groups, and at the default 65,536 rows per group
+every one of them but Zurich (4 groups) is a single row group, on which a hit
+can skip nothing. The suite now measures the bloom axis on the slice alone.
 
 The run also measured what the suite no longer has: the bloom axis on six
 smaller 3DBAG slices (1,000 to 500,000 objects), whose files and size rows

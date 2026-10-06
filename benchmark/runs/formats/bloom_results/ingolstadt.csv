@@ -1,9 +1,0 @@
-dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
-ingolstadt.city.json,cityparquet,id-lookup,0.002639,1,0.048878,0.001107,0.048166,0.047905,0.051023,0.048022,0.049504,15417374,27320320,7,id-50pct,,,1,0,512
-ingolstadt.city.json,cityparquet,id-lookup,0.000000,0,0.004022,0.000279,0.003855,0.003740,0.004450,0.003785,0.004270,294014,12251136,7,id-miss,,,1,1,512
-ingolstadt.city.json,cityparquet,feature-lookup,0.023747,9,0.051611,0.001421,0.052031,0.048821,0.053781,0.051064,0.052260,15417379,27320320,7,feature-50pct,,,1,0,128
-ingolstadt.city.json,cityparquet,feature-lookup,0.000000,0,0.003586,0.000305,0.003689,0.003022,0.004041,0.003419,0.003757,294027,12247040,7,feature-miss,,,1,1,128
-ingolstadt.city.json,cityparquet+nobloom,id-lookup,0.002639,1,0.053078,0.003253,0.051394,0.050233,0.058648,0.050793,0.054842,15417390,27308032,7,id-50pct,,,1,0,0
-ingolstadt.city.json,cityparquet+nobloom,id-lookup,0.000000,0,0.004128,0.000169,0.004217,0.003857,0.004357,0.003997,0.004237,294726,13012992,7,id-miss,,,1,0,0
-ingolstadt.city.json,cityparquet+nobloom,feature-lookup,0.023747,9,0.053456,0.002822,0.052058,0.050900,0.059725,0.051729,0.054025,15417395,27308032,7,feature-50pct,,,1,0,0
-ingolstadt.city.json,cityparquet+nobloom,feature-lookup,0.000000,0,0.003743,0.000608,0.003587,0.003149,0.005031,0.003275,0.003943,294739,12984320,7,feature-miss,,,1,0,0
