@@ -137,6 +137,11 @@ def dataset_stem(path: Path) -> str:
     return path.stem
 
 
+def sizes_command(input_path: Path, prepared: Path, output: Path) -> list[str]:
+    """The size script's argv; the suite names the dataset, the script never re-derives it."""
+    return [sys.executable, "benchmark/scripts/measure_sizes.py", "--dataset", dataset_stem(input_path), "--prepared", str(prepared), "--out", str(output)]
+
+
 def renderer_dataset_ids(manifest: dict, selected: list[str]) -> list[str]:
     """Use the source identifiers retained in raw result CSV rows."""
     return [dataset_stem(Path(manifest["datasets"][key]["source"])) for key in selected]
@@ -303,7 +308,7 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
     if "sizes" in families:
         output = result_dir(locations, "sizes", profile) / "sizes.csv"
         for input_path in inputs:
-            command(sys.executable, "benchmark/scripts/measure_sizes.py", "--input", str(input_path), "--prepared", str(locations["prepared"]), "--out", str(output))
+            command(*sizes_command(input_path, locations["prepared"], output))
     if "bloom" in families:
         output = result_dir(locations, "bloom", profile)
         just("bloom-bench", str(stage(locations, "bloom", inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args)

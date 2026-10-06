@@ -106,3 +106,13 @@ class SummaryStatisticTests(unittest.TestCase):
     def test_the_summary_forwards_the_mean(self):
         cmd = self._summary_command("--statistic", "mean")
         self.assertEqual(cmd[cmd.index("--statistic") + 1], "mean")
+
+
+class SizesCommandTests(unittest.TestCase):
+    def test_the_suite_names_the_dataset_for_the_size_script(self):
+        argv = bench_suite.sizes_command(Path("/corpus/tokyo.city.json"), Path("/prepared"), Path("/out/sizes.csv"))
+        self.assertEqual(argv[1], "benchmark/scripts/measure_sizes.py")
+        self.assertEqual(argv[argv.index("--dataset") + 1], "tokyo")
+        self.assertEqual(argv[argv.index("--prepared") + 1], "/prepared")
+        self.assertEqual(argv[argv.index("--out") + 1], "/out/sizes.csv")
+        self.assertNotIn("--input", argv)
