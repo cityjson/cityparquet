@@ -40,10 +40,13 @@ without re-measuring, every other column unchanged.
 The median, minimum, maximum and quartile columns (`time_median_s`,
 `time_min_s`, `time_max_s`, `time_q1_s`, `time_q3_s`) of the format and bloom
 CSVs (`formats/results/*.csv`, `formats/bloom_results/*.csv`; not
-`sizes.csv`) were computed from the same committed raw samples by
+`sizes.csv`) and of the database CSV (`databases/results/3dbag_n1000000.csv`)
+were computed from the same committed raw samples by
 `benchmark/scripts/migrate_timing_columns.py`, which also checked that every
-recomputed mean and standard deviation equals the committed value exactly. No
-existing value changed.
+recomputed mean and standard deviation equals the committed value exactly. In
+the database CSV, `time_s` became `time_mean_s` and `server_time_s` became
+`server_time_mean_s`, and the parallel `server_time_*` block was computed the
+same way from `raw_server_time_samples_s`. No existing value changed.
 
 The run also timed writes. The suite no longer measures them, so the
 `write` rows were removed from the format and bloom CSVs and the bloom

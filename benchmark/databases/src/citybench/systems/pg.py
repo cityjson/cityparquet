@@ -7,16 +7,16 @@ transfer. Publishing both means the client-server tax is visible and
 attributable rather than silently folded into the headline number.
 
 I3 (final whole-branch review) corrected a framing error in how the two
-were compared: `server_time_s` is not a clean "engine-only" baseline to
-subtract `time_s` against. `EXPLAIN (ANALYZE, BUFFERS)` itself adds real
+were compared: `server_time_*` is not a clean "engine-only" baseline to
+subtract `time_*` against. `EXPLAIN (ANALYZE, BUFFERS)` itself adds real
 instrumentation overhead (per-node timing/buffer-counting instrumentation,
 plus `track_io_timing = on`'s own clock calls) on top of the query's own
-execution — so `server_time_s` is an UPPER BOUND on the engine's true,
+execution — so `server_time_*` is an UPPER BOUND on the engine's true,
 uninstrumented execution time, not a lower one. Seventeen committed rows
-have `server_time_s > time_s` (the instrumented re-run outweighing the
-plain, uninstrumented `time_s` measurement it is compared against) —
-impossible if `server_time_s` were a clean subset of `time_s` the way a
-naive "client-server tax = time_s - server_time_s" framing assumes. This
+have `server_time_* > time_*` (the instrumented re-run outweighing the
+plain, uninstrumented `time_*` measurement it is compared against) —
+impossible if `server_time_*` were a clean subset of `time_*` the way a
+naive "client-server tax = time_* - server_time_*" framing assumes. This
 count is re-derived from the currently committed `results/*.csv` files,
 not a number to copy forward by hand — it moved from 18 to 17 between
 when this note was first written and a later Zurich re-run landing on
@@ -179,12 +179,12 @@ def time_write(conn: psycopg.Connection, sql: str, args: tuple = (),
     """Run one MUTATING statement once, timed, and report rows touched.
 
     Deliberately NOT `time_query`: that function re-runs its statement under
-    `EXPLAIN (ANALYZE, BUFFERS)` to obtain `server_time_s`, and
+    `EXPLAIN (ANALYZE, BUFFERS)` to obtain `server_time_*`, and
     `EXPLAIN ANALYZE` on an INSERT/UPDATE/DELETE **executes** it. Reusing it
     here would apply CJDB's Q6 twice (two `footprint_area` property rows per
     Building on 3DCityDB), increment Q7 by 20 rather than 10, and rewrite
     half a million cjdb tuples a second time per sample. Write rows
-    therefore carry no `server_time_s`, and the README's CSV contract says
+    therefore carry no `server_time_*`, and the README's CSV contract says
     so.
 
     ``reset`` runs first, UNTIMED, so every sample measures the same work

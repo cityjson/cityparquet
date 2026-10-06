@@ -359,7 +359,7 @@ footer and so its CRS), the statements above mutate them, and
 Mechanics, all of which change what the numbers mean:
 
 - **No `EXPLAIN (ANALYZE)` re-run**, so write rows carry no
-  `server_time_s`. `EXPLAIN ANALYZE` on an INSERT/UPDATE/DELETE _executes_
+  `server_time_*` block. `EXPLAIN ANALYZE` on an INSERT/UPDATE/DELETE _executes_
   it: reusing the read path would have applied Q6 twice, incremented Q7 by
   20 rather than 10, and rewritten half a million cjdb tuples a second time
   per sample.
@@ -588,13 +588,16 @@ in their schema (`pg.vacuum_analyze`) before any timed scenario runs.
 Every `run()` performs **one discarded warm-up** call followed by `repeat`
 timed samples of the same query; `--repeat` defaults to **7**.
 
-- `time_s` is the **arithmetic mean** of the samples and `time_std_s` is
-  their **population standard deviation** (`report.py`, `stats.py`), both to
-  six decimal places. The raw samples are in `raw_time_samples_s`.
+- Each row reports the seven-column timing block shared with the format
+  harness: `time_mean_s` (**arithmetic mean**), `time_std_s` (**population
+  standard deviation**), `time_median_s`, `time_min_s`, `time_max_s`,
+  `time_q1_s` and `time_q3_s` (`report.py`, `stats.py`), all to six decimal
+  places. The median and quartiles interpolate linearly at position
+  p·(n−1) on the sorted samples. The raw samples are in `raw_time_samples_s`.
 - The PostgreSQL adapters time each sample from just before the query is sent
   to just after every row has been fetched. After each timed execution the
   same query runs again, untimed, under `EXPLAIN (ANALYZE, BUFFERS, FORMAT
-JSON)` to obtain `server_time_s` (Caveat 4).
+JSON)` to obtain the `server_time_*` block (Caveat 4).
 - `duckdb-cityparquet` times in-process. For a scenario that returns rows
   the result is materialised **inside** the timed window, to **Arrow**
   (`to_arrow_table()`), not to Python objects — a Python-object fetch of a
@@ -669,10 +672,10 @@ the same figures.
 and nineteen columns:
 
 ```
-dataset,format,scenario,selectivity,result_count,time_s,time_std_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,server_time_s,size_bytes,size_bytes_no_index,status,raw_time_samples_s,raw_server_time_samples_s
+dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,server_time_mean_s,server_time_std_s,server_time_median_s,server_time_min_s,server_time_max_s,server_time_q1_s,server_time_q3_s,size_bytes,size_bytes_no_index,status,raw_time_samples_s,raw_server_time_samples_s
 ```
 
-The first thirteen columns match, in name and order, the header of the format
+The first eighteen columns match, in name and order, the header of the format
 harness's CSVs (`benchmark/runs/formats/results/<dataset>.csv`; `sizes.csv`
 has another shape). Appending those rows to this
 harness's rows needs six empty fields per row. The two harnesses use
@@ -682,7 +685,7 @@ there) and are separate experiments.
 - **`selectivity`** — `result_count / total_city_objects`; empty for
   `count`, `geometry-scan` and the write tier (a mutation's rows-touched is
   not a selection). The window's target is in `notes`, not here.
-- **`time_s` / `time_std_s`** — see "The warm protocol".
+- **`time_mean_s` … `time_q3_s`** — the timing block; see "The warm protocol".
 - **`peak_heap_bytes`** — populated only for the native reader (the child's
   allocator high-water mark); empty for every SQL system.
 - **`peak_rss_bytes`** — peak resident set size of the process executing the
@@ -699,9 +702,10 @@ there) and are separate experiments.
   `external-importer`, which area expression was used, and on
   `append-object` which importer ran and how many rows it wrote.
 - **`bytes_read` / `http_requests`** — always empty (Caveat 8).
-- **`server_time_s`** — empty for the in-process systems **and for every
-  write row on every system**; for `cjdb`'s and `3dcitydb`'s read rows, the
-  mean of PostgreSQL's reported `Execution Time` from the
+- **`server_time_mean_s` … `server_time_q3_s`** — the same seven statistics
+  over the server-side samples; empty for the in-process systems **and for every
+  write row on every system**; for `cjdb`'s and `3dcitydb`'s read rows, they
+  summarise PostgreSQL's reported `Execution Time` from the
   `EXPLAIN (ANALYZE, BUFFERS)` re-runs (`pg.time_query`). Raw values are in
   `raw_server_time_samples_s`. A write row has none because `EXPLAIN
 ANALYZE` would execute the mutation a second time.
@@ -760,12 +764,12 @@ Read these before citing a number.
    storage cannot answer a z-restricted query, while the others' storage
    could but is not asked to.
 
-4. **`server_time_s` is an instrumented upper bound, not a component of
-   `time_s`.** `time_s` is the uninstrumented end-to-end figure for every
-   system. `server_time_s` comes from a separate `EXPLAIN (ANALYZE,
+4. **The `server_time_*` block is an instrumented upper bound, not a component of
+   the `time_*` block.** The `time_*` block is the uninstrumented end-to-end figure for every
+   system. The `server_time_*` block comes from a separate `EXPLAIN (ANALYZE,
 BUFFERS)` execution, whose per-node timing and buffer counters (and
    `track_io_timing`) add overhead. In the committed 3DBAG CSV, 9 of the 24
-   PostgreSQL rows have `server_time_s` greater than `time_s`, which a
+   PostgreSQL rows have a mean server time greater than the mean end-to-end time, which a
    "subset of wall-clock" reading cannot explain. **Do not subtract the two
    to compute a client-server tax.** Read them side by side, qualitatively.
 
@@ -1032,7 +1036,7 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
 
 20. **`EXPLAIN (ANALYZE, BUFFERS)` doubles the per-sample work on both
     PostgreSQL systems for every read row.** The instrumented re-run is
-    outside the timed window, so it does not inflate `time_s` directly, but
+    outside the timed window, so it does not inflate the `time_*` block directly, but
     it does mean each PostgreSQL read sample executes its query twice while
     neither DuckDB row does — relevant to cache state between samples, and
     to wall-clock planning of a full run. Write rows are exempt, because

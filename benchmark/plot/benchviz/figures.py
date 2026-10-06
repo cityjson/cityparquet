@@ -131,6 +131,11 @@ def _seconds(value: Any) -> str:
     return f"{value * 1000:.1f} ms" if value < 1 else f"{value:.2f} s"
 
 
+def _statistic(data: dict[str, Any]) -> str:
+    """The timing statistic `prep.build` recorded for these figures."""
+    return data.get("statistic", "median")
+
+
 def _ratio(value: Any, base: Any) -> float | None:
     return float(value) / float(base) if value is not None and base not in (None, 0) else None
 
@@ -884,7 +889,7 @@ def database_blocks(data: dict[str, Any]) -> dict[str, Any]:
 
 
 DB_HEAT_SPECS = (
-    ("time_s", "Mean query time", _seconds),
+    ("time_s", "{statistic} query time", _seconds),
     ("peak_rss_bytes", "Peak execution-process RSS", _mib),
 )
 
@@ -986,7 +991,8 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
                 [[(c[0], c[1]) for c in row] for row in block],
                 rows,
                 systems,
-                f"{title} — {THREAD_TITLES.get(config, config)}",
+                f"{title.format(statistic=_statistic(data).capitalize())} — "
+                f"{THREAD_TITLES.get(config, config)}",
                 vmax=bounds[field],
                 scale="diverging",
                 x_rotation=0,

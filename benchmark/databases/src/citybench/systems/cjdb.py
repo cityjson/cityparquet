@@ -245,7 +245,7 @@ class CjdbSystem:
         return Measurement(
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
-            # Write rows carry no server_time_s: obtaining it would mean a
+            # Write rows carry no server_time_* block: obtaining it would mean a
             # second EXPLAIN ANALYZE execution of the mutation itself.
             server_times_s=[],
             peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),

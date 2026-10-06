@@ -1,10 +1,10 @@
 """Summary statistics for benchmark timings.
 
-``report.py`` reports the arithmetic mean of the timed samples in
-``time_s`` and their population standard deviation in ``time_std_s``.
-``median`` and ``mad`` (median absolute deviation about the median) are
-available for robust estimates; this harness's headline timing does not
-use them.
+``report.py`` reports the seven-column timing block from ``timing_summary``:
+the arithmetic mean (``time_mean_s``), the population standard deviation
+(``time_std_s``), the median, the range and the quartiles. ``mad`` (median
+absolute deviation about the median) is available as a further robust
+estimate.
 """
 
 import statistics

@@ -1,9 +1,9 @@
 """The results CSV contract.
 
-The first thirteen columns (``dataset`` through ``http_requests``) match the
+The first eighteen columns (``dataset`` through ``http_requests``) match the
 format harness's committed CSVs (``benchmark/runs/formats/results/*.csv``) in
 name and order; ``bytes_read``/``http_requests`` are always empty here.
-``server_time_s``/``size_bytes``/``size_bytes_no_index``/``status`` and the
+the ``server_time_*`` block/``size_bytes``/``size_bytes_no_index``/``status`` and the
 raw-sample columns are this harness's own, added once server-bound databases
 entered the comparison, and the format harness's last three columns are its
 lookup counters. Concatenating the two harnesses' rows is therefore a
@@ -17,7 +17,13 @@ import json
 from pathlib import Path
 
 from citybench.config import Measurement
-from citybench.stats import mean, standard_deviation
+from citybench.stats import timing_summary
+
+# The timing block both benchmark families write, in this order (see
+# citybench.stats.timing_summary for the definitions).
+_STATS = ("mean", "std", "median", "min", "max", "q1", "q3")
+TIME_BLOCK = tuple(f"time_{s}_s" for s in _STATS)
+SERVER_TIME_BLOCK = tuple(f"server_time_{s}_s" for s in _STATS)
 
 COLUMNS: tuple[str, ...] = (
     "dataset",
@@ -25,15 +31,14 @@ COLUMNS: tuple[str, ...] = (
     "scenario",
     "selectivity",
     "result_count",
-    "time_s",
-    "time_std_s",
+    *TIME_BLOCK,
     "peak_heap_bytes",
     "peak_rss_bytes",
     "repeat",
     "notes",
     "bytes_read",
     "http_requests",
-    "server_time_s",
+    *SERVER_TIME_BLOCK,
     "size_bytes",
     "size_bytes_no_index",
     "status",
@@ -46,6 +51,14 @@ _PRECISION = 6
 
 def _fmt(value: float | None) -> str:
     return "" if value is None else f"{value:.{_PRECISION}f}"
+
+
+def _block(prefix: str, samples: list[float]) -> dict[str, str]:
+    """One timing block's cells; all empty when there are no samples."""
+    if not samples:
+        return {f"{prefix}_{s}_s": "" for s in _STATS}
+    stats = timing_summary(samples)
+    return {f"{prefix}_{s}_s": _fmt(stats[s]) for s in _STATS}
 
 
 def _int(value: int | None) -> str:
@@ -85,8 +98,7 @@ def row_from_measurement(
         "scenario": scenario,
         "selectivity": _fmt(selectivity),
         "result_count": _int(measurement.result_count),
-        "time_s": _fmt(mean(times)) if times else "",
-        "time_std_s": _fmt(standard_deviation(times)) if times else "",
+        **_block("time", times),
         "peak_heap_bytes": _int(measurement.peak_heap_bytes),
         "peak_rss_bytes": _int(measurement.peak_rss_bytes),
         "repeat": str(len(times)),
@@ -94,7 +106,7 @@ def row_from_measurement(
         # Always empty: this harness measures local transport only.
         "bytes_read": "",
         "http_requests": "",
-        "server_time_s": _fmt(mean(server)) if server else "",
+        **_block("server_time", server),
         "size_bytes": _int(size_bytes),
         "size_bytes_no_index": _int(size_bytes_no_index),
         "status": ("error" if measurement.notes.startswith("error:") else

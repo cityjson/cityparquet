@@ -57,15 +57,14 @@ DB_COLUMNS = [
     "scenario",
     "selectivity",
     "result_count",
-    "time_s",
-    "time_std_s",
+    *prep.TIMING_BLOCK,
     "peak_heap_bytes",
     "peak_rss_bytes",
     "repeat",
     "notes",
     "bytes_read",
     "http_requests",
-    "server_time_s",
+    *(f"server_{c}" for c in prep.TIMING_BLOCK),
     "size_bytes",
     "size_bytes_no_index",
     "status",
@@ -108,7 +107,15 @@ def test_database_loader_selects_largest_and_preserves_bbox_keys(tmp_path: Path)
                 "scenario": "bbox-query",
                 "notes": tag,
                 "status": "ok",
-                "time_s": "2.0",
+                "time_mean_s": "2.0",
+                "time_std_s": "0.4",
+                "time_median_s": "1.5",
+                "time_min_s": "1.0",
+                "time_max_s": "3.5",
+                "time_q1_s": "1.2",
+                "time_q3_s": "2.5",
+                "server_time_median_s": "1.4",
+                "server_time_mean_s": "1.9",
                 "peak_rss_bytes": "100",
                 "size_bytes": "20",
             }
@@ -121,7 +128,7 @@ def test_database_loader_selects_largest_and_preserves_bbox_keys(tmp_path: Path)
             "scenario": "bbox-query",
             "notes": "bbox-5pct",
             "status": "error",
-            "time_s": "bad",
+            "time_median_s": "bad",
             "size_bytes": "10",
         }
     )
@@ -132,6 +139,40 @@ def test_database_loader_selects_largest_and_preserves_bbox_keys(tmp_path: Path)
     assert {r["scenario"] for r in loaded["records"]} == {"bbox-1pct", "bbox-5pct", "bbox-25pct"}
     error = next(r for r in loaded["records"] if r["format"] == "cjdb")
     assert error["time_s"] is None and error["status"] == "error"
+    median = next(r for r in loaded["records"] if r["format"] == "3dcitydb")
+    assert (median["time_s"], median["time_lo_s"], median["time_hi_s"]) == (1.5, 1.2, 2.5)
+    assert (median["time_min_s"], median["time_max_s"]) == (1.0, 3.5)
+    assert median["server_time_s"] == 1.4
+
+
+def test_database_loader_mean_statistic_switches_value_and_spread(tmp_path: Path):
+    root = tmp_path / "benchmark"
+    results = root / "databases" / "results"
+    results.mkdir(parents=True)
+    base = {key: "" for key in DB_COLUMNS}
+    _db_csv(
+        results / "one.csv",
+        [
+            {
+                **base,
+                "dataset": "one",
+                "format": "3dcitydb",
+                "scenario": "geometry-scan",
+                "status": "ok",
+                "time_mean_s": "2.0",
+                "time_std_s": "0.5",
+                "time_median_s": "1.5",
+                "time_q1_s": "1.2",
+                "time_q3_s": "2.5",
+                "server_time_mean_s": "1.9",
+                "server_time_median_s": "1.4",
+            }
+        ],
+    )
+    loaded = prep.load_databases(prep.Inputs(root / "formats"), statistic="mean")
+    (record,) = loaded["records"]
+    assert (record["time_s"], record["time_lo_s"], record["time_hi_s"]) == (2.0, 1.5, 2.5)
+    assert record["server_time_s"] == 1.9
 
 
 def test_database_loader_uses_explicit_smoke_mode(tmp_path: Path):

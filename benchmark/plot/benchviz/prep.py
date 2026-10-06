@@ -850,8 +850,12 @@ def _db_empty() -> dict:
     return {"baseline": DB_BASELINE, "records": [], "sizes": []}
 
 
-def load_databases(inputs: Inputs) -> dict:
+def load_databases(inputs: Inputs, statistic: str = "median") -> dict:
     """Load one selected database result set, preserving unavailable cells.
+
+    `statistic` picks the plotted time from the `time_*` block and the
+    `server_time_*` block alike (see `timing`); an unparseable cell reads as
+    no time.
 
     Every record is keyed by (system, scenario, threads): the CSV carries both
     thread configurations and, for `bbox-query`/`id-lookup`, one row per window
@@ -863,6 +867,11 @@ def load_databases(inputs: Inputs) -> dict:
             return _float(value)
         except ValueError:
             return None
+
+    def spread(row: dict[str, str], prefix: str) -> dict[str, float | None]:
+        block = {column: safe_float(row.get(f"{prefix}{column}")) for column in TIMING_BLOCK}
+        values = timing({k: "" if v is None else repr(v) for k, v in block.items()}, statistic)
+        return {f"{prefix}{key}": value for key, value in values.items()}
 
     def safe_int(value: str | None) -> int | None:
         try:
@@ -924,10 +933,9 @@ def load_databases(inputs: Inputs) -> dict:
                 "achieved": float(achieved.group(1)) if achieved else None,
                 "approx": approx,
                 "result_count": safe_int(row.get("result_count")),
-                "time_s": safe_float(row.get("time_s")),
-                "time_std_s": safe_float(row.get("time_std_s")),
+                **spread(row, ""),
                 "peak_rss_bytes": safe_int(row.get("peak_rss_bytes")),
-                "server_time_s": safe_float(row.get("server_time_s")),
+                **spread(row, "server_"),
                 "size_bytes": safe_int(row.get("size_bytes")),
                 "size_bytes_no_index": safe_int(row.get("size_bytes_no_index")),
                 "status": (row.get("status") or "").strip(),
@@ -1162,7 +1170,7 @@ def build(inputs: Inputs | None = None, statistic: str = "median") -> tuple[dict
         raw_mb.setdefault(row["dataset"], None)
     datasets = build_datasets(read_records, raw_mb)
     apply_manifest_titles(inputs, datasets)
-    database_data = load_databases(inputs)
+    database_data = load_databases(inputs, statistic)
     bloom = load_bloom_axis(inputs.bloom_dir, statistic=statistic)
 
     order = {d["id"]: i for i, d in enumerate(datasets)}
