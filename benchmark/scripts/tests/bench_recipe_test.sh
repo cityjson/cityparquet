@@ -185,7 +185,8 @@ case_isolation_flags_reach_readbench() {
     if [[ "$body" != *'--numa-node "{{NUMA_NODE}}"'* \
       || "$body" != *'--max-load "{{MAX_LOAD}}"'* \
       || "$body" != *'--max-load-wait-s "{{MAX_LOAD_WAIT_S}}"'* \
-      || "$body" != *'--memory-max "{{MEMORY_MAX}}"'* ]]; then
+      || "$body" != *'--memory-max "{{MEMORY_MAX}}"'* \
+      || "$body" != *'"{{MEMORY_MAX}}" != off'* ]]; then
       fail "$name" "$recipe does not pass every isolation flag"
       return
     fi
@@ -193,7 +194,7 @@ case_isolation_flags_reach_readbench() {
   for recipe in bench bloom-bench bloom-bench-http; do
     header="$(grep -E "^$recipe " "$JUSTFILE")"
     if [[ "$header" != *"NUMA_NODE=env('BENCH_NUMA_NODE', 'auto')"* \
-      || "$header" != *"MEMORY_MAX=''"* || "$header" != *"MAX_LOAD='auto'"* \
+      || "$header" != *"MEMORY_MAX='64000000000'"* || "$header" != *"MAX_LOAD='auto'"* \
       || "$header" != *"MAX_LOAD_WAIT_S='600'"* ]]; then
       fail "$name" "$recipe lacks the isolation defaults: $header"
       return

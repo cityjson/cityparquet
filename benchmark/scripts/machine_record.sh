@@ -68,8 +68,10 @@ else
     fi
   fi
 fi
-if [[ -n "${MEMORY_MAX:-}" ]]; then
-  row "Memory limit" "requested MemoryMax=${MEMORY_MAX} via systemd-run --user --scope"
+if [[ "${MEMORY_MAX:-}" == off ]]; then
+  row "Memory limit" "not applied: switched off (readbench --memory-max off)"
+elif [[ -n "${MEMORY_MAX:-}" ]]; then
+  row "Memory limit" "requested MemoryMax=${MEMORY_MAX} (decimal bytes, $((MEMORY_MAX / 1000000000)) GB) via systemd-run --user --scope"
 else
   row "Memory limit" "not applied: not requested (readbench --memory-max)"
 fi

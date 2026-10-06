@@ -57,8 +57,21 @@ case_absent_tools_say_not_found() {
   if grep -q "^| cjdb | not found" <<<"$bare"; then pass "$name"; else fail "$name" "$(grep '^| cjdb' <<<"$bare")"; fi
 }
 
+case_memory_ceiling_is_recorded_in_decimal_bytes_or_off() {
+  local name="the memory ceiling is recorded as decimal bytes, and off as not requested"
+  local on off
+  on="$(MEMORY_MAX=64000000000 "$SCRIPT" 2>/dev/null | grep '| Memory limit |')"
+  off="$(MEMORY_MAX=off "$SCRIPT" 2>/dev/null | grep '| Memory limit |')"
+  if [[ "$on" == *"MemoryMax=64000000000 (decimal bytes, 64 GB)"* && "$off" == *"not applied: switched off"* ]]; then
+    pass "$name"
+  else
+    fail "$name" "$on / $off"
+  fi
+}
+
 case_sections
 case_every_fact_has_a_row
+case_memory_ceiling_is_recorded_in_decimal_bytes_or_off
 case_fcb_core_pin_is_read_from_the_lock
 case_degrades_explicitly_off_linux
 case_absent_tools_say_not_found
