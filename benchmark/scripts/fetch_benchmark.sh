@@ -105,7 +105,7 @@ BENCH_ROOT="${BENCH_ROOT:-$BENCHMARK_DIR/runs}"
 #   vienna_102081           1,322   2
 #   nyc_da13_buildings     23,777   2
 #   montreal               31,415   2
-#   tokyo                  49,915   0 / 1 / 2
+#   tokyo                  49,915   0 / 1 / 2 / 3
 #   zurich_building_lod2  198,699   2
 #
 # The 1,000,001-object 3DBAG slice that completes the format comparison is not

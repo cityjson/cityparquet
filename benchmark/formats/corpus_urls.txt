@@ -105,7 +105,8 @@ https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/
 #   3D city model of Chiyoda-ku, Tokyo, PLATEAU, Ministry of Land,
 #   Infrastructure, Transport and Tourism (MLIT), Japan — CC BY 4.0. 49,915
 #   CityObjects — 38,743 `Building` and 11,172 `BuildingInstallation` — LoD 0,
-#   1 and 2 (124 LoD3 installation geometries), textured; 35,067 objects carry
+#   1, 2 and 3 (124 LoD 3 geometries: 21 `Building` solids and 103
+#   `BuildingInstallation` geometries), textured; 35,067 objects carry
 #   an `address`. CRS JGD2011 (EPSG:6697), which declares LATITUDE FIRST: the
 #   CityJSON keeps that order, a CityParquet package stores longitude first
 #   (READ_BENCHMARK.md, Caveat 22).
@@ -158,7 +159,8 @@ https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/
 #   from CityParquet; READ_BENCHMARK.md, Caveat 14, states what it means.
 
 # --------------------------------------------------------------------------
-# EXCLUDED — offered by cityjson.org, not measurable here
+# EXCLUDED — offered by cityjson.org, but not measurable here or outside the
+# content rule
 # --------------------------------------------------------------------------
 #
 # DenHaag_01 and LoD3_Railway fail gate 2 of benchmark/scripts/fetch_benchmark.sh's
