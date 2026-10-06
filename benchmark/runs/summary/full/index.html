@@ -222,7 +222,9 @@ above) is a distinct, separately-reported measurement, always
 warm rows.</li><li>**Sub-millisecond deltas are noise; single-threaded reads are pinned.**
 As in `benchmark/formats/README.md`&#x27;s own methodology, deltas under roughly 10 ms at
 `repeat = 7` are within scheduler/filesystem-cache noise and are not
-cited as a finding by themselves. Every format&#x27;s reads here run
+cited as a finding by themselves. That threshold describes the committed
+evidence, which was taken at `repeat = 7`; the default is 25, and a run at
+25 samples is read against its own spread, not against this figure. Every format&#x27;s reads here run
 single-threaded (no Parquet multi-threaded row-group decode) — a
 deliberate, disclosed choice so timing differences reflect the
 format/mechanism, not thread-count parallelism a production deployment
