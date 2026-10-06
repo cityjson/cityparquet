@@ -63,6 +63,7 @@ Nothing Linux-specific has run on Linux, and all committed evidence under `bench
 5. `just bloom-columns` on the slice's package confirms that the configured attribute columns carry a Bloom filter.
 6. The database run passes its count and identifier checks on the slice, including the LoD 2.2 query, which no local dataset can exercise, and on a dataset without a declared CRS.
 7. `just bench-compression` gives the geometry share and ratio for the slice.
+8. The `network` family runs on the host as part of the full run, under the profiles the author settles (open below: all three on the corpus; on the slice, `fast` and `typical`, or all three, given its run time); every network result's server and client totals agree.
 
 Then the full run, `just bench-summary`, and the paper's placeholders.
 
@@ -79,7 +80,8 @@ The author supplies the URLs where the whole corpus is hosted when this task sta
 Status. The primary measurement runs against a local simulated network (`net-sim`; profiles `fast`, `typical`, `slow` in `benchmark/manifest.toml`), the secondary against the hosted corpus; see `benchmark/README.md` "The network family".
 
 - Done: the simulated server and its tests; the `network` family in `bench_suite.py` (`bench-run --families network`, `--network-profile`, a custom profile, `--network-target real`); the profile, target and the server's totals against the clients' in the params sidecar; each row's model time in `<dataset>.model.csv`; the README section and the `READ_BENCHMARK.md` caveat.
-- Open: the `network` figure and the bloom-over-network table in `benchviz` (with the "not measured" state in the committed summary); recording the resolved host and the `cf-cache-status`/`age` headers for the real target; which cells the `full` profile runs, given that a whole-file format downloads the whole file for every query (the author decides).
+- Done: the `network` figure (time, bytes, requests per format and query), `network/network_factors.csv` and the bloom-over-network table in `benchviz`, with the "not measured" state when no results exist; the suite entry point run end to end on Rotterdam and Vienna under all three profiles; the FlatCityBuf attribute-filter caveat (a `fcb_core` 0.7.6 client artefact, not the format).
+- Open: recording the resolved host and the `cf-cache-status`/`age` headers for the real target; which cells the `full` profile runs, given that a whole-file format downloads the whole file for every query (the author decides).
 - The host run: `just bench-run --families network --profile full --network-profile all` over the corpus and the slice, then the real snapshot.
 
 ## Afterwards
