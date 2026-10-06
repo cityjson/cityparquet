@@ -1442,6 +1442,19 @@ from a local file, and populates the trailing `bytes_read` / `http_requests`
 CSV columns (empty for every local row). Upload steps and methodology are in
 `benchmark/formats/READ_BENCHMARK.md`.
 
+The **network family** runs the same read benchmark over HTTP against a local
+server that simulates a network profile (`fast` 1,000 Mbps / 5 ms, `typical`
+100 Mbps / 20 ms, `slow` 20 Mbps / 50 ms):
+
+```sh
+just bench-run --families network --datasets rotterdam --network-profile typical \
+  --network-repeat 2 --numa-node off --max-load off   # macOS: no NUMA, no load gate
+```
+
+Check the log for `cross-format consistency OK` per dataset, and that each
+`runs/network/full/<profile>/<dataset>.csv.params.json` carries server and
+client totals that agree (`network.server` against `network.clients`).
+
 > **Still blocked: multi-module datasets.** The `CityParquetRunner` supports
 > only single-table packages, so a multi-module input such as `lod3_railway`
 > produces no read numbers, and one test is `#[ignore]`d for it.

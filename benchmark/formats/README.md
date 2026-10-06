@@ -95,6 +95,21 @@ just bench-run --families formats,sizes,bloom
 just bench-summary
 ```
 
+The same read benchmark over HTTP is the `network` family. It reads the
+prepared corpus through a local server (`net-sim`) that simulates one network
+profile, so it needs no cloud account:
+
+```sh
+just bench-run --families network --network-profile all --network-repeat 3
+just bench-run --families network --network-profile typical --datasets rotterdam,vienna
+just bench-run --families network --network-target real --network-profile typical \
+  --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v8 --key-layout bucket
+```
+
+Its results go to `runs/network/<suite-profile>/<network-profile>/`; the
+benchmark README's network section describes the profiles, the simulation and
+what each target records.
+
 The `formats` family compares read performance across file formats, and the
 `sizes` family records each format's file or package size. The `bloom` family
 holds the format fixed and changes one configuration dimension over the

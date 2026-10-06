@@ -156,14 +156,27 @@ formats that download whole files; latency penalises formats that make many
 range requests. The secondary target (`--network-target real --base-url <url>
 --key-layout bucket`) reads real object storage, such as the hosted corpus at
 `https://other-data.open3d.city/cityparquet-paper/benchmark/v8`; its result is a
-snapshot of one network path at one time, not a repeatable measurement.
+snapshot of one network path at one time, not a repeatable measurement. It
+records the base URL in the params sidecar's `network` block; it does not yet
+record the resolved host or the caching headers (`cf-cache-status`, `age`) of
+the objects it read, so whether a request was served from the CDN's cache is
+not known from the result.
+
+**Rendering.** `just bench-summary` discovers the network profile directories
+and renders, per profile and dataset, a figure with three panels (time, bytes
+read, HTTP requests; formats as columns, queries as rows, CityGML's value
+divided by the format's in brackets), `network/network_factors.csv` with the
+model time beside the measured statistic, and `network_bloom.csv` per profile
+for the Bloom pair. A summary with no network results states that the family
+was not measured.
 
 **The simulation.** Each request waits the profile's latency before its first
 response byte. Response bodies leave through ONE bandwidth budget shared by
 every connection, so concurrent requests divide the bandwidth rather than
 multiply it. The limiter is a virtual clock that paces 16 KiB pieces; an idle
 link earns at most 2 ms of credit (the burst), which absorbs the timer's
-resolution. Headers are not charged. The simulation leaves out TLS, HTTP/2,
+resolution: 25 kB at 100 Mbps, 250 kB at 1 Gbps, 5 kB at 20 Mbps, sent at once
+after an idle spell. Headers are not charged. The simulation leaves out TLS, HTTP/2,
 connection set-up, jitter, packet loss and any throttling a storage service
 applies, so the simulated times are a model of the transfer, not of a
 particular provider.
