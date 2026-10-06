@@ -1059,13 +1059,20 @@ each cold number stands alone, one per format, one `full-read` only.
     those rows as the cost of reading this serialisation of the slice, with
     the same qualification as every other `citygml` number.
 
-24. **The `bloom` family's pruning is informative only where a table spans
-    several row groups.** At the default 65 536-row groups a table of fewer
-    rows is one row group, which a filter can still prune on a miss but
-    which says nothing about how pruning scales. The 3DBAG slice's
-    1,000,001 rows span 16 row groups and Zurich's 198,699 span 4; every
-    other corpus dataset holds fewer than 65 536 CityObjects and is a single
-    row group. The slice and Zurich are the informative ones.
+24. **The `bloom` family measures the 3DBAG slice alone, because pruning
+    needs several row groups.** A filter rules out whole row groups. At the
+    default 65 536-row groups a table of fewer rows is one row group, on
+    which a hit can skip nothing and which says nothing about how pruning
+    scales. The 3DBAG slice's 1,000,001 rows span 16 row groups and
+    Zurich's 198,699 span 4; every other corpus dataset holds fewer than
+    65 536 CityObjects and is a single row group. The family therefore runs
+    on the slice only. Even there a hit still reads one whole row group,
+    because a filter cannot narrow the search inside a group, and a miss can
+    still read a group through a false positive at the 1 % target rate. The
+    benefit depends on the row-group size, which the benchmark does not vary
+    (65 536 rows per group, the writer's default). `cityparquet+nobloom`
+    still carries row-group statistics, so the axis measures what the
+    filters add on top of statistics.
 
     Row groups are pruned in two steps: the Bloom filter first, then the
     column chunk's min/max statistics. `bloom_pruned` counts the row groups

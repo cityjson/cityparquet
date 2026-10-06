@@ -166,7 +166,7 @@ and `memory`).
 | ----------- | -------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `sizes`     | Corpus with the 3DBAG slice      | Complete file or package size; CityParquet bytes by column | None                                                                                    |
 | `formats`   | Same corpus                      | Read time and peak memory                                  | All format queries                                                                      |
-| `bloom`     | Same corpus                      | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
+| `bloom`     | The 3DBAG slice alone            | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
 | `databases` | The 3DBAG slice                  | Storage with and without indexes; query time and peak working memory | Database query suite                                                                    |
 
 The corpus is Rotterdam, Ingolstadt, Vienna, New York, Zurich, Tokyo (Chiyoda)
@@ -203,7 +203,11 @@ and `--no-lod0` turns off the CLI's default LoD 0 synthesis so every format
 holds the same geometries), displayed as **CityParquet**. The CityJSON
 artefact is written without optional whitespace, like the CityGML one. The bloom experiment compares `cityparquet` with
 `cityparquet+nobloom`, both Hilbert-ordered, and holds ordering, codec and
-row-group size fixed.
+row-group size fixed. It measures the 3DBAG slice alone: a filter rules out
+whole row groups, and at the default 65,536 rows per group every corpus
+dataset but Zurich is a single row group, so a hit there can skip nothing.
+The suite runs it under `full` and `quick`, the profiles that include the
+slice.
 
 ## Figures
 
@@ -226,7 +230,6 @@ renderer and the scripts.
 | `formats/query_factors.csv`                             | Time and peak memory per dataset, query and format, with both factors against CityGML                                                                                      |
 | `formats/compression.csv`                               | CityParquet bytes per dataset by column group, column and non-column part, copied from the `sizes` family's results ([breakdown](formats/README.md#the-compression-breakdown)) |
 | `bloom`                                                 | Package size and the two read heatmaps for the 3DBAG slice                                                                                                                 |
-| `bloom-corpus`                                          | The bloom pair per corpus dataset                                                                                                                                          |
 | `databases`                                             | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |
 
 Every results CSV carries the same seven-column timing block,

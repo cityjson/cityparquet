@@ -190,8 +190,21 @@ to `<figures>/formats/compression.csv`, beside `size_factors.csv`.
 
 ## The bloom family
 
-`just bloom-bench` (via `just bench-run --families bloom`) builds two packages
-from each input, untimed — `cityparquet`, which carries bloom filters, and
+`just bloom-bench` (via `just bench-run --families bloom`) measures the 1M
+3DBAG slice alone. A Bloom filter rules out whole row groups, and at the
+writer's default 65,536 rows per group only the slice (16 groups) and Zurich
+(4) span more than one; on every other corpus dataset the table is a single
+row group, so a hit can skip nothing. The suite therefore runs the family
+under the profiles that include the slice (`full`, `quick`) and not under
+`short` or `smoke`. Even on the slice a hit still reads one whole row group,
+because a filter cannot narrow the search inside a group, and a miss can still
+read a group through a false positive at the filters' 1 % target rate. The
+benefit depends on the row-group size, which the benchmark does not vary: both
+packages use the writer's default. `cityparquet+nobloom` still carries
+row-group min/max statistics, so the axis measures what the filters add on top
+of the statistics, and both pruning counts are recorded.
+
+The recipe builds two packages from the slice, untimed — `cityparquet`, which carries bloom filters, and
 `cityparquet+nobloom`, which carries none — and times `id-lookup` (`id-50pct`,
 `id-miss`) and `feature-lookup` (`feature-50pct`, `feature-miss`) against
 both. Package bytes go to `sizes.csv`. Every lookup row carries `row_groups_total`, `bloom_pruned`, `stats_pruned`
@@ -202,8 +215,7 @@ of the CSV's 22 columns. Each miss probe is a stored identifier with
 statistics alone cannot reject it. Both packages are written in Hilbert
 order: the coordinator builds every variant package that way and refuses a
 `+source` suffix, so the two differ in their bloom filters alone.
-The 3DBAG slice is drawn in `bloom`; the corpus datasets are drawn per dataset
-in `bloom-corpus`.
+The `bloom` figure draws the slice.
 
 Over HTTP, `just bloom-bench-http FOLDER BASE_URL` reads — never builds — the
 two packages a local `bloom-bench` run left in the prepared directory, once that
