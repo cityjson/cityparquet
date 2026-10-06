@@ -5,17 +5,14 @@ description = "Render paper-focused CityParquet benchmark figures."
 requires-python = ">=3.11"
 dependencies = [
     "matplotlib>=3.9",
-    "pandas>=2.3",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
-# Two packages, one project: `readbench_plot` renders the per-dataset charts of
-# a single run (`just plot`), `benchviz` renders the cross-dataset summary page
-# and the static paper figures (`just plot-pretty`). They read the same CSVs and
-# `benchviz`'s dependencies are a subset of these, so a second uv project would
-# only buy a second lockfile to keep in step.
+# `benchviz` renders the summary page and the paper figures (`just
+# bench-summary`); `bench-prep`, `bench-run` and `scripts-test` run their
+# Python in this project's environment too.
 [tool.hatch.build.targets.wheel]
 packages = ["benchviz"]
 
