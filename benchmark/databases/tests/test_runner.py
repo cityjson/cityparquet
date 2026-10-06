@@ -406,3 +406,34 @@ def test_run_matrix_dataset_name_is_stamped_onto_every_row():
     systems = [FakeSystem("cjdb", 10)]
     rows = run_matrix(systems, PARAMS, "rotterdam", repeat=1, scenarios=("count",))
     assert rows[0]["dataset"] == "rotterdam"
+
+
+class FakeGate:
+    def __init__(self, busy):
+        self.busy = busy
+        self.labels = []
+        self.after = 0
+
+    def before_cell(self, label):
+        self.labels.append(label)
+        return self.busy
+
+    def after_cell(self):
+        self.after += 1
+
+
+def test_run_matrix_consults_the_load_gate_around_every_cell():
+    gate = FakeGate(busy=False)
+    systems = [FakeSystem("cjdb", 10), FakeSystem("3dcitydb", 10)]
+    rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("count",),
+                      run_note="threads=single", gate=gate)
+    assert gate.labels == ["threads=single count cjdb", "threads=single count 3dcitydb"]
+    assert gate.after == 2
+    assert all("busy" not in row["notes"].split() for row in rows)
+
+
+def test_run_matrix_tags_a_cell_busy_when_the_gate_gave_up_waiting():
+    systems = [FakeSystem("cjdb", 10)]
+    rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("count",),
+                      run_note="threads=single", gate=FakeGate(busy=True))
+    assert "busy" in rows[0]["notes"].split()

@@ -469,3 +469,64 @@ def test_run_defaults_to_25_timed_repetitions(monkeypatch):
     monkeypatch.setattr(cli, "cmd_bench", lambda args: seen.append(args.repeat) or 0)
     assert cli.main(["run", "--dataset", "unused.city.jsonl"]) == 0
     assert seen == [25]
+
+
+def test_run_parser_accepts_the_isolation_flags(monkeypatch):
+    from citybench import cli
+    seen = {}
+    monkeypatch.setattr(cli, "cmd_bench", lambda args: seen.update(vars(args)) or 0)
+    monkeypatch.setenv("BENCH_NUMA_NODE", "1")
+    cli.main(["run", "--dataset", "x", "--max-load", "off",
+              "--max-load-wait-s", "30", "--memory-max", "8000000000"])
+    assert seen["numa_node"] == "1"
+    assert seen["max_load"] == "off"
+    assert seen["max_load_wait_s"] == 30.0
+    assert seen["memory_max"] == "8000000000"
+
+
+def test_run_parser_isolation_defaults(monkeypatch):
+    from citybench import cli
+    seen = {}
+    monkeypatch.setattr(cli, "cmd_bench", lambda args: seen.update(vars(args)) or 0)
+    monkeypatch.delenv("BENCH_NUMA_NODE", raising=False)
+    cli.main(["run", "--dataset", "x"])
+    assert (seen["numa_node"], seen["max_load"], seen["max_load_wait_s"], seen["memory_max"]) == ("auto", "auto", 600.0, None)
+
+
+def test_cmd_bench_plans_isolation_once_and_hands_the_cpuset_to_the_containers(monkeypatch, tmp_path):
+    from argparse import Namespace
+    from contextlib import contextmanager
+    from citybench import cli, isolation
+
+    record = isolation.plan(
+        numa_node="auto", max_load="auto", max_load_wait_s=600, memory_max=None,
+        is_linux=True, has_setaffinity=True, node_cpus={0: "0-3", 1: "4-7"},
+        node_meminfo={0: "Node 0 MemFree: 1 kB", 1: "Node 1 MemFree: 2 kB"},
+        meminfo="MemTotal: 8 kB\nMemAvailable: 4 kB\n",
+        controllers="cpuset cpu memory", all_cpus=list(range(8)),
+    )
+    setups = []
+    monkeypatch.setattr(cli.isolation_mod, "setup",
+                        lambda **kw: setups.append(kw) or (record, object()))
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    @contextmanager
+    def fake_databases(data_root, srid, *, container_args=None):
+        seen["container_args"] = container_args
+        raise Stop
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(cli, "isolated_databases", fake_databases)
+    args = Namespace(dataset="x", data_root=str(tmp_path), ports=None, srid=7415,
+                     numa_node="auto", max_load="auto", max_load_wait_s=600.0,
+                     memory_max=None)
+    try:
+        cli.cmd_bench(args)
+    except Stop:
+        pass
+    assert len(setups) == 1
+    assert seen["container_args"] == ["--cpuset-cpus=4-7", "--cpuset-mems=1"]
+    assert record["containers"]["started_by_run"] is True

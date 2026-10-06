@@ -91,7 +91,10 @@ def _wait(port: int, *, citydb: bool = False) -> None:
 
 
 @contextmanager
-def isolated_databases(data_root: Path, srid: int):
+def isolated_databases(data_root: Path, srid: int, *, container_args: list[str] | None = None):
+    """Start both PostgreSQL containers; ``container_args`` (the run's
+    ``--cpuset-cpus``/``--cpuset-mems`` flags, when the cpuset controller is
+    delegated) are added to each ``podman run``."""
     root = data_root.resolve()
     if root != ROOT and ROOT not in root.parents:
         raise ValueError(f"data root must be below {ROOT}")
@@ -113,7 +116,7 @@ def isolated_databases(data_root: Path, srid: int):
     previous_temp_environment = {name: os.environ.get(name) for name in temp_environment}
     os.environ.update(temp_environment)
     names = {"cjdb": f"citybench-cjdb-{run_id}", "3dcitydb": f"citybench-citydb-{run_id}"}
-    common = ["-d", "--rm", "--cpus", CPU_LIMIT, "--memory", MEMORY_LIMIT, "--shm-size", SHM_SIZE, "-p", "127.0.0.1::5432"]
+    common = ["-d", "--rm", "--cpus", CPU_LIMIT, "--memory", MEMORY_LIMIT, "--shm-size", SHM_SIZE, "-p", "127.0.0.1::5432"] + list(container_args or [])
     created: list[str] = []
     try:
         for key, image in (("cjdb", CJDB_IMAGE), ("3dcitydb", CITYDB_IMAGE)):

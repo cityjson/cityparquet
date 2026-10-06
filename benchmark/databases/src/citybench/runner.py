@@ -130,6 +130,7 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
                sizes: dict[str, tuple[int, int]] | None = None,
                *, tolerance: float = DEFAULT_COUNT_TOLERANCE,
                run_note: str = "",
+               gate=None,
                ) -> list[dict[str, str]]:
     """Run every scenario on every system, cross-checking counts.
 
@@ -158,6 +159,12 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
     for every scenario except those in ``NO_SELECTIVITY_SCENARIOS`` (
     ``count``, ``geometry-scan`` and the write tier), per the inherited CSV
     contract — see that constant's docstring for the exact wording.
+
+    ``gate`` is the run's load gate (``isolation.LoadGate``): consulted
+    before each system's cell, it waits for a quiet node and records the
+    load around the cell; a cell that proceeded above ``--max-load`` after
+    the wait carries the ``busy`` token in ``notes``. Samples of one cell
+    still run back to back, and cells are never interleaved.
     """
     sizes = sizes or {}
     rows: list[dict[str, str]] = []
@@ -176,8 +183,13 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
             # verified-absent one.
             variant_note = _variant_note(window, probe)
             measurements: dict[str, Measurement] = {}
+            busy: set[str] = set()
 
             for system in wanted:
+                if gate is not None and gate.before_cell(
+                    " ".join(n for n in (run_note, scenario, variant_note, system.tag) if n)
+                ):
+                    busy.add(system.tag)
                 try:
                     measurements[system.tag] = system.run(
                         scenario, params, repeat, window=window, probe=probe
@@ -189,6 +201,9 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
                     measurements[system.tag] = _failed(f"skipped: {exc}")
                 except Exception as exc:  # a system that cannot answer is a result
                     measurements[system.tag] = _failed(f"error: {type(exc).__name__}")
+                finally:
+                    if gate is not None:
+                        gate.after_cell()
 
             answered = {
                 tag: m for tag, m in measurements.items() if m.result_count is not None
@@ -201,7 +216,10 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
             )
 
             for tag, m in measurements.items():
-                note = " ".join(n for n in (run_note, variant_note, deviation) if n)
+                note = " ".join(
+                    n for n in (run_note, variant_note, deviation,
+                                "busy" if tag in busy else "") if n
+                )
                 total, no_index = sizes.get(tag, (None, None))
                 # Blank only for NO_SELECTIVITY_SCENARIOS; every other
                 # scenario — including the non-windowed ones such as

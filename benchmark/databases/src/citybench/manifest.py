@@ -34,7 +34,7 @@ def required_keys() -> tuple[str, ...]:
     return (
         "dataset", "source", "baseline", "host", "versions", "pg_settings", "ingest", "sizes",
         "patches", "srid", "memory_measurement", "temporary_storage",
-        "execution", "count_check",
+        "execution", "count_check", "isolation",
     )
 
 
@@ -44,7 +44,8 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
             patches: dict[str, dict[str, str]] | None = None,
             srid: dict[str, int] | None = None,
             execution: dict[str, Any] | None = None,
-            count_check: dict[str, Any] | None = None) -> dict[str, Any]:
+            count_check: dict[str, Any] | None = None,
+            isolation: dict[str, Any] | None = None) -> dict[str, Any]:
     """``srid`` — the SRID each PostgreSQL-backed system actually landed on.
 
     Added for Task 14 (the heterogeneity corpus): 3DCityDB's SRID is baked
@@ -85,6 +86,9 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
         # The tolerance the cross-system count check was run with, and what
         # a status of `ok-deviation` means in the CSV it produced.
         "count_check": count_check or {},
+        # NUMA pinning, container cpusets, the load gate and its per-cell
+        # load record: what was requested, what was applied, and why not.
+        "isolation": isolation or {},
         "memory_measurement": {
             "metric": "peak_rss_bytes",
             "scope": "execution process only",

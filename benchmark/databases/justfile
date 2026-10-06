@@ -80,8 +80,11 @@ capture-schema DATASET:
 derive-params DATASET PREPARED='../runs/data/readbench':
     uv run python -m citybench.cli derive-params --dataset {{DATASET}} --prepared-dir {{PREPARED}}
 
-bench DATASET REPEAT='25':
-    uv run python -m citybench.cli run --dataset {{DATASET}} --repeat {{REPEAT}}
+# Isolation (see README "Host isolation"): NUMA_NODE is a node id, `auto`
+# (most MemFree at run start; env BENCH_NUMA_NODE overrides the default) or
+# `off`; MAX_LOAD is a load threshold, `auto` (half the node's cores) or `off`.
+bench DATASET REPEAT='25' NUMA_NODE=env_var_or_default('BENCH_NUMA_NODE', 'auto') MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
+    uv run python -m citybench.cli run --dataset {{DATASET}} --repeat {{REPEAT}} --numa-node {{NUMA_NODE}} --max-load {{MAX_LOAD}} --max-load-wait-s {{MAX_LOAD_WAIT_S}}
 
 # Full pipeline on the small fixture. Must pass before any long run.
 smoke:

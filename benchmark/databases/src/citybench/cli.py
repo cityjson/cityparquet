@@ -7,7 +7,8 @@ import csv
 import json
 import sys
 import os
-from citybench.lifecycle import isolated_databases
+from citybench.lifecycle import CPU_LIMIT, MEMORY_LIMIT, isolated_databases
+from citybench import isolation as isolation_mod
 from pathlib import Path
 
 from citybench import manifest, params as params_mod
@@ -98,6 +99,7 @@ def _run_all_scenarios(systems: list, params, dataset_name: str, repeat: int,
                         sizes: dict[str, tuple[int, int]],
                         tolerance: float,
                         resolved: dict[str, dict] | None = None,
+                        gate=None,
                         ) -> list[dict[str, str]]:
     """Every read scenario under BOTH thread configurations, then the writes.
 
@@ -130,7 +132,7 @@ def _run_all_scenarios(systems: list, params, dataset_name: str, repeat: int,
         rows += run_matrix(
             systems, params, dataset_name, repeat=repeat,
             scenarios=READ_SCENARIOS, sizes=sizes, tolerance=tolerance,
-            run_note=f"threads={name}",
+            run_note=f"threads={name}", gate=gate,
         )
 
     primary = THREAD_CONFIGURATIONS[0]
@@ -138,6 +140,7 @@ def _run_all_scenarios(systems: list, params, dataset_name: str, repeat: int,
     rows += run_matrix(
         systems, params, dataset_name, repeat=repeat, scenarios=TIER3,
         sizes=sizes, tolerance=tolerance, run_note=f"threads={primary[0]}",
+        gate=gate,
     )
     return rows
 
@@ -242,11 +245,27 @@ def cmd_derive_params(args) -> int:
     return 0
 
 
+def _isolation(args) -> tuple[dict, isolation_mod.LoadGate]:
+    """Plan and apply host isolation once per run, before any container
+    starts, so the PostgreSQL containers can be given the same node."""
+    if getattr(args, "isolation", None) is None:
+        args.isolation, args.gate = isolation_mod.setup(
+            numa_node=getattr(args, "numa_node", "auto"),
+            max_load=getattr(args, "max_load", "auto"),
+            max_load_wait_s=getattr(args, "max_load_wait_s", 600.0),
+            memory_max=getattr(args, "memory_max", None),
+        )
+    return args.isolation, args.gate
+
+
 def cmd_bench(args) -> int:
+    record, gate = _isolation(args)
     # The public runner creates fresh, UUID-scoped databases when a data root
     # is supplied. Recursive entry carries only discovered ports.
     if getattr(args, "data_root", None) and not getattr(args, "ports", None):
-        with isolated_databases(Path(args.data_root), args.srid) as context:
+        record["containers"]["started_by_run"] = True
+        with isolated_databases(Path(args.data_root), args.srid,
+                                container_args=record["containers"]["args"]) as context:
             args.ports = context["ports"]
             os.environ["CITYBENCH_CJDB_CONTAINER"] = context["containers"]["cjdb"]
             os.environ["CITYBENCH_CITYDB_CONTAINER"] = context["containers"]["3dcitydb"]
@@ -293,8 +312,24 @@ def cmd_bench(args) -> int:
     tolerance = getattr(args, "count_tolerance", DEFAULT_COUNT_TOLERANCE)
     resolved: dict[str, dict] = {}
     rows = _run_all_scenarios(
-        systems, p, dataset.name, args.repeat, sizes, tolerance, resolved
+        systems, p, dataset.name, args.repeat, sizes, tolerance, resolved, gate
     )
+    if not record["containers"].get("started_by_run"):
+        record["containers"]["cpuset"] = (
+            "not applied: the PostgreSQL containers were not started by this run"
+        )
+        record["containers"]["args"] = []
+    elif record["containers"]["cpuset"] != "applied" and record["client"]["cpu"].startswith("applied"):
+        record["containers"]["inherited_affinity"] = (
+            "podman was launched from the pinned client, so the container "
+            "processes are expected to inherit its CPU affinity; no cgroup "
+            "enforces it"
+        )
+    record["containers"].update(cpus=CPU_LIMIT, memory=MEMORY_LIMIT)
+    isolation_record = {
+        **record,
+        "load": {**record["load"], **gate.summary(), "cells": gate.cells},
+    }
 
     write_csv(results_dir / f"{dataset.name}.csv", rows)
 
@@ -312,6 +347,7 @@ def cmd_bench(args) -> int:
                 patches=_patches(systems),
                 srid=_srids(systems),
                 execution=_execution(resolved),
+                isolation=isolation_record,
                 count_check={
                     "relative_spread_tolerance": tolerance,
                     "statuses": {
@@ -374,6 +410,12 @@ def cmd_smoke(args) -> int:
         data_root=getattr(args, "data_root", None),
         srid=getattr(args, "srid", 7415),
         count_tolerance=getattr(args, "count_tolerance", DEFAULT_COUNT_TOLERANCE),
+        # Pinned like a real run, but never held back by the load gate: the
+        # smoke run checks correctness, not timings.
+        numa_node=os.environ.get("BENCH_NUMA_NODE", "auto"),
+        max_load="off",
+        max_load_wait_s=0.0,
+        memory_max=None,
     )
     bench_status = cmd_bench(ns)
     output_dir = Path(ns.output_dir) if ns.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
@@ -588,6 +630,20 @@ def main(argv: list[str] | None = None) -> int:
                               f"(default {DEFAULT_COUNT_TOLERANCE})")
     p_bench.add_argument("--output-dir", default=None,
                          help="directory for CSV, manifest, and index artefacts")
+    p_bench.add_argument("--numa-node", default=os.environ.get("BENCH_NUMA_NODE", "auto"),
+                         help="NUMA node to pin the client (and DuckDB) and, when the "
+                              "cpuset controller is delegated, the PostgreSQL containers "
+                              "to: a node id, `auto` (most MemFree at run start) or `off` "
+                              "(env BENCH_NUMA_NODE; default auto)")
+    p_bench.add_argument("--max-load", default="auto",
+                         help="wait before a cell while the node's share of load1 exceeds "
+                              "this: a number, `auto` (half the node's cores) or `off`")
+    p_bench.add_argument("--max-load-wait-s", type=float, default=600.0,
+                         help="longest wait per cell before proceeding and tagging it "
+                              "`busy` in `notes` (default 600)")
+    p_bench.add_argument("--memory-max", default=None,
+                         help="memory cap in bytes; recorded in the manifest's `isolation` "
+                              "object but not applied to the database family")
     p_bench.set_defaults(func=cmd_bench)
 
     p_smoke = sub.add_parser("smoke")

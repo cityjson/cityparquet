@@ -43,3 +43,18 @@ def test_benchmark_temp_directory_defaults_to_user_owned_location(monkeypatch):
     monkeypatch.delenv("CITYBENCH_TEMP_DIR", raising=False)
     monkeypatch.delenv("TMPDIR", raising=False)
     assert lifecycle.benchmark_temp_directory() == Path("/data2/hideba/tmp")
+
+
+def test_container_args_are_spliced_into_every_postgresql_container(tmp_path, monkeypatch):
+    monkeypatch.setattr(lifecycle, 'ROOT', tmp_path)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
+    calls = []
+    monkeypatch.setattr(lifecycle, '_run', lambda *args, **kwargs: calls.append(args) or ('127.0.0.1:40123\n' if args[1] == 'port' else ''))
+    monkeypatch.setattr(lifecycle, '_wait', lambda *args, **kwargs: None)
+    monkeypatch.setattr(lifecycle.subprocess, 'run', lambda args, **kwargs: calls.append(tuple(args)))
+    flags = ["--cpuset-cpus=32-63", "--cpuset-mems=1"]
+    with lifecycle.isolated_databases(tmp_path, 7415, container_args=flags):
+        pass
+    starts = [call for call in calls if len(call) > 2 and call[1] == 'run']
+    assert len(starts) == 2
+    assert all(set(flags) <= set(start) for start in starts)
