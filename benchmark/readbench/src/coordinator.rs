@@ -672,6 +672,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     }
 
     let attr_probes = attr_lookup_probes(base, &scenarios, variants.as_deref(), opts)?;
+    if !attr_probes.is_empty() {
+        sidecar_json["attr_probes"] = attr_probes_json(&attr_probes);
+        write_params(&sidecar, &sidecar_json)?;
+    }
 
     for (format, source, label) in &resolved_formats {
         let format = *format;
@@ -1893,6 +1897,25 @@ fn attr_lookup_probes(
     Ok(probes)
 }
 
+/// The `attr-lookup` probes as the `.params.json` sidecar records them: one
+/// object per probe with its column, `notes` tag, the value looked up, whether
+/// it is present and whether the hit was substituted — so every attribute
+/// lookup's CSV row can be traced to the value it measured.
+fn attr_probes_json(probes: &[(String, params::IdProbe)]) -> serde_json::Value {
+    probes
+        .iter()
+        .map(|(column, probe)| {
+            serde_json::json!({
+                "column": column,
+                "tag": probe.tag,
+                "value": probe.id,
+                "present": probe.present,
+                "substituted": probe.substituted,
+            })
+        })
+        .collect()
+}
+
 fn build_variant(
     base: &str,
     id: &str,
@@ -2170,6 +2193,38 @@ mod tests {
         assert!(
             rendered.contains("attr=b3_dak_type=slanted;no-attr-index"),
             "tags must be joined with ';': {rendered}"
+        );
+    }
+
+    /// The attribute lookups' probe values reach the `.params.json` sidecar,
+    /// keyed by column and tag, so a CSV row can be traced to the value it
+    /// looked up — including whether the hit was substituted.
+    #[test]
+    fn attr_probes_are_recorded_with_column_value_and_substitution() {
+        let probe = |tag: &str, id: &str, present: bool, substituted: bool| params::IdProbe {
+            tag: tag.to_string(),
+            id: id.to_string(),
+            present,
+            substituted,
+        };
+        let recorded = attr_probes_json(&[
+            (
+                "documentnummer".to_string(),
+                probe("attr-documentnummer-50pct", "D-1", true, true),
+            ),
+            (
+                "documentnummer".to_string(),
+                probe("attr-documentnummer-miss", "D-0-absent", false, false),
+            ),
+        ]);
+        assert_eq!(
+            recorded,
+            serde_json::json!([
+                {"column": "documentnummer", "tag": "attr-documentnummer-50pct",
+                 "value": "D-1", "present": true, "substituted": true},
+                {"column": "documentnummer", "tag": "attr-documentnummer-miss",
+                 "value": "D-0-absent", "present": false, "substituted": false},
+            ])
         );
     }
 
