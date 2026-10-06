@@ -9,12 +9,13 @@
 //! assumed.** `fcb ser` builds one `CityFeature` per top-level CityObject,
 //! so `lod3_railway.city.json` (121 CityObjects in its single CityJSON
 //! document) becomes an `.fcb` file with 38 features (confirmed via `fcb
-//! info`) — `Count`/`FullRead`/`BBoxQuery` count at that feature level.
-//! `AttrFilter`/`AttrStats` count at CityObject level instead:
-//! FCB's own B+-tree attribute index returns one match per matching
-//! CityObject occurrence (not deduplicated by feature), and this runner's
-//! own `select_all`-walk fallback deliberately matches that same
-//! granularity. Independently verified against the fixture with Python
+//! info`) — `Count` and the `FullRead` result count stay at that feature
+//! level. `BBoxQuery`, `AttrFilter` and `AttrStats` count at CityObject level
+//! instead: the spatial window takes the hits of the 2D per-feature R-tree,
+//! then tests every CityObject in each hit feature against the box over its
+//! own `children` subtree, and the attribute filter re-tests every
+//! CityObject of the features the B+-tree attribute index hits (this
+//! runner's `select_all`-walk fallback matches that same granularity). Independently verified against the fixture with Python
 //! (`python3` over the raw CityJSON): 65 of 121 CityObjects have
 //! `function == "1070"` — matched exactly below. None of this tries to reproduce CityParquet's own
 //! CityObject-ROW counts (CityParquet counts parents AND children as table
@@ -148,7 +149,7 @@ fn bbox_query_quarter_window_is_a_proper_nonempty_subset() {
     let input = generate_fcb("lod3_railway.city.json", tmp.path());
 
     // Whole-dataset extent (confirmed via `fcb info`): x in [0.56, 12.64],
-    // y in [0.64, 7.68]. Every feature must match this.
+    // y in [0.64, 7.68]. Every CityObject must match this.
     let whole = ["--bbox", "0.56,0.64,-1000,12.64,7.68,1000"];
     let all = run_child("flatcitybuf", "bbox-query", &input, &whole);
     assert_eq!(
@@ -171,7 +172,7 @@ fn bbox_query_quarter_window_is_a_proper_nonempty_subset() {
     let partial = run_child("flatcitybuf", "bbox-query", &input, &quarter);
     assert!(
         partial < all,
-        "a quarter-area window must match strictly fewer features than the \
+        "a quarter-area window must match strictly fewer CityObjects than the \
          whole-dataset window (got {partial}, whole dataset is {all})"
     );
 }

@@ -3,7 +3,7 @@
 //!
 //! Everything that decides is a PURE function of strings and tool
 //! availability, so it is unit-tested on any platform. The thin impure layer
-//! ([`probe`], [`read_load`]) reads `/sys` and `/proc` and looks tools up on
+//! ([`probe_tools`], [`read_load`]) reads `/sys` and `/proc` and looks tools up on
 //! `PATH`; off Linux it returns explicit `"not applied: <reason>"` records and
 //! never fails the run.
 //!
