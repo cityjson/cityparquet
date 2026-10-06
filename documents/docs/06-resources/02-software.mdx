@@ -46,8 +46,11 @@ cargo run --release -p cityparquet-cli -- convert model.city.jsonl --output city
 cargo run --release -p cityparquet-cli -- export city --help
 ```
 
-Conversion supports Hilbert spatial ordering, configurable row groups and
-compression, and partitioning into multiple packages. An LoD0 footprint can be
+Conversion writes rows in Hilbert spatial order by default, which holds every
+feature in memory before the first row is written; `--ordering source` streams
+features in source order instead, the low-memory path for an input too large to
+hold. Row groups and compression are configurable, and the output can be
+partitioned into multiple packages. An LoD0 footprint can be
 synthesised when the source has no LoD0 geometry; `--no-lod0` disables that step.
 
 The Rust library also exposes projected reads, attribute queries, and spatial

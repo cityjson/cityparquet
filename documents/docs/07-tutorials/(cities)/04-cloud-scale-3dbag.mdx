@@ -149,8 +149,9 @@ the extent is a first-class column, and the [benchmark](/benchmark) page measure
 it.
 
 Writing the package with **tighter row groups**, or ordering rows along a Hilbert
-curve so spatially close objects land together, makes this sharper still — both are
-flags on the [`cityparquet-rs`](/resources/software) writer.
+curve so spatially close objects land together, makes this sharper still. The
+[`cityparquet-rs`](/resources/software) writer orders rows along a Hilbert curve by
+default, and the row-group size is a flag.
 
 ## The footprint is GeoParquet
 

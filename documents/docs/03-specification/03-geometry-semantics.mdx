@@ -330,5 +330,7 @@ Every object row **SHOULD** carry a `bbox` in the same CRS as the geometry — a
 
 Rows **MAY** be written in **[Hilbert-curve order](/design-decisions/spatial-access)**
 on the `bbox` centroid to improve spatial locality for object-storage range reads and
-row-group pruning. Row-group sizing interacts with pruning selectivity; see the
+row-group pruning. The cost falls on the writer: it must hold every row before it can
+write the first, whereas rows in source order can be streamed one at a time. Either
+order is conformant. Row-group sizing interacts with pruning selectivity; see the
 [dataset metadata](/specification/metadata).
