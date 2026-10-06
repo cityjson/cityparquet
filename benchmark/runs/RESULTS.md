@@ -17,7 +17,8 @@ mix the two.
 
 ## What was measured
 
-- **Formats and sizes** (`formats/results/`): the five city datasets and the
+- **Formats and sizes** (`formats/results/`): four city datasets (NYC DA13,
+  Rotterdam Delfshaven, Vienna 102081, Zurich) and the
   1,000,001-object 3DBAG slice, every artefact written by the chain-3
   preparation (CityParquet packages carry bloom filters; `MACHINE.md`
   records the host, the commit and the tool versions). Seven read
@@ -60,6 +61,14 @@ NYC DA13, Rotterdam Delfshaven, Vienna 102081, Zurich). Their files
 a filter rules out whole row groups, and at the default 65,536 rows per group
 every one of them but Zurich (4 groups) is a single row group, on which a hit
 can skip nothing. The suite now measures the bloom axis on the slice alone.
+
+The run also measured Ingolstadt in the format family. Its files (`.csv`,
+`.csv.params.json`, `.csv.samples.json`, `.run.json`), its rows in
+`formats/results/sizes.csv` and its figures were removed with the dataset,
+which has left the corpus: its Window and Door surfaces name no parent
+surface, so `citygml-tools from-cityjson -v 2.0` omits their polygons from
+the synthesised CityGML, and its five formats did not hold the same content
+(`benchmark/formats/READ_BENCHMARK.md`, Caveat 43).
 
 The run also measured what the suite no longer has: the bloom axis on six
 smaller 3DBAG slices (1,000 to 500,000 objects), whose files and size rows
