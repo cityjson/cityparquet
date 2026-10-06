@@ -1164,8 +1164,22 @@ fn check_consistency(
 
 /// A comparable total one format is excused from, and why. Each entry is a
 /// principled difference, never a tolerance: the total is simply not
-/// compared for that format. Empty while every format agrees on every total.
-const TOTAL_EXCLUSIONS: &[(Format, &str, &str)] = &[];
+/// compared for that format.
+///
+/// - `citygml` / `extent`: CityGML stores real coordinates and no transform,
+///   so the library's CityGML reader quantises them with its own step,
+///   derived from the CRS's units (`cityparquet_schema::crs::axis_scale`:
+///   a millimetre for a metre axis). A source whose `transform` is finer
+///   than that (Tokyo's height step is 1e-6 m) therefore yields a read-all
+///   and identifier-lookup extent up to half a millimetre away from the
+///   other four formats', more than the package's one-step tolerance. The
+///   spatial window's `returned-extent` is still compared.
+const TOTAL_EXCLUSIONS: &[(Format, &str, &str)] = &[(
+    Format::CityGml,
+    "extent",
+    "the CityGML reader quantises to its own CRS-derived step (1 mm on a metre axis), \
+     coarser than a source transform such as Tokyo's 1e-6 m height step",
+)];
 
 fn excluded(format: Format, total: &str) -> bool {
     TOTAL_EXCLUSIONS
@@ -1967,6 +1981,36 @@ fn write_sizes(out: &Path, base: &str, sizes: &[SizeRow]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_citygml_extent_is_excluded_from_the_comparison() {
+        assert!(excluded(Format::CityGml, "extent"));
+        for part in [
+            "objects",
+            "geometries",
+            "semantic_faces",
+            "id-digest",
+            "returned-geometries",
+            "returned-extent",
+        ] {
+            assert!(
+                !excluded(Format::CityGml, part),
+                "{part} must stay compared"
+            );
+        }
+        for format in [
+            Format::CityJson,
+            Format::CityJsonSeq,
+            Format::FlatCityBuf,
+            Format::CityParquet,
+        ] {
+            assert!(
+                !excluded(format, "extent"),
+                "{format:?} extent must stay compared"
+            );
+        }
+        assert!(TOTAL_EXCLUSIONS.iter().all(|(_, _, why)| !why.is_empty()));
+    }
 
     fn row(scenario: Scenario, notes: &[&str]) -> Row {
         Row {
