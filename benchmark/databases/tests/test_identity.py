@@ -64,3 +64,12 @@ def test_a_postgresql_geometry_array_in_text_counts_its_non_null_elements():
                       [(9, "NL.1", "{}")])
     assert citydb == Identity(frozenset({"NL.1"}), 2)
     assert empty == Identity(frozenset({"NL.1"}), 0)
+
+
+def test_a_postgis_geometry_array_literal_is_colon_delimited():
+    """PostGIS declares `:` as the array delimiter of `geometry`
+    (`pg_type.typdelim`), so a live server prints `{hex:hex:hex}`. Split on
+    commas alone, a three-LoD object counted as one geometry (Tokyo)."""
+    live = summarise("id-lookup", ["id", "objectid", "geometries"],
+                     [(9, "bldg_1", "{0106000020:010F000020:NULL:01EF000020}")])
+    assert live == Identity(frozenset({"bldg_1"}), 3)

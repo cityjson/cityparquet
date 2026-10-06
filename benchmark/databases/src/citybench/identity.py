@@ -29,6 +29,7 @@ return geometry (`bbox-query`, `lod-query`), the non-null second column.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 #: Scenarios whose rows are objects, and so whose identifier sets compare.
@@ -64,9 +65,11 @@ def _geometry_count(columns: list[str], row: tuple) -> int:
                 value = json.loads(value)
             elif value.startswith("{"):
                 # A PostgreSQL array literal (text fetch, no loader for
-                # `geometry`): hex WKB elements hold no commas.
+                # `geometry`). PostGIS declares `:` as the delimiter of
+                # `geometry` arrays (`pg_type.typdelim`); hex WKB elements
+                # hold neither `:` nor `,`, so both are accepted.
                 value = [None if e == "NULL" else e
-                         for e in value[1:-1].split(",") if e]
+                         for e in re.split(r"[,:]", value[1:-1]) if e]
             else:
                 value = [value]
         if isinstance(value, (list, tuple)):
