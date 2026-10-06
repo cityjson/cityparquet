@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
 
-from . import prep, tables, units
+from . import network, prep, tables, units
 from .paths import DEFAULT_DATA_PATH, DEFAULT_FIGURES_DIR
 
 BG = "#fffff8"
@@ -1146,6 +1146,7 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
     written = sizes(data, out) + format_figures(data, out) + tables.write_tables(data, out)
     written += _axis_main(data, "bloom", out) + _remove_retired(out)
     written += databases(data, out)
+    written += network.render(data, out)
     print(f"benchviz figures -> {out}")
     for path in written:
         print(f"  {path.name}")

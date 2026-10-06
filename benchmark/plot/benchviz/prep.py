@@ -1353,6 +1353,11 @@ def build(inputs: Inputs | None = None, statistic: str = "median") -> tuple[dict
     apply_manifest_titles(inputs, datasets)
     database_data = load_databases(inputs, statistic)
     bloom = load_bloom_axis(inputs.bloom_dir, statistic=statistic)
+    from . import network  # imports this module, so not at the top
+
+    suite_profile = inputs.bench_dir.name if inputs.bench_dir.name in {"quick", "smoke", "short"} else ""
+    data_root = inputs.bench_dir.parent.parent if suite_profile else inputs.bench_dir.parent
+    network_data = network.load(data_root, suite_profile or "full", statistic)
 
     order = {d["id"]: i for i, d in enumerate(datasets)}
     read_records.sort(
@@ -1398,6 +1403,7 @@ def build(inputs: Inputs | None = None, statistic: str = "median") -> tuple[dict
         "sizes": size_records,
         "bloom": bloom,
         "databases": database_data,
+        "network": network_data,
     }
     return data, anomalies + excluded.notes()
 

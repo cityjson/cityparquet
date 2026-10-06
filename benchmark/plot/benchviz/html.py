@@ -8,7 +8,7 @@ import html
 import json
 from pathlib import Path
 
-from . import tables
+from . import network, tables
 from .paths import DEFAULT_DATA_PATH, DEFAULT_FIGURES_DIR, DEFAULT_HTML_PATH
 from .tables import FORMAT_METRICS, FORMATS_DIR
 
@@ -55,7 +55,7 @@ def sections(data: dict) -> list[tuple[str, str, list[str]]]:
             result.append((f"{FORMATS_DIR}/{dataset_id}/{metric}", f"{name} — {page_title}", []))
     for path, title in TAIL:
         result.append((path, title, conditions.get(path, [])))
-    return result
+    return result + network.sections(data)
 
 
 def _table(path: Path) -> str:
@@ -90,6 +90,10 @@ def main(
             listing = f"<h3>Conditions</h3><ul class='conditions'>{lines}</ul>" if lines else ""
             parts.append(
                 f"<section><h2>{html.escape(title)}</h2><img alt='{html.escape(title)}' src='data:image/svg+xml;base64,{payload}'>{listing}</section>"
+            )
+        elif name == network.NOT_MEASURED_SECTION:
+            parts.append(
+                f"<section class='missing'><h2>{html.escape(title)}</h2><p>Not measured: no network results exist for this summary.</p></section>"
             )
         else:
             parts.append(
