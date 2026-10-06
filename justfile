@@ -677,7 +677,7 @@ usecase-energy-features input output="features.parquet":
 bench-prep *ARGS:
     uv run --project {{PLOT}} python benchmark/scripts/bench_suite.py prep "$@"
 
-[doc("Run selected benchmark families; --smoke keeps validation outputs separate")]
+[doc("Run selected benchmark families; --profile quick|short|smoke keep their outputs separate; --memory-max defaults to 64000000000 (off disables)")]
 [positional-arguments]
 bench-run *ARGS:
     uv run --project {{PLOT}} python benchmark/scripts/bench_suite.py run "$@"

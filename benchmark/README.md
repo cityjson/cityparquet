@@ -20,8 +20,8 @@ On this machine the data and output root is
 | `data/benchmark/`, `data/3dbag/`              | Source corpus and the 3DBAG slice                 |
 | `data/readbench/`                             | Prepared format artefacts                         |
 | `formats/results/`, `formats/bloom_results/`  | Full format, size and bloom measurements          |
-| `formats/{short,smoke}/`                      | The same families under the `short` and `smoke` profiles |
-| `databases/{prepared,results,short,smoke}/`   | Database lifecycle inputs and measurements        |
+| `formats/{quick,short,smoke}/`                | The same families under the `quick`, `short` and `smoke` profiles |
+| `databases/{prepared,results,quick,short,smoke}/` | Database lifecycle inputs and measurements    |
 | `summary/{full,short,smoke}/`                 | Rendered figures and combined HTML                |
 
 Benchmark inputs, derived artefacts, results and rendered summaries are generated
@@ -33,6 +33,7 @@ to `paper/assets/bench/`.
 ```sh
 just bench-prep --families formats
 just bench-run --families bloom
+just bench-run --profile quick
 just bench-run --profile short
 just bench-run --datasets 3dbag --families formats
 just bench-summary --data-root benchmark/runs
@@ -43,18 +44,31 @@ selection, the suite includes all four. Use each command's `--help` for its
 selection and output options. Smoke runs validate the pipeline with small
 inputs and fewer repetitions; their results are not publication runs.
 
-Three run profiles decide which datasets are measured, how many repetitions
+Four run profiles decide which datasets are measured, how many repetitions
 and where results land, so a test run can never overwrite the paper's
 evidence: `--profile full` (the default; the seven corpus datasets and the
 3DBAG slice, 25 read repetitions, each family's own results directory, and
-the database family measures the slice), `--profile short` (the corpus
+the database family measures the slice), `--profile quick` (the same
+datasets as `full`, the database family's slice included, at 7 repetitions,
+results under `<family>/quick/` and `databases/quick/`; a complete run in
+about a third of the time, not the paper's evidence), `--profile short` (the corpus
 without the slice, the same repetitions, results under `<family>/short/`; for
 iterating on the harness in about an hour rather than a day) and `--profile
 smoke` (`--smoke`: Rotterdam alone, one repetition, `<family>/smoke/`; a
 pipeline check, not a measurement). Under `short` and `smoke` the database
 family measures Rotterdam (the manifest's `small_database_dataset`) through
 its prepared `rotterdam_delfshaven.city.jsonl`. Every run manifest records its
-profile.
+profile and its repetitions (`measurement.read_repeat` for the read families,
+`execution.repeat` for the database family), every CSV row its samples in
+`repeat`, and every timing figure's caption prints the warm runs it plots
+("7 warm runs" for a quick run), so a quick run cannot be mistaken for the
+25-repetition one. `bench-summary --profile quick` renders it into
+`summary/quick/`.
+
+On the earlier, smaller corpus a full run took about 23 h for the read
+families and 8 h for the database family; at 7 repetitions the same work is
+estimated at about 7 h and 2.5 h. Neither figure has been re-measured on the
+current corpus.
 
 Each measured cell takes one discarded warm-up and then 25 timed samples by
 default, run back to back; samples are not interleaved across formats or
@@ -90,7 +104,7 @@ results.
 Use `--families` to run one family after preparing it. `--datasets` accepts
 manifest IDs, and `3dbag` for the slice (`[suite] slice_dataset` in
 `manifest.toml`). The database family's dataset is the slice under `full` and
-Rotterdam under `short` and `smoke`. The selector rejects data roots outside
+`quick` and Rotterdam under `short` and `smoke`. The selector rejects data roots outside
 `benchmark/runs/`.
 
 The `sizes` family also writes `compression.csv`, the breakdown of each
@@ -112,7 +126,7 @@ records say why.
 | Setting | Flag / recipe parameter | Default | Applied by |
 | --- | --- | --- | --- |
 | NUMA node | `--numa-node`, `NUMA_NODE` (env `BENCH_NUMA_NODE`) | `auto`: the node with the most free memory at start | `numactl --physcpubind=<node cores minus the first> --membind=N`; else `taskset -c` (CPU only); the coordinator pins itself to the node's first core |
-| Memory ceiling | `--memory-max`, `MEMORY_MAX` (bytes) | off | `systemd-run --user --scope -p MemoryMax=`, probed once; a refusal is recorded, never fatal |
+| Memory ceiling | `--memory-max`, `MEMORY_MAX` (decimal bytes, or `off`) | 64,000,000,000 (64 GB) under `full`, `quick` and `short`; off under `smoke` | `systemd-run --user --scope -p MemoryMax=`, probed once; a refusal is recorded, never fatal |
 | Load gate | `--max-load`, `MAX_LOAD` | `auto`: half the pinned node's cores | before every sample, `load1 * node_cores / total_cores` above the threshold waits in 10 s steps |
 | Longest wait | `--max-load-wait-s`, `MAX_LOAD_WAIT_S` | 600 | a cell that proceeds while still contended is tagged `busy` in `notes` |
 
@@ -123,7 +137,19 @@ while still catching a node that is genuinely contended. Each sample's
 `load1`, runnable count and `MemAvailable` go to `.samples.json`, and each
 cell's maxima to `.params.json`. `just bench-run` forwards the same settings
 (`--numa-node`, `--memory-max`, `--max-load`, `--max-load-wait-s`) and records
-them in the run manifest.
+them in the run manifest. Sizes in this repository are decimal: the ceiling's
+64 GB is 64,000,000,000 bytes, and `--memory-max off` (`MEMORY_MAX=off` on the
+recipes) runs without one. The database family receives the ceiling and
+records it in its manifest, but does not apply it (see
+[`databases/README.md`](databases/README.md), "Memory cap").
+
+On Linux the page-cache pages a child reads are charged to its cgroup, so
+the ceiling must stay above the largest artefact a reader opens plus the
+largest reader's peak RSS: today about 10.8 GB for the slice's CityGML
+artefact and about 35.5 GB peak RSS for the CityJSON reader on the slice,
+measured in different cells. A ceiling below that would evict the warm
+cache mid-cell or kill the reader. The first host run under the default must
+confirm that warm runs stay warm under the ceiling.
 
 The samples of one cell run back to back after its warm-up; formats are not
 interleaved. What needs root, and is therefore not done: changing the CPU
