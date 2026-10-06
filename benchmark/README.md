@@ -93,6 +93,13 @@ manifest IDs, and `3dbag` for the slice (`[suite] slice_dataset` in
 Rotterdam under `short` and `smoke`. The selector rejects data roots outside
 `benchmark/runs/`.
 
+The `sizes` family also writes `compression.csv`, the breakdown of each
+CityParquet package by column group, column and non-column part. `just
+bench-compression [PREPARED] [OUT]` writes it for every package in a prepared
+directory on its own, with a readable table on stdout. It reads Parquet
+footers with DuckDB from `benchmark/databases`' uv project and measures no
+time ([`formats/README.md`](formats/README.md#the-compression-breakdown)).
+
 ## Running on a shared host
 
 The citable numbers come from a shared Linux host without root, so the read
@@ -129,7 +136,7 @@ and `memory`).
 
 | Family      | Data                             | Measurements                                               | Read queries                                                                            |
 | ----------- | -------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `sizes`     | Corpus with the 3DBAG slice      | Complete file or package size                              | None                                                                                    |
+| `sizes`     | Corpus with the 3DBAG slice      | Complete file or package size; CityParquet bytes by column | None                                                                                    |
 | `formats`   | Same corpus                      | Read time and peak memory                                  | All format queries                                                                      |
 | `bloom`     | Same corpus                      | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss` |
 | `databases` | The 3DBAG slice                  | Storage including indexes; mean query time and peak memory | Database query suite                                                                    |
@@ -175,6 +182,7 @@ the same figures, tables and conditions. The format comparison lives in its own
 | `formats/<dataset>/time`, `formats/<dataset>/rss`       | One heatmap per dataset and metric: read time or read peak memory per query and format, with factors against CityGML                                                       |
 | `formats/size_factors.csv`, `formats/size_extremes.csv` | Bytes and size factors against CityGML per dataset; the best and worst dataset by CityParquet's factor                                                                     |
 | `formats/query_factors.csv`                             | Time and peak memory per dataset, query and format, with both factors against CityGML                                                                                      |
+| `formats/compression.csv`                               | CityParquet bytes per dataset by column group, column and non-column part, copied from the `sizes` family's results ([breakdown](formats/README.md#the-compression-breakdown)) |
 | `bloom`                                                 | Package size and the two read heatmaps for the 3DBAG slice                                                                                                                 |
 | `bloom-corpus`                                          | The bloom pair per corpus dataset                                                                                                                                          |
 | `databases`                                             | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |

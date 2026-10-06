@@ -113,6 +113,61 @@ See [`../README.md`](../README.md) for the experimental matrix and figure list.
   the measurement and `mb_decimal` is bytes / 10^6 (1 MB = 10^6 bytes), for
   reading the file by eye. Ratios between formats are derived from the bytes
   by the renderer, in one place.
+- **The compression breakdown says where a package's bytes go.**
+  `benchmark/scripts/compression_contribution.py` (`just bench-compression
+  [PREPARED] [OUT]`, and part of the `sizes` family) reads every object table
+  of each prepared package with DuckDB's `parquet_metadata()` and writes
+  `compression.csv`. See [The compression breakdown](#the-compression-breakdown).
+
+## The compression breakdown
+
+The breakdown is measured from the Parquet footers of the packages the
+`sizes` family measured, so it changes only when the packages do. DuckDB
+comes from `benchmark/databases`' uv project. For each dataset it sums, over
+every row group and every object table, the column chunks'
+`total_compressed_size` and `total_uncompressed_size`. A nested column (a
+struct, list or map) counts towards its top-level column, and each top-level
+column belongs to one group by its specification name:
+
+| Group                   | Columns                                                                     |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `geometry`              | `geometry_lod*`                                                             |
+| `geometry_properties`   | `geometry_properties_lod*`                                                  |
+| `appearance`            | `material_lod*`, `texture_lod*`                                             |
+| `attributes`            | `address` and every column that is not reserved                            |
+| `identifiers_structure` | `id`, `feature_id`, `object_type`, `parents`, `children`, `children_roles` |
+| `bbox`                  | `bbox`                                                                      |
+| `other`                 | `other`, `implicit_geometry`                                                |
+
+**"Uncompressed" is the size after encoding and before the codec.**
+`total_uncompressed_size` counts the column's pages once dictionary, delta or
+run-length encoding has been applied. For a plain byte-array column, such as
+the WKB in `geometry_lod*`, that is close to the raw values. For a
+dictionary-encoded column it is already the encoded size, so
+`compression_ratio` (uncompressed / compressed) understates the total saving
+over the raw values. Each column row lists the encodings its chunks use, so a
+dictionary-encoded column is visible as `RLE_DICTIONARY`.
+
+**Everything that is not column data is a part**, so the column groups and
+the parts add up to the package size in `sizes.csv`:
+
+| Part                      | Bytes                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------------- |
+| `bloom_filters`           | The object tables' Bloom filters (`bloom_filter_length`)                               |
+| `footer_and_page_indexes` | The rest of each object table: footer, column and offset indexes, magic bytes          |
+| `sidecar_tables`          | The `cityparquet-sidecar` assets of `metadata.json` (materials, textures, templates), whole files |
+| `metadata`                | `metadata.json`                                                                        |
+| `other_files`             | Any other file in the package directory                                                |
+
+`compression.csv` has the columns
+`dataset,status,level,name,group,encodings,compressed_bytes,uncompressed_bytes,compressed_mb_decimal,share_of_column_bytes,share_of_package_bytes,compression_ratio`.
+`level` is `group`, `part`, `package` (the total) or `column`; `encodings`
+is filled for columns. The two shares are against the package's compressed
+column bytes and against the whole package, and parts have no uncompressed
+size, ratio or column share. A dataset whose package is missing gets one row
+with status `missing` and empty values, and the script exits 1. The `sizes`
+family writes the file beside `sizes.csv`, and `just bench-summary` copies it
+to `<figures>/formats/compression.csv`, beside `size_factors.csv`.
 - **Seven timing statistics over `repeat` read samples** — default 25, run back to back after one discarded warm-up; see `READ_BENCHMARK.md` "Sampling" for the optional cell time budget —
   reported at 6-decimal precision: `time_mean_s`, the **population standard
   deviation** `time_std_s` (the warm repeats are the whole measured set, not
