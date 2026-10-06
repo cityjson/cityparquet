@@ -54,7 +54,17 @@ carried as `meta.slice_dataset`) and is a labelled placeholder when the run did
 not measure it. The bloom axis measures the slice alone, because a filter rules
 out whole row groups and every corpus dataset but Zurich is a single group at
 the default row-group size; the earlier `bloom-corpus` figure is retired, and a
-copy left in a re-used figures directory is removed. The page reports a manifest `corpus` or `slice`
+copy left in a re-used figures directory is removed. Its queries are
+`bloom.measures` in `bench_data.json`: the identifier and feature lookups, then
+a hit (`attr-<column>-50pct`) and a miss (`attr-<column>-miss`) for each column
+of the slice's `bloom_attributes` in `benchmark/manifest.toml` and for any
+other attribute column the CSVs carry. A query no row answers is listed in
+`bloom.not_measured` and keeps its column, every cell reading "not measured",
+with the figure's note naming it — never dropped. Beside the size bar and the
+read time (ms) and peak RSS heatmaps, a text-only panel prints each lookup's
+pruning counts as `bloom_pruned + stats_pruned of row_groups_total`; the
+records carry those counters, `filter_bytes` and `probe_value` (the value the
+probe looked up, from the run's `.params.json`). The page reports a manifest `corpus` or `slice`
 dataset without format results as a missing section.
 Database panels use 3DCityDB as baseline. The loader reads the run's
 `.manifest.json` beside the CSV. When its `sizes.<tag>` blocks carry

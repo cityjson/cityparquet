@@ -125,6 +125,10 @@ def lod_query_label(params: dict | None) -> str:
 
 
 def _label(value: str) -> str:
+    attr = prep.ATTR_NOTE_RE.match(value)
+    if attr and value not in LABELS and value not in SCENARIO_LABELS:
+        probe = "miss" if value.endswith("-miss") else "hit 50 %"
+        return f"{attr.group('column')} lookup ({probe})"
     return LABELS.get(value) or SCENARIO_LABELS.get(value) or value.replace("-", " ").title()
 
 
@@ -531,19 +535,24 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
             f"Not rendered: the slice dataset ({largest or 'unnamed'}) was not measured; "
             f"the {key} axis measures the slice alone.",
         )
-    queries = _axis_queries(selected)
+    # The axis's own list of queries, so a lookup this run did not measure
+    # keeps its column and says so instead of vanishing from the figure.
+    queries = list(data.get(key, {}).get("measures") or []) or _axis_queries(selected)
+    answered = {r.get("measure") for r in selected}
+    unmeasured = [q for q in queries if q not in answered]
     palette = _axis_palette(variants)
-    # One row: the package size beside the two read heatmaps it explains.
-    fig = plt.figure(figsize=(11, 4.2))
+    # One row: the package size beside the read heatmaps it explains and the
+    # row groups each lookup pruned.
+    fig = plt.figure(figsize=(15, 4.8))
     grid = fig.add_gridspec(
         1,
-        3,
-        width_ratios=[0.55, 1, 1],
-        left=0.06,
-        right=0.86,
-        bottom=0.3,
-        top=0.82,
-        wspace=0.35,
+        4,
+        width_ratios=[0.45, 1, 1, 1],
+        left=0.05,
+        right=0.9,
+        bottom=0.36,
+        top=0.84,
+        wspace=0.3,
     )
     for col, (title, source, _ratio_field, value, measure) in enumerate(
         (
@@ -609,10 +618,14 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
                 b = base[0] if base else None
                 actual = r.get(field) if r else None
                 ratio = _ratio(actual, b.get(field) if b else None)
-                if actual is None:
+                if query in unmeasured:
+                    text = "not\nmeasured"
+                elif actual is None:
                     text = "—"
                 else:
-                    number = float(actual) / (units.MB if field == "rss_b" else 1)
+                    # Milliseconds: a lookup takes well under a second, and
+                    # six decimal places of seconds overrun the cell.
+                    number = float(actual) / units.MB if field == "rss_b" else actual * 1000
                     text = f"{number:.3g}\n{_ratio_short(ratio)}" if ratio else f"{number:.3g}"
                 row.append((ratio, text))
             cells.append(row)
@@ -621,7 +634,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     # bound can serve them; the cells carry the precision either way.
     bound = _cell_bound([row for block in cell_blocks for row in block], "diverging")
     for col, (ax, cells, title) in enumerate(
-        zip(heat_axes, cell_blocks, ("read time (s)", "read peak RSS (MB)"), strict=True)
+        zip(heat_axes, cell_blocks, ("read time (ms)", "read peak RSS (MB)"), strict=True)
     ):
         _heat(ax, cells, short_variants, queries, title, vmax=bound, scale="diverging")
         for text in ax.texts:
@@ -630,7 +643,41 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
         ax.tick_params(axis="x", labelsize=6)
         if col == 1:
             ax.set_yticks([])
-    cbar = fig.colorbar(heat_axes[-1].images[0], cax=fig.add_axes([0.90, 0.3, 0.015, 0.52]))
+    # The pruning counts: row groups the Bloom filters ruled out, then those
+    # the min/max statistics ruled out, of the table's row groups. Text only —
+    # a count is not a ratio to the default, so the cells carry no colour.
+    prune_ax = fig.add_subplot(grid[0, 3])
+    prune_cells = []
+    for variant in variants:
+        row = []
+        for query in queries:
+            r = next(
+                (s for s in selected if s.get("variant") == variant and s.get("measure") == query),
+                None,
+            )
+            total = r.get("row_groups_total") if r else None
+            if query in unmeasured:
+                text = "not\nmeasured"
+            elif total is None:
+                text = "—"
+            else:
+                text = f"{r.get('bloom_pruned') or 0} + {r.get('stats_pruned') or 0}\nof {total}"
+            row.append((None, text))
+        prune_cells.append(row)
+    _heat(
+        prune_ax,
+        prune_cells,
+        short_variants,
+        queries,
+        "row groups pruned (bloom + stats of total)",
+        vmax=bound,
+        scale="diverging",
+    )
+    for text in prune_ax.texts:
+        text.set_fontsize(5.5)
+    prune_ax.tick_params(axis="x", labelsize=6)
+    prune_ax.set_yticks([])
+    cbar = fig.colorbar(heat_axes[-1].images[0], cax=fig.add_axes([0.925, 0.36, 0.012, 0.48]))
     ticks = _heat_ticks(bound, "diverging")
     cbar.set_ticks(ticks)
     cbar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
@@ -643,7 +690,12 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
         **data.get("meta", {}).get("dataset_labels", {}).get(largest, {}),
     }
     fig.suptitle(f"{key.capitalize()} filters — {_title(headline)}", x=0.01, ha="left", fontsize=11)
-    note = " ".join(filter(None, (slice_note(headline), _statistic_note(data))))
+    unmeasured_note = (
+        f"Not measured in this run: {', '.join(_label(q) for q in unmeasured)}."
+        if unmeasured
+        else ""
+    )
+    note = " ".join(filter(None, (slice_note(headline), _statistic_note(data), unmeasured_note)))
     fig.text(0.01, 0.02, note, fontsize=6, color=MUTED, ha="left", wrap=True)
     return _save(fig, key, out)
 

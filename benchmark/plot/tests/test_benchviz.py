@@ -231,6 +231,78 @@ def test_bloom_axis_keys_the_lookup_probes_and_carries_the_counters(tmp_path: Pa
     assert off["time_ratio"] == 0.0049 / 0.0021
 
 
+def _with_attr_lookups(bench: Path) -> None:
+    """Append `documentnummer` attribute lookups, as a tile run with nine
+    row groups writes them, and record their probe values in the sidecar."""
+    directory = bench / "bloom_results"
+    hit, miss = "attr-documentnummer-50pct;value-substituted", "attr-documentnummer-miss"
+    rows = [
+        ("cityparquet", hit, 23, "0.003000", "9,6,0,4096"),
+        ("cityparquet", miss, 0, "0.001500", "9,9,0,4096"),
+        ("cityparquet+nobloom", hit, 23, "0.004500", "9,0,6,0"),
+        ("cityparquet+nobloom", miss, 0, "0.004000", "9,0,0,0"),
+    ]
+    with (directory / "delft.csv").open("a", encoding="utf-8") as csv:
+        for variant, notes, count, t, counters in rows:
+            csv.write(
+                f"delft.city.jsonl,{variant},attr-lookup,0.01,{count},{t},0.0001,{t},{t},{t},"
+                f"{t},{t},380000,14600000,2,{notes},,,{counters}\n"
+            )
+    sidecar = directory / "delft.csv.params.json"
+    params = json.loads(sidecar.read_text(encoding="utf-8"))
+    params["attr_probes"] = [
+        {"column": "documentnummer", "tag": "attr-documentnummer-50pct", "value": "704452.tif",
+         "present": True, "substituted": True},
+        {"column": "documentnummer", "tag": "attr-documentnummer-miss",
+         "value": "408537.tif-readbench-absent", "present": False, "substituted": False},
+    ]
+    sidecar.write_text(json.dumps(params), encoding="utf-8")
+
+
+def test_bloom_axis_keys_the_attribute_lookups_with_their_probe_values(tmp_path: Path):
+    bench = fixture_bench(tmp_path)
+    _with_attr_lookups(bench)
+    axis = prep.load_bloom_axis(bench / "bloom_results", attributes=["documentnummer"])
+    assert axis["measures"] == [
+        *prep.BLOOM_MEASURES,
+        "attr-documentnummer-50pct",
+        "attr-documentnummer-miss",
+    ]
+    assert axis["not_measured"] == []
+    hit = next(
+        r
+        for r in axis["records"]
+        if r["variant"] == "cityparquet+nobloom" and r["measure"] == "attr-documentnummer-50pct"
+    )
+    # Without filters the statistics still prune; both counts are kept.
+    assert (hit["row_groups_total"], hit["bloom_pruned"], hit["stats_pruned"]) == (9, 0, 6)
+    assert hit["probe_value"] == "704452.tif"
+    assert "value-substituted" in hit["notes"]
+
+
+def test_unmeasured_attribute_lookups_are_listed_and_drawn_as_not_measured(tmp_path: Path):
+    """The fixture, like the committed slice evidence, has no attribute rows:
+    the configured columns stay on the axis as `not measured`."""
+    import matplotlib.pyplot as plt
+
+    bench = fixture_bench(tmp_path)
+    data, _ = prep.build(prep.Inputs(bench))
+    axis = data["bloom"]
+    configured = prep.bloom_attributes()
+    assert configured, "the manifest's slice configures bloom_attributes"
+    expected = [m for c in configured for m in (f"attr-{c}-50pct", f"attr-{c}-miss")]
+    assert axis["not_measured"] == expected
+    assert {r["measure"] for r in axis["records"]} == set(prep.BLOOM_MEASURES)
+    data["meta"]["slice_dataset"] = "delft"
+    with plt.rc_context({"svg.fonttype": "none"}):
+        figures._axis_main(data, "bloom", tmp_path / "figures")
+    text = (tmp_path / "figures" / "bloom.svg").read_text(encoding="utf-8")
+    assert "Not measured in this run:" in text
+    assert f"{configured[0]} lookup (miss)" in text
+    assert "row groups pruned (bloom + stats of total)" in text
+    assert "1 + 0" in text
+
+
 def test_bloom_objects_come_from_the_parameter_sidecar_not_a_lookup_count(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     data, _ = prep.build(prep.Inputs(bench))

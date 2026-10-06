@@ -76,7 +76,14 @@ def _cmd_prep(args: argparse.Namespace) -> None:
         if "sizes" not in families:
             payload["sizes"] = []
         if "bloom" not in families:
-            payload["bloom"] = {"records": [], "sizes": [], "gaps": [], "variants": []}
+            payload["bloom"] = {
+                "records": [],
+                "sizes": [],
+                "gaps": [],
+                "variants": [],
+                "measures": [],
+                "not_measured": [],
+            }
         if "databases" not in families:
             _drop_databases(payload)
     data.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

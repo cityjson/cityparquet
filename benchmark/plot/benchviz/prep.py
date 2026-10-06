@@ -203,11 +203,15 @@ BBOX_NOTE_RE = re.compile(r"^bbox-\d+pct$")
 # rather than being averaged into one.
 ID_NOTE_RE = re.compile(r"^id-(?:\d+pct|miss)$")
 FEATURE_NOTE_RE = re.compile(r"^feature-(?:\d+pct|miss)$")
+# The bloom axis's attribute-equality probes: `attr-<column>-50pct` (a value
+# that is present) and `attr-<column>-miss` (a value verified absent).
+ATTR_NOTE_RE = re.compile(r"^attr-(?P<column>.+)-(?:\d+pct|miss)$")
 COLD_RE = re.compile(r"\bcold\b", re.IGNORECASE)
 
 AXIS_BASELINE = "cityparquet"
-# The bloom axis measures the identifier lookups only; every other query is
-# untouched by the filters.
+# The bloom axis measures the lookups a filter can answer: the identifier
+# lookups below, and an attribute-equality lookup per configured column
+# (`bloom_measures`). Every other query is untouched by the filters.
 BLOOM_MEASURES = ("id-50pct", "id-miss", "feature-50pct", "feature-miss")
 # The lookup counters a CityParquet lookup row carries, appended to the read
 # CSV after `http_requests`: row groups in the table, those the bloom filters
@@ -458,6 +462,10 @@ def _scenario_key(row: dict[str, str]) -> str:
         tag = _primary_tag(notes)
         if FEATURE_NOTE_RE.match(tag):
             return tag
+    if scenario == "attr-lookup":
+        tag = _primary_tag(notes)
+        if ATTR_NOTE_RE.match(tag):
+            return tag
     return scenario
 
 
@@ -598,11 +606,49 @@ def slice_dataset(path: Path = MANIFEST_PATH) -> str | None:
     return _manifest_stem(entry.get("source", "")) or key
 
 
+def bloom_attributes(path: Path = MANIFEST_PATH) -> list[str]:
+    """The slice dataset's `bloom_attributes`: the text columns whose
+    attribute-equality lookups the bloom axis measures. Empty when the
+    manifest is absent or configures none."""
+    if not path.exists():
+        return []
+    manifest = tomllib.loads(path.read_text(encoding="utf-8"))
+    key = manifest.get("suite", {}).get("slice_dataset")
+    entry = manifest.get("datasets", {}).get(key, {}) if key else {}
+    return list(entry.get("bloom_attributes", []))
+
+
+def bloom_measures(attributes: list[str]) -> tuple[str, ...]:
+    """The bloom axis's queries in figure order: the identifier and feature
+    lookups, then each attribute column's hit and miss."""
+    attr = tuple(
+        m for column in attributes for m in (f"attr-{column}-50pct", f"attr-{column}-miss")
+    )
+    return BLOOM_MEASURES + attr
+
+
+def _probe_values(path: Path) -> dict[str, str]:
+    """`notes` tag -> the value that probe looked up, from the run's sidecar."""
+    sidecar = Path(f"{path}.params.json")
+    if not sidecar.is_file():
+        return {}
+    params = json.loads(sidecar.read_text(encoding="utf-8"))
+    values = {
+        p["tag"]: p["id"]
+        for field in ("id_probes", "feature_probes")
+        for p in params.get(field) or []
+        if "tag" in p and "id" in p
+    }
+    values |= {p["tag"]: p["value"] for p in params.get("attr_probes") or [] if "tag" in p}
+    return values
+
+
 def load_bloom_axis(
     directory: Path,
     baseline: str = AXIS_BASELINE,
-    measures: tuple[str, ...] = BLOOM_MEASURES,
+    measures: tuple[str, ...] | None = None,
     statistic: str = "median",
+    attributes: list[str] | None = None,
 ) -> dict:
     """The bloom-filter configuration axis from a `--variants` run.
 
@@ -610,6 +656,12 @@ def load_bloom_axis(
     memory or disk. The variant order is the CSVs' own first-seen order,
     because the recipe's list is the figure's order and sorting would lose
     it. Absolute seconds and bytes stay: the corpus figure plots them.
+
+    `measures` is every query the axis should show: by default the
+    identifier and feature lookups and the attribute lookups of the
+    manifest's `bloom_attributes` (or `attributes`), plus any attribute
+    column the CSVs carry. A measure no CSV row answers is listed under
+    `not_measured`, so the figure can say so rather than drop its column.
     """
     records: list[dict] = []
     sizes: list[dict] = []
@@ -617,6 +669,7 @@ def load_bloom_axis(
     variants: list[str] = []
     objects_by: dict[str, int | None] = {}
 
+    keyed: list[tuple[Path, str, dict[str, dict[str, dict[str, str]]]]] = []
     for path in _dataset_csvs(directory):
         name = path.stem
         rows = _read_rows(path, READ_COLUMNS)
@@ -633,7 +686,21 @@ def load_bloom_axis(
         if not any(baseline in bucket for bucket in by_measure.values()):
             gaps.append({"dataset": name, "issue": f"no '{baseline}' baseline rows"})
             continue
+        keyed.append((path, name, by_measure))
+
+    if measures is None:
+        configured = bloom_attributes() if attributes is None else list(attributes)
+        found = [
+            m.group("column")
+            for _, _, by_measure in keyed
+            for key in by_measure
+            if (m := ATTR_NOTE_RE.match(key))
+        ]
+        measures = bloom_measures(list(dict.fromkeys(configured + found)))
+
+    for path, name, by_measure in keyed:
         objects_by[name] = _object_total(path, by_measure, baseline)
+        probe_values = _probe_values(path)
         present = {v for bucket in by_measure.values() for v in bucket}
         for key in measures:
             bucket = by_measure.get(key)
@@ -685,6 +752,7 @@ def load_bloom_axis(
                         ),
                         "status": status,
                         "notes": row.get("notes", ""),
+                        "probe_value": probe_values.get(key),
                         **{column: _int(row.get(column)) for column in LOOKUP_COLUMNS},
                     }
                 )
@@ -720,7 +788,15 @@ def load_bloom_axis(
                 )
 
     gaps.sort(key=lambda g: (g["dataset"], g["issue"]))
-    return {"records": records, "sizes": sizes, "gaps": gaps, "variants": variants}
+    answered = {r["measure"] for r in records}
+    return {
+        "records": records,
+        "sizes": sizes,
+        "gaps": gaps,
+        "variants": variants,
+        "measures": list(measures),
+        "not_measured": [m for m in measures if m not in answered],
+    }
 
 
 def read_machine(directory: Path) -> str | None:
