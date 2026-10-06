@@ -35,6 +35,9 @@ FAMILIES = ("sizes", "formats", "bloom", "databases")
 PROFILES = ("full", "short", "smoke")
 # The dataset roles that are format, size and bloom inputs.
 INPUT_ROLES = frozenset({"corpus", "slice"})
+# The read recipes' shared-host isolation (benchmark/README.md, "Running on
+# a shared host"): NUMA node, children's memory ceiling, load gate.
+DEFAULT_ISOLATION = {"numa_node": os.environ.get("BENCH_NUMA_NODE", "auto"), "memory_max": None, "max_load": "auto", "max_load_wait_s": 600}
 
 
 def slice_dataset(manifest: dict) -> str:
@@ -177,7 +180,7 @@ def code_identity() -> dict[str, object]:
     }
 
 
-def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repeat: int, smoke: bool, fixed_configuration: str, profile: str = "full", cell_budget_s: float | None = None, min_repeat: int = 7) -> None:
+def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repeat: int, smoke: bool, fixed_configuration: str, profile: str = "full", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None) -> None:
     """Persist enough local evidence to identify one benchmark result exactly."""
     artefacts = [
         result_csv,
@@ -186,6 +189,8 @@ def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repe
     ]
     files = {str(path.name): sha256(path) for path in artefacts if path.is_file()}
     params = Path(f"{result_csv}.params.json")
+    # What the run asked for beside what readbench recorded as applied.
+    applied = json.loads(params.read_text()).get("isolation") if params.is_file() else None
     manifest = {
         "schema": 1,
         "family": family,
@@ -193,7 +198,7 @@ def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repe
         "profile": profile,
         "source": {"path": str(source_path.resolve()), "sha256": sha256(source_path)},
         "result": {"csv": str(result_csv.resolve()), "files_sha256": files, "params_sha256": sha256(params) if params.is_file() else None},
-        "measurement": {"read_repeat": repeat, "cell_budget_s": cell_budget_s, "min_repeat": min_repeat, "fixed_configuration": fixed_configuration},
+        "measurement": {"read_repeat": repeat, "cell_budget_s": cell_budget_s, "min_repeat": min_repeat, "fixed_configuration": fixed_configuration, "isolation": {"requested": isolation or DEFAULT_ISOLATION, "applied": applied}},
         "code": code_identity(),
         "machine": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "processor": platform.processor(), "python": sys.version.split()[0]},
         "tools": {"rust": version("rustc", "--version"), "fcb": version("fcb", "--version"), "cjseq": version("cjseq", "--version"), "cityparquet": version("lib/cityparquet-rs/target/release/cityparquet", "--version")},
@@ -271,11 +276,13 @@ def read_repeat(profile: str) -> int:
     return 1 if profile == "smoke" else 25
 
 
-def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7) -> None:
+def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None) -> None:
     smoke = profile == "smoke"
     repeat = read_repeat(profile)
     budget = "" if cell_budget_s is None else str(cell_budget_s)
-    sampling = {"cell_budget_s": cell_budget_s, "min_repeat": min_repeat}
+    isolation = isolation or DEFAULT_ISOLATION
+    sampling = {"cell_budget_s": cell_budget_s, "min_repeat": min_repeat, "isolation": isolation}
+    isolation_args = (str(isolation["numa_node"]), "" if isolation["memory_max"] is None else str(isolation["memory_max"]), str(isolation["max_load"]), str(isolation["max_load_wait_s"]))
     selected = {key: manifest["datasets"][key] for key in datasets}
     inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in INPUT_ROLES]
     require_prepared(inputs, locations)
@@ -285,7 +292,7 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         # `bench` is the low-level format runner. It must be passed explicit
         # external output paths.
         output = result_dir(locations, "formats", profile)
-        just("bench", str(stage(locations, "formats", inputs)), str(output), read_formats, str(locations["prepared"]), str(repeat), budget, str(min_repeat))
+        just("bench", str(stage(locations, "formats", inputs)), str(output), read_formats, str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args)
         for input_path in inputs:
             # A read subset is part of the run's identity: a CSV whose
             # read rows were measured for four formats must say so.
@@ -299,7 +306,7 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
             command(sys.executable, "benchmark/scripts/measure_sizes.py", "--input", str(input_path), "--prepared", str(locations["prepared"]), "--out", str(output))
     if "bloom" in families:
         output = result_dir(locations, "bloom", profile)
-        just("bloom-bench", str(stage(locations, "bloom", inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat))
+        just("bloom-bench", str(stage(locations, "bloom", inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args)
         for input_path in inputs:
             write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile, **sampling)
     if "databases" in families:
@@ -335,6 +342,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--smoke", action="store_true", help="the same as --profile smoke")
     result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")
     result.add_argument("--cell-budget-s", type=float, default=None, help="run only: optional per-cell time budget in seconds for the formats and bloom families (default: off); a cell stops sampling once its runs, warm-up included, took this long and at least --min-repeat samples exist")
+    result.add_argument("--numa-node", default=DEFAULT_ISOLATION["numa_node"], help="run only: NUMA node for the read families' measured processes: an id, auto (most free memory; default, or $BENCH_NUMA_NODE) or off")
+    result.add_argument("--memory-max", type=int, default=None, help="run only: memory ceiling in bytes for the read families' measured processes, via systemd-run --user (default: off)")
+    result.add_argument("--max-load", default="auto", help="run only: load gate before every read sample: the pinned node's load share against this threshold; auto = half the node's cores, off disables")
+    result.add_argument("--max-load-wait-s", type=int, default=600, help="run only: the longest a read sample waits for the load to drop before it proceeds and its cell is tagged busy (default 600)")
     result.add_argument("--min-repeat", type=int, default=7, help="run only: the fewest timed samples a budgeted cell takes (default 7, clamped to the repetitions)")
     result.add_argument("--data-root", type=Path, default=Path(os.environ.get("CITYPARQUET_BENCH_ROOT", DEFAULT_DATA_ROOT)))
     result.add_argument("--out", type=Path)
@@ -359,7 +370,7 @@ def main() -> None:
     if args.command == "prep":
         prepare(data, locations, families, datasets, profile)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat)
+        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": args.memory_max, "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s})
     else:
         output = (args.out or locations["summary"] / profile).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None

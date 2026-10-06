@@ -124,7 +124,7 @@ case_positional_arguments_line_up() {
   local name="bloom-bench and bloom-bench-http pass each argument in its own parameter's position"
   local params
   params="$(variant_bench_params | tr '\n' ' ')"
-  if [[ "$params" != "FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL " ]]; then
+  if [[ "$params" != "FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_NODE MEMORY_MAX MAX_LOAD MAX_LOAD_WAIT_S SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL " ]]; then
     fail "$name" "variant-bench's parameters changed: $params"
     return
   fi
@@ -133,6 +133,10 @@ case_positional_arguments_line_up() {
     if [[ "$(argument_for "$recipe" REPEAT)" != "{{REPEAT}}" \
       || "$(argument_for "$recipe" CELL_BUDGET_S)" != "{{CELL_BUDGET_S}}" \
       || "$(argument_for "$recipe" MIN_REPEAT)" != "{{MIN_REPEAT}}" \
+      || "$(argument_for "$recipe" NUMA_NODE)" != "{{NUMA_NODE}}" \
+      || "$(argument_for "$recipe" MEMORY_MAX)" != "{{MEMORY_MAX}}" \
+      || "$(argument_for "$recipe" MAX_LOAD)" != "{{MAX_LOAD}}" \
+      || "$(argument_for "$recipe" MAX_LOAD_WAIT_S)" != "{{MAX_LOAD_WAIT_S}}" \
       || "$(argument_for "$recipe" SCENARIOS)" != "id-lookup,feature-lookup" \
       || "$(argument_for "$recipe" ID_PROBES)" != "id-50pct,id-miss" \
       || "$(argument_for "$recipe" FEATURE_PROBES)" != "feature-50pct,feature-miss" ]]; then
@@ -172,10 +176,37 @@ case_variant_bench_has_no_caller_defaults() {
   pass "$name"
 }
 
+case_isolation_flags_reach_readbench() {
+  local name="bench and variant-bench pass the isolation settings to readbench"
+  local recipe body header
+  for recipe in bench variant-bench; do
+    header="$(grep -E "^$recipe " "$JUSTFILE")"
+    body="$(sed -n "/^$recipe /,/^\[private\]/p" "$JUSTFILE")"
+    if [[ "$body" != *'--numa-node "{{NUMA_NODE}}"'* \
+      || "$body" != *'--max-load "{{MAX_LOAD}}"'* \
+      || "$body" != *'--max-load-wait-s "{{MAX_LOAD_WAIT_S}}"'* \
+      || "$body" != *'--memory-max "{{MEMORY_MAX}}"'* ]]; then
+      fail "$name" "$recipe does not pass every isolation flag"
+      return
+    fi
+  done
+  for recipe in bench bloom-bench bloom-bench-http; do
+    header="$(grep -E "^$recipe " "$JUSTFILE")"
+    if [[ "$header" != *"NUMA_NODE=env('BENCH_NUMA_NODE', 'auto')"* \
+      || "$header" != *"MEMORY_MAX=''"* || "$header" != *"MAX_LOAD='auto'"* \
+      || "$header" != *"MAX_LOAD_WAIT_S='600'"* ]]; then
+      fail "$name" "$recipe lacks the isolation defaults: $header"
+      return
+    fi
+  done
+  pass "$name"
+}
+
 case_bloom_bench_list
 case_bloom_http_matches_the_local_pair
 case_positional_arguments_line_up
 case_variant_bench_has_no_caller_defaults
+case_isolation_flags_reach_readbench
 
 echo "bench_recipe_test: $PASSED passed, $FAILED failed"
 [[ "$FAILED" -eq 0 ]]

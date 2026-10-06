@@ -321,9 +321,16 @@ readbench-prepare INPUT OUTDIR=(BENCH / "runs/data/readbench") FORMATS='':
 # a cell's sampling once its runs, warm-up included, have taken that many
 # seconds and at least MIN_REPEAT samples exist; such a row carries the
 # `budget` tag in `notes`.
+#
+# Isolation on a shared host (see benchmark/README.md): NUMA_NODE (default
+# `auto`, or $BENCH_NUMA_NODE) pins the children to one node, MEMORY_MAX
+# (bytes, empty: off) caps their memory through `systemd-run --user`, and
+# MAX_LOAD (`auto` = half the node's cores, `off`) holds each sample for up
+# to MAX_LOAD_WAIT_S seconds while the node is contended; a cell that runs
+# anyway carries `busy` in `notes`. Off Linux each is recorded as not applied.
 [private]
 [doc("Cross-format READ benchmark over every input under FOLDER")]
-bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7':
+bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7' NUMA_NODE=env('BENCH_NUMA_NODE', 'auto') MEMORY_MAX='' MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -336,6 +343,9 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
     fi
     if [[ -n "{{CELL_BUDGET_S}}" ]]; then
         run_args+=(--cell-budget-s "{{CELL_BUDGET_S}}")
+    fi
+    if [[ -n "{{MEMORY_MAX}}" ]]; then
+        run_args+=(--memory-max "{{MEMORY_MAX}}")
     fi
     found=0
     while IFS= read -r -d '' f; do
@@ -360,6 +370,9 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
             --out "$out" \
             --repeat {{REPEAT}} \
             --min-repeat {{MIN_REPEAT}} \
+            --numa-node "{{NUMA_NODE}}" \
+            --max-load "{{MAX_LOAD}}" \
+            --max-load-wait-s "{{MAX_LOAD_WAIT_S}}" \
             ${run_args[@]+"${run_args[@]}"}
 
         found=$((found + 1))
@@ -397,7 +410,7 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
 # reads those lists back out of this file.
 [private]
 [doc("Configuration-axis run: reads and package size per variant, over every input under FOLDER")]
-variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL='':
+variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_NODE MEMORY_MAX MAX_LOAD MAX_LOAD_WAIT_S SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL='':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -425,6 +438,10 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT SCENA
         if [[ -n "{{CELL_BUDGET_S}}" ]]; then
             budget_args=(--cell-budget-s "{{CELL_BUDGET_S}}")
         fi
+        memory_args=()
+        if [[ -n "{{MEMORY_MAX}}" ]]; then
+            memory_args=(--memory-max "{{MEMORY_MAX}}")
+        fi
         transport_args=()
         if [[ -n "{{BASE_URL}}" ]]; then
             transport_args=(--transport http --base-url "{{BASE_URL}}")
@@ -436,6 +453,10 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT SCENA
             --repeat {{REPEAT}} \
             --min-repeat {{MIN_REPEAT}} \
             ${budget_args[@]+"${budget_args[@]}"} \
+            --numa-node "{{NUMA_NODE}}" \
+            ${memory_args[@]+"${memory_args[@]}"} \
+            --max-load "{{MAX_LOAD}}" \
+            --max-load-wait-s "{{MAX_LOAD_WAIT_S}}" \
             --scenarios "{{SCENARIOS}}" \
             --id-probes "{{ID_PROBES}}" \
             ${feature_args[@]+"${feature_args[@]}"} \
@@ -459,8 +480,8 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT SCENA
 # verified miss. Every variant at the default codec and row-group size.
 [private]
 [doc("Bloom axis over every input under FOLDER: cityparquet vs cityparquet+nobloom")]
-bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7':
-    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"
+bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7' NUMA_NODE=env('BENCH_NUMA_NODE', 'auto') MEMORY_MAX='' MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "{{NUMA_NODE}}" "{{MEMORY_MAX}}" "{{MAX_LOAD}}" "{{MAX_LOAD_WAIT_S}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"
 
 # The bloom axis over HTTP: reads (never builds) the two packages a local
 # `bloom-bench` run left in PREPARED, after PREPARED was uploaded to BASE_URL
@@ -468,8 +489,8 @@ bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / 
 # real bucket, and its timings are a snapshot of one network path.
 [private]
 [doc("Bloom axis over HTTP, against uploaded bloom-bench packages")]
-bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7':
-    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"
+bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7' NUMA_NODE=env('BENCH_NUMA_NODE', 'auto') MEMORY_MAX='' MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "{{NUMA_NODE}}" "{{MEMORY_MAX}}" "{{MAX_LOAD}}" "{{MAX_LOAD_WAIT_S}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"
 
 # ---------------------------------------------------------------------------
 # The harness's own test suites

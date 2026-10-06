@@ -62,11 +62,27 @@ class ProvenanceTests(unittest.TestCase):
             source = root / "slice.city.jsonl"; source.write_text("source\n")
             result = root / "slice.csv"; result.write_text("dataset\n")
             Path(f"{result}.samples.json").write_text("[]\n")
-            Path(f"{result}.params.json").write_text("{}\n")
+            Path(f"{result}.params.json").write_text(json.dumps({"isolation": {"pinning": {"status": "not applied: not Linux"}}}))
             bench_suite.write_run_manifest(source, result, family="formats", repeat=1, smoke=True, fixed_configuration="test")
             manifest = json.loads(result.with_suffix(".run.json").read_text())
             self.assertEqual(set(manifest["result"]["files_sha256"]), {"slice.csv", "slice.csv.samples.json", "slice.csv.params.json"})
-            self.assertEqual(manifest["measurement"], {"read_repeat": 1, "cell_budget_s": None, "min_repeat": 7, "fixed_configuration": "test"})
+            self.assertEqual(manifest["measurement"], {"read_repeat": 1, "cell_budget_s": None, "min_repeat": 7, "fixed_configuration": "test",
+                                                       "isolation": {"requested": bench_suite.DEFAULT_ISOLATION, "applied": {"pinning": {"status": "not applied: not Linux"}}}})
+
+    def test_run_suite_forwards_the_isolation_to_the_read_recipes(self):
+        from unittest import mock
+        calls = []
+        isolation = {"numa_node": "1", "memory_max": 8000000000, "max_load": "off", "max_load_wait_s": 60}
+        with mock.patch.object(bench_suite, "just", lambda *a: calls.append(a)), \
+             mock.patch.object(bench_suite, "require_prepared", lambda *a: None), \
+             mock.patch.object(bench_suite, "source", lambda entry, locations: Path("x.city.jsonl")), \
+             mock.patch.object(bench_suite, "stage", lambda *a: Path("stage")), \
+             mock.patch.object(bench_suite, "result_dir", lambda *a: Path("out")), \
+             mock.patch.object(bench_suite, "write_run_manifest", lambda *a, **k: None):
+            manifest = {"datasets": {"d": {"role": "corpus"}}}
+            bench_suite.run_suite(manifest, {"prepared": Path("p"), "data": Path("d")}, ["formats", "bloom"], ["d"], "full", isolation=isolation)
+        for call in calls:
+            self.assertEqual(call[-4:], ("1", "8000000000", "off", "60"), call)
 
 
 if __name__ == "__main__":
