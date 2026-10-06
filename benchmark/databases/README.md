@@ -1317,17 +1317,15 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     there the re-run would apply the mutation twice (see "The write tier").
 
 21. **The CityParquet package carries bloom filters, and DuckDB consults
-    them.** Since the writer's 2026-09-23 default, `cityparquet convert`
-    writes Parquet bloom filters on `id`, `feature_id` and every string
+    them.** By default `cityparquet convert` writes Parquet bloom filters on `id`, `feature_id` and every string
     attribute whose estimated distinct count reaches a fifth of its
     non-null count (FPP 0.01, filters after the last row group). DuckDB
     reads them for equality predicates, so `id-lookup` and `attr-filter`
     on `duckdb-cityparquet` can skip row groups a min/max statistic could
     not. cjdb and 3DCityDB answer the same probes through their btree
     indexes, so this is an index-versus-index comparison, not a scan
-    against an index as it was in the 12 September run, whose package
-    carried no filters. A figure that puts the two runs side by side must
-    say so. `parquet_metadata(...)` on the package shows
+    against an index; a package written without filters would answer a
+    different question. `parquet_metadata(...)` on the package shows
     `bloom_filter_offset` non-null on the filtered columns; the format
     family's `bloom` family measures the effect in isolation. The filters
     explain the `id-miss` row, not the hit rows: what a hit costs on
@@ -1339,7 +1337,7 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     measure is DuckDB materialising every column of the one surviving row
     group for a `SELECT *`. A diagnostic probe on 25 September 2026, on the
     committed 1M Hilbert package with the harness's own probe ids, the same
-    DuckDB 1.5.5 the committed run used, one thread, five samples after a
+    DuckDB 1.5.5 the committed evidence used, one thread, five samples after a
     warm-up (a probe, not the committed rows' means) measured:
 
     | query                            | hit            | miss           |
