@@ -268,8 +268,8 @@ convert-all FOLDER OUT='out/cityparquet':
 # ---------------------------------------------------------------------------
 
 # Prepare the per-format artefacts for ONE input, WITHOUT measuring anything
-# (`just bench FOLDER` runs exactly this as its first step, for every input
-# under FOLDER). A thin wrapper over
+# (`just bench-prep` runs exactly this for every selected input; `bench`
+# only reads what it built). A thin wrapper over
 # `benchmark/scripts/readbench_prepare.sh`, which owns the conversion
 # chain, its per-format tool guards and its refusals.
 #
