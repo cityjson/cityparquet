@@ -127,6 +127,21 @@ new_sandbox() {
   local dir
   dir="$(mktemp -d "${TMPDIR:-/tmp}/readbench_prepare_test.XXXXXX")"
   mkdir -p "$dir/repo/benchmark/scripts" "$dir/repo/lib/cityparquet-rs" "$dir/bin" "$dir/data" "$dir/out"
+  mkdir -p "$dir/repo/benchmark/readbench"
+  # The corpus normalisation, stubbed: it copies INPUT, and when told to drop
+  # (STUB_NORMALISE_DROPPED > 0) appends a marker feature, so a case can see
+  # which source the rest of the chain was built from.
+  cat >"$dir/bin/lod-normalise" <<'NORMALISE_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+cp "$1" "$2"
+dropped=${STUB_NORMALISE_DROPPED:-0}
+if [[ $dropped -gt 0 ]]; then
+  printf '{"type":"CityJSONFeature","id":"normalised"}\n' >>"$2"
+fi
+echo "dropped=$dropped geometries=9->$((9 - dropped)) vertices=4->4"
+NORMALISE_STUB
+  chmod +x "$dir/bin/lod-normalise"
   cp "$PREPARE" "$dir/repo/benchmark/scripts/readbench_prepare.sh"
   cp "$(dirname "$PREPARE")/compact_json.py" "$dir/repo/benchmark/scripts/compact_json.py"
   # One CityJSONFeature line — enough for the script's feature count to be 1.
@@ -241,8 +256,11 @@ echo stub >"$out/building.parquet"
 # package rather than merely trusting the script's own echo of it.
 printf '%s\n' "$src" >"$out/stub-source.txt"
 printf '%s\n' "${argv[@]}" >"$out/stub-argv.txt"
+# The writer's report line; its third field is skipped_same_lod_geometries.
+printf '1 1 %s 0 0 0 0 0 0 0\n' "${STUB_SKIPPED_SAME_LOD:-0}"
 CITYPARQUET_STUB
 chmod +x target/release/cityparquet
+cp "$(command -v lod-normalise)" target/release/lod-normalise
 CARGO_STUB
         chmod +x "$dir/bin/cargo"
         ;;
@@ -435,7 +453,10 @@ run_prepare() {
   # CITYGML_TOOLS is blanked, not inherited: a developer who exported it to
   # point at their own checkout would otherwise smuggle a real citygml-tools
   # into the cases that exist to prove it is absent.
+  # LOD_NORMALISE names the stub; RUN_PREPARE_LOD_NORMALISE="" makes the
+  # script build it with cargo instead.
   PATH="$dir/bin:${RUN_PREPARE_PATH:-$BASE_PATH}" CITYGML_TOOLS="" \
+    LOD_NORMALISE="${RUN_PREPARE_LOD_NORMALISE-$dir/bin/lod-normalise}" \
     "$dir/repo/benchmark/scripts/readbench_prepare.sh" "$@" \
     >"$LAST_LOG" 2>&1
   LAST_RC=$?
@@ -1585,6 +1606,107 @@ case_an_unpinned_tool_version_is_warned_about() {
   pass "$name"
 }
 
+
+# --------------------------------------------------------------------------
+# Case 9: the corpus normalisation (one geometry per LoD and object) runs
+# first, and a source it changed replaces INPUT for the whole chain.
+# --------------------------------------------------------------------------
+case_the_normalised_source_feeds_the_chain() {
+  local name="a source the normalisation changed feeds every artefact"
+  local dir
+  dir="$(new_sandbox cargo fcb)"
+  STUB_NORMALISE_DROPPED=3 run_prepare "$dir" --formats cityjsonseq,cityparquet "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "normalise tiny: one geometry per LoD and object: 3 geometries dropped"; then
+    fail "$name" "no normalisation log line; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! grep -qF '"id":"normalised"' "$dir/out/tiny.city.jsonl"; then
+    fail "$name" "the CityJSONSeq artefact was not built from the normalised source"
+    return
+  fi
+  pass "$name"
+}
+
+case_an_unchanged_source_is_used_as_is() {
+  local name="a source the normalisation left alone is the chain's input, byte for byte"
+  local dir
+  dir="$(new_sandbox cargo)"
+  run_prepare "$dir" --formats cityjsonseq,cityparquet "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "0 geometries dropped" || ! cmp -s "$dir/data/tiny.city.jsonl" "$dir/out/tiny.city.jsonl"; then
+    fail "$name" "the CityJSONSeq artefact differs from the source; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ -e "$dir/out/.readbench-chain/tiny.normalised.city.jsonl" ]]; then
+    fail "$name" "an unused normalised copy was left behind"
+    return
+  fi
+  pass "$name"
+}
+
+case_a_same_lod_skip_after_normalisation_is_an_error() {
+  local name="a writer that still skips same-LoD geometries fails the dataset"
+  local dir
+  dir="$(new_sandbox cargo)"
+  STUB_SKIPPED_SAME_LOD=2 run_prepare "$dir" --formats cityparquet "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "'tiny': the CityParquet writer skipped 2 same-LoD geometries"; then
+    return
+  fi
+  pass "$name"
+}
+
+case_a_normalised_dataset_refuses_every_stage() {
+  local name="a dataset the normalisation changed refuses every stage built before it"
+  local dir
+  dir="$(new_sandbox cargo fcb)"
+  STUB_NORMALISE_DROPPED=1 run_prepare "$dir" --formats cityparquet,flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "first run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  printf '6\n' >"$dir/out/.readbench-chain/tiny"
+  STUB_NORMALISE_DROPPED=1 run_prepare "$dir" --formats cityparquet,flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "built by an older derivation chain"; then
+    return
+  fi
+  if ! grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.fcb"; then
+    fail "$name" "the refusal does not name the FlatCityBuf file; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
+case_lod_normalise_is_built_when_not_given() {
+  local name="lod-normalise is built with cargo when LOD_NORMALISE is not set"
+  local dir
+  dir="$(new_sandbox cargo)"
+  RUN_PREPARE_LOD_NORMALISE="" run_prepare "$dir" --formats cityparquet "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]] || ! log_mentions "building lod-normalise"; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
+case_a_citygml_input_is_not_normalised() {
+  local name="a CityGML input is not normalised"
+  local dir
+  dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
+  RUN_PREPARE_LOD_NORMALISE=/usr/bin/false run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]] || log_mentions "normalise tiny"; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
 case_cityparquet_only
 case_an_unpinned_tool_version_is_warned_about
 case_flatcitybuf_without_fcb
@@ -1619,6 +1741,12 @@ case_unstamped_artefacts_are_refused
 case_current_chain_artefacts_are_reused
 case_vocabulary_matches_the_rust_enum
 case_artefact_names_match_the_rust_enum
+case_the_normalised_source_feeds_the_chain
+case_an_unchanged_source_is_used_as_is
+case_a_same_lod_skip_after_normalisation_is_an_error
+case_a_normalised_dataset_refuses_every_stage
+case_lod_normalise_is_built_when_not_given
+case_a_citygml_input_is_not_normalised
 
 echo "readbench_prepare_test: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

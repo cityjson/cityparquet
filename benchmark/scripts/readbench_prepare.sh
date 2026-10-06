@@ -28,6 +28,21 @@
 # `naming::strip_known_extension`), held in lockstep by
 # `benchmark/readbench/tests/strip_extension.rs`.
 #
+# THE CORPUS IS NORMALISED FIRST: ONE GEOMETRY PER LoD AND OBJECT. Before any
+# artefact is built, a CityJSON/CityJSONSeq INPUT goes through `lod-normalise`
+# (benchmark/readbench, `lod::keep_first_per_lod`): each CityObject keeps the
+# first geometry at each LoD in source order, the vertices nothing references
+# any more are removed, and every CityObject is kept, with or without
+# geometry. CityParquet stores one geometry column per LoD, so its writer
+# keeps the first geometry at a LoD and drops the rest; normalising the
+# SOURCE, rather than letting the writer drop them, makes every artefact,
+# all five formats, hold the same geometries. "The same LoD" is the writer's
+# key exactly (`Lod::parse`, so `1` and `1.0` are one LoD; a GeometryInstance
+# never claims a LoD), and the CityParquet stage asserts the writer then skips
+# nothing. A source that needs no change is used as is, byte for byte. The
+# normalised source lives in OUTDIR/.readbench-chain/ and replaces INPUT for
+# the rest of the chain. A CityGML INPUT is not normalised.
+#
 # THE CONVERSION CHAIN, AND WHY IT RUNS FORWARDS ONLY:
 #
 #   CityGML --citygml-tools to-cityjson--> CityJSON --cjseq cat--> CityJSONSeq
@@ -591,6 +606,49 @@ same_file() {
     == "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")" ]]
 }
 
+# --- normalisation: one geometry per LoD and object ------------------------
+# See the header. Runs on every invocation (it is a single streaming or
+# in-memory pass) and before the chain-provenance check, because whether
+# this dataset changed decides which of its artefacts are stale.
+# `LOD_NORMALISE` names a prebuilt `lod-normalise`; otherwise it is built here.
+NORMALISED=0
+if [[ "$INPUT_KIND" != "citygml" ]]; then
+  if [[ -z "${LOD_NORMALISE:-}" ]]; then
+    require_tool cargo "building lod-normalise (the corpus normalisation)"
+    echo "-- building lod-normalise (cargo build --release --bin lod-normalise)"
+    ( cd "$BENCHMARK_DIR/readbench" && cargo build --release --bin lod-normalise )
+    LOD_NORMALISE="$BENCHMARK_DIR/readbench/target/release/lod-normalise"
+  fi
+  case "$INPUT_KIND" in
+    cityjsonseq) NORM_EXT="city.jsonl" ;;
+    *) NORM_EXT="city.json" ;;
+  esac
+  mkdir -p "$OUTDIR/.readbench-chain"
+  NORM_OUT="$OUTDIR/.readbench-chain/$BASE.normalised.$NORM_EXT"
+  NORM_REPORT="$("$LOD_NORMALISE" "$INPUT" "$NORM_OUT")"
+  NORM_DROPPED="$(sed -n 's/.*dropped=\([0-9][0-9]*\).*/\1/p' <<<"$NORM_REPORT")"
+  if [[ -z "$NORM_DROPPED" ]]; then
+    echo "error: lod-normalise printed no drop count for $INPUT: $NORM_REPORT" >&2
+    exit 1
+  fi
+  echo "-- normalise $BASE: one geometry per LoD and object: $NORM_DROPPED geometr$([[ "$NORM_DROPPED" == 1 ]] && echo y || echo ies) dropped (${NORM_REPORT#dropped=* })"
+  if [[ "$NORM_DROPPED" -gt 0 ]]; then
+    # INPUT sitting in OUTDIR under an artefact's own name would be both the
+    # unnormalised source and an artefact this chain must rebuild.
+    for out in "$GML_OUT" "$CITYJSON_OUT" "$SEQ_OUT"; do
+      if same_file "$INPUT" "$out"; then
+        echo "error: $INPUT is an artefact path in $OUTDIR and needs normalising;" \
+          "move the source out of $OUTDIR and re-run" >&2
+        exit 1
+      fi
+    done
+    NORMALISED=1
+    INPUT="$NORM_OUT"
+  else
+    rm -f "$NORM_OUT"
+  fi
+fi
+
 # --- chain provenance ------------------------------------------------------
 # WHY A STAMP AND NOT A SENTENCE IN THE DOCS.
 #
@@ -628,11 +686,15 @@ same_file() {
 #      benchmark's one CityParquet configuration.
 #   6  the CityJSON artefact is written without optional whitespace, and the
 #      package without LoD 0 synthesis (`--no-lod0`).
-CHAIN_VERSION=6
+#   7  the source is normalised to one geometry per LoD and object before
+#      any artefact is built.
+CHAIN_VERSION=7
 # The chain version at which each STAGE last changed what it writes. An
 # artefact is stale when its stage changed after the version that built it,
 # so a bump that touches one stage does not force the hours-long stages it
 # left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#   7  every stage, for a dataset the normalisation changed (Vienna and
+#      Ingolstadt in the corpus); no stage for one it left byte-identical.
 #   6  the CityJSON and CityParquet stages: a CityJSON built before may carry
 #      the source's whitespace, and a package built before carries a
 #      synthesised LoD 0 footprint for every object without a source LoD 0.
@@ -649,6 +711,10 @@ CHAIN_VERSION=6
 #   2  the CityJSONSeq stage became a real artefact for every input kind
 #      (the gzip case above); FlatCityBuf and CityGML derive from it.
 stage_version() {
+  if [[ "$NORMALISED" -eq 1 ]]; then
+    echo 7
+    return
+  fi
   case "$1" in
     "$PARQUET_OUT" | "$CITYJSON_OUT") echo 6 ;;
     *) echo 4 ;;
@@ -983,7 +1049,22 @@ if want cityparquet; then
     # without a source LoD 0, which no other format's artefact holds, so the
     # package would be measured with more content than its competitors. A
     # SOURCE LoD 0 (Tokyo, 3DBAG) is kept either way.
-    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --ordering hilbert --no-lod0 --overwrite
+    # The writer's report line: object_count files skipped_same_lod_geometries
+    # ... After the normalisation it must have skipped nothing; a non-zero
+    # count means the package holds fewer geometries than the other formats.
+    CONVERT_LOG="$("$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --ordering hilbert --no-lod0 --overwrite)"
+    printf '%s\n' "$CONVERT_LOG"
+    SKIPPED_SAME_LOD="$(awk 'NF == 10 && $3 ~ /^[0-9]+$/ { s = $3 } END { print s }' <<<"$CONVERT_LOG")"
+    if [[ -z "$SKIPPED_SAME_LOD" ]]; then
+      echo "error: cityparquet convert printed no report line for '$BASE'" >&2
+      exit 1
+    fi
+    if [[ "$SKIPPED_SAME_LOD" -ne 0 ]]; then
+      echo "error: '$BASE': the CityParquet writer skipped $SKIPPED_SAME_LOD same-LoD geometr$([[ "$SKIPPED_SAME_LOD" == 1 ]] && echo y || echo ies)" \
+        "after the normalisation; the package would hold fewer geometries than the other formats" >&2
+      rm -rf "$PARQUET_OUT"
+      exit 1
+    fi
   fi
   BUILT+=("$PARQUET_OUT")
 fi
