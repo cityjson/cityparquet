@@ -383,6 +383,7 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
         echo "bench: no city-model inputs found under {{FOLDER}}" >&2
         exit 1
     fi
+    BENCH_NUMA_NODE="{{NUMA_NODE}}" MEMORY_MAX="{{MEMORY_MAX}}" ./{{BENCH_SCRIPTS}}/machine_record.sh > "{{OUT}}/MACHINE.md"
     echo "bench: ${found} file(s) benchmarked into {{OUT}}"
 
 
@@ -471,7 +472,7 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_
         echo "variant-bench: no city-model inputs found under {{FOLDER}}" >&2
         exit 1
     fi
-    ./{{BENCH_SCRIPTS}}/machine_record.sh > "{{OUT}}/MACHINE.md"
+    BENCH_NUMA_NODE="{{NUMA_NODE}}" MEMORY_MAX="{{MEMORY_MAX}}" ./{{BENCH_SCRIPTS}}/machine_record.sh > "{{OUT}}/MACHINE.md"
     echo "variant-bench: ${found} file(s) benchmarked into {{OUT}}"
 
 # The BLOOM axis: the default package, which carries bloom filters, against
@@ -536,6 +537,7 @@ scripts-test:
     ./{{BENCH_SCRIPTS}}/tests/readbench_prepare_test.sh
     ./{{BENCH_SCRIPTS}}/tests/fetch_benchmark_test.sh
     ./{{BENCH_SCRIPTS}}/tests/bench_recipe_test.sh
+    ./{{BENCH_SCRIPTS}}/tests/machine_record_test.sh
     uv run --project {{PLOT}} python -m unittest discover -s {{BENCH_SCRIPTS}}/tests -p 'test_*.py'
 
 # ---------------------------------------------------------------------------
