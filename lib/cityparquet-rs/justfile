@@ -5,9 +5,9 @@
 # `justfile`, because the harness spans two trees: its code is a workspace
 # crate (`benchmark/readbench`) and the scripts under `scripts/`,
 # while its corpora, results and plotting project are evidence and live under
-# `../../benchmark/`. Run `just bench`, `just fetch-data`, `just plot-pretty`,
-# `just convert-all`, `just plot-test` and `just scripts-test` from the
-# repository root.
+# `../../benchmark/`. Run `just bench-prep`, `just bench-run`,
+# `just bench-summary`, `just fetch-data`, `just convert-all`,
+# `just plot-test` and `just scripts-test` from the repository root.
 #
 # `just check` here stays the Rust workspace's gate and is self-contained: it
 # needs no `uv`, no `jq` and no corpus.
