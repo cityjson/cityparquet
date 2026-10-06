@@ -327,7 +327,7 @@ def memory_ceiling(requested: str | None, profile: str) -> int | None:
     return int(requested)
 
 
-def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None) -> None:
+def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None, database_datasets: str = "") -> None:
     smoke = profile == "smoke"
     repeat = read_repeat(profile)
     budget = "" if cell_budget_s is None else str(cell_budget_s)
@@ -364,31 +364,40 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         for input_path in inputs:
             write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile, **sampling)
     if "databases" in families:
-        database_key = database_dataset(manifest, profile)
-        if database_key not in selected:
-            raise SystemExit(f"the database family under --profile {profile} measures {database_key}; select it")
-        database_entry = manifest["datasets"][database_key]
-        database_input = source(database_entry, locations)
-        if database_entry["role"] != "slice":
-            # The database systems ingest CityJSONSeq; the prepared stream is
-            # the same content the format family read.
-            database_input = locations["prepared"] / f"{dataset_stem(database_input)}.city.jsonl"
-        if not database_input.is_file():
-            raise SystemExit("database input is not prepared; run just bench-prep --families databases first")
-        output = locations["databases"] / (profile_subdir(profile) or "results")
-        root = locations["formats"].parent
-        # One invocation measures BOTH thread configurations — `single`
-        # (the primary figure) and `parallel` — and then the write tier,
-        # in that order: the write tier's mutations leave bloat behind that
-        # a later read pass would measure as if it were the steady state.
-        # The count tolerance is passed explicitly rather than left to the
-        # CLI default so the suite's own choice is visible here and in the
-        # run manifest.
-        command("uv", "run", "--project", "benchmark/databases", "python", "-m", "citybench.cli", "smoke" if smoke else "run", "--data-root", str(root), "--prepared-dir", str(locations["prepared"]), "--dataset", str(database_input), "--output-dir", str(output), "--count-tolerance", str(DATABASE_COUNT_TOLERANCE),
-                *([] if smoke else ["--repeat", str(repeat)]),
-                # Recorded in the database manifest, not applied: see
-                # benchmark/databases/README.md "Host isolation".
-                *([] if isolation["memory_max"] is None else ["--memory-max", str(isolation["memory_max"])]))
+        # --database-datasets: `all`, or manifest ids (`3dbag` = the slice);
+        # empty keeps the profile's one dataset (the slice under full/quick,
+        # Rotterdam under short/smoke), which must then be selected.
+        if database_datasets == "all":
+            database_keys = list(manifest["datasets"])
+        elif database_datasets:
+            database_keys = [slice_dataset(manifest) if k == "3dbag" else k for k in values(database_datasets)]
+        else:
+            database_keys = [database_dataset(manifest, profile)]
+            if database_keys[0] not in selected:
+                raise SystemExit(f"the database family under --profile {profile} measures {database_keys[0]}; select it")
+        for database_key in database_keys:
+            database_entry = manifest["datasets"][database_key]
+            database_input = source(database_entry, locations)
+            if database_entry["role"] != "slice":
+                # The database systems ingest CityJSONSeq; the prepared stream is
+                # the same content the format family read.
+                database_input = locations["prepared"] / f"{dataset_stem(database_input)}.city.jsonl"
+            if not database_input.is_file():
+                raise SystemExit("database input is not prepared; run just bench-prep --families databases first")
+            output = locations["databases"] / (profile_subdir(profile) or "results")
+            root = locations["formats"].parent
+            # One invocation measures BOTH thread configurations — `single`
+            # (the primary figure) and `parallel` — and then the write tier,
+            # in that order: the write tier's mutations leave bloat behind that
+            # a later read pass would measure as if it were the steady state.
+            # The count tolerance is passed explicitly rather than left to the
+            # CLI default so the suite's own choice is visible here and in the
+            # run manifest.
+            command("uv", "run", "--project", "benchmark/databases", "python", "-m", "citybench.cli", "smoke" if smoke else "run", "--data-root", str(root), "--prepared-dir", str(locations["prepared"]), "--dataset", str(database_input), "--output-dir", str(output), "--count-tolerance", str(DATABASE_COUNT_TOLERANCE),
+                    *([] if smoke else ["--repeat", str(repeat)]),
+                    # Recorded in the database manifest, not applied: see
+                    # benchmark/databases/README.md "Host isolation".
+                    *([] if isolation["memory_max"] is None else ["--memory-max", str(isolation["memory_max"])]))
 
 
 def parser() -> argparse.ArgumentParser:
@@ -396,6 +405,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("command", choices=("prep", "run", "summary"))
     result.add_argument("--families", default="all", help=f"comma-separated families from {','.join(FAMILIES)}, or all")
     result.add_argument("--datasets", default="")
+    result.add_argument("--database-datasets", default="", help="datasets the database family measures: `all`, or comma-separated manifest ids (`3dbag` = the slice); default: the profile's own (the slice under full/quick, Rotterdam under short/smoke)")
     result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 25 read repetitions, the families' own result directories (the paper's evidence); quick: the same datasets at 7 repetitions, under <family>/quick/, a faster complete run that is not the paper's evidence; short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Rotterdam alone, 1 repetition, under <family>/smoke/. Under full and quick the database family measures the 3DBAG slice, under short and smoke Rotterdam")
     result.add_argument("--smoke", action="store_true", help="the same as --profile smoke")
     result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")
@@ -428,7 +438,7 @@ def main() -> None:
     if args.command == "prep":
         prepare(data, locations, families, datasets, profile)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s})
+        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s}, args.database_datasets)
     else:
         output = (args.out or locations["summary"] / profile).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None

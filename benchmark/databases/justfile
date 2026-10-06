@@ -80,6 +80,11 @@ capture-schema DATASET:
 # Isolation (see README "Host isolation"): NUMA_NODE is a node id, `auto`
 # (most MemFree at run start; env BENCH_NUMA_NODE overrides the default) or
 # `off`; MAX_LOAD is a load threshold, `auto` (half the node's cores) or `off`.
+# DATASETS: `all`, or comma-separated manifest ids / source stems, each read
+# from PREPARED as <stem>.city.jsonl; one CSV + manifest per dataset id.
+bench-datasets DATASETS PREPARED='../runs/data/readbench' REPEAT='25' NUMA_NODE=env_var_or_default('BENCH_NUMA_NODE', 'auto') MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
+    uv run python -m citybench.cli run --datasets {{DATASETS}} --prepared-dir {{PREPARED}} --repeat {{REPEAT}} --numa-node {{NUMA_NODE}} --max-load {{MAX_LOAD}} --max-load-wait-s {{MAX_LOAD_WAIT_S}}
+
 bench DATASET REPEAT='25' NUMA_NODE=env_var_or_default('BENCH_NUMA_NODE', 'auto') MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
     uv run python -m citybench.cli run --dataset {{DATASET}} --repeat {{REPEAT}} --numa-node {{NUMA_NODE}} --max-load {{MAX_LOAD}} --max-load-wait-s {{MAX_LOAD_WAIT_S}}
 
