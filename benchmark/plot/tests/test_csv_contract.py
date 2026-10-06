@@ -74,3 +74,23 @@ def test_the_database_csv_carries_the_same_timing_blocks():
     at = columns.index(server[0])
     assert columns[at : at + 7] == server, columns
     assert "time_s" not in columns and "server_time_s" not in columns
+
+
+def test_the_renderer_reads_the_database_memory_column_by_its_current_name():
+    """The loader's preferred memory column is the one citybench writes, in its
+    position after `peak_heap_bytes`; the old `peak_rss_bytes` name survives only
+    as the loader's reading of committed old evidence, never in the header.
+    """
+    columns = _database_columns()
+    current, old = prep.DB_MEMORY_COLUMNS
+    assert current == "peak_working_mem_bytes" and old == "peak_rss_bytes"
+    assert current in columns and old not in columns
+    assert columns[columns.index("peak_heap_bytes") + 1] == current
+    for column in ("size_bytes", "size_bytes_no_index", "status", "notes", "result_count"):
+        assert column in columns, column
+
+
+def test_the_database_fixture_carries_the_current_header():
+    fixture = Path(__file__).parent / "fixtures" / "benchviz-databases" / "results"
+    header = (fixture / "3dbag_n10000.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert header.split(",") == _database_columns()
