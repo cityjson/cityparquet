@@ -861,7 +861,7 @@ DB_CITABLE = frozenset({"ok", "ok-deviation"})
 DB_MEMORY_COLUMNS = ("peak_working_mem_bytes", "peak_rss_bytes")
 DB_MEMORY_LABELS = {
     "peak_working_mem_bytes": "Peak working memory",
-    "peak_rss_bytes": "Peak process RSS (old evidence, not working memory)",
+    "peak_rss_bytes": "Peak process RSS (old evidence)",
 }
 # Storage fields a manifest's `sizes.<tag>` block may carry.
 DB_SIZE_FIELDS = (

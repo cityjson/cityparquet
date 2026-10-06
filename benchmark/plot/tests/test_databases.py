@@ -128,7 +128,8 @@ def test_old_evidence_is_labelled_process_rss_not_working_memory(tmp_path: Path)
     with plt.rc_context({"svg.fonttype": "none"}):
         figures.databases(data, out)
     svg = (out / "databases.svg").read_text(encoding="utf-8")
-    assert "Peak process RSS (old evidence, not working memory)" in svg
+    assert "Peak process RSS (old evidence)" in svg
+    assert "not working memory" in svg
     assert "Peak working memory" not in svg
     assert "Storage including indexes" in svg and "Storage with and without" not in svg
 

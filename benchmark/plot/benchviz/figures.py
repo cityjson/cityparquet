@@ -1067,7 +1067,7 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
                 [[(c[0], c[1]) for c in row] for row in block],
                 rows,
                 systems,
-                f"{title.format(statistic=statistic, memory=memory_title)} — "
+                f"{title.format(statistic=statistic, memory=memory_title)}\n"
                 f"{THREAD_TITLES.get(config, config)}",
                 vmax=bounds[field],
                 scale="diverging",
