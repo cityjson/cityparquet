@@ -235,11 +235,12 @@ fn convert_delft_small_row_groups() -> tempfile::TempDir {
     out
 }
 
-/// The visit-based bbox, attribute and id primitives visit exactly the rows
-/// the id/count primitives select, and report the same pruning counts.
+/// The id-lookup visit visits exactly the row the id-only bbox query names,
+/// and an absent id is ruled out in every row group by bloom filter or
+/// statistics.
 #[test]
-fn bbox_attr_and_id_visits_select_the_same_rows_as_the_id_paths() {
-    use cityparquet::query::{self, AttrPredicate};
+fn id_lookup_visit_selects_the_looked_up_row_and_prunes_a_miss() {
+    use cityparquet::query;
     let out = convert_delft_small_row_groups();
     let table = out.path().join("building.parquet");
     let e = query::full_read_visit(&table).unwrap().extent;
@@ -253,22 +254,7 @@ fn bbox_attr_and_id_visits_select_the_same_rows_as_the_id_paths() {
     ];
 
     let ids = query::bbox_query(&table, window).unwrap();
-    let visited = query::bbox_query_visit(&table, window).unwrap();
     assert!(!ids.ids.is_empty() && ids.ids.len() < 2231);
-    assert_eq!(visited.totals.objects, ids.ids.len() as u64);
-    assert!(visited.totals.geometries >= visited.totals.objects);
-    assert_eq!(visited.row_groups_total, ids.row_groups_total);
-    assert_eq!(visited.row_groups_touched, ids.row_groups_touched);
-
-    let pred = AttrPredicate::Eq(serde_json::Value::String("BuildingPart".into()));
-    let (attr, stats) = query::attr_filter_visit(&table, "object_type", &pred).unwrap();
-    assert_eq!(attr.objects, 1116);
-    assert_eq!(
-        stats,
-        query::attr_filter_with_stats(&table, "object_type", &pred)
-            .unwrap()
-            .1
-    );
 
     let (hit, stats) = query::id_lookup_visit(&table, &ids.ids[0]).unwrap();
     assert_eq!(hit.objects, 1);

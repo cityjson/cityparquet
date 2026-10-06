@@ -498,16 +498,6 @@ fn statistics_min_max(stats: &Statistics) -> Option<(f64, f64)> {
     }
 }
 
-/// The result of a visit-based bbox query: the native visit of every row
-/// whose `bbox` intersects the window, plus the row-group pruning counts
-/// [`BBoxQueryResult`] reports.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BBoxVisitResult {
-    pub totals: crate::visit::VisitTotals,
-    pub row_groups_total: usize,
-    pub row_groups_touched: usize,
-}
-
 /// The string-equality predicate a lookup by `value` applies to the
 /// statistics.
 pub(crate) fn eq_str(value: &str) -> AttrPredicate {
@@ -596,9 +586,9 @@ fn row_group_may_match(rg: &RowGroupMetaData, column: &str, pred: &AttrPredicate
     }
 }
 
-/// The bbox-intersection [`RowFilter`] the visit-based bbox query installs:
+/// The bbox-intersection [`RowFilter`] the spatial geometry query installs:
 /// the predicate reads only the `bbox` struct, so a row outside the window
-/// never has its geometry or attribute columns decoded.
+/// never has its geometry decoded.
 pub(crate) fn bbox_row_filter(
     parquet_schema: &SchemaDescriptor,
     query_bbox: [f64; 6],

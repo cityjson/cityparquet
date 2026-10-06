@@ -45,8 +45,8 @@ use crate::query_core;
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 
 pub use crate::query_core::{
-    AttrPredicate, AttrStats, BBoxGeometryResult, BBoxQueryResult, BBoxVisitResult, BloomPrune,
-    BloomTarget, BloomTargets, FullReadResult, LookupStats, bloom_targets,
+    AttrPredicate, AttrStats, BBoxGeometryResult, BBoxQueryResult, BloomPrune, BloomTarget,
+    BloomTargets, FullReadResult, LookupStats, bloom_targets,
 };
 pub use crate::visit::VisitTotals;
 
@@ -106,29 +106,6 @@ fn visit_all(
         }
     }
     Ok(totals)
-}
-
-/// [`bbox_query`] that VISITS every matching object natively rather than
-/// returning ids. Row groups are pruned as in [`bbox_query`]; within the
-/// survivors a `RowFilter` reads the `bbox` struct alone, so rows outside
-/// the window never have their geometry or attribute columns decoded.
-pub fn bbox_query_visit(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxVisitResult> {
-    let file = File::open(table_path)?;
-    let builder =
-        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
-    let (row_groups_total, row_groups_touched) =
-        query_core::bbox_row_group_counts(builder.metadata(), &query_bbox);
-    let row_filter = query_core::bbox_row_filter(builder.parquet_schema(), query_bbox);
-    let reader = builder
-        .with_bbox_row_groups(query_bbox)?
-        .with_row_filter(row_filter)
-        .build()
-        .map_err(CityParquetError::parquet_from)?;
-    Ok(BBoxVisitResult {
-        totals: visit_all(reader, false)?,
-        row_groups_total,
-        row_groups_touched,
-    })
 }
 
 /// The ids of the objects whose `bbox` intersects `query_bbox` (edges
@@ -219,28 +196,6 @@ fn prune_row_groups(
     Ok(LookupStats::from_prune_and_statistics(
         prune, metadata, column, pred,
     ))
-}
-
-/// [`attr_filter_with_stats`] that VISITS every matching object natively;
-/// `totals.objects` is the count. Row groups are pruned exactly as in
-/// [`attr_filter_with_stats`].
-pub fn attr_filter_visit(
-    table_path: &Path,
-    column: &str,
-    pred: &AttrPredicate,
-) -> Result<(VisitTotals, LookupStats)> {
-    let file = File::open(table_path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
-        .map_err(CityParquetError::parquet_from)?;
-    let probe = query_core::string_probe(builder.schema(), builder.parquet_schema(), column, pred)?;
-    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)?;
-    let (row_groups, stats) = prune_row_groups(&file, builder.metadata(), column, probe, pred)?;
-    let reader = builder
-        .with_row_filter(row_filter)
-        .with_row_groups(row_groups)
-        .build()
-        .map_err(CityParquetError::parquet_from)?;
-    Ok((visit_all(reader, false)?, stats))
 }
 
 /// [`id_lookup_with_stats`] that VISITS the matching object natively instead

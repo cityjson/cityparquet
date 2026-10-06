@@ -36,8 +36,8 @@ use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 
 use crate::decode::DecodedObject;
 use crate::query::{
-    AttrPredicate, AttrStats, BBoxGeometryResult, BBoxQueryResult, BBoxVisitResult, BloomPrune,
-    FullReadResult, LookupStats, VisitTotals,
+    AttrPredicate, AttrStats, BBoxGeometryResult, BBoxQueryResult, BloomPrune, FullReadResult,
+    LookupStats, VisitTotals,
 };
 use crate::query_core;
 use crate::reader::CityParquetReaderBuilder;
@@ -218,53 +218,6 @@ pub async fn full_read_visit_async(
         .build()
         .map_err(CityParquetError::parquet_from)?;
     visit_stream(stream, false).await
-}
-
-/// The async mirror of [`crate::query::bbox_query_visit`].
-pub async fn bbox_query_visit_async(
-    store: Arc<dyn ObjectStore>,
-    path: &ObjectPath,
-    query_bbox: [f64; 6],
-) -> Result<BBoxVisitResult> {
-    let reader = ParquetObjectReader::new(store, path.clone());
-    let builder = ParquetRecordBatchStreamBuilder::new(reader)
-        .await
-        .map_err(CityParquetError::parquet_from)?;
-    let (row_groups_total, row_groups_touched) =
-        query_core::bbox_row_group_counts(builder.metadata(), &query_bbox);
-    let row_filter = query_core::bbox_row_filter(builder.parquet_schema(), query_bbox);
-    let stream = builder
-        .with_bbox_row_groups(query_bbox)?
-        .with_row_filter(row_filter)
-        .build()
-        .map_err(CityParquetError::parquet_from)?;
-    Ok(BBoxVisitResult {
-        totals: visit_stream(stream, false).await?,
-        row_groups_total,
-        row_groups_touched,
-    })
-}
-
-/// The async mirror of [`crate::query::attr_filter_visit`].
-pub async fn attr_filter_visit_async(
-    store: Arc<dyn ObjectStore>,
-    path: &ObjectPath,
-    column: &str,
-    pred: &AttrPredicate,
-) -> Result<(VisitTotals, LookupStats)> {
-    let (mut reader, arrow_meta) = open_async(store, path).await?;
-    let builder =
-        ParquetRecordBatchStreamBuilder::new_with_metadata(reader.clone(), arrow_meta.clone());
-    let probe = query_core::string_probe(builder.schema(), builder.parquet_schema(), column, pred)?;
-    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)?;
-    let (row_groups, stats) =
-        prune_row_groups_async(&mut reader, &arrow_meta, column, probe, pred).await?;
-    let stream = builder
-        .with_row_filter(row_filter)
-        .with_row_groups(row_groups)
-        .build()
-        .map_err(CityParquetError::parquet_from)?;
-    Ok((visit_stream(stream, false).await?, stats))
 }
 
 /// The async mirror of [`crate::query::bbox_query_geometry`]: the same
@@ -1229,14 +1182,14 @@ mod tests {
             (window[1] + window[4]) / 2.0,
             window[5],
         ];
-        let bbox = bbox_query_visit_async(Arc::clone(&store), &path, quarter)
+        let bbox = bbox_query_geometry_async(Arc::clone(&store), &path, quarter)
             .await
             .unwrap();
         assert_eq!(
             bbox,
-            crate::query::bbox_query_visit(&table_file, quarter).unwrap()
+            crate::query::bbox_query_geometry(&table_file, quarter).unwrap()
         );
-        assert!(bbox.totals.objects > 0 && bbox.totals.objects < full.objects);
+        assert!(!bbox.ids.is_empty() && (bbox.ids.len() as u64) < full.objects);
 
         for (column, pred) in [
             ("oorspronkelijkbouwjaar", AttrPredicate::Ge(2000.0)),
@@ -1245,16 +1198,16 @@ mod tests {
                 AttrPredicate::Eq(serde_json::Value::String("BuildingPart".into())),
             ),
         ] {
-            let got = attr_filter_visit_async(Arc::clone(&store), &path, column, &pred)
+            let got = attr_filter_ids_async(Arc::clone(&store), &path, column, &pred)
                 .await
                 .unwrap();
-            let want = crate::query::attr_filter_visit(&table_file, column, &pred).unwrap();
+            let want = crate::query::attr_filter_ids(&table_file, column, &pred).unwrap();
             assert_eq!(got, want, "{column} {pred:?}");
             let (count, stats) =
                 attr_filter_async_with_stats(Arc::clone(&store), &path, column, &pred)
                     .await
                     .unwrap();
-            assert_eq!((count, stats), (got.0.objects, got.1));
+            assert_eq!((count, stats), (got.0.len() as u64, got.1));
         }
         let (_, numeric) = attr_filter_async_with_stats(
             Arc::clone(&store),
