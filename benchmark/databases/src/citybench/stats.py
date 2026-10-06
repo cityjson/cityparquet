@@ -142,3 +142,42 @@ def mad(values: list[float]) -> float:
         raise ValueError("mad requires at least one value")
     centre = statistics.median(values)
     return statistics.median([abs(v - centre) for v in values])
+
+
+def quantile(values: list[float], p: float) -> float:
+    """The ``p`` quantile of ``values`` (0 <= p <= 1). Raises ValueError if empty.
+
+    Definition: linear interpolation at position ``p * (n - 1)`` on the sorted
+    samples -- numpy's default, and ``statistics.quantiles(method="inclusive")``.
+    So the median (p = 0.5) of an even count is the mean of the two middle
+    values. The readbench harness (``benchmark/readbench/src/stats.rs``) uses
+    the identical definition, so both families' quartiles are the same statistic.
+    """
+    if not values:
+        raise ValueError("quantile requires at least one value")
+    ordered = sorted(values)
+    position = p * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
+def timing_summary(values: list[float]) -> dict[str, float]:
+    """The seven timing statistics of ``values``, in the CSV block's order.
+
+    Keys ``mean, std, median, min, max, q1, q3``: arithmetic mean, population
+    standard deviation, and the median and quartiles by :func:`quantile`'s
+    linear-interpolation definition. Raises ValueError if empty.
+    """
+    if not values:
+        raise ValueError("timing_summary requires at least one value")
+    return {
+        "mean": mean(values),
+        "std": standard_deviation(values),
+        "median": quantile(values, 0.5),
+        "min": min(values),
+        "max": max(values),
+        "q1": quantile(values, 0.25),
+        "q3": quantile(values, 0.75),
+    }

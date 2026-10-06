@@ -13,3 +13,4 @@ pub mod lod;
 pub mod naming;
 pub mod params;
 pub mod slice;
+pub mod stats;
