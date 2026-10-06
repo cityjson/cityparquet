@@ -658,6 +658,100 @@ pub fn feature_probes(id_probes: &[IdProbe]) -> Vec<IdProbe> {
         .collect()
 }
 
+/// Per row group of `table`, the `[min, max]` of string column `column` from
+/// the footer statistics; `None` for a group whose chunk carries none (which
+/// statistics cannot prune). Empty when the table has no such column.
+pub fn row_group_string_ranges(
+    table: &Path,
+    column: &str,
+) -> Result<Vec<Option<(String, String)>>> {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    use parquet::file::statistics::Statistics;
+
+    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
+    let reader = SerializedFileReader::new(file)
+        .with_context(|| format!("reading the footer of {}", table.display()))?;
+    let meta = reader.metadata();
+    let Some(index) = meta
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .position(|c| c.path().string() == column)
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(meta
+        .row_groups()
+        .iter()
+        .map(|rg| match rg.column(index).statistics() {
+            Some(Statistics::ByteArray(s)) => match (s.min_opt(), s.max_opt()) {
+                (Some(min), Some(max)) => Some((
+                    String::from_utf8_lossy(min.data()).into_owned(),
+                    String::from_utf8_lossy(max.data()).into_owned(),
+                )),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect())
+}
+
+/// The most candidates [`stats_resistant_miss`] scores: an evenly spaced
+/// sample of the sorted stored identifiers, so a national-scale dataset costs
+/// a bounded number of comparisons per row group.
+const MISS_CANDIDATES: usize = 1024;
+
+/// An identifier absent from `taken` that row-group min/max statistics can
+/// reject in as FEW row groups as possible, across every column's ranges in
+/// `ranges` (one entry per looked-up column, e.g. `id` and `feature_id`).
+///
+/// A miss built as `<stored id>-readbench-absent` sorts immediately after its
+/// seed, so it lies inside every row group whose range contains the seed and
+/// some larger stored identifier. The candidates are an evenly spaced sample
+/// (at most [`MISS_CANDIDATES`]) of the sorted `stored` identifiers; each is
+/// scored by the number of row groups, summed over the columns, whose range
+/// contains its miss (a group without statistics always counts); the best
+/// wins, ties going to the candidate nearest the middle of the sorted order.
+/// Without this, a probe seeded at an arbitrary identifier can fall outside
+/// some groups' ranges, and the package without bloom filters then rejects it
+/// for free, which is not the cost the bloom axis sets out to compare.
+/// `None` when `stored` is empty.
+pub fn stats_resistant_miss(
+    stored: &[String],
+    taken: &std::collections::HashSet<String>,
+    ranges: &[Vec<Option<(String, String)>>],
+) -> Option<String> {
+    let mut sorted: Vec<&String> = stored.iter().collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    if sorted.is_empty() {
+        return None;
+    }
+    let n = sorted.len();
+    let step = n.div_ceil(MISS_CANDIDATES).max(1);
+    let middle = n / 2;
+    let covered = |miss: &str| -> usize {
+        ranges
+            .iter()
+            .flatten()
+            .filter(|range| match range {
+                Some((min, max)) => min.as_str() <= miss && miss <= max.as_str(),
+                None => true,
+            })
+            .count()
+    };
+    (0..n)
+        .step_by(step)
+        .chain(std::iter::once(middle))
+        .map(|i| {
+            let miss = miss_id(sorted[i], taken);
+            (covered(&miss), std::cmp::Reverse(i.abs_diff(middle)), miss)
+        })
+        .max_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)))
+        .map(|(_, _, miss)| miss)
+}
+
 /// `array`'s Utf8 values as `Option<String>` per row (`None` for a null
 /// cell) — handles both a plain `Utf8` array and a `Dictionary<Int32,
 /// Utf8>` array, because a string ATTRIBUTE column may be written as
@@ -1337,8 +1431,8 @@ pub fn resolve(
         })
         .collect();
 
-    let id_probes = match seq_path {
-        None => Vec::new(),
+    let (id_probes, feature_miss) = match seq_path {
+        None => (Vec::new(), None),
         Some(seq_path) => {
             let seq_ids = seq_feature_ids(seq_path)?;
             let mut verifiable: std::collections::HashSet<String> =
@@ -1355,11 +1449,33 @@ pub fn resolve(
                     );
                 }
             }
-            id_probes(&seq_ids, &verifiable)
+            let mut probes = id_probes(&seq_ids, &verifiable);
+            // Each miss goes where the package's row-group statistics on its
+            // own lookup column cannot rule it out.
+            let taken: std::collections::HashSet<String> = seq_ids.iter().cloned().collect();
+            let miss_for = |column: &str| -> Result<Option<String>> {
+                let ranges = [row_group_string_ranges(cp_table, column)?];
+                Ok(stats_resistant_miss(&seq_ids, &taken, &ranges))
+            };
+            if let (Some(miss), Some(probe)) = (
+                miss_for("id")?,
+                probes.iter_mut().find(|p| p.tag == ID_MISS_TAG),
+            ) {
+                probe.id = miss;
+            }
+            (probes, miss_for("feature_id")?)
         }
     };
 
-    let feature_probes = feature_probes(&id_probes);
+    let mut feature_probes = feature_probes(&id_probes);
+    if let (Some(miss), Some(probe)) = (
+        feature_miss,
+        feature_probes
+            .iter_mut()
+            .find(|p| p.tag == FEATURE_MISS_TAG),
+    ) {
+        probe.id = miss;
+    }
     let schema = open_arrow_schema(cp_table)?;
     let attr_filter = pick_attr_filter(dataset, &meta, &schema, cp_table)?;
     let numeric_attr = pick_stats_attribute(strip_known_extension(dataset), &meta, &schema);

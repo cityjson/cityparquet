@@ -259,3 +259,120 @@ fn a_hand_picked_column_the_package_lacks_falls_back_to_the_derived_rule() {
     );
     assert!(!picked.hand_picked);
 }
+
+/// A package converted from `input` with small row groups, with or without
+/// bloom filters, Hilbert-ordered as the benchmark's packages are; returns
+/// its single `building.parquet` table.
+fn small_group_table(input: &Path, rows: usize, bloom: bool) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let out = dir.path().join("pkg.parquet");
+    let mut opts = ConvertOptions::new(input.to_path_buf(), out.clone());
+    opts.generate_lod0 = false;
+    opts.recipe.row_group_size = rows;
+    opts.recipe.bloom.enabled = bloom;
+    convert(&opts).expect("converting");
+    let table = out.join("building.parquet");
+    assert!(table.exists(), "expected {} to exist", table.display());
+    (dir, table)
+}
+
+/// The miss probes must be identifiers that row-group min/max statistics
+/// cannot reject on their own: without bloom filters a miss must still be
+/// read from (some) row groups, or the bloom axis compares two prunings that
+/// are both free. With bloom filters, the filters reject it. Returns
+/// `(row_groups_total, bloom_pruned, stats_pruned, single_valued)` per
+/// variant and probe, `single_valued` being the row groups whose statistics
+/// on the probe's column have `min == max`: a group holding one identifier
+/// rejects every other one, so no absent probe can sit inside its range.
+type Counters = (usize, usize, usize, usize);
+fn miss_probe_counters(input: &Path, rows: usize) -> Vec<(bool, String, Counters)> {
+    let mut out = Vec::new();
+    for bloom in [false, true] {
+        let (_dir, table) = small_group_table(input, rows, bloom);
+        let resolved = resolve("probe", &table, Some(input), None).expect("resolving params");
+        let id_miss = resolved
+            .id_probes
+            .iter()
+            .find(|p| p.tag == "id-miss")
+            .expect("an id-miss probe");
+        let feature_miss = resolved
+            .feature_probes
+            .iter()
+            .find(|p| p.tag == "feature-miss")
+            .expect("a feature-miss probe");
+        let single_valued = |column: &str| {
+            cityparquet_readbench::params::row_group_string_ranges(&table, column)
+                .unwrap()
+                .iter()
+                .filter(|r| r.as_ref().is_some_and(|(min, max)| min == max))
+                .count()
+        };
+        let (totals, s) = cityparquet::query::id_lookup_visit(&table, &id_miss.id).unwrap();
+        assert_eq!(
+            totals.objects, 0,
+            "the id-miss probe {} is absent",
+            id_miss.id
+        );
+        out.push((
+            bloom,
+            "id-miss".to_string(),
+            (
+                s.row_groups_total,
+                s.bloom_pruned,
+                s.stats_pruned,
+                single_valued("id"),
+            ),
+        ));
+        let (totals, s) =
+            cityparquet::query::feature_lookup_visit(&table, &feature_miss.id).unwrap();
+        assert_eq!(totals.objects, 0, "the feature-miss probe is absent");
+        out.push((
+            bloom,
+            "feature-miss".to_string(),
+            (
+                s.row_groups_total,
+                s.bloom_pruned,
+                s.stats_pruned,
+                single_valued("feature_id"),
+            ),
+        ));
+    }
+    out
+}
+
+fn assert_statistics_cannot_reject_the_misses(input: &Path, rows: usize) {
+    let counters = miss_probe_counters(input, rows);
+    eprintln!("{}: {counters:?}", input.display());
+    for (bloom, tag, (total, bloom_pruned, stats_pruned, single_valued)) in counters {
+        assert!(total > 1, "{tag}: the fixture must span several row groups");
+        if bloom {
+            assert!(
+                bloom_pruned > 0,
+                "{tag}: the bloom filters must reject the miss somewhere"
+            );
+        } else {
+            assert_eq!(bloom_pruned, 0, "{tag}: no filters, nothing bloom-pruned");
+            assert!(
+                stats_pruned < total,
+                "{tag}: statistics rejected every group"
+            );
+            assert_eq!(
+                stats_pruned, single_valued,
+                "{tag}: statistics alone rejected {stats_pruned} of {total} row groups, \
+                 but only {single_valued} hold a single identifier"
+            );
+        }
+    }
+}
+
+#[test]
+fn statistics_reject_the_miss_probes_only_in_single_identifier_groups_on_delft() {
+    assert_statistics_cannot_reject_the_misses(&fixture("delft.city.jsonl"), 256);
+}
+
+#[test]
+fn statistics_reject_the_miss_probes_only_in_single_identifier_groups_on_tokyo() {
+    let tokyo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/tokyo_chiyoda_40.city.jsonl");
+    assert_statistics_cannot_reject_the_misses(&tokyo, 16);
+}
