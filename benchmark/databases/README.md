@@ -53,7 +53,8 @@ scenario set, in both thread configurations, with the write tier:
 Every row is `ok` or `ok-deviation` (the nine spatial rows per configuration
 differ across systems by at most 0.02 %, with the decomposition in `notes`)
 except the two CityParquet `append-object` rows, which error because the
-DuckDB extension refuses to widen an empty `material_lod*` column (see the
+DuckDB CityJSON extension build that run loaded by name refuses
+`PRAGMA insert_cityjsonseq` into a `cityparquet_read` package (see the
 write tier below). The package the DuckDB systems read carries bloom filters
 (Caveat 21).
 
@@ -253,9 +254,9 @@ the timed window on every system.
 | `bbox-query` (1/5/25 %) | ids + highest-LoD geometry | objects whose bbox intersects the window, each with its most detailed geometry | `bbox` STRUCT comparisons — **x/y only**; `coalesce` over the per-LoD WKB columns, most detailed first | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3); the highest-LoD element of the geometry JSONB | envelope `&& ST_MakeEnvelope(...)`; the `geometry_data` row of the highest `property.val_lod` (integer tier) via `LEFT JOIN LATERAL` |
 | `attr-filter`             | ids                      | objects matching the per-dataset attribute predicate               | `WHERE "<col>" = ?` — a typed, flattened top-level column                                                                                             | `WHERE attributes ->> '<col>' = %s` — **no index on `attributes`** (see "Index sets")                                                                                                                    | `property` join on `pr.name = %s AND pr.val_string = %s` (Caveat 13)                                                                                                                                                                              |
 | `attr-range`              | ids                      | objects whose numeric attribute exceeds the threshold              | `WHERE "<col>" > ?` — DOUBLE column with row-group statistics                                                                                         | `WHERE (attributes ->> '<col>')::float > %s`                                                                                                                                                             | `property` join with `coalesce(val_double, val_int) > %s`                                                                                                                                                                                         |
-| `attr-stats`              | `(count, min, max, sum)` | aggregate of `numeric_column`                                      | aggregates over the flattened top-level column                                                                                                        | aggregates over `(attributes->>col)::numeric` — every row's JSONB unpacked, and heavier arithmetic than a DOUBLE sum                                                                                     | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` (Caveat 13)                                                                                                                                            |
-| `id-lookup` (×4 probes)   | the object               | the row for one probe id, materialised                             | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index; bloom filters prune, the cost is the row-group decode (Caveats 21, 22)   | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB                                                                                                                      | `SELECT * FROM feature WHERE objectid = %s` (btree) — the `feature` row only; `property` and `geometry_data` are not joined (Caveat 17)                                                                                                           |
-| `lod-query`               | whole rows               | objects carrying an LoD 1.2 geometry (Caveat 9)                    | `SELECT * WHERE geometry_lod1_2 IS NOT NULL`, fetched to Arrow inside the timed window; `WHERE FALSE` when the package has no such column (Caveat 15) | `SELECT *` with `geometry @? '$[*] ? (@.lod == "1.2")'` — the `@?` operator, which uses cjdb's GIN(`geometry`) index; the `jsonb_path_exists` function form does not; the row carries the geometry JSONB | `SELECT DISTINCT ON (f.id) f.*, gd.geometry` through the `property` row with `val_lod = '1' AND val_geometry_id IS NOT NULL`, joined to `geometry_data` — the importer stores LoD 1.2 as `'1'` (`docs/3dcitydb-v5-schema.md`, "LoD value format") |
+| `attr-stats`              | `(min, max, sum, count)` | aggregate of `numeric_column`                                      | aggregates over the flattened top-level column                                                                                                        | aggregates over `(attributes ->> '<col>')::float8` — every row's JSONB unpacked and cast                                                                                                                  | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` (Caveat 13)                                                                                                                                            |
+| `id-lookup` (×4 probes)   | the object               | the row for one probe id, materialised                             | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index; bloom filters prune, the cost is the row-group decode (Caveats 21, 22)   | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB                                                                                                                      | one row: `f.*` of the `feature` row `WHERE objectid = %s` (btree), plus one array per `property` column (`name`, every `val_*`) and an array of every geometry it points at, aggregated in scalar subqueries (Caveat 17)                         |
+| `lod-query`               | ids + LoD 2.2 geometry   | objects carrying an LoD 2.2 geometry, each with that geometry (Caveat 9) | `SELECT id, geometry_lod2_2 WHERE geometry_lod2_2 IS NOT NULL`, fetched to Arrow inside the timed window; skipped on a dataset without LoD 2.2 (Caveat 15) | `SELECT object_id, jsonb_path_query_first(geometry, '$[*] ? (@.lod == "2.2")')` with `WHERE geometry @? '$[*] ? (@.lod == "2.2")'` — the `@?` operator, which uses cjdb's GIN(`geometry`) index; the `jsonb_path_exists` function form does not | `SELECT DISTINCT ON (f.id) f.objectid, gd.geometry` through the `property` row with `val_lod = '2' AND val_geometry_id IS NOT NULL`, joined to `geometry_data` — the importer stores only the integer LoD tier (`docs/3dcitydb-v5-schema.md`, "LoD value format"; Caveat 17) |
 | `parts-per-building`      | one row per Building     | how many parts each Building has, **childless Buildings included** | `SELECT id, coalesce(len(children), 0) WHERE object_type = 'Building'` — a stored array, no join                                                      | `LEFT JOIN city_object_relationships cor ON cor.parent_id = co.id`, `count(cor.child_id)`, `GROUP BY co.object_id`                                                                                       | `feature parent LEFT JOIN property LEFT JOIN feature child`, the CityObject predicate on the child, `count(child.id)`                                                                                                                             |
 | `parts-per-building-join` | one row per Building     | the same question in the shape a normalised store must use         | `LEFT JOIN (SELECT unnest(parents) AS parent, id … WHERE object_type = 'BuildingPart') p ON p.parent = b.id … GROUP BY b.id`                          | —                                                                                                                                                                                                        | —                                                                                                                                                                                                                                                 |
 
@@ -269,14 +270,13 @@ or `attr-range`, no usable attribute for `attr-filter`, no feature to cut
 an append file from) is recorded as `skipped: ...`, not as an error.
 
 `lod-query` returns **rows carrying the geometry on every system**, which
-is what makes the three times comparable: DuckDB returns every column,
-including all of the object's LoD geometries; cjdb's row carries the whole
-`geometry` JSONB; 3DCityDB joins `geometry_data` for the LoD-1 solid.
-3DCityDB still returns less than the other two — the attributes live in
-`property` and are not joined (Caveat 17) — and its `DISTINCT ON (f.id)`
+is what makes the three times comparable: each row is the object's
+identifier and its LoD 2.2 geometry — DuckDB's `geometry_lod2_2` WKB,
+cjdb's LoD 2.2 element of the `geometry` JSONB array, 3DCityDB's
+`geometry_data` row for the tier-2 geometry. 3DCityDB's `DISTINCT ON (f.id)`
 adds a bigint sort the others do not pay, in exchange for a row count that
 is one per CityObject even when several `property` rows of that feature
-match. On 3DBAG the objects carrying an LoD1.2 geometry are the
+match. On 3DBAG the objects carrying an LoD 2.2 geometry are the
 `BuildingPart`s, not their parent `Building`s; all three systems answer at
 CityObject grain, so they agree on which objects those are.
 
@@ -317,34 +317,21 @@ plus its parts — and what each importer actually wrote is measured and
 stamped into `notes` (`city-object-rows-added` on cjdb,
 `feature-rows-added` on 3DCityDB) rather than left to be assumed.
 
-> **`append-object` does not currently run on `duckdb-cityparquet`, and
-> the reason is upstream.** `PRAGMA insert_cityjsonseq` into a package
-> loaded by `cityparquet_read` is refused on any **appearance-free**
-> corpus, 3DBAG included:
->
-> ```
-> Binder Error: insert_cityjson: column 'material_lod0_0' cannot be
-> widened -- the destination is MAP(VARCHAR, BIGINT[]) and the incoming
-> type is VARCHAR.
-> ```
->
-> Measured, not inferred: `cityparquet convert` writes every
-> `material_lod*`/`texture_lod*` column with its full nested type even
-> when nothing in the dataset uses appearances, while the extension's own
-> CityJSON reader types those same columns `VARCHAR` for a file with no
-> appearance section — `DESCRIBE SELECT * FROM read_cityjsonseq(...)`
-> reports `VARCHAR` for the whole 3DBAG source, not only for the derived
-> one-feature slice. The two sides of the stack disagree about the
-> package's schema, so the insert is refused before it begins. Until an
-> all-NULL placeholder column can be widened (or the writer and the reader
-> agree on its type), both DuckDB `append-object` rows are
-> `error: BinderException` on this corpus and `citybench run` exits
-> non-zero. The
-> harness does **not** work around it: a system that cannot answer is a
-> result, and papering over a schema disagreement between this project's
-> own two implementations is exactly the kind of thing a benchmark must
-> not do quietly. The fix belongs in `lib/duckdb-cityjson` or in the
-> writer, not here.
+> **`append-object` on `duckdb-cityparquet` depends on which build of the
+> DuckDB CityJSON extension answers.** A bare `LOAD cityjson` answers with
+> the installed community build, which refuses `PRAGMA insert_cityjsonseq`
+> into a package loaded with `cityparquet_read`: the insert fails with a
+> `BinderException` saying a column of the loaded package "cannot be
+> widened" to the incoming type (the community build tested rejected
+> `material_lod2_0`). The committed run's two DuckDB `append-object` rows
+> are that error. The fix — an insert that keeps the package's column
+> types, including the LoD 0 `GEOMETRY` column — is in the submodule
+> `lib/duckdb-cityjson` (commit `062279e`), so the harness loads an
+> explicitly chosen build by path rather than by name (see
+> [Which build of the DuckDB CityJSON extension](#which-build-of-the-duckdb-cityjson-extension)).
+> The harness does **not** work around a refused insert: a system that
+> cannot answer is a result, recorded as `error: BinderException`, and
+> `citybench run` exits non-zero.
 
 CityParquet has no in-place update path — a Parquet file's smallest
 rewritable unit is a column chunk — so the comparable operation is the one
@@ -443,6 +430,34 @@ import` pays a container start and a JVM start, which for a one-feature
   registers no assignment cast from `json` to `jsonb`. The
   `attributes::jsonb` the paper writes is kept and is a no-op here.
 
+### Which build of the DuckDB CityJSON extension
+
+The write tier runs through the extension's package model
+(`PRAGMA cityparquet_read`, `PRAGMA insert_cityjsonseq`,
+`cityparquet_write`), so which build answered is part of the result
+(`src/citybench/extension.py`). The DuckDB systems load one explicitly
+chosen file, by path, never `LOAD cityjson` by name:
+
+1. the path given to `citybench --duckdb-cityjson-extension`;
+2. else the path in `CITYBENCH_DUCKDB_CITYJSON_EXTENSION`;
+3. else the submodule's local release build,
+   `lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension`
+   (`just -f lib/duckdb-cityjson/justfile build`).
+
+When none of them names an existing file, a run that includes a DuckDB
+system refuses to start, before any database is started. A local build is
+unsigned, so every DuckDB connection is opened with
+`allow_unsigned_extensions`. A C++ DuckDB extension loads only into the
+exact DuckDB version it was built for, so `pyproject.toml` pins the Python
+`duckdb` package to 1.5.4, the version the submodule builds against.
+
+The manifest's `versions` block names the build that answered:
+`duckdb-cityjson` (the extension's self-reported version),
+`duckdb-cityjson-path`, `duckdb-cityjson-commit` (the submodule's checked-out
+commit, with `+dirty` when its working tree differs; stated only for a build
+inside `lib/duckdb-cityjson`) and `duckdb-cityjson-sha256` (the file's
+digest, which identifies the build exactly).
+
 ## Mapping to the CJDB paper
 
 CJDB's own benchmark ([Appendix A, pp. 16-17](https://arxiv.org/pdf/2307.06621#page=16))
@@ -456,7 +471,7 @@ here rather than left for a reader to discover.
 | Q2 bbox               | `bbox-query`         | **CJDB uses `ST_Contains(window, ground_geometry)` — containment. This harness uses `&&` overlap on every system**, which is what a bbox index answers natively on all three. Ours returns the count rather than ids plus footprints, and does not restrict to `type = 'Building'`, so it asks about every CityObject in the window. The containment fetch was dropped with the catalogue review: how a window query is _composed_ is not what this benchmark is comparing.                                                                                                                         |
 | Q3 point              | —                    | **Not reproduced: a point query is a window query** (`notes/benchmark-queries.md`). Q3 is a bbox overlap against a degenerate window, answered by the same index and the same code path as Q2 on all three systems, so a separate row would have measured the same mechanism twice. The median row centre it would have used is still recorded as `point_xy`, because the windows are built around it.                                                                                                                                                                                              |
 | Q4 parts per building | `parts-per-building` | Adapted to cjdb 2.2.0's schema, where `city_object_relationships.parent_id` is the integer `city_object.id`, not the textual `object_id`. Childless Buildings are kept, as Q4's `LEFT JOIN` keeps them. `parts-per-building-join` is an extra DuckDB-only control with no CJDB counterpart.                                                                                                                                                                                                                                                                                                         |
-| Q5 LoD 1.2            | `lod-query`          | Returns **whole rows**, where Q5 returns ids: the catalogue's own definition is "retrieve all buildings having a specific LoD geometry", and a projection of ids alone is answerable from one column's definition levels on a Parquet reader. cjdb uses the `@?` jsonpath operator rather than the paper's `@>`, because only the operator form cooperates with cjdb's own GIN index. 3DCityDB must test `val_lod = '1'` — its importer truncates the fractional tier, so its "LoD 1" covers CityJSON's 1.2 _and_ 1.3 — and joins `geometry_data` so its row carries a geometry like the other two. |
+| Q5 LoD 1.2            | `lod-query`          | Asks for **LoD 2.2**, which the benchmark's 3DBAG slice carries (LoD 0, 1.3 and 2.2; no 1.2), and returns **ids plus that geometry**, where Q5 returns ids: the catalogue's own definition is "retrieve all buildings having a specific LoD geometry", and a projection of ids alone is answerable from one column's definition levels on a Parquet reader. cjdb uses the `@?` jsonpath operator rather than the paper's `@>`, because only the operator form cooperates with cjdb's own GIN index. 3DCityDB must test `val_lod = '2'` — its importer truncates the fractional tier, so its "LoD 2" covers every CityJSON 2.x (Caveat 17) — and joins `geometry_data` so its row carries a geometry like the other two. |
 | Q6 add attribute      | `attr-add`           | See the write tier above: `::json` dropped; envelope-versus-footprint area inherited.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Q7 update attribute   | `attr-update`        | None.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Q8 delete attribute   | `attr-delete`        | None on the PostgreSQL side.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -570,7 +585,22 @@ On Apple `container`, the cpuset flags, the host network and host-visible
 database container's own address. Each database is published on a free
 `127.0.0.1` port chosen by the harness and passed explicitly
 (`-p 127.0.0.1:<port>:5432`), because Apple `container` has no random-port
-form.
+form. Apple `container`'s bind mounts also refuse the `chown`/`chmod` the
+PostgreSQL entrypoint applies to its data directory, so on that engine
+`PGDATA` is set to `/var/lib/postgresql/pgdata` inside the container's own
+filesystem and is removed with the container, rather than bound to a host
+directory (`bind_mount_ownership` among the recorded capabilities).
+
+Both PostgreSQL images (`postgis/postgis:16-3.4` and
+`3dcitydb/3dcitydb-pg:16-3.4-5.1.2-alpine`) publish `linux/amd64` only, so
+the database containers are started with `--platform linux/amd64`
+(`DB_PLATFORM` in `lifecycle.py`); on an arm64 host they run under
+emulation (Rosetta on Apple `container`).
+
+cjdb 2.2.0 declares SQLAlchemy without an upper bound and fails on
+SQLAlchemy 2.1, so every `cjdb` invocation is launched as
+`uv run --with <patched cjdb> --with 'sqlalchemy<2.1'` (`CJDB_WITH_PINS` in
+`systems/cjdb.py`).
 
 On macOS both Apple `container` and `docker` run Linux in a virtual machine,
 so numbers measured there test the harness and are not citable. The
@@ -743,6 +773,7 @@ is the **status**:
 | systems agree                                            | `ok`           | —                                                      |
 | ≤ the tolerance (default **0.1 %**, `--count-tolerance`) | `ok-deviation` | the run continues                                      |
 | above the tolerance                                      | `mismatch`     | `citybench run` exits non-zero; the row is not citable |
+| identifier sets differ (see below)                       | `id-mismatch`  | `citybench run` exits non-zero; the row is not citable |
 
 The tolerance exists because the bbox counts on 3DBAG differ by
 0.03-0.04 % for reasons that are **properties of the compared systems, not
@@ -755,9 +786,10 @@ still fails the run — it remains the main defect detector, not a
 formality. The tolerance is recorded in the manifest's `count_check` block
 alongside what each status means.
 
-`citybench smoke` fails on any row whose **status** is `mismatch` or
-`error`. It deliberately does not search `notes` for the text
-`count-mismatch`: an `ok-deviation` row keeps that text, because the
+`citybench smoke` returns the run's own non-zero exit, so any `error`,
+`mismatch` or `id-mismatch` row fails it, and it then checks the CSV's
+**status** column for `mismatch` and `error`. It deliberately does not
+search `notes` for the text `count-mismatch`: an `ok-deviation` row keeps that text, because the
 decomposition is the row's value.
 
 Each expansion of a scenario is checked **against itself**: the 5 % window
@@ -768,6 +800,39 @@ the four probes into one row would have made that read as a mismatch.
 The check compares answers, not work: it cannot detect a system that returns
 the right count without doing the work the scenario is meant to measure
 (Caveat 15).
+
+### Identifier-set cross-check
+
+Equal counts do not make equal answers, so the scenarios that return
+object rows — `bbox-query` (each window), `attr-filter`, `attr-range`,
+`lod-query` and `id-lookup` — are also compared on **which** objects came
+back (`citybench.identity`). After a scenario's timed samples, each SQL
+system that answered runs the scenario's SQL once more, **untimed**
+(`verify_rows`); nothing inside the timed window changes. The native-reader
+systems have no `verify_rows` and are left out of this check.
+
+Each schema returns the object's CityJSON identifier under its own name:
+the package's `id`, cjdb's `city_object.object_id`, and 3DCityDB's
+`feature.objectid`, which `citydb import cityjson` fills with the CityJSON
+identifier. The row scenarios return it as their first column; `id-lookup`
+returns the whole object, so the identifier is read by that column name.
+Identifiers are compared as strings, unaltered. Where the rows carry
+geometry, the number of non-null geometries is compared too: the non-null
+second column for `bbox-query` and `lod-query`; for `id-lookup`, DuckDB's
+non-null `geometry_lod*` columns, the length of cjdb's `geometry` array
+and the length of 3DCityDB's `geometries` array.
+
+Every system is compared against the first. A disagreement sets the row's
+status to `id-mismatch`, writes `id-mismatch: ...` to `notes` naming, per
+pair of systems, the first five identifiers (sorted) found only on each
+side together with how many there are, and makes `citybench run` exit
+non-zero. The comparison is exact unless the count cross-check already
+accepted the row as `ok-deviation`; only then may the symmetric difference (and
+the geometry-count difference) reach the count tolerance, as a fraction of
+the larger set, so an agreeing count never hides a different set.
+`id-mismatch` replaces the count cross-check's status, so a row whose
+counts were already a `mismatch` reads `id-mismatch` when its sets differ
+too; the count decomposition stays in `notes` beside it.
 
 ### Two size figures
 
@@ -827,9 +892,10 @@ there) and are separate experiments.
   `raw_server_time_samples_s`. A write row has none because `EXPLAIN
 ANALYZE` would execute the mutation a second time.
 - **`size_bytes` / `size_bytes_no_index`** — see "Two size figures".
-- **`status`** — `ok`, `ok-deviation`, `mismatch`, `skipped` or `error`.
-  See "Count cross-check" for what `ok-deviation` means and which tolerance
-  it was judged against (the manifest records the value).
+- **`status`** — `ok`, `ok-deviation`, `mismatch`, `id-mismatch`, `skipped`
+  or `error`. See "Count cross-check" for what `ok-deviation` means and which
+  tolerance it was judged against (the manifest records the value), and
+  "Identifier-set cross-check" for `id-mismatch`.
 
 ## Fairness caveats
 
@@ -943,16 +1009,15 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
    PostgreSQL system has an object-storage access path.
 
 9. **`lod-query` returns rows, and the three systems' rows are close but
-   not identical.** The scenario asks for the objects carrying an LoD 1.2
-   geometry, and all three materialise whole rows inside the timed window,
-   each carrying a geometry: DuckDB every column (including the object's
-   other LoD geometries, which the query never filters on but `SELECT *`
-   returns), cjdb the `geometry` JSONB, 3DCityDB the `feature` row joined
-   to the LoD-1 solid in `geometry_data`. Three differences remain and are
+   not identical.** The scenario asks for the objects carrying an LoD 2.2
+   geometry, and all three materialise rows inside the timed window, each
+   the object's identifier and that geometry: DuckDB the `geometry_lod2_2`
+   WKB, cjdb the LoD 2.2 element of the `geometry` JSONB array, 3DCityDB the
+   tier-2 geometry in `geometry_data`. Three differences remain and are
    not engineered away:
-   - **3DCityDB's row carries no attributes** (they live in `property`,
-     unjoined), so it returns less than the other two — the same asymmetry
-     Caveat 17 records for `id-lookup`.
+   - **Each system returns the geometry in its own representation** —
+     WKB, cjdb's JSON geometry object, a PostGIS `geometry` — the same
+     asymmetry Caveat 18 records for `geometry-scan` and `bbox-query`.
    - **3DCityDB pays an ordering the others do not.** `DISTINCT ON
 (f.id) … ORDER BY f.id` keeps the row count CityObject-grained when
      several `property` rows of one feature match, and is scoped to the
@@ -960,13 +1025,14 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
      geometries for equality. The sort KEY is a bigint but the sorted
      tuples carry the geometry, so at scale this may spill to disk rather
      than fit `work_mem` — check the plan for a `Sort`/`Unique` node
-     before reading the row against the other two. On delft the
-     de-duplication removes nothing, each CityObject owning exactly one
-     `lod1Solid`.
-   - **3DCityDB's "LoD 1" is wider than CityJSON's "1.2".** `citydb-tool`
-     truncates the fractional tier on import, so `val_lod = '1'` covers
-     1.2 and 1.3 alike. Where a dataset carries both, its row set is a
-     superset of the other two systems' and the cross-check will say so.
+     before reading the row against the other two. Where each CityObject
+     owns exactly one tier-2 geometry, the de-duplication removes nothing.
+   - **3DCityDB's "LoD 2" is wider than CityJSON's "2.2".** `citydb-tool`
+     truncates the fractional tier on import, so `val_lod = '2'` covers
+     2.0, 2.1, 2.2 and 2.3 alike (Caveat 17). The benchmark's 3DBAG slice
+     carries LoD 0, 1.3 and 2.2, so there tier 2 is LoD 2.2; on a dataset
+     carrying another LoD 2.x besides 2.2, 3DCityDB's row set is a
+     superset of the other two systems' and the cross-checks will say so.
 
    **Client-side object construction is kept off both sides.** DuckDB
    materialises to Arrow (`fetch: arrow`), and the PostgreSQL connections
@@ -1069,16 +1135,18 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     `cityparquet-objects` in `metadata.json`, combined with
     `read_parquet([...], union_by_name = true)`, and is unaffected.
 
-15. **`lod-query` is degenerate on `duckdb-cityparquet` when the package
-    lacks the column it reads.** It targets the column `geometry_lod1_2`.
-    When a package has no such column, `sql_duckdb.sql_for` emits
-    `SELECT * ... WHERE FALSE`, which DuckDB folds at plan time without
-    scanning anything, while cjdb and 3DCityDB still execute their queries
-    and return no rows. The counts agree, so the cross-check raises
-    nothing, but the `duckdb-cityparquet` time on such a row measures no
-    work and must not be compared with the others or cited as evidence of
-    anything. The committed 3DBAG package has `geometry_lod1_2` (all three
-    systems count 500,296), so the row is not degenerate on it.
+15. **`lod-query` is skipped, not answered with an empty query, on a
+    dataset without LoD 2.2.** It targets LoD 2.2 (`LOD_QUERY_TARGET` in
+    `scenarios/registry.py`). The dataset's LoDs are read from the
+    package's `geometry_lod<major>_<minor>` column names (`lods` in the
+    params sidecar), and when 2.2 is not among them every system's SQL
+    builder raises `ScenarioUnavailable`, so the scenario is recorded as
+    `skipped: dataset carries no LoD 2.2 geometry ...` on all three. No
+    system then runs a query that DuckDB could fold at plan time into an
+    empty result: the count cross-check compares answers, not work, and
+    would not tell such a row from one that scanned the data. The committed
+    run's `lod-query` rows (all three systems count 500,296) answer an LoD
+    1.2 form of the scenario and are not comparable with an LoD 2.2 run.
 
 16. **CityParquet's `bbox` is NULL for an object whose only geometry is a
     `GeometryInstance`.** The writer computes `bbox` from the object's own
@@ -1093,17 +1161,23 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     `window_rows` in the params sidecar. On the committed 3DBAG slice this
     caveat does not operate: 0 of 1,000,001 rows has a NULL `bbox`.
 
-17. **`id-lookup` returns a different amount of object per system.**
-    `duckdb-cityparquet` and `cjdb` return the whole object row, geometry
-    included. 3DCityDB returns the `feature` row only: `property` and
-    `geometry_data` are not joined, so it hands back an object's identity
-    and envelope without its attributes or geometry. That makes 3DCityDB's
-    `id-lookup` the least work of the three, and the scenario is one
-    CityParquet loses heavily in any case, for a reason Caveat 22 isolates
-    (a row-group decode, not a missing index). Read it as "locate a row by id",
-    not "materialise a comparable object". `lod-query` narrows the same gap
-    without closing it: there 3DCityDB's row does carry the LoD-1 geometry,
-    but still not the attributes (Caveat 9).
+17. **3DCityDB answers `id-lookup` and `lod-query` in its own shape.**
+    `id-lookup` returns the whole object on every system, as one row:
+    `duckdb-cityparquet` the package row (`SELECT *`, every geometry
+    column included), `cjdb` the `city_object` row (`SELECT *`, the
+    `geometry` JSONB included), and 3DCityDB the `feature` row plus one
+    array per `property` column (`name` and every `val_*`) and an array of
+    every geometry the object points at in `geometry_data`, aggregated in
+    scalar subqueries so the lookup stays one row. 3DCityDB therefore reads
+    three tables where the others read one, and its row is shaped
+    differently: the attributes come back as parallel arrays rather than as
+    named columns or a JSON object. The scenario is one CityParquet loses
+    heavily in any case, for a reason Caveat 22 isolates (a row-group
+    decode, not a missing index). `lod-query` on 3DCityDB targets the
+    integer LoD tier 2 (`CITYDB_LOD_TIER`), because the importer stores
+    only the integer tier on the `property` row; tier 2 equals LoD 2.2 only
+    where 2.2 is the dataset's only LoD 2.x. The benchmark's 3DBAG slice
+    carries LoD 0, 1.3 and 2.2, so there the two coincide (Caveat 9).
 
 18. **`geometry-scan` and `bbox-query` return geometry in each system's
     native binary form, which is not one form.** DuckDB hands back the
@@ -1254,7 +1328,8 @@ With `--data-root` (which must lie below `benchmark/runs/`),
   `citybench-citydb-<uuid>`, each with the resource limits above, published
   on a free `127.0.0.1` port chosen by the harness;
 - binds each PostgreSQL data directory to
-  `<data-root>/databases/<uuid>/{cjdb,3dcitydb}`;
+  `<data-root>/databases/<uuid>/{cjdb,3dcitydb}`, except on Apple
+  `container`, where it stays inside the container ("Container engine");
 - creates a per-run temporary directory under `$TMPDIR` (or
   `/data2/hideba/tmp` if unset) with separate subdirectories bound to each
   container's `/tmp`, used by `citydb-tool`, and set as DuckDB's
@@ -1275,13 +1350,18 @@ not the requested value.
 The CityParquet package must already exist as
 `<prepared-dir>/<dataset>.parquet`, for example from
 `just readbench-prepare <input> <outdir> cityparquet` at the repository
-root. Without `--output-dir`, results are written to
+root. `--dataset` must name the CityJSONSeq file, `<dataset>.city.jsonl`:
+cjdb imports CityJSONSeq, and the harness hands the `--dataset` path to
+`cjdb import -f` unchanged (`_dataset` in `cli.py` keeps the given path as
+the source). The dataset name, and so the package looked up, is the same
+for `<dataset>.city.jsonl` and `<dataset>.city.json`. Without
+`--output-dir`, results are written to
 `benchmark/runs/databases/results/`. Every run overwrites
 `<dataset>.csv`, `<dataset>.manifest.json`, `<dataset>.params.json` and
 `<dataset>.indexes.sql`.
 
 `citybench smoke` runs the same pipeline with `repeat = 2` and fails on any
-count mismatch or error. Its default dataset,
+count mismatch, identifier mismatch or error. Its default dataset,
 `benchmark/databases/data/delft.city.jsonl`, is not in the repository
 (`data/` is git-ignored), so pass `--dataset` or place the file there first.
 
