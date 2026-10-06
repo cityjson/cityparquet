@@ -611,3 +611,99 @@ async fn a_variants_run_over_http_reads_the_uploaded_packages_without_building()
     }
     assert_eq!(std::fs::read_to_string(&sizes).unwrap(), sizes_before);
 }
+
+/// The bloom axis on several row groups (delft written at 256 rows per
+/// group): an identifier and a text attribute, each with a hit and a miss, on
+/// the package with filters and on the one without. With filters a miss is
+/// pruned in every group (bar false positives) and a hit in every group that
+/// does not hold the value; without filters nothing is pruned by a filter;
+/// both packages return the same counts.
+#[test]
+fn the_bloom_axis_prunes_identifier_and_attribute_probes_across_row_groups() {
+    let (prepared, input) = prepared_delft();
+    let out_csv = prepared.path().join("out.csv");
+    let output = run(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "id-lookup,attr-lookup",
+        "--id-probes",
+        "id-50pct,id-miss",
+        "--bloom-attributes",
+        "identificatie",
+        "--variants",
+        "cityparquet,cityparquet+rg256,cityparquet+nobloom+rg256",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = std::fs::read_to_string(&out_csv).unwrap();
+    // The bare baseline (one row group) is required on every axis; the
+    // pruning is read off the two 256-row variants.
+    let rows: Vec<&str> = text
+        .lines()
+        .skip(1)
+        .filter(|row| field(row, 1).contains("+rg256"))
+        .collect();
+    assert_eq!(rows.len(), 8, "{text}");
+    let mut counts = std::collections::HashMap::new();
+    for row in &rows {
+        let (label, notes) = (field(row, 1), column(row, "notes"));
+        let n = |name: &str| column(row, name).parse::<u64>().unwrap();
+        let (total, bloom, stats) = (n("row_groups_total"), n("bloom_pruned"), n("stats_pruned"));
+        assert_eq!(total, 9, "2231 rows at 256 per group: {row}");
+        let is_miss = notes.contains("-miss");
+        if is_miss {
+            assert_eq!(stats, 0, "each miss sits inside every group's range: {row}");
+        }
+        if label.contains("nobloom") {
+            assert_eq!((bloom, n("filter_bytes")), (0, 0), "{row}");
+        } else if is_miss {
+            // At least `total - 1` in general (a false positive keeps one);
+            // on this fixture every group is ruled out.
+            assert_eq!(bloom, total, "{row}");
+        } else {
+            // One feature: its rows sit in at most two adjacent groups.
+            assert!(bloom >= total - 2, "{row}");
+            assert_eq!(bloom, total - 1, "one group holds the value here: {row}");
+        }
+        let count = n("result_count");
+        assert_eq!(count, if is_miss { 0 } else { 1 }, "{row}");
+        let tag = notes.split(';').next().unwrap().to_string();
+        assert_eq!(*counts.entry(tag).or_insert(count), count, "{row}");
+    }
+    assert_eq!(counts.len(), 4, "{counts:?}");
+}
+
+#[test]
+fn an_attribute_probe_column_without_a_filter_fails_the_run_naming_it() {
+    let (prepared, input) = prepared_delft();
+    let out_csv = prepared.path().join("out.csv");
+    expect_rejection(
+        &[
+            "--input",
+            input.to_str().unwrap(),
+            "--prepared-dir",
+            prepared.path().to_str().unwrap(),
+            "--out",
+            out_csv.to_str().unwrap(),
+            "--repeat",
+            "1",
+            "--scenarios",
+            "attr-lookup",
+            "--bloom-attributes",
+            "status",
+            "--variants",
+            "cityparquet,cityparquet+nobloom",
+        ],
+        "bloom attribute 'status' carries no Bloom filter",
+    );
+}

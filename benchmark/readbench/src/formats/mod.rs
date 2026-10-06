@@ -185,7 +185,7 @@ pub const LOOKUP_STATS_MARKER: &str = "cityparquet-readbench: lookup-stats";
 
 /// Every non-CityParquet runner's answer to [`Scenario::FeatureLookup`].
 pub const FEATURE_LOOKUP_CITYPARQUET_ONLY: &str =
-    "scenario 'feature-lookup' is measured for CityParquet only";
+    "scenarios 'feature-lookup' and 'attr-lookup' are measured for CityParquet only";
 
 /// One format's read-benchmark backend: runs exactly one [`Scenario`]
 /// against `source` (a format-specific location — a CityParquet package

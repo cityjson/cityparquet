@@ -283,7 +283,9 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
             }
             Ok(Answer::reading(0, totals))
         }
-        Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
+        Scenario::FeatureLookup | Scenario::AttrLookup => {
+            bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY)
+        }
     }
 }
 

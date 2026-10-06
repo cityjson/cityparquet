@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use arrow_array::types::Int32Type;
@@ -695,6 +695,54 @@ pub fn row_group_string_ranges(
             _ => None,
         })
         .collect())
+}
+
+/// The two bloom-axis probes on text attribute `column` of `table`: tag
+/// `attr-<column>-50pct`, the value of the row halfway through the table (the
+/// nearest non-null row when that one is null, with `substituted` set), and
+/// tag `attr-<column>-miss`, a value verified absent and chosen by
+/// [`stats_resistant_miss`] against the column's row-group ranges in `table`
+/// and in every package of `range_tables` (the other packages of the axis,
+/// whose row groups may be cut differently), so that min/max statistics alone
+/// reject it in as few row groups as possible.
+pub fn attr_probes(table: &Path, column: &str, range_tables: &[PathBuf]) -> Result<Vec<IdProbe>> {
+    let mut values: Vec<Option<String>> = Vec::new();
+    for batch in projected_reader(table, &[column])? {
+        let batch = batch.with_context(|| format!("reading a batch of {}", table.display()))?;
+        values.extend(utf8_values(batch.column(0).as_ref())?);
+    }
+    let present: Vec<String> = values.iter().flatten().cloned().collect();
+    if present.is_empty() {
+        anyhow::bail!(
+            "bloom attribute '{column}' has no non-null value in {}",
+            table.display()
+        );
+    }
+    let middle = values.len() / 2;
+    let (index, hit) = (0..values.len())
+        .flat_map(|o| [middle.saturating_sub(o), (middle + o).min(values.len() - 1)])
+        .find_map(|i| values[i].clone().map(|v| (i, v)))
+        .expect("a non-null value exists");
+    let taken: std::collections::HashSet<String> = present.iter().cloned().collect();
+    let mut ranges = vec![row_group_string_ranges(table, column)?];
+    for other in range_tables {
+        ranges.push(row_group_string_ranges(other, column)?);
+    }
+    let miss = stats_resistant_miss(&present, &taken, &ranges).expect("present is non-empty");
+    Ok(vec![
+        IdProbe {
+            tag: format!("attr-{column}-50pct"),
+            id: hit,
+            present: true,
+            substituted: index != middle,
+        },
+        IdProbe {
+            tag: format!("attr-{column}-miss"),
+            id: miss,
+            present: false,
+            substituted: false,
+        },
+    ])
 }
 
 /// The most candidates [`stats_resistant_miss`] scores: an evenly spaced

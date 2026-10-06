@@ -217,6 +217,12 @@ struct RunArgs {
     #[arg(long, value_delimiter = ',')]
     feature_probes: Option<Vec<String>>,
 
+    /// Text attribute columns for `attr-lookup` (the bloom axis): each gets
+    /// a hit probe and a miss probe; each must carry a Bloom filter in the
+    /// variant package without `nobloom`.
+    #[arg(long, value_delimiter = ',')]
+    bloom_attributes: Option<Vec<String>>,
+
     /// After the warm matrix, run one additional `FullRead` per format,
     /// tagged `cold` in `notes` (see [`coordinator::run`]'s own doc comment
     /// on the `sudo purge` protocol this does NOT automate).
@@ -269,6 +275,7 @@ fn run(cli: Cli) -> Result<()> {
             scenarios: run_args.scenarios,
             id_probes: run_args.id_probes,
             feature_probes: run_args.feature_probes,
+            bloom_attributes: run_args.bloom_attributes,
             cold: run_args.cold,
             transport,
             base_url: run_args.base_url,

@@ -175,6 +175,14 @@ fn window(result: &BBoxGeometryResult) -> Reply {
 }
 
 /// The attribute filter: the matching objects' identifiers.
+/// [`matched`] plus the lookup counters: the bloom axis's attribute probe.
+fn counted(ids: &[String], stats: LookupStats) -> Reply {
+    Reply {
+        lookup: Some(counters(stats)),
+        ..matched(ids)
+    }
+}
+
 fn matched(ids: &[String]) -> Reply {
     Reply {
         result_count: ids.len() as u64,
@@ -217,6 +225,10 @@ enum ScenarioPlan<'a> {
     FeatureLookup {
         feature_id: &'a str,
     },
+    AttrLookup {
+        column: &'a str,
+        pred: AttrPredicate,
+    },
 }
 
 impl<'a> ScenarioPlan<'a> {
@@ -238,6 +250,10 @@ impl<'a> ScenarioPlan<'a> {
             },
             Scenario::IdLookup => Self::IdLookup {
                 id: require(&params.target_id, "target-id", scenario)?.as_str(),
+            },
+            Scenario::AttrLookup => Self::AttrLookup {
+                column: require(&params.attr_column, "attr-column", scenario)?.as_str(),
+                pred: to_query_predicate(require(&params.attr_pred, "attr-eq", scenario)?),
             },
             Scenario::FeatureLookup => Self::FeatureLookup {
                 feature_id: require(&params.target_feature_id, "target-feature-id", scenario)?
@@ -334,6 +350,11 @@ async fn run_http(
                 query_async::id_lookup_visit_async(dyn_store(), &table_path, id).await?;
             visited(&totals, Some(stats))
         }
+        ScenarioPlan::AttrLookup { column, pred } => {
+            let (ids, stats) =
+                query_async::attr_filter_ids_async(dyn_store(), &table_path, column, &pred).await?;
+            counted(&ids, stats)
+        }
         ScenarioPlan::FeatureLookup { feature_id } => {
             let (totals, stats) =
                 query_async::feature_lookup_visit_async(dyn_store(), &table_path, feature_id)
@@ -382,6 +403,10 @@ impl FormatRunner for CityParquetRunner {
                     }
                     ScenarioPlan::AttrStats { column } => {
                         stats_reply(aggregates(query::attr_stats(&table, column)?))
+                    }
+                    ScenarioPlan::AttrLookup { column, pred } => {
+                        let (ids, stats) = query::attr_filter_ids(&table, column, &pred)?;
+                        counted(&ids, stats)
                     }
                     ScenarioPlan::IdLookup { id } => {
                         let (totals, stats) = query::id_lookup_visit(&table, id)?;

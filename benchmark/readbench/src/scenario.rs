@@ -37,6 +37,11 @@ pub enum Scenario {
     /// column, so it is not in [`Scenario::ALL`] (the format-comparison set)
     /// and a run names it explicitly.
     FeatureLookup,
+    /// The objects whose text attribute equals a value — the bloom axis's
+    /// attribute probe, returning count + identifiers like `attr-filter` but
+    /// with the lookup counters (row groups pruned by Bloom filter and by
+    /// statistics). CityParquet only, and not in [`Scenario::ALL`].
+    AttrLookup,
 }
 
 impl Scenario {
@@ -61,6 +66,7 @@ impl Scenario {
             Scenario::AttrStats => "attr-stats",
             Scenario::IdLookup => "id-lookup",
             Scenario::FeatureLookup => "feature-lookup",
+            Scenario::AttrLookup => "attr-lookup",
         }
     }
 }
@@ -86,14 +92,16 @@ impl FromStr for Scenario {
             "attr-stats" | "attrstats" => Ok(Scenario::AttrStats),
             "id-lookup" | "idlookup" => Ok(Scenario::IdLookup),
             "feature-lookup" | "featurelookup" => Ok(Scenario::FeatureLookup),
+            "attr-lookup" | "attrlookup" => Ok(Scenario::AttrLookup),
             other => Err(format!(
-                "unknown scenario '{other}'; expected one of: {}, {}",
+                "unknown scenario '{other}'; expected one of: {}, {}, {}",
                 Scenario::ALL
                     .iter()
                     .map(|s| s.as_str())
                     .collect::<Vec<_>>()
                     .join(", "),
-                Scenario::FeatureLookup.as_str()
+                Scenario::FeatureLookup.as_str(),
+                Scenario::AttrLookup.as_str()
             )),
         }
     }

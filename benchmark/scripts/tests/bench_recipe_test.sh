@@ -54,7 +54,7 @@ case_bloom_bench_list() {
     return
   fi
   line="$(sed -n '/^bloom-bench /,/^$/p' "$JUSTFILE" | grep 'just variant-bench')"
-  if [[ "$line" != *'"id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"'* ]]; then
+  if [[ "$line" != *'"id-lookup,feature-lookup,attr-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{ATTRIBUTES}}"'* ]]; then
     fail "$name" "bloom-bench does not pass the lookup scenarios and probes: $line"
     return
   fi
@@ -70,7 +70,7 @@ case_bloom_http_matches_the_local_pair() {
     return
   fi
   line="$(sed -n '/^bloom-bench-http /,/^$/p' "$JUSTFILE" | grep 'just variant-bench')"
-  if [[ "$line" != *'"id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"'* ]]; then
+  if [[ "$line" != *'"id-lookup,feature-lookup,attr-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{ATTRIBUTES}}" "{{BASE_URL}}"'* ]]; then
     fail "$name" "bloom-bench-http does not pass the lookups and its BASE_URL: $line"
     return
   fi
@@ -124,7 +124,7 @@ case_positional_arguments_line_up() {
   local name="bloom-bench and bloom-bench-http pass each argument in its own parameter's position"
   local params
   params="$(variant_bench_params | tr '\n' ' ')"
-  if [[ "$params" != "FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_NODE MEMORY_MAX MAX_LOAD MAX_LOAD_WAIT_S SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL " ]]; then
+  if [[ "$params" != "FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_NODE MEMORY_MAX MAX_LOAD MAX_LOAD_WAIT_S SCENARIOS ID_PROBES FEATURE_PROBES BLOOM_ATTRIBUTES BASE_URL " ]]; then
     fail "$name" "variant-bench's parameters changed: $params"
     return
   fi
@@ -137,9 +137,10 @@ case_positional_arguments_line_up() {
       || "$(argument_for "$recipe" MEMORY_MAX)" != "{{MEMORY_MAX}}" \
       || "$(argument_for "$recipe" MAX_LOAD)" != "{{MAX_LOAD}}" \
       || "$(argument_for "$recipe" MAX_LOAD_WAIT_S)" != "{{MAX_LOAD_WAIT_S}}" \
-      || "$(argument_for "$recipe" SCENARIOS)" != "id-lookup,feature-lookup" \
+      || "$(argument_for "$recipe" SCENARIOS)" != "id-lookup,feature-lookup,attr-lookup" \
       || "$(argument_for "$recipe" ID_PROBES)" != "id-50pct,id-miss" \
-      || "$(argument_for "$recipe" FEATURE_PROBES)" != "feature-50pct,feature-miss" ]]; then
+      || "$(argument_for "$recipe" FEATURE_PROBES)" != "feature-50pct,feature-miss" \
+      || "$(argument_for "$recipe" BLOOM_ATTRIBUTES)" != "{{ATTRIBUTES}}" ]]; then
       fail "$name" "$recipe passes its arguments out of position: $(recipe_arguments "$recipe" | tr '\n' ' ')"
       return
     fi

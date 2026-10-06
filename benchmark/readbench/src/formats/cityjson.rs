@@ -187,7 +187,9 @@ fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -
             }
             Ok(Answer::reading(totals.objects, totals))
         }
-        Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
+        Scenario::FeatureLookup | Scenario::AttrLookup => {
+            bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY)
+        }
     }
 }
 

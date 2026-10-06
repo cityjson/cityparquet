@@ -412,7 +412,7 @@ bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "
 # reads those lists back out of this file.
 [private]
 [doc("Configuration-axis run: reads and package size per variant, over every input under FOLDER")]
-variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_NODE MEMORY_MAX MAX_LOAD MAX_LOAD_WAIT_S SCENARIOS ID_PROBES FEATURE_PROBES BASE_URL='':
+variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_NODE MEMORY_MAX MAX_LOAD MAX_LOAD_WAIT_S SCENARIOS ID_PROBES FEATURE_PROBES BLOOM_ATTRIBUTES BASE_URL='':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -444,6 +444,16 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_
         if [[ -n "{{MEMORY_MAX}}" && "{{MEMORY_MAX}}" != off ]]; then
             memory_args=(--memory-max "{{MEMORY_MAX}}")
         fi
+        # `attr-lookup`'s columns: BLOOM_ATTRIBUTES, or else the slice's
+        # `bloom_attributes` in benchmark/manifest.toml.
+        attr_args=()
+        if [[ ",{{SCENARIOS}}," == *",attr-lookup,"* ]]; then
+            attrs="{{BLOOM_ATTRIBUTES}}"
+            if [[ -z "$attrs" ]]; then
+                attrs="$(python3 -c 'import tomllib; m = tomllib.load(open("benchmark/manifest.toml", "rb")); print(",".join(m["datasets"][m["suite"]["slice_dataset"]]["bloom_attributes"]))')"
+            fi
+            attr_args=(--bloom-attributes "$attrs")
+        fi
         transport_args=()
         if [[ -n "{{BASE_URL}}" ]]; then
             transport_args=(--transport http --base-url "{{BASE_URL}}")
@@ -462,6 +472,7 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT CELL_BUDGET_S MIN_REPEAT NUMA_
             --scenarios "{{SCENARIOS}}" \
             --id-probes "{{ID_PROBES}}" \
             ${feature_args[@]+"${feature_args[@]}"} \
+            ${attr_args[@]+"${attr_args[@]}"} \
             ${transport_args[@]+"${transport_args[@]}"} \
             --variants "{{VARIANTS}}"
 
@@ -493,8 +504,8 @@ bloom-columns PACKAGE:
 # dataset but Zurich is a single group, so a hit there can skip nothing.
 [private]
 [doc("Bloom axis over the 3DBAG slice staged in FOLDER: cityparquet vs cityparquet+nobloom")]
-bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7' NUMA_NODE=env('BENCH_NUMA_NODE', 'auto') MEMORY_MAX='64000000000' MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
-    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "{{NUMA_NODE}}" "{{MEMORY_MAX}}" "{{MAX_LOAD}}" "{{MAX_LOAD_WAIT_S}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"
+bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7' NUMA_NODE=env('BENCH_NUMA_NODE', 'auto') MEMORY_MAX='64000000000' MAX_LOAD='auto' MAX_LOAD_WAIT_S='600' ATTRIBUTES='':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "{{NUMA_NODE}}" "{{MEMORY_MAX}}" "{{MAX_LOAD}}" "{{MAX_LOAD_WAIT_S}}" "id-lookup,feature-lookup,attr-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{ATTRIBUTES}}"
 
 # The bloom axis over HTTP: reads (never builds) the two packages a local
 # `bloom-bench` run left in PREPARED, after PREPARED was uploaded to BASE_URL
@@ -502,8 +513,8 @@ bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / 
 # real bucket, and its timings are a snapshot of one network path.
 [private]
 [doc("Bloom axis over HTTP, against uploaded bloom-bench packages")]
-bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7' NUMA_NODE=env('BENCH_NUMA_NODE', 'auto') MEMORY_MAX='64000000000' MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
-    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "{{NUMA_NODE}}" "{{MEMORY_MAX}}" "{{MAX_LOAD}}" "{{MAX_LOAD_WAIT_S}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"
+bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25' CELL_BUDGET_S='' MIN_REPEAT='7' NUMA_NODE=env('BENCH_NUMA_NODE', 'auto') MEMORY_MAX='64000000000' MAX_LOAD='auto' MAX_LOAD_WAIT_S='600' ATTRIBUTES='':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{CELL_BUDGET_S}}" "{{MIN_REPEAT}}" "{{NUMA_NODE}}" "{{MEMORY_MAX}}" "{{MAX_LOAD}}" "{{MAX_LOAD_WAIT_S}}" "id-lookup,feature-lookup,attr-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{ATTRIBUTES}}" "{{BASE_URL}}"
 
 # ---------------------------------------------------------------------------
 # The harness's own test suites

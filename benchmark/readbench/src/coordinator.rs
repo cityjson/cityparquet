@@ -124,6 +124,10 @@ pub struct RunOptions {
     pub id_probes: Option<Vec<String>>,
     /// Optional subset of resolved `feature-lookup` probe tags.
     pub feature_probes: Option<Vec<String>>,
+    /// The text attribute columns `attr-lookup` probes (the bloom axis's
+    /// `bloom_attributes`); each must carry a Bloom filter in the variant
+    /// package without `nobloom`, or the run fails naming it.
+    pub bloom_attributes: Option<Vec<String>>,
     /// After the warm matrix, run one additional `FullRead` per format,
     /// tagged `cold` in `notes` (see [`run`]'s own doc comment on the
     /// `sudo purge` protocol this does NOT automate).
@@ -667,6 +671,8 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         }
     }
 
+    let attr_probes = attr_lookup_probes(base, &scenarios, variants.as_deref(), opts)?;
+
     for (format, source, label) in &resolved_formats {
         let format = *format;
         for scenario in &scenarios {
@@ -789,6 +795,40 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 // target would make the published time a function of where
                 // that id happened to sit in the stream, which is a property
                 // of the sample rather than of the format.
+                Scenario::AttrLookup if format != Format::CityParquet => eprintln!(
+                    "cityparquet-readbench: skipping scenario '{scenario}' for format \
+                     '{format}': {}",
+                    crate::formats::FEATURE_LOOKUP_CITYPARQUET_ONLY
+                ),
+                Scenario::AttrLookup => {
+                    for (column, probe) in &attr_probes {
+                        let params = QueryParams {
+                            attr_column: Some(column.clone()),
+                            attr_pred: Some(AttrPred::Eq(serde_json::Value::String(
+                                probe.id.clone(),
+                            ))),
+                            ..Default::default()
+                        };
+                        let mut notes = probe.tag.clone();
+                        if probe.substituted {
+                            notes.push_str(";value-substituted");
+                        }
+                        run_measurement(
+                            &mut rows,
+                            &mut samples,
+                            &mut gate,
+                            &dataset,
+                            format,
+                            label,
+                            source,
+                            *scenario,
+                            &params,
+                            &opts.sampling,
+                            Some(resolved.cp_object_total),
+                            &notes,
+                        )?;
+                    }
+                }
                 Scenario::FeatureLookup if format != Format::CityParquet => {
                     eprintln!(
                         "cityparquet-readbench: skipping scenario '{scenario}' for format \
@@ -1803,6 +1843,56 @@ fn run_measurement(
 /// regardless — as the flags are in the prepare script — so the benchmark
 /// states its configuration rather than inheriting it, and a later change of
 /// default cannot change what its figures measure.
+/// The `attr-lookup` probes, `(column, probe)`, from the variant package that
+/// carries Bloom filters (the first id without `nobloom`, as a local run left
+/// it in the prepared directory). Empty unless `attr-lookup` is named; an
+/// error, naming the column, when a configured column is missing, not text,
+/// or carries no filter there — so a run cannot silently measure nothing.
+fn attr_lookup_probes(
+    base: &str,
+    scenarios: &[Scenario],
+    variants: Option<&[(String, Variant)]>,
+    opts: &RunOptions,
+) -> Result<Vec<(String, params::IdProbe)>> {
+    use cityparquet_readbench::bloom_columns;
+    if !scenarios.contains(&Scenario::AttrLookup) {
+        return Ok(Vec::new());
+    }
+    let columns = opts
+        .bloom_attributes
+        .as_deref()
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("scenario 'attr-lookup' needs --bloom-attributes"))?;
+    let bloom_id = variants
+        .and_then(|list| list.iter().find(|(id, _)| !id.contains("nobloom")))
+        .map(|(id, _)| id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "scenario 'attr-lookup' belongs to the bloom axis: it needs --variants with \
+                 a package that carries Bloom filters"
+            )
+        })?;
+    let package = |id: &str| {
+        bloom_columns::main_table(&opts.prepared_dir.join(format!("{base}.{id}.parquet")))
+    };
+    let table = package(bloom_id)?;
+    let others = variants
+        .into_iter()
+        .flatten()
+        .filter(|(id, _)| id != bloom_id)
+        .map(|(id, _)| package(id))
+        .collect::<Result<Vec<_>>>()?;
+    let survey = bloom_columns::survey(&table)?;
+    let mut probes = Vec::new();
+    for column in columns {
+        bloom_columns::require_filtered_text(&survey, column)?;
+        for probe in params::attr_probes(&table, column, &others)? {
+            probes.push((column.clone(), probe));
+        }
+    }
+    Ok(probes)
+}
+
 fn build_variant(
     base: &str,
     id: &str,

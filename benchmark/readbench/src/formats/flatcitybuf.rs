@@ -1300,7 +1300,9 @@ async fn run_http(
             let id = require(&params.target_id, "target-id", scenario)?;
             id_lookup_http(&url, tally.clone(), id).await?
         }
-        Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
+        Scenario::FeatureLookup | Scenario::AttrLookup => {
+            bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY)
+        }
     };
 
     let (bytes, requests) = tally.snapshot();
@@ -1347,7 +1349,9 @@ impl FormatRunner for FlatCityBufRunner {
                         let id = require(&params.target_id, "target-id", scenario)?;
                         id_lookup(input, id)?
                     }
-                    Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
+                    Scenario::FeatureLookup | Scenario::AttrLookup => {
+                        bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY)
+                    }
                 };
                 return Ok(outcome(answer, None));
             }

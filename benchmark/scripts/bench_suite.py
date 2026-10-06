@@ -334,7 +334,7 @@ def memory_ceiling(requested: str | None, profile: str) -> int | None:
     return int(requested)
 
 
-def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None, database_datasets: str = "") -> None:
+def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None, database_datasets: str = "", bloom_attributes: list[str] | None = None) -> None:
     smoke = profile == "smoke"
     repeat = read_repeat(profile)
     budget = "" if cell_budget_s is None else str(cell_budget_s)
@@ -373,7 +373,8 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         print("bloom: skipped; the bloom family measures the 3DBAG slice alone, which this selection does not include", file=sys.stderr, flush=True)
     if "bloom" in families and bloom_inputs:
         output = result_dir(locations, "bloom", profile)
-        just("bloom-bench", str(stage(locations, "bloom", bloom_inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args)
+        attributes = ",".join(bloom_attributes or next((entry.get("bloom_attributes", []) for entry in selected.values() if entry["role"] == "slice"), []))
+        just("bloom-bench", str(stage(locations, "bloom", bloom_inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args, attributes)
         for input_path in bloom_inputs:
             write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile, **sampling)
     if "databases" in families:
@@ -422,6 +423,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 25 read repetitions, the families' own result directories (the paper's evidence); quick: the same datasets at 7 repetitions, under <family>/quick/, a faster complete run that is not the paper's evidence; short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Rotterdam alone, 1 repetition, under <family>/smoke/. Under full and quick the database family measures the 3DBAG slice, under short and smoke Rotterdam")
     result.add_argument("--smoke", action="store_true", help="the same as --profile smoke")
     result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")
+    result.add_argument("--bloom-attributes", default="", help="run only: comma-separated text attribute columns for the bloom family's attr-lookup probes (default: the slice's bloom_attributes in manifest.toml); each must carry a Bloom filter or the run fails naming it")
     result.add_argument("--cell-budget-s", type=float, default=None, help="run only: optional per-cell time budget in seconds for the formats and bloom families (default: off); a cell stops sampling once its runs, warm-up included, took this long and at least --min-repeat samples exist")
     result.add_argument("--numa-node", default=DEFAULT_ISOLATION["numa_node"], help="run only: NUMA node for the read families' measured processes: an id, auto (most free memory; default, or $BENCH_NUMA_NODE) or off")
     result.add_argument("--memory-max", default=None, help="run only: memory ceiling in decimal bytes for the read families' measured processes, via systemd-run --user, or off (default: 64000000000 = 64 GB under full, quick and short; off under smoke). The database family records it but does not apply it")
@@ -451,7 +453,7 @@ def main() -> None:
     if args.command == "prep":
         prepare(data, locations, families, datasets, profile)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s}, args.database_datasets)
+        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s}, args.database_datasets, [c for c in args.bloom_attributes.split(",") if c] if args.bloom_attributes else None)
     else:
         output = (args.out or locations["summary"] / profile).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None
