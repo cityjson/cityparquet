@@ -102,11 +102,10 @@ def test_every_timing_figure_prints_the_statistic(tmp_path: Path, monkeypatch):
             lambda data=data: (
                 figures.format_figures(data, tmp_path),
                 figures._axis_main(data, "bloom", tmp_path),
-                figures._axis_corpus(data, "bloom", tmp_path),
                 figures.databases(data, tmp_path),
             ),
         )
-        assert {"databases", "bloom", "bloom-corpus"} <= set(seen)
+        assert {"databases", "bloom"} <= set(seen)
         for name, text in seen.items():
             # Storage and memory carry no timing statistic; a placeholder plots nothing.
             if name in ("sizes", "rss") or "Not rendered" in text:

@@ -503,16 +503,6 @@ def _axis_queries(records: list[dict]) -> list[str]:
     return [q for q in wanted if q in present]
 
 
-def _corpus_datasets(records: list[dict], slice_id: str | None) -> list[str]:
-    """The corpus datasets an axis measured, smallest first: every dataset but
-    the slice, which the headline figure shows on its own."""
-    objects: dict[str, int] = {}
-    for r in records:
-        if r["dataset"] != slice_id:
-            objects[r["dataset"]] = max(objects.get(r["dataset"], 0), r.get("objects") or 0)
-    return sorted(objects, key=lambda d: (objects[d], d))
-
-
 def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     records, sizes, variants = _axis(data, key)
     if not records:
@@ -527,7 +517,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
             key,
             out,
             f"Not rendered: the slice dataset ({largest or 'unnamed'}) was not measured; "
-            f"the corpus datasets are drawn in {key}-corpus.",
+            f"the {key} axis measures the slice alone.",
         )
     queries = _axis_queries(selected)
     palette = _axis_palette(variants)
@@ -646,77 +636,17 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     return _save(fig, key, out)
 
 
-def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
-    """The corpus datasets of an axis, per dataset, apart from the slice.
+def _remove_retired(out: Path) -> list[Path]:
+    """Remove the retired `bloom-corpus` figure from a re-used directory.
 
-    Grouped bars, one group per corpus dataset and one bar per variant, for
-    the file size and the read time of each lookup. Nothing is written for an
-    axis that measured no corpus dataset, and any `{key}-corpus` figure
-    already in `out` is removed.
+    The bloom axis measures the 3DBAG slice alone (a filter rules out whole
+    row groups, and every corpus dataset but Zurich is a single group), so no
+    corpus figure is drawn; one an earlier run left behind must not reach the
+    summary page as if this run had measured it.
     """
-    records, sizes, variants = _axis(data, key)
-    slice_id = data.get("meta", {}).get("slice_dataset")
-    datasets = _corpus_datasets(records, slice_id)
-    if not datasets:
-        # Remove a corpus figure an earlier run left in a re-used directory,
-        # so the summary page cannot embed it as if this run had measured it.
-        for suffix in ("svg", "png"):
-            (out / f"{key}-corpus.{suffix}").unlink(missing_ok=True)
-        return []
-    corpus = [r for r in records if r["dataset"] != slice_id]
-    corpus_sizes = [r for r in sizes if r["dataset"] != slice_id]
-    queries = _axis_queries(corpus)
-    palette = _axis_palette(variants)
-    metrics = [
-        ("File size (MB)", corpus_sizes, "bytes", None),
-    ] + [(f"Read time (s)\n{_label(q)}", corpus, "time_s", q) for q in queries]
-    columns = 3
-    rows = -(-len(metrics) // columns)
-    fig, axes = plt.subplots(
-        rows, columns, figsize=(10, 2.6 * rows), layout="constrained", squeeze=False
-    )
-    width = 0.8 / max(1, len(variants))
-    for ax, (title, source, field, measure) in zip(axes.flat, metrics, strict=False):
-        divisor = units.MB if field in ("bytes", "rss_b") else 1
-        for vi, variant in enumerate(variants):
-            by = {
-                r["dataset"]: r
-                for r in source
-                if r.get("variant") == variant and (measure is None or r.get("measure") == measure)
-            }
-            values = [
-                float(by[d][field]) / divisor
-                if d in by and by[d].get(field) is not None
-                else float("nan")
-                for d in datasets
-            ]
-            ax.bar(
-                [i + (vi - (len(variants) - 1) / 2) * width for i in range(len(datasets))],
-                values,
-                width=width,
-                color=palette.get(variant, MUTED),
-                label=variant.replace("cityparquet+", "").replace("cityparquet", "default"),
-            )
-        ax.set_title(title, fontsize=8)
-        ax.set_xticks(range(len(datasets)), datasets, rotation=30, ha="right", fontsize=6)
-        ax.tick_params(axis="y", labelsize=6)
-    for ax in list(axes.flat)[len(metrics) :]:
-        ax.axis("off")
-    handles, labels = axes.flat[0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels,
-        loc="outside lower center",
-        ncol=min(5, len(variants)),
-        fontsize=7,
-        frameon=False,
-    )
-    fig.suptitle(
-        f"{key.capitalize()} — corpus datasets",
-        fontsize=12,
-    )
-    fig.text(0.01, 0.005, _statistic_note(data), fontsize=6, color=MUTED, ha="left")
-    return _save(fig, f"{key}-corpus", out)
+    for suffix in ("svg", "png"):
+        (out / f"bloom-corpus.{suffix}").unlink(missing_ok=True)
+    return []
 
 
 def _missing(
@@ -1149,7 +1079,7 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
         }
     )
     written = sizes(data, out) + format_figures(data, out) + tables.write_tables(data, out)
-    written += _axis_main(data, "bloom", out) + _axis_corpus(data, "bloom", out)
+    written += _axis_main(data, "bloom", out) + _remove_retired(out)
     written += databases(data, out)
     print(f"benchviz figures -> {out}")
     for path in written:

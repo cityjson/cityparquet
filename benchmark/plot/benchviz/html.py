@@ -16,7 +16,6 @@ from .tables import FORMAT_METRICS, FORMATS_DIR
 # directory without its extension, page title).
 TAIL = (
     ("bloom", "Bloom-filter configuration"),
-    ("bloom-corpus", "Bloom filters on the corpus"),
     ("databases", "Database comparison"),
 )
 # The format comparison's ratio tables, as (file under `formats/`, page title).

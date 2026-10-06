@@ -25,8 +25,9 @@ def test_preparation_and_paper_figure_set(tmp_path: Path):
     path.write_text(prep.json.dumps(data), encoding="utf-8")
     output = figures.main(path, tmp_path / "figures")
     names = {p.name for p in output.glob("*")}
-    expected = {f"{name}.{kind}" for name in ("bloom", "bloom-corpus") for kind in ("svg", "png")}
+    expected = {f"bloom.{kind}" for kind in ("svg", "png")}
     assert expected <= names
+    assert not any(name.startswith("bloom-corpus") for name in names)
     assert {"sizes.svg", "sizes.png"} <= {p.name for p in (output / "formats").glob("*")}
     assert not any("pareto" in name or "heatmap" in name for name in names)
 
@@ -250,13 +251,13 @@ def _mixed_bloom_fixture(bench: Path) -> None:
     """The slice and two corpus datasets in one bloom directory.
 
     The slice reports 1,000,004 objects; the corpus `rotterdam_delfshaven`
-    and `ingolstadt` report 2,231 and 379.
+    and `vienna_102081` report 2,231 and 1,322.
     """
     directory = bench / "bloom_results"
     template = (directory / "delft.csv").read_text().splitlines()
     (directory / "delft.csv").unlink()
     (directory / "delft.csv.params.json").unlink()
-    counts = {SLICE: 1_000_004, "rotterdam_delfshaven": 2231, "ingolstadt": 379}
+    counts = {SLICE: 1_000_004, "rotterdam_delfshaven": 2231, "vienna_102081": 1322}
     sizes = ["dataset,format,bytes,mb_decimal"]
     for i, (name, count) in enumerate(counts.items()):
         rows = [template[0]]
@@ -272,22 +273,15 @@ def _mixed_bloom_fixture(bench: Path) -> None:
     (directory / "sizes.csv").write_text("\n".join(sizes) + "\n")
 
 
-def test_the_bloom_headline_is_the_manifest_slice_and_the_corpus_stands_apart(tmp_path: Path):
+def test_the_bloom_headline_is_the_manifest_slice_and_draws_no_corpus_figure(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     _mixed_bloom_fixture(bench)
     data, _ = prep.build(prep.Inputs(bench))
     assert data["meta"]["slice_dataset"] == SLICE
-    axis = data["bloom"]
-    assert {r["dataset"] for r in axis["records"]} == {SLICE, "rotterdam_delfshaven", "ingolstadt"}
-    # The corpus is every measured dataset but the slice, smallest first.
-    assert figures._corpus_datasets(axis["records"], SLICE) == [
-        "ingolstadt",
-        "rotterdam_delfshaven",
-    ]
-
     output = figures.main(_dump(data, tmp_path), tmp_path / "figures")
     names = {p.name for p in output.glob("*")}
-    assert {"bloom.svg", "bloom-corpus.svg"} <= names
+    assert "bloom.svg" in names
+    assert not any(name.startswith("bloom-corpus") for name in names)
 
 
 def test_an_unmeasured_slice_leaves_the_bloom_headline_a_placeholder(tmp_path: Path):
@@ -302,7 +296,6 @@ def test_an_unmeasured_slice_leaves_the_bloom_headline_a_placeholder(tmp_path: P
         figures._axis_main(data, "bloom", tmp_path / "figures")
     text = (tmp_path / "figures" / "bloom.svg").read_text(encoding="utf-8")
     assert f"the slice dataset ({SLICE}) was not measured" in text
-    assert figures._corpus_datasets(data["bloom"]["records"], SLICE) == ["delft"]
 
 
 def _dump(data: dict, tmp_path: Path) -> Path:
@@ -311,31 +304,26 @@ def _dump(data: dict, tmp_path: Path) -> Path:
     return path
 
 
-def test_a_rerun_without_corpus_data_leaves_no_stale_corpus_figure(tmp_path: Path):
+def test_a_retired_corpus_figure_in_a_reused_directory_is_removed(tmp_path: Path):
+    """The bloom axis measures the slice alone; a `bloom-corpus` figure an
+    earlier run left in a re-used output directory must not reach the page."""
     from benchviz import html
 
     bench = fixture_bench(tmp_path)
     _mixed_bloom_fixture(bench)
     figures_dir = tmp_path / "figures"
+    figures_dir.mkdir()
+    for suffix in ("svg", "png"):
+        (figures_dir / f"bloom-corpus.{suffix}").write_text("stale")
     data, _ = prep.build(prep.Inputs(bench))
-    figures.main(_dump(data, tmp_path), figures_dir)
-    assert (figures_dir / "bloom-corpus.svg").exists()
-
-    # The same output directory, re-used by a run whose bloom axis measured
-    # the slice only: the earlier corpus figure must not survive into the page.
-    for key in ("records", "sizes"):
-        data["bloom"][key] = [r for r in data["bloom"][key] if r["dataset"] == SLICE]
     data_path = _dump(data, tmp_path)
     figures.main(data_path, figures_dir)
     assert not (figures_dir / "bloom-corpus.svg").exists()
     assert not (figures_dir / "bloom-corpus.png").exists()
     page = html.main(data_path=data_path, out_path=tmp_path / "index.html", figures_dir=figures_dir)
     text = page.read_text(encoding="utf-8")
-    corpus_section = text.split("<h2>Bloom filters on the corpus</h2>", 1)[1].split(
-        "</section>", 1
-    )[0]
-    assert "<img" not in corpus_section
-    assert "Not rendered" in corpus_section
+    assert "Bloom filters on the corpus" not in text
+    assert "bloom-corpus" not in text
 
 
 def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path):
@@ -345,7 +333,7 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
     `prep.read_caveats` extracts that one list and `html.main` is the only
     thing that prints caveats — it reads `meta.caveats_read` and nothing else.
     So a bloom caveat kept in `benchmark/formats/README.md` instead would leave
-    the bloom and bloom-corpus figures on the page with no warning beside them
+    the bloom figure on the page with no warning beside them
     at all. Phrases, not a count: the list is allowed to
     grow (see `prep.read_caveats`), and each phrase is one source line with no
     character `html.escape` rewrites.
@@ -362,10 +350,7 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
     text = page.read_text(encoding="utf-8")
 
     # The premise: the page really is showing bloom figures.
-    for title in (
-        "Bloom-filter configuration",
-        "Bloom filters on the corpus",
-    ):
+    for title in ("Bloom-filter configuration",):
         section = text.split(f"<h2>{title}</h2>", 1)[1].split("</section>", 1)[0]
         assert "<img" in section, title
 

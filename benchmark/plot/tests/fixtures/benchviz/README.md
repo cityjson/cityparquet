@@ -26,7 +26,7 @@ at their middle and miss probes, with the three lookup counters) so the bloom
 axis's keying and counter pass-through are exercised on rows of the right
 shape. One dataset only, and `delft` is a corpus model rather than the
 manifest's slice dataset, so the `bloom` headline renders its "slice dataset
-was not measured" placeholder and `bloom-corpus` draws `delft`. Tests that need
+was not measured" placeholder. Tests that need
 the slice derive it from these rows (`_mixed_bloom_fixture` in
 `tests/test_benchviz.py`). No measured `bloom` run is committed under
 `benchmark/formats/`; these stand in for one, and are to be replaced by a
