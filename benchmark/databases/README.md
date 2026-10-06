@@ -552,12 +552,11 @@ block records both settings and which is primary.
 
 `single` is primary because it is the condition under which the two engines
 are asked for the same amount of CPU, and because it matches the format
-harness, which pins every reader to one thread. The committed run gave
-DuckDB 16 threads against a PostgreSQL with parallel query disabled, and
-the resulting advantage was not spread evenly: it concentrated on the
-headline rows (7.6x on the whole-table scan, 5.5x on the retired
-`lod-extract`, 5.4x on the retired `semantic-surface`) and left the
-two-to-three-order-of-magnitude wins untouched (`notes/benchmark-fairness-review-2026-09-22.md` §4.3).
+harness, which pins every reader to one thread. Giving DuckDB 16 threads
+against a PostgreSQL with parallel query disabled would not spread the
+advantage evenly: it concentrates on the whole-table scans and leaves the
+two-to-three-order-of-magnitude differences untouched
+(`notes/benchmark-fairness-review-2026-09-22.md` §4.3).
 
 Under `parallel`, `parallel_setup_cost` and `min_parallel_table_scan_size`
 stay at their defaults: raising the worker cap is a resource decision,
@@ -739,8 +738,8 @@ the manifest's `ingest.index_build_s`, apart from the import time.
 `<dataset>.indexes.sql` records both the DDL this harness added and a live
 `pg_indexes` dump of each PostgreSQL schema taken at run time (`pg.dump_indexes`),
 so the complete index set each system queried against is auditable. The
-committed 3DBAG file lists 15 cjdb indexes and 59 3DCityDB indexes, from a run
-before the attribute indexes existed.
+committed 3DBAG file predates the attribute indexes, so it lists 15 cjdb
+and 59 3DCityDB indexes without them.
 
 `EXPLAIN` on the Rotterdam (Delfshaven) databases confirms the plans use the
 intended indexes. Rotterdam's `attr-filter` is the numeric bound
