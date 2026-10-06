@@ -1,5 +1,6 @@
 mod alloc;
 mod coordinator;
+mod derive;
 mod formats;
 mod scenario;
 
@@ -252,6 +253,12 @@ struct RunArgs {
     network_profile: Option<String>,
     #[arg(long, requires = "network_latency_ms")]
     network_bandwidth_mbps: Option<f64>,
+    /// The scenarios the whole-file formats (citygml, cityjson, cityjsonseq)
+    /// are measured on in a network run: `full-read,id-lookup` (default),
+    /// `full-read` (derive the identifier lookups too) or `all` (derive
+    /// nothing). Every other scenario is derived from their read all.
+    #[arg(long, default_value = "full-read,id-lookup")]
+    whole_file_scenarios: derive::WholeFileScenarios,
     #[arg(long, requires = "network_bandwidth_mbps")]
     network_latency_ms: Option<f64>,
 }
@@ -315,11 +322,13 @@ fn run(cli: Cli) -> Result<()> {
                             bandwidth_mbps,
                             latency_ms,
                         }),
+                        whole_file: run_args.whole_file_scenarios,
                     })
                 }
                 (Some(name), _, _) => Some(coordinator::NetworkOptions {
                     name,
                     simulated: None,
+                    whole_file: run_args.whole_file_scenarios,
                 }),
                 _ => None,
             },

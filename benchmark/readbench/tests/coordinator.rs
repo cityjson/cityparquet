@@ -1310,3 +1310,99 @@ fn cityparquet_readbench_params_path(out: &Path) -> PathBuf {
     name.push(".params.json");
     PathBuf::from(name)
 }
+
+/// The network family's derived rows: a whole-file format (CityJSONSeq) is
+/// measured on read all and the identifier lookups only; its count is a
+/// derived row — read all's bytes and request count copied after every
+/// measured sample proved one whole-object GET, every time field empty,
+/// tagged in `notes` — while CityParquet is measured on everything. The
+/// params sidecar records the decision and the cells the consistency check
+/// skipped.
+#[test]
+fn a_network_run_derives_the_whole_file_formats_unmeasured_cells() {
+    let parent = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    convert(&ConvertOptions::new(
+        input.clone(),
+        parent.path().join("delft.parquet"),
+    ))
+    .unwrap();
+    std::fs::copy(&input, parent.path().join("delft.city.jsonl")).unwrap();
+    let size = std::fs::metadata(&input).unwrap().len();
+    let out_csv = parent.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        parent.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "2",
+        "--scenarios",
+        "count,full-read,id-lookup",
+        "--formats",
+        "cityjsonseq,cityparquet",
+        "--transport",
+        "http",
+        "--network-profile",
+        "test",
+        "--network-bandwidth-mbps",
+        "500",
+        "--network-latency-ms",
+        "1",
+    ]);
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    let derived: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.field("notes").contains("derived-from=full-read"))
+        .collect();
+    assert_eq!(derived.len(), 1, "{csv_text}");
+    let d = derived[0];
+    assert_eq!(
+        (d.field("format"), d.field("scenario")),
+        ("cityjsonseq", "count")
+    );
+    assert_eq!(d.field("notes"), "derived-from=full-read;status=derived");
+    assert_eq!(d.field("bytes_read"), size.to_string());
+    assert_eq!(d.field("http_requests"), "1");
+    assert_eq!(d.field("repeat"), "0");
+    for column in [
+        "result_count",
+        "time_mean_s",
+        "time_median_s",
+        "time_q3_s",
+        "peak_rss_bytes",
+    ] {
+        assert!(
+            d.field(column).is_empty(),
+            "{column} must be empty: {csv_text}"
+        );
+    }
+    let measured = |format: &str, scenario: &str| {
+        rows.iter().any(|r| {
+            r.field("format") == format
+                && r.field("scenario") == scenario
+                && !r.field("time_median_s").is_empty()
+        })
+    };
+    assert!(measured("cityjsonseq", "full-read") && measured("cityjsonseq", "id-lookup"));
+    assert!(measured("cityparquet", "count") && measured("cityparquet", "full-read"));
+    let sidecar: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(cityparquet_readbench_params_path(&out_csv)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        sidecar["network"]["whole_file_scenarios"],
+        "full-read,id-lookup"
+    );
+    let derivation = &sidecar["whole_file_derivation"];
+    assert_eq!(derivation["formats"]["cityjsonseq"]["status"], "derived");
+    assert_eq!(derivation["formats"]["cityjsonseq"]["artefact_size"], size);
+    assert!(derivation["formats"].get("cityparquet").is_none());
+    assert_eq!(
+        derivation["consistency_skipped"],
+        serde_json::json!(["cityjsonseq/count"])
+    );
+}

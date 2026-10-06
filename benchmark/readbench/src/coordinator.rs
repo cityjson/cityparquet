@@ -84,6 +84,7 @@ use cityparquet_readbench::sampling::SamplingPlan;
 use cityparquet_readbench::stats::TimingStats;
 use cityparquet_readbench::variant_package;
 
+use crate::derive::{Pending, WholeFileScenarios};
 use crate::formats::returned::{Returned, extents_agree};
 use crate::formats::{IoStats, LOOKUP_STATS_MARKER, LookupCounters, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
@@ -155,6 +156,9 @@ pub struct NetworkOptions {
     /// simulated network with this profile (`target = simulated`). `None`:
     /// the run reads the real `base_url` (`target = real`).
     pub simulated: Option<cityparquet_readbench::netsim::NetProfile>,
+    /// The scenarios the whole-file formats are measured on; the rest are
+    /// derived from their read all (see [`crate::derive`]).
+    pub whole_file: WholeFileScenarios,
 }
 
 /// The shared-host isolation the CLI requested (see [`isolation`]).
@@ -398,7 +402,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     if opts.transport != Transport::Http {
         bail!("a network run needs --transport http");
     }
-    let mut record = serde_json::json!({ "profile": network.name });
+    let mut record = serde_json::json!({
+        "profile": network.name,
+        "whole_file_scenarios": network.whole_file.as_str(),
+    });
     let server = match network.simulated {
         Some(profile) => {
             if opts.base_url.is_some() {
@@ -668,6 +675,10 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
     // `isolation` records what was requested and applied; it is written now
     // and again after the matrix with the waits and per-cell load filled in.
     let (isolation_record, mut gate) = setup_isolation(&opts.isolation);
+    let mut deferral = Deferral {
+        setting: opts.network.as_ref().map(|n| n.whole_file),
+        pending: Vec::new(),
+    };
     sidecar_json
         .as_object_mut()
         .context("the resolved query parameters serialise to a JSON object")?
@@ -776,6 +787,7 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
                         &mut rows,
                         &mut samples,
                         &mut gate,
+                        &mut deferral,
                         &dataset,
                         format,
                         label,
@@ -810,6 +822,7 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
                             &mut rows,
                             &mut samples,
                             &mut gate,
+                            &mut deferral,
                             &dataset,
                             format,
                             label,
@@ -840,6 +853,7 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
                             &mut rows,
                             &mut samples,
                             &mut gate,
+                            &mut deferral,
                             &dataset,
                             format,
                             label,
@@ -868,6 +882,7 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
                             &mut rows,
                             &mut samples,
                             &mut gate,
+                            &mut deferral,
                             &dataset,
                             format,
                             label,
@@ -911,6 +926,7 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
                             &mut rows,
                             &mut samples,
                             &mut gate,
+                            &mut deferral,
                             &dataset,
                             format,
                             label,
@@ -949,6 +965,7 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
                             &mut rows,
                             &mut samples,
                             &mut gate,
+                            &mut deferral,
                             &dataset,
                             format,
                             label,
@@ -980,6 +997,7 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
                             &mut rows,
                             &mut samples,
                             &mut gate,
+                            &mut deferral,
                             &dataset,
                             format,
                             label,
@@ -1048,6 +1066,55 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
         eprintln!("cityparquet-readbench: cross-format consistency OK");
     }
 
+    // The whole-file cells the network family set aside: derived from the
+    // format's measured read all once its samples prove the premise (see
+    // [`crate::derive`]), then reported as skipped by the check above, which
+    // only ever sees measured rows.
+    let mut derived_lines = Vec::new();
+    if let Some(setting) = deferral.setting {
+        let simulated_root = opts
+            .network
+            .as_ref()
+            .and_then(|n| n.simulated)
+            .map(|_| opts.prepared_dir.as_path());
+        let mut measured = crate::derive::MeasuredTransfers::new();
+        for s in samples.iter().filter(|s| s.dataset == dataset) {
+            measured
+                .entry(s.format.clone())
+                .or_default()
+                .push((s.bytes_read, s.http_requests));
+        }
+        let mut sizes: HashMap<String, Option<u64>> = HashMap::new();
+        for p in &deferral.pending {
+            if !sizes.contains_key(&p.label)
+                && let Some((_, source, _)) =
+                    resolved_formats.iter().find(|(_, _, l)| *l == p.label)
+            {
+                sizes.insert(p.label.clone(), artefact_size(source, simulated_root));
+            }
+        }
+        let resolution = crate::derive::resolve(&deferral.pending, &measured, &sizes);
+        for warning in &resolution.warnings {
+            eprintln!("{warning}");
+        }
+        let skipped: Vec<String> = resolution
+            .record
+            .values()
+            .filter(|r| r["status"] == "derived")
+            .flat_map(|r| r["cells"].as_array().cloned().unwrap_or_default())
+            .filter_map(|c| c.as_str().map(str::to_string))
+            .collect();
+        if let Some(report) = crate::derive::consistency_skips(&skipped) {
+            eprintln!("{report}");
+        }
+        sidecar_json["whole_file_derivation"] = serde_json::json!({
+            "scenarios_measured": setting.as_str(),
+            "formats": resolution.record,
+            "consistency_skipped": skipped,
+        });
+        derived_lines = resolution.lines;
+    }
+
     // A configuration run groups its rows per variant, so a CSV reads top to
     // bottom the way the recipe listed the variants. `sort_by_key` is
     // stable, so the rows keep their scenario order within each group.
@@ -1062,6 +1129,9 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
 
     for row in &rows {
         writeln!(csv, "{}", row.render()).context("writing a CSV row")?;
+    }
+    for line in &derived_lines {
+        writeln!(csv, "{line}").context("writing a derived CSV row")?;
     }
 
     write_samples(&opts.out, &samples)?;
@@ -1083,6 +1153,47 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The cells a `network` run derives instead of measuring: the run's
+/// [`WholeFileScenarios`] setting (`None` off the network family, where every
+/// cell is measured) and the cells it set aside.
+struct Deferral {
+    setting: Option<WholeFileScenarios>,
+    pending: Vec<Pending>,
+}
+
+/// A whole-file artefact's size, the yardstick of the derivation premise:
+/// the served file's own length on a simulated network (the coordinator
+/// serves `prepared_dir` itself), the `Content-Length` of a `HEAD` against
+/// a real target. `None` when neither is available.
+fn artefact_size(source: &Source, simulated_root: Option<&Path>) -> Option<u64> {
+    match (source, simulated_root) {
+        (Source::Http { key, .. }, Some(root)) => {
+            fs::metadata(root.join(key)).ok().map(|m| m.len())
+        }
+        (Source::Http { base_url, key }, None) => {
+            let url = format!("{}/{key}", base_url.trim_end_matches('/'));
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            runtime.block_on(async {
+                let response = reqwest::Client::new().head(&url).send().await.ok()?;
+                if !response.status().is_success() {
+                    return None;
+                }
+                response
+                    .headers()
+                    .get(reqwest::header::CONTENT_LENGTH)?
+                    .to_str()
+                    .ok()?
+                    .parse()
+                    .ok()
+            })
+        }
+        (Source::Local(path), _) => fs::metadata(path).ok().map(|m| m.len()),
+    }
 }
 
 /// `window` (in the CityParquet package's longitude-first order) in the axis
@@ -1821,6 +1932,7 @@ fn run_measurement(
     rows: &mut Vec<Row>,
     samples: &mut Vec<Sample>,
     gate: &mut Gate,
+    deferral: &mut Deferral,
     dataset: &str,
     format: Format,
     label: &str,
@@ -1831,6 +1943,17 @@ fn run_measurement(
     total_for_selectivity: Option<u64>,
     notes: &str,
 ) -> Result<u64> {
+    if let Some(setting) = deferral.setting
+        && !setting.measures(format, scenario)
+    {
+        deferral.pending.push(Pending {
+            dataset: dataset.to_string(),
+            label: label.to_string(),
+            scenario,
+            notes: notes.to_string(),
+        });
+        return Ok(0);
+    }
     let mut times = Vec::with_capacity(sampling.repeat);
     let mut peak_heap_max = 0u64;
     let mut peak_rss_max = 0u64;
