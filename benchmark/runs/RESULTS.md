@@ -46,7 +46,10 @@ The run also measured what the suite no longer has: the bloom axis on six
 smaller 3DBAG slices (1,000 to 500,000 objects), whose files and size rows
 were deleted, and a DuckDB configuration over the source-order package,
 whose six `duckdb-cityparquet-source` rows were deleted from the database
-CSV. The format CSVs, their samples and `sizes.csv` carried the
+CSV. The `count-mismatch` note on each remaining `bbox-query` row still
+lists that configuration's count beside the other systems', as the run
+wrote it; its count equals `duckdb-cityparquet`'s, so the recorded spread
+holds without it. The format CSVs, their samples and `sizes.csv` carried the
 Hilbert-ordered package as `cityparquet-hilbert`; it is relabelled
 `cityparquet`, the benchmark's one CityParquet format, with no value
 changed.
