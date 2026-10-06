@@ -23,7 +23,7 @@ FAMILIES = ("sizes", "formats", "bloom", "databases")
 # A run profile fixes which datasets are measured, how many repetitions and
 # where the results go, so that a test run can never overwrite the paper's
 # evidence:
-#   full   the corpus and the 3DBAG slice, 7 read repetitions, results in each
+#   full   the corpus and the 3DBAG slice, 25 read repetitions, results in each
 #          family's own directory; the database family measures the slice;
 #   short  the corpus without the slice, the same repetitions, results under
 #          `<family>/short/`; for iterating on the harness in an hour instead
@@ -266,9 +266,14 @@ def require_prepared(inputs: list[Path], locations: dict[str, Path]) -> None:
         raise SystemExit(f"prepared artefacts missing: run just bench-prep first ({locations['prepared']})")
 
 
+def read_repeat(profile: str) -> int:
+    """Timed read repetitions per cell (each after one discarded warm-up)."""
+    return 1 if profile == "smoke" else 25
+
+
 def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "") -> None:
     smoke = profile == "smoke"
-    repeat = 1 if smoke else 7
+    repeat = read_repeat(profile)
     selected = {key: manifest["datasets"][key] for key in datasets}
     inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in INPUT_ROLES]
     require_prepared(inputs, locations)
@@ -324,7 +329,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("command", choices=("prep", "run", "summary"))
     result.add_argument("--families", default="all", help=f"comma-separated families from {','.join(FAMILIES)}, or all")
     result.add_argument("--datasets", default="")
-    result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 7 read repetitions, the families' own result directories (the paper's evidence); short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Rotterdam alone, 1 repetition, under <family>/smoke/. Under short and smoke the database family measures Rotterdam")
+    result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 25 read repetitions, the families' own result directories (the paper's evidence); short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Rotterdam alone, 1 repetition, under <family>/smoke/. Under short and smoke the database family measures Rotterdam")
     result.add_argument("--smoke", action="store_true", help="the same as --profile smoke")
     result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")
     result.add_argument("--data-root", type=Path, default=Path(os.environ.get("CITYPARQUET_BENCH_ROOT", DEFAULT_DATA_ROOT)))

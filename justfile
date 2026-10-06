@@ -317,7 +317,7 @@ readbench-prepare INPUT OUTDIR=(BENCH / "runs/data/readbench") FORMATS='':
 # existing `just bench FOLDER OUT` call's second argument.
 [private]
 [doc("Cross-format READ benchmark over every input under FOLDER")]
-bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
+bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "runs/data/readbench") REPEAT='25':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -443,7 +443,7 @@ variant-bench FOLDER OUT VARIANTS PREPARED REPEAT SCENARIOS ID_PROBES FEATURE_PR
 # verified miss. Every variant at the default codec and row-group size.
 [private]
 [doc("Bloom axis over every input under FOLDER: cityparquet vs cityparquet+nobloom")]
-bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
+bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25':
     just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"
 
 # The bloom axis over HTTP: reads (never builds) the two packages a local
@@ -452,7 +452,7 @@ bloom-bench FOLDER OUT=(BENCH / "runs/formats/bloom_results") PREPARED=(BENCH / 
 # real bucket, and its timings are a snapshot of one network path.
 [private]
 [doc("Bloom axis over HTTP, against uploaded bloom-bench packages")]
-bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
+bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='25':
     just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"
 
 # ---------------------------------------------------------------------------

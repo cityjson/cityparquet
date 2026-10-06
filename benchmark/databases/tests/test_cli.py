@@ -460,3 +460,12 @@ def test_indexes_sql_still_includes_the_harness_added_ddl_section(monkeypatch):
     # genuinely missing index) must survive alongside the new live dump,
     # not be replaced by it.
     assert "CREATE INDEX IF NOT EXISTS ix_co_object_id" in text
+
+
+def test_run_defaults_to_25_timed_repetitions(monkeypatch):
+    import citybench.cli as cli
+
+    seen = []
+    monkeypatch.setattr(cli, "cmd_bench", lambda args: seen.append(args.repeat) or 0)
+    assert cli.main(["run", "--dataset", "unused.city.jsonl"]) == 0
+    assert seen == [25]

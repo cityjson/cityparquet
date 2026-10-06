@@ -18,6 +18,11 @@ class SelectionTests(unittest.TestCase):
     def test_the_manifest_holds_no_other_3dbag_dataset(self):
         slices = [key for key, entry in self.manifest["datasets"].items() if entry["role"] == "slice"]
         self.assertEqual(slices, ["3dbag_n1000000"])
+    def test_read_repetitions_are_25_except_under_smoke(self):
+        self.assertEqual(bench_suite.read_repeat("full"), 25)
+        self.assertEqual(bench_suite.read_repeat("short"), 25)
+        self.assertEqual(bench_suite.read_repeat("smoke"), 1)
+
     def test_smoke_selects_rotterdam_alone(self):
         self.assertEqual(bench_suite.dataset_selection(self.manifest, ["formats", "bloom", "databases"], "", "smoke"), ["rotterdam"])
     def test_unknown_family_is_rejected(self):

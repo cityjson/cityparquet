@@ -136,7 +136,7 @@ struct RunArgs {
 
     /// Warm repeats per measurement; a further, discarded warmup precedes
     /// every one. Must be >= 1. With `--cell-budget-s` it is the ceiling.
-    #[arg(long, default_value_t = 7)]
+    #[arg(long, default_value_t = 25)]
     repeat: usize,
 
     /// Optional time budget per measurement, in seconds (off by default):

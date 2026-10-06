@@ -80,7 +80,7 @@ capture-schema DATASET:
 derive-params DATASET PREPARED='../runs/data/readbench':
     uv run python -m citybench.cli derive-params --dataset {{DATASET}} --prepared-dir {{PREPARED}}
 
-bench DATASET REPEAT='7':
+bench DATASET REPEAT='25':
     uv run python -m citybench.cli run --dataset {{DATASET}} --repeat {{REPEAT}}
 
 # Full pipeline on the small fixture. Must pass before any long run.

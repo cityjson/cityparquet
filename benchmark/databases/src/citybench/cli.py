@@ -573,7 +573,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_bench = sub.add_parser("run")
     p_bench.add_argument("--dataset", required=True)
-    p_bench.add_argument("--repeat", type=int, default=7)
+    p_bench.add_argument("--repeat", type=int, default=25)
     p_bench.add_argument("--systems", default=None,
                          help="comma-separated tags; default is DuckDB over CityParquet, cjdb, and 3DCityDB")
     p_bench.add_argument("--prepared-dir", default=None)
