@@ -816,4 +816,18 @@ CityObject-grained ones; Caveat 1 states which is which, and the
 coordinator checks each level against its own reference (Caveat 2).
 Ingolstadt (379 in 55), Vienna (1,322 in 307) and Zurich (198,699 in
 52,834) are nested too; Rotterdam, New York and Montréal hold one
-CityObject per feature.</li></ul></section>
+CityObject per feature.</li><li>**Isolation on a shared host is best effort, and recorded rather than
+assumed.** The citable host is shared and the harness has no root, so it
+pins the measured children to one NUMA node (`numactl`, else `taskset`
+without memory binding), keeps the coordinator on that node&#x27;s first core,
+can cap the children&#x27;s memory through `systemd-run --user`, and holds each
+sample while the node&#x27;s share of the load exceeds `--max-load`. It cannot
+change the CPU governor, disable SMT or turbo, drop page caches or isolate
+cores (`isolcpus`). What a run requested and what was applied is in its
+`.params.json` under `isolation`, with each sample&#x27;s `load1`, runnable
+count and `MemAvailable` in `.samples.json`; a params sidecar without an
+`isolation` object comes from a run that applied none of it. A row tagged
+`busy` ran after the longest wait with the node still contended and is not
+cited without its spread. The samples of one cell run back to back, with
+no interleaving across formats, so slow drift in co-tenant load lands on
+whole cells rather than averaging out across formats.</li></ul></section>

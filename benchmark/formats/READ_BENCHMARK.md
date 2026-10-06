@@ -1215,6 +1215,22 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     52,834) are nested too; Rotterdam, New York and Montréal hold one
     CityObject per feature.
 
+39. **Isolation on a shared host is best effort, and recorded rather than
+    assumed.** The citable host is shared and the harness has no root, so it
+    pins the measured children to one NUMA node (`numactl`, else `taskset`
+    without memory binding), keeps the coordinator on that node's first core,
+    can cap the children's memory through `systemd-run --user`, and holds each
+    sample while the node's share of the load exceeds `--max-load`. It cannot
+    change the CPU governor, disable SMT or turbo, drop page caches or isolate
+    cores (`isolcpus`). What a run requested and what was applied is in its
+    `.params.json` under `isolation`, with each sample's `load1`, runnable
+    count and `MemAvailable` in `.samples.json`; a params sidecar without an
+    `isolation` object comes from a run that applied none of it. A row tagged
+    `busy` ran after the longest wait with the node still contended and is not
+    cited without its spread. The samples of one cell run back to back, with
+    no interleaving across formats, so slow drift in co-tenant load lands on
+    whole cells rather than averaging out across formats.
+
 ## Environment
 
 **Two halves, and both must be recorded for a run to be reproducible**: the
@@ -1262,9 +1278,16 @@ paper's hardware.
 
 `benchmark/scripts/machine_record.sh` is the canonical capture: it runs the
 `uname`, `lscpu`/`sysctl` and `free` lines below, plus `rustc`, `cargo` and the
-commit hash, into a results directory's `MACHINE.md` — how `variant-bench`
-records its host. The two lines it does not cover are the `fcb` version and
-the pinned conversion chain:
+commit hash, into a results directory's `MACHINE.md` — how `bench` and
+`variant-bench` record their host. It adds an isolation table (`numactl` and
+`taskset` availability, the chosen NUMA node and its cores, the pinning
+command, the memory limit and whether the user cgroup delegates `cpuset` and
+`memory`, the CPU governor, SMT, the kernel, other users' CPU and `MemTotal`
+against `MemAvailable` at start) and a tool-version table (the
+`cityparquet-rs` commit, `cjseq`, the `fcb` CLI and the pinned `fcb_core`,
+citygml-tools, DuckDB, the PostGIS and 3DCityDB images, `cjdb`). Off Linux the
+Linux-only rows read "not readable" or "not applied: not Linux", and an absent
+tool reads "not found". The pinned conversion chain is recorded separately:
 
 ```sh
 uname -srm     # kernel, release and architecture; NOT `uname -a`, whose node

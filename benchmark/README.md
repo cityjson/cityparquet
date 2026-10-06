@@ -93,6 +93,38 @@ manifest IDs, and `3dbag` for the slice (`[suite] slice_dataset` in
 Rotterdam under `short` and `smoke`. The selector rejects data roots outside
 `benchmark/runs/`.
 
+## Running on a shared host
+
+The citable numbers come from a shared Linux host without root, so the read
+families (`formats`, `bloom`, the variant runs) isolate their measured child
+processes as far as an ordinary user can, and record every setting as applied
+or "not applied: <reason>" in each CSV's `.params.json` (`isolation`) and in
+the results directory's `MACHINE.md`. Off Linux nothing is applied and the
+records say why.
+
+| Setting | Flag / recipe parameter | Default | Applied by |
+| --- | --- | --- | --- |
+| NUMA node | `--numa-node`, `NUMA_NODE` (env `BENCH_NUMA_NODE`) | `auto`: the node with the most free memory at start | `numactl --physcpubind=<node cores minus the first> --membind=N`; else `taskset -c` (CPU only); the coordinator pins itself to the node's first core |
+| Memory ceiling | `--memory-max`, `MEMORY_MAX` (bytes) | off | `systemd-run --user --scope -p MemoryMax=`, probed once; a refusal is recorded, never fatal |
+| Load gate | `--max-load`, `MAX_LOAD` | `auto`: half the pinned node's cores | before every sample, `load1 * node_cores / total_cores` above the threshold waits in 10 s steps |
+| Longest wait | `--max-load-wait-s`, `MAX_LOAD_WAIT_S` | 600 | a cell that proceeds while still contended is tagged `busy` in `notes` |
+
+One node rather than the whole machine keeps memory local and leaves the other
+node to co-tenants. The load threshold is half the node because our own child
+adds about one runnable task: half leaves room for it and light co-tenancy
+while still catching a node that is genuinely contended. Each sample's
+`load1`, runnable count and `MemAvailable` go to `.samples.json`, and each
+cell's maxima to `.params.json`. `just bench-run` forwards the same settings
+(`--numa-node`, `--memory-max`, `--max-load`, `--max-load-wait-s`) and records
+them in the run manifest.
+
+The samples of one cell run back to back after its warm-up; formats are not
+interleaved. What needs root, and is therefore not done: changing the CPU
+governor, disabling SMT or turbo, dropping page caches, `isolcpus`, and a
+cgroup `cpuset` for the database family's podman containers without user
+delegation (`MACHINE.md` records whether the user cgroup delegates `cpuset`
+and `memory`).
+
 ## Experimental matrix
 
 | Family      | Data                             | Measurements                                               | Read queries                                                                            |
