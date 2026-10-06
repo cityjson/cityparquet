@@ -248,9 +248,9 @@ the timed window on every system.
 
 | scenario                  | returns                  | common target                                                      | `duckdb-cityparquet`                                                                                                                                  | `cjdb`                                                                                                                                                                                                   | `3dcitydb`                                                                                                                                                                                                                                        |
 | ------------------------- | ------------------------ | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `geometry-scan`           | `(count, bytes)`         | every object's geometry                                            | `count(*), sum(octet_length(...))` over every `geometry_lod*` column (Caveat 18)                                                                      | `count(*), sum(length(geometry::text))`                                                                                                                                                                  | `count(DISTINCT f.id), sum(length(gd.geometry::text))` over `geometry_data` joined to CityObject-grain features                                                                                                                                   |
+| `geometry-scan` | ids + native binary geometry | every object's id and every geometry it carries | `SELECT id, <every geometry_lod* column>` fetched to Arrow as WKB | `SELECT object_id, geometry` (the geometry JSONB), binary wire format | `objectid` + `array_agg(geometry_data.geometry)` per feature, binary wire format |
 | `count`                   | count                    | total CityObject count                                             | `SELECT count(*)` — answered from file metadata; caption it as such                                                                                   | `SELECT count(*) FROM cjdb.city_object`                                                                                                                                                                  | `count(*)` over `feature` with the CityObject predicate (Caveat 1)                                                                                                                                                                                |
-| `bbox-query` (1/5/25 %)   | count                    | objects whose bbox intersects the window                           | `bbox.xmax/xmin/ymax/ymin` comparisons on the `bbox` STRUCT — **x/y only**                                                                            | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3)                                                                                                                       | `envelope && ST_MakeEnvelope(...)`, GIST-indexed; `ST_MakeEnvelope` returns a 2D polygon, so the test is 2D                                                                                                                                       |
+| `bbox-query` (1/5/25 %) | ids + highest-LoD geometry | objects whose bbox intersects the window, each with its most detailed geometry | `bbox` STRUCT comparisons — **x/y only**; `coalesce` over the per-LoD WKB columns, most detailed first | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3); the highest-LoD element of the geometry JSONB | envelope `&& ST_MakeEnvelope(...)`; the `geometry_data` row of the highest `property.val_lod` (integer tier) via `LEFT JOIN LATERAL` |
 | `attr-filter`             | ids                      | objects matching the per-dataset attribute predicate               | `WHERE "<col>" = ?` — a typed, flattened top-level column                                                                                             | `WHERE attributes ->> '<col>' = %s` — **no index on `attributes`** (see "Index sets")                                                                                                                    | `property` join on `pr.name = %s AND pr.val_string = %s` (Caveat 13)                                                                                                                                                                              |
 | `attr-range`              | ids                      | objects whose numeric attribute exceeds the threshold              | `WHERE "<col>" > ?` — DOUBLE column with row-group statistics                                                                                         | `WHERE (attributes ->> '<col>')::float > %s`                                                                                                                                                             | `property` join with `coalesce(val_double, val_int) > %s`                                                                                                                                                                                         |
 | `attr-stats`              | `(count, min, max, sum)` | aggregate of `numeric_column`                                      | aggregates over the flattened top-level column                                                                                                        | aggregates over `(attributes->>col)::numeric` — every row's JSONB unpacked, and heavier arithmetic than a DOUBLE sum                                                                                     | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` (Caveat 13)                                                                                                                                            |
@@ -970,8 +970,9 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
 
    **Client-side object construction is kept off both sides.** DuckDB
    materialises to Arrow (`fetch: arrow`), and the PostgreSQL connections
-   register a text passthrough for `json`/`jsonb` (`fetch: text`,
-   `pg.register_text_passthrough`) so psycopg does not parse every
+   fetch the timed query in PostgreSQL's binary wire format (`fetch: binary`)
+   and load `json`/`jsonb` as raw bytes (`pg.register_text_passthrough`), so
+   geometry is never converted to text and psycopg does not parse every
    geometry document into Python dicts. Both sides still transfer every
    row and read it to exhaustion inside the timed window; what is skipped
    is the client's per-value object construction, which is not what this
@@ -1104,29 +1105,18 @@ ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
     without closing it: there 3DCityDB's row does carry the LoD-1 geometry,
     but still not the attributes (Caveat 9).
 
-18. **`geometry-scan` is fairer than the row it replaces, but it is not
-    neutral, and a byte length does not prove a decode.** All three systems
-    now scan the same thing, which the retired `full-read` did not: that row
-    hashed 84 columns on DuckDB, serialised three JSONB/PostGIS columns to
-    text on cjdb, and cast whole composite records through two `GROUP BY`
-    CTEs over entire tables on 3DCityDB (276 s against 1.2 s, and largely
-    artefact — `notes/benchmark-fairness-review-2026-09-22.md` §4.2). Three
-    asymmetries remain, and none is removed by this change:
-    - **Binary against text.** DuckDB reads stored WKB lengths; both
-      PostgreSQL systems serialise to text first (`geometry::text` is a
-      JSONB render on cjdb, EWKT on 3DCityDB) and then throw the string
-      away. A client reading JSONB genuinely pays that, but it is not the
-      same operation.
-    - **One DuckDB term is itself a re-serialisation.** CityParquet writes
-      the LoD0 footprint with Parquet's own GEOMETRY logical type, which
-      DuckDB 1.5 decodes to its native `GEOMETRY` — measured to be true
-      **whatever `enable_geoparquet_conversion` is set to**, because that
-      setting governs the `geo`-footer path, not the logical type.
-      `octet_length` does not bind against it, so that column's term is
-      `octet_length(ST_AsWKB(...))`. The other `geometry_lod*` columns are
-      BLOB and are read as stored lengths.
-    - **A summed byte length does not establish that a geometry was
-      decoded** on any of the three.
+18. **`geometry-scan` and `bbox-query` return geometry in each system's
+    native binary form, which is not one form.** DuckDB hands back the
+    stored WKB of the per-LoD columns (a LoD 0 footprint typed with Parquet's
+    GEOMETRY logical type is re-encoded by `ST_AsWKB` in `bbox-query`, so
+    `coalesce` binds). cjdb returns its geometry JSONB, whose binary wire
+    form is still JSON text with a version byte. 3DCityDB returns PostGIS's
+    binary geometry. No system converts geometry to text and no byte sizes
+    are summed, but the amount transferred per object differs with each
+    system's storage, and that difference is part of what is measured. On
+    3DCityDB, `property.val_lod` holds only the integer LoD tier, so the
+    highest-LoD pick inside one tier (1.2 against 1.3) falls to the newest
+    `geometry_data` row.
 
 19. **The write tier is different operations, not one scale.** cjdb rewrites
     roughly half a million JSONB tuples under MVCC; 3DCityDB inserts,
