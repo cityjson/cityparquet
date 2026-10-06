@@ -483,7 +483,8 @@ versions.
 `docker/postgresql.conf` is mounted read-only, as the same file, into both
 containers. Stock PostgreSQL defaults (128 MB `shared_buffers`) would make
 either database a strawman. The manifest's `pg_settings` block records the
-values the committed run read back with `current_setting()`:
+values the committed run read back with `current_setting()`, in PostgreSQL's
+own memory units, which are binary (1 GB = 1024 MB):
 
 | setting                | cjdb  | 3dcitydb |
 | ---------------------- | ----- | -------- |
@@ -534,8 +535,9 @@ The write tier runs **once**, under `single`, after every read row.
 
 ### Resource limits
 
-Each PostgreSQL container is limited to 16 CPUs and 32 GB of memory, with a
-2 GB `/dev/shm`. The isolated lifecycle (`lifecycle.isolated_databases`)
+Each PostgreSQL container is limited to 16 CPUs and 32 GiB of memory
+(34.4 GB), with a 2 GiB (2.1 GB) `/dev/shm`: podman's `g` suffix is binary,
+so these limits are spelt in its unit and converted to decimal GB in brackets. The isolated lifecycle (`lifecycle.isolated_databases`)
 passes these as `podman run --cpus 16 --memory 32g --shm-size 2g`;
 `docker/compose.yml` declares the same limits in `deploy.resources.limits`.
 `docs/3dcitydb-v5-schema.md` ("Resource limits — measured, not assumed")
@@ -739,6 +741,9 @@ and nineteen columns:
 ```
 dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,server_time_mean_s,server_time_std_s,server_time_median_s,server_time_min_s,server_time_max_s,server_time_q1_s,server_time_q3_s,size_bytes,size_bytes_no_index,status,raw_time_samples_s,raw_server_time_samples_s
 ```
+
+Sizes and memory are recorded in bytes. The summary's figures show them in
+decimal units, 1 MB = 10^6 bytes and 1 GB = 10^9 bytes (`benchviz.units`).
 
 The first eighteen columns match, in name and order, the header of the format
 harness's CSVs (`benchmark/runs/formats/results/<dataset>.csv`; `sizes.csv`

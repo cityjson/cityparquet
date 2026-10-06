@@ -176,6 +176,12 @@ comparison's ratio tables as CSV, and a self-contained `index.html` collecting
 the same figures, tables and conditions. The format comparison lives in its own
 `formats/` folder of the figures directory, one sub-folder per dataset id.
 
+File sizes and memory are in decimal units throughout: 1 MB = 10^6 bytes and
+1 GB = 10^9 bytes, in figure labels, captions, tables and the derived CSV
+columns alike. The CSVs keep the raw byte counts as the measurement; one helper,
+`benchmark/plot/benchviz/units.py`, derives MB and GB from them for the
+renderer and the scripts.
+
 | Figure                                                  | Content                                                                                                                                                                    |
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `formats/sizes`                                         | Vertical size bars, one subplot per dataset; actual sizes and factors against CityGML                                                                                      |
