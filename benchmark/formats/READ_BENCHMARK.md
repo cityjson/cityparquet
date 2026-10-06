@@ -1389,6 +1389,26 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     with openings, and its only LoD 3 content is Tokyo's 21 LoD 3 solids
     and 103 LoD 3 installation geometries.
 
+- **The network family's times come from a simulated network.** The
+    primary over-HTTP measurement reads through `net-sim`, a local server
+    with a fixed bandwidth (one budget shared by every connection) and a
+    fixed latency per request, with no TLS, HTTP/2, connection set-up,
+    jitter, loss or service-side throttling. Its times are therefore a
+    model of the transfer: a reader should cite the bytes read and the
+    request count as the format's properties, and the time as what one
+    stated profile makes of them. A run against real object storage is a
+    snapshot of one path at one time. How each client issues its requests
+    decides what the latency multiplies: the CityGML, CityJSON and
+    CityJSONSeq arms fetch the whole object with one `GET` per query, so
+    every query costs the whole file's transfer plus one latency; the
+    CityParquet arm reads `metadata.json`, then each Parquet file through
+    `parquet`'s `ParquetObjectReader` over `object_store` (a `HEAD` for the
+    size, the footer, then the column chunks of the row groups that
+    survive pruning, as ranged `GET`s that `object_store` may coalesce and
+    issue concurrently); the FlatCityBuf arm reads through
+    `http-range-client`'s buffered client, one ranged `GET` at a time, for
+    the header, the spatial or attribute index and then the features.
+
 ## Environment
 
 **Two halves, and both must be recorded for a run to be reproducible**: the

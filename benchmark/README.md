@@ -129,6 +129,63 @@ York, Zurich, Tokyo and Montréal). The 3DBAG slice is added by
 machine with the R2 token and enough memory for its CityGML synthesis; every
 other machine then downloads it with the default mode.
 
+## The network family
+
+`bench-run --families network` is the format read benchmark over HTTP: per
+query it records the time, the bytes read and the number of HTTP requests, for
+the five formats and, on the 3DBAG slice, for the `cityparquet` /
+`cityparquet-nobloom` pair on the identifier, feature and attribute-equality
+lookups (the prepared no-bloom package is reused, never rebuilt). Bytes read
+and requests are properties of the format and the query; the time is what a
+network turns them into.
+
+**Two targets.** The primary measurement (`--network-target simulated`, the
+default) reads the prepared directory through `net-sim`, a local HTTP/1.1
+server in `readbench/src/netsim.rs` that imposes a deterministic profile:
+
+| Profile | Bandwidth | Latency per request |
+| --- | --- | --- |
+| `fast` | 1,000 Mbps | 5 ms |
+| `typical` (default) | 100 Mbps | 20 ms |
+| `slow` | 20 Mbps | 50 ms |
+
+The profiles are data in `manifest.toml` (`[network_profiles.*]`); select them
+with `--network-profile fast,slow` or `all`, or give a custom one with
+`--network-bandwidth-mbps` and `--network-latency-ms`. Bandwidth penalises
+formats that download whole files; latency penalises formats that make many
+range requests. The secondary target (`--network-target real --base-url <url>
+--key-layout bucket`) reads real object storage, such as the hosted corpus at
+`https://other-data.open3d.city/cityparquet-paper/benchmark/v8`; its result is a
+snapshot of one network path at one time, not a repeatable measurement.
+
+**The simulation.** Each request waits the profile's latency before its first
+response byte. Response bodies leave through ONE bandwidth budget shared by
+every connection, so concurrent requests divide the bandwidth rather than
+multiply it. The limiter is a virtual clock that paces 16 KiB pieces; an idle
+link earns at most 2 ms of credit (the burst), which absorbs the timer's
+resolution. Headers are not charged. The simulation leaves out TLS, HTTP/2,
+connection set-up, jitter, packet loss and any throttling a storage service
+applies, so the simulated times are a model of the transfer, not of a
+particular provider.
+
+**What is recorded.** Results go to
+`runs/network/<suite-profile>/<network-profile>/<dataset>.csv` (the bloom pair
+under `bloom/`), with the read CSV's columns. The params sidecar's `network`
+block records the profile, the target, the bandwidth and latency, the server's
+own request and body-byte totals and the clients' totals over every sample
+(warm-up included); the two must be equal. `<dataset>.model.csv` puts each
+row's model time, `bytes_read * 8 / bandwidth + http_requests * latency`,
+beside the measured median. The simulated network is deterministic, so a cell
+takes 3 timed samples after one discarded warm-up (`--network-repeat`), under
+the usual per-cell time budget.
+
+```sh
+just bench-run --families network --profile short                     # typical
+just bench-run --families network --profile short --network-profile all
+just bench-run --families network --datasets rotterdam --network-target real \
+  --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v8
+```
+
 ## Selecting work
 
 ```sh
