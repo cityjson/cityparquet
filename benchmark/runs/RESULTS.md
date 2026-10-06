@@ -80,6 +80,13 @@ committed files.
 
 ## Coverage and limitations
 
+- The database CSV's memory column, `peak_rss_bytes`, holds each executing
+  process's **resident set size** (`memory-scope: duckdb-process-rss` and
+  `postgresql-backend-rss` in `notes`), which for the PostgreSQL backends
+  is dominated by the shared buffer pool. It is **not** the working memory
+  (`peak_working_mem_bytes`, summed `RssAnon`) the current database harness
+  reports, and the summary labels it as process RSS; the two must not be
+  compared.
 - The 1M slice's **CityJSON read rows were measured one scenario per run**
   on 24 September: the whole-document parse (about 35 GB resident) was
   refused three times by the host's strict memory-overcommit limit while
