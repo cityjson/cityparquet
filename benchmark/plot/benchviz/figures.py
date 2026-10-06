@@ -100,7 +100,6 @@ SCENARIO_LABELS = {
     "id-90pct": "Id lookup (hit 90 %)",
     "feature-50pct": "Feature lookup (hit 50 %)",
     "feature-miss": "Feature lookup (miss)",
-    "lod-query": "LoD 1.2 rows",
     "parts-per-building": "Parts per building",
     "parts-per-building-join": "Parts per building (join)",
     "attr-add": "Add attribute",
@@ -113,6 +112,16 @@ SCENARIO_LABELS = {
 def _load(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+def lod_query_label(params: dict | None) -> str:
+    """The `lod-query` row label: the LoD the database run actually targeted.
+
+    The harness writes the dataset's LoDs (`lods`) into its params from the
+    change that made `lod-query` ask for LoD 2.2; params without the key come
+    from the earlier harness, whose `lod-query` asked for LoD 1.2.
+    """
+    return "LoD 2.2 rows" if "lods" in (params or {}) else "LoD 1.2 rows"
 
 
 def _label(value: str) -> str:
@@ -268,6 +277,7 @@ def _heat(
     vmax: float = 3.0,
     scale: str = "diverging",
     x_rotation: int = 45,
+    row_labels: dict[str, str] | None = None,
 ) -> None:
     cmap, norm = _heat_colors(scale, vmax)
     vals = [[math.log2(v) if v and v > 0 else math.nan for v, _ in row] for row in cells]
@@ -287,7 +297,9 @@ def _heat(
         )
     else:
         ax.set_xticks(range(len(columns)), [_label(c) for c in columns], fontsize=6)
-    ax.set_yticks(range(len(rows)), [_label(r) for r in rows], fontsize=6)
+    ax.set_yticks(
+        range(len(rows)), [(row_labels or {}).get(r) or _label(r) for r in rows], fontsize=6
+    )
     for y, row in enumerate(cells):
         for x, (_, text) in enumerate(row):
             ax.text(x, y, text, ha="center", va="center", fontsize=5, color=INK)
@@ -966,9 +978,9 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
         )
         notes += [line for line in conditions if line.startswith(prep.DB_WRITE_NOTE_PREFIXES)]
     for (query, config, deviation), number in sorted(footnotes.items(), key=lambda kv: kv[1]):
-        notes.append(f"*{number} ok-deviation, {_label(query)}, threads={config}: {deviation}")
+        notes.append(f"*{number} ok-deviation, {lod_query_label(db.get('params')) if query == 'lod-query' else _label(query)}, threads={config}: {deviation}")
     for (query, reason), number in sorted(layout["skips"].items(), key=lambda kv: kv[1]):
-        notes.append(f"†{number} skipped, {_label(query)}: {reason}")
+        notes.append(f"†{number} skipped, {lod_query_label(db.get('params')) if query == 'lod-query' else _label(query)}: {reason}")
 
     n_cols = len(configs)
     width = max(8.5, 1.1 * len(systems) * n_cols + 3.0)
@@ -1002,6 +1014,7 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
                 vmax=bounds[field],
                 scale="diverging",
                 x_rotation=0,
+                row_labels={"lod-query": lod_query_label(db.get("params"))},
             )
             ax.set_xticks(range(len(systems)), [_db_label(s) for s in systems], fontsize=5.5)
             for text in ax.texts:
