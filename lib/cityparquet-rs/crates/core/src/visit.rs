@@ -45,12 +45,16 @@ use crate::wkb_read::{WkbVisitor, visit_wkb};
 /// - `objects`: rows visited (one per city object).
 /// - `geometries`: non-null `geometry_lod*` cells. CityParquet stores one
 ///   geometry per LoD column (`geometry_lod2_2`, …), so this matches a
-///   CityJSON source's geometry entries, with two documented exceptions:
+///   CityJSON source's geometry entries, with three documented exceptions:
 ///   the writer synthesises a LoD0 footprint into `geometry_lod0_0` by
 ///   default (counted here and separately in `lod0_geometries`, so a caller
-///   whose source carries no LoD0 subtracts it), and a geometry whose every
+///   whose source carries no LoD0 subtracts it); a geometry whose every
 ///   surface the writer dropped as degenerate is stored as null and is not
-///   counted. `GeometryInstance` entries live in `template`, not here.
+///   counted; and the column suffix `lod<major>_<minor>` is the LoD, not an
+///   ordinal, so a second geometry at the same LoD on one object is not
+///   stored (the writer keeps the first and reports the rest in
+///   `ConvertReport::skipped_same_lod_geometries`). `GeometryInstance`
+///   entries live in `template`, not here.
 /// - `lod0_geometries`: the subset of `geometries` in `geometry_lod0*`
 ///   columns.
 /// - `semantic_faces`: non-null `face_semantics` items, i.e. faces carrying a

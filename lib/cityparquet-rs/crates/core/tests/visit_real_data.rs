@@ -388,3 +388,53 @@ fn feature_lookup_visit_visits_every_row_of_the_feature() {
         stats.row_groups_total
     );
 }
+
+/// The geometries a CityJSON source carries, excluding `GeometryInstance`
+/// (stored in `template`, not in a `geometry_lod*` column).
+fn source_geometry_count(source: &Path) -> u64 {
+    let text = std::fs::read_to_string(source).unwrap();
+    let docs: Vec<serde_json::Value> = if source.extension().is_some_and(|e| e == "jsonl") {
+        text.lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    } else {
+        vec![serde_json::from_str(&text).unwrap()]
+    };
+    docs.iter()
+        .filter_map(|d| d.get("CityObjects").and_then(|c| c.as_object()))
+        .flat_map(|objects| objects.values())
+        .filter_map(|o| o.get("geometry").and_then(|g| g.as_array()))
+        .flatten()
+        .filter(|g| g["type"] != "GeometryInstance")
+        .count() as u64
+}
+
+/// A `geometry_lod*` column holds one geometry per object per LoD; its
+/// `lod<major>_<minor>` suffix is the LoD, not an ordinal. A second geometry
+/// at the same LoD on one object is not stored — the writer keeps the first
+/// and counts the rest in `ConvertReport::skipped_same_lod_geometries` — so
+/// with LoD0 synthesis off `VisitTotals::geometries` equals the source's
+/// geometry entries less that count.
+#[test]
+fn visit_geometries_equal_source_geometries_less_same_lod_skips() {
+    use cityparquet::query;
+    for name in ["delft.city.jsonl", "lod3_railway.city.json"] {
+        let out = tempfile::tempdir().unwrap();
+        let mut opts = ConvertOptions::new(fixture(name), out.path().to_path_buf());
+        opts.generate_lod0 = false;
+        let report = convert(&opts).unwrap();
+        // The object tables only: the `geometry_templates` sidecar holds the
+        // templates `GeometryInstance` entries refer to.
+        let visited: u64 = cityparquet::stac::properties::PackageTables::open(out.path())
+            .unwrap()
+            .tables
+            .iter()
+            .map(|t| query::full_read_visit(t).unwrap().geometries)
+            .sum();
+        assert_eq!(
+            visited + report.skipped_same_lod_geometries as u64,
+            source_geometry_count(&fixture(name)),
+            "{name}"
+        );
+    }
+}
