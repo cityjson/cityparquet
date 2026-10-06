@@ -23,7 +23,7 @@ fn fixture() -> PathBuf {
 fn prepared() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let mut opts = ConvertOptions::new(fixture(), dir.path().join("tokyo_chiyoda_40.parquet"));
-    opts.generate_lod0 = true;
+    opts.generate_lod0 = false;
     convert(&opts).unwrap();
     std::fs::copy(fixture(), dir.path().join("tokyo_chiyoda_40.city.jsonl")).unwrap();
     dir

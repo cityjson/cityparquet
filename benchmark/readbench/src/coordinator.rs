@@ -1629,16 +1629,16 @@ fn run_measurement(
 /// and its size, not how long it took to build.
 ///
 /// `ConvertOptions` is filled the way the prepare script's `cityparquet
-/// convert --ordering hilbert` fills it (Hilbert row order,
-/// `generate_lod0: true`, the default batch size), so a variant package has
-/// the same content as `<base>.parquet` and differs from it only in the
-/// recipe under test. A library-default `ConvertOptions::new`
-/// would leave LoD0 generation OFF and the row counts would not line up.
+/// convert --ordering hilbert --no-lod0` fills it (Hilbert row order, no
+/// LoD 0 synthesis, the default batch size), so a variant package has the
+/// same content as `<base>.parquet` and differs from it only in the recipe
+/// under test. Without LoD 0 synthesis the package holds the source's
+/// geometries and no others, as every other format's artefact does.
 ///
-/// Hilbert order is also the library default, and it is pinned here
-/// regardless — as `--ordering hilbert` is in the prepare script — so the
-/// benchmark states its configuration rather than inheriting it, and a later
-/// change of default cannot change what its figures measure.
+/// Both settings are also the library defaults, and they are pinned here
+/// regardless — as the flags are in the prepare script — so the benchmark
+/// states its configuration rather than inheriting it, and a later change of
+/// default cannot change what its figures measure.
 fn build_variant(
     base: &str,
     id: &str,
@@ -1654,7 +1654,7 @@ fn build_variant(
     let mut opts = cityparquet::package::ConvertOptions::new(seq.to_path_buf(), built.clone());
     opts.recipe = variant.recipe();
     opts.ordering = RowOrder::Hilbert;
-    opts.generate_lod0 = true;
+    opts.generate_lod0 = false;
     cityparquet::package::convert(&opts)
         .with_context(|| format!("converting with variant '{id}'"))?;
 

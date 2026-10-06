@@ -39,7 +39,7 @@ fn prepared_delft() -> (tempfile::TempDir, PathBuf) {
 
 fn convert_delft(input: &std::path::Path, out: &std::path::Path, ordering: RowOrder) {
     let mut opts = ConvertOptions::new(input.to_path_buf(), out.to_path_buf());
-    opts.generate_lod0 = true;
+    opts.generate_lod0 = false;
     opts.ordering = ordering;
     convert(&opts).unwrap();
 }
@@ -69,6 +69,70 @@ fn ids_in(package: &std::path::Path) -> Vec<String> {
         ids.extend((0..column.len()).map(|i| column.value(i).to_string()));
     }
     ids
+}
+
+/// Non-null values across every `geometry_lod0*` column of a package's tables.
+fn lod0_geometries_in(package: &std::path::Path) -> usize {
+    use arrow_array::Array;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let mut count = 0;
+    for entry in std::fs::read_dir(package).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|x| x != "parquet") {
+            continue;
+        }
+        let reader = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(path).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        for batch in reader {
+            let batch = batch.unwrap();
+            for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
+                if field.name().starts_with("geometry_lod0") {
+                    count += column.len() - column.null_count();
+                }
+            }
+        }
+    }
+    count
+}
+
+/// A variant package holds the source's geometries and no others, as the
+/// prepare script's `--no-lod0` package does: Delft's 1,116 BuildingParts
+/// carry no source LoD 0, so a synthesised footprint for each would be
+/// content no other format's artefact holds.
+#[test]
+fn a_variant_package_synthesises_no_lod0() {
+    let (prepared, input) = prepared_delft();
+    let out_csv = prepared.path().join("out.csv");
+    let output = run(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "full-read",
+        "--variants",
+        "cityparquet",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let source_lod0 = 1115;
+    assert_eq!(
+        lod0_geometries_in(&prepared.path().join("delft.cityparquet.parquet")),
+        source_lod0
+    );
+    assert_eq!(
+        lod0_geometries_in(&prepared.path().join("delft.parquet")),
+        source_lod0
+    );
 }
 
 /// Every variant package is written in Hilbert order — the benchmark's only
