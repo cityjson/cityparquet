@@ -121,10 +121,6 @@
 #     `--index-node-size 64` panics on every `bbox-query` with a capacity
 #     overflow. Measured, not assumed.
 #
-# The write benchmark's own FlatCityBuf variant must pass the SAME flags:
-# a read artefact and a write artefact built differently are not the same
-# measurement.
-#
 # EXTERNAL TOOLS ARE GUARDED PER FORMAT, not up front: `fcb` is only required
 # when `flatcitybuf` was requested, `citygml-tools`/`cjseq`/`jq` only when the
 # request actually needs that hop of the chain, and the release CityParquet
