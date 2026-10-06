@@ -237,6 +237,12 @@ struct RunArgs {
     /// HTTP base URL when `--transport http`.
     #[arg(long)]
     base_url: Option<String>,
+
+    /// Key layout under `--base-url`: `flat` (default; the prepared directory
+    /// uploaded as it is, `<base>.<ext>`) or `bucket` (the hosted corpus,
+    /// `<format>/<base>.<ext>` under `v<chain>/`).
+    #[arg(long, default_value = "flat")]
+    key_layout: cityparquet_readbench::format::KeyLayout,
 }
 
 fn main() {
@@ -279,6 +285,7 @@ fn run(cli: Cli) -> Result<()> {
             cold: run_args.cold,
             transport,
             base_url: run_args.base_url,
+            key_layout: run_args.key_layout,
             isolation: coordinator::IsolationOptions {
                 numa_node: run_args.numa_node,
                 memory_max: run_args.memory_max,

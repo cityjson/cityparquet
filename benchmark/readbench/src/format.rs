@@ -104,6 +104,45 @@ impl Format {
             Format::CityParquet => format!("{base}.parquet"),
         }
     }
+
+    /// The artefact's key under an HTTP `--base-url`. [`KeyLayout::Flat`] is
+    /// the prepared directory uploaded as it is ([`Format::artefact`]);
+    /// [`KeyLayout::Bucket`] is the hosted corpus's layout, one folder per
+    /// format (`<folder>/<base><suffix>`), which `benchmark/scripts/corpus_bucket.py`
+    /// writes and reads. This is the one place the harness maps a format to
+    /// a bucket folder.
+    pub fn key(self, base: &str, layout: KeyLayout) -> String {
+        let name = self.artefact(base);
+        match layout {
+            KeyLayout::Flat => name,
+            KeyLayout::Bucket => format!("{}/{name}", self.as_str()),
+        }
+    }
+}
+
+/// How an HTTP run lays its artefacts out under `--base-url` (see
+/// [`Format::key`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyLayout {
+    /// `<base>.<ext>`: the prepared directory, uploaded wholesale.
+    #[default]
+    Flat,
+    /// `<format>/<base>.<ext>`: the hosted corpus (`v<chain>/` in the bucket).
+    Bucket,
+}
+
+impl FromStr for KeyLayout {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text {
+            "flat" => Ok(KeyLayout::Flat),
+            "bucket" => Ok(KeyLayout::Bucket),
+            other => Err(format!(
+                "unknown key layout '{other}'; expected flat or bucket"
+            )),
+        }
+    }
 }
 
 impl std::fmt::Display for Format {
@@ -154,6 +193,44 @@ mod tests {
     #[test]
     fn cityparquet_reads_the_one_package() {
         assert_eq!(Format::CityParquet.artefact("delft"), "delft.parquet");
+    }
+
+    /// Under the hosted corpus's bucket layout every artefact sits in its
+    /// format's folder; the flat layout is the prepared directory's own.
+    #[test]
+    fn bucket_layout_puts_each_format_in_its_folder() {
+        let cases = [
+            (Format::CityGml, "citygml/x.gml"),
+            (Format::CityJson, "cityjson/x.city.json"),
+            (Format::CityJsonSeq, "cityjsonseq/x.city.jsonl"),
+            (Format::FlatCityBuf, "flatcitybuf/x.fcb"),
+            (Format::CityParquet, "cityparquet/x.parquet"),
+        ];
+        for (format, key) in cases {
+            assert_eq!(format.key("x", KeyLayout::Bucket), key);
+            assert_eq!(format.key("x", KeyLayout::Flat), format.artefact("x"));
+        }
+        assert_eq!("bucket".parse::<KeyLayout>(), Ok(KeyLayout::Bucket));
+        assert_eq!("flat".parse::<KeyLayout>(), Ok(KeyLayout::Flat));
+        assert!("other".parse::<KeyLayout>().is_err());
+    }
+
+    /// The Python side of the hosted corpus (`benchmark/scripts/corpus_bucket.py`,
+    /// which uploads and downloads) must name the same folders and suffixes.
+    #[test]
+    fn bucket_layout_matches_the_corpus_script() {
+        let script = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scripts/corpus_bucket.py"
+        ))
+        .unwrap();
+        for format in Format::ALL {
+            let key = format.key("x", KeyLayout::Bucket);
+            let (folder, rest) = key.split_once('/').unwrap();
+            let suffix = &rest[1..];
+            let line = format!("(\"{folder}\", \"{suffix}\"");
+            assert!(script.contains(&line), "corpus_bucket.py lacks {line}");
+        }
     }
 
     /// CityJSONSeq reads a PREPARED `<base>.city.jsonl`, never the original

@@ -136,6 +136,8 @@ pub struct RunOptions {
     pub transport: Transport,
     /// HTTP base URL; required when `transport` is [`Transport::Http`].
     pub base_url: Option<String>,
+    /// How artefacts are laid out under `base_url` (see [`Format::key`]).
+    pub key_layout: cityparquet_readbench::format::KeyLayout,
     /// Pinning, memory ceiling and load gate for the measured children.
     pub isolation: IsolationOptions,
 }
@@ -428,6 +430,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 base,
                 opts.transport,
                 opts.base_url.as_deref(),
+                opts.key_layout,
             ) {
                 ArtefactResolution::Source(Source::Local(path)) if path.exists() => {
                     resolved_formats.push((
@@ -1378,8 +1381,9 @@ enum ArtefactResolution {
 /// Maps `format` onto its artefact [`Source`] — for [`Transport::Local`], a
 /// local path under `prepared_dir`, the exact naming convention
 /// `benchmark/scripts/readbench_prepare.sh` produces; for [`Transport::Http`], the
-/// same artefact's relative key under `base_url` (`prepared_dir` uploaded
-/// wholesale — see `benchmark/scripts/readbench_upload.md`).
+/// same artefact's key under `base_url`, laid out by `key_layout`
+/// ([`Format::key`]: the prepared directory uploaded wholesale, or the hosted
+/// corpus's one folder per format).
 ///
 /// The per-format NAMING itself lives on [`Format::artefact`]; this function
 /// only turns the resulting name into a path or an HTTP key.
@@ -1392,6 +1396,7 @@ fn resolve_format_artefact(
     base: &str,
     transport: Transport,
     base_url: Option<&str>,
+    key_layout: cityparquet_readbench::format::KeyLayout,
 ) -> ArtefactResolution {
     let local_path = prepared_dir.join(format.artefact(base));
 
@@ -1401,13 +1406,14 @@ fn resolve_format_artefact(
             let key = local_path
                 .strip_prefix(prepared_dir)
                 .ok()
-                .and_then(|p| p.to_str());
+                .and_then(|p| p.to_str())
+                .map(|_| format.key(base, key_layout));
             match key {
                 Some(key) => ArtefactResolution::Source(Source::Http {
                     base_url: base_url
                         .expect("caller (run) already validated Transport::Http requires base_url")
                         .to_string(),
-                    key: key.to_string(),
+                    key,
                 }),
                 None => ArtefactResolution::NonUtf8Key,
             }
