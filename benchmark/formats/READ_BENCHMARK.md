@@ -1120,8 +1120,10 @@ each cold number stands alone, one per format, one `full-read` only.
 
 31. **One generation of results, one timing block, one header.** Every
     committed results CSV reports the seven-column timing block
-    (`time_mean_s` .. `time_q3_s`) over the warm samples, in the
-    coordinator's 21-column shape. Results from before 2026-09-24 (a median
+    (`time_mean_s` .. `time_q3_s`) over the warm samples, in the 21-column
+    shape the coordinator wrote before it added `stats_pruned` (Caveat 30);
+    the coordinator now writes 22 columns, and a re-run's CSVs carry them.
+    Results from before 2026-09-24 (a median
     with `time_mad_s`) and from before default-on bloom filters exist only in
     git history and must not be set beside these: a median absolute deviation
     and an interquartile range are different spreads, and an `id-lookup` without filters is a different
