@@ -36,8 +36,8 @@ use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 
 use crate::decode::DecodedObject;
 use crate::query::{
-    AttrPredicate, AttrStats, BBoxQueryResult, BBoxVisitResult, BloomPrune, FullReadResult,
-    LookupStats, VisitTotals,
+    AttrPredicate, AttrStats, BBoxGeometryResult, BBoxQueryResult, BBoxVisitResult, BloomPrune,
+    FullReadResult, LookupStats, VisitTotals,
 };
 use crate::query_core;
 use crate::reader::CityParquetReaderBuilder;
@@ -265,6 +265,73 @@ pub async fn attr_filter_visit_async(
         .build()
         .map_err(CityParquetError::parquet_from)?;
     Ok((visit_stream(stream, false).await?, stats))
+}
+
+/// The async mirror of [`crate::query::bbox_query_geometry`]: the same
+/// row-group prune, `id`/`bbox`/geometry projection, `bbox` `RowFilter` and
+/// highest-LoD walk, over an object store.
+pub async fn bbox_query_geometry_async(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    query_bbox: [f64; 6],
+) -> Result<BBoxGeometryResult> {
+    let reader = ParquetObjectReader::new(store, path.clone());
+    let builder = ParquetRecordBatchStreamBuilder::new(reader)
+        .await
+        .map_err(CityParquetError::parquet_from)?;
+    let (row_groups_total, row_groups_touched) =
+        query_core::bbox_row_group_counts(builder.metadata(), &query_bbox);
+    let mask = query_core::bbox_geometry_mask(builder.schema(), builder.parquet_schema())?;
+    let row_filter = query_core::bbox_row_filter(builder.parquet_schema(), query_bbox);
+    let mut stream = builder
+        .with_projection(mask)
+        .with_bbox_row_groups(query_bbox)?
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let mut acc = BBoxGeometryResult::empty(row_groups_total, row_groups_touched);
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
+        query_core::fold_bbox_geometry(&batch, &mut acc)?;
+    }
+    Ok(acc)
+}
+
+/// The async mirror of [`crate::query::attr_filter_ids`]: bloom filters
+/// (one ranged fetch) then statistics prune the row groups, the predicate
+/// `RowFilter` reads `column` alone, and only `id` is projected.
+pub async fn attr_filter_ids_async(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<(Vec<String>, LookupStats)> {
+    let (mut reader, arrow_meta) = open_async(store, path).await?;
+    let builder =
+        ParquetRecordBatchStreamBuilder::new_with_metadata(reader.clone(), arrow_meta.clone());
+    let probe = query_core::string_probe(builder.schema(), builder.parquet_schema(), column, pred)?;
+    let output_mask = query_core::root_mask(builder.parquet_schema(), "id")?;
+    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)?;
+    let (row_groups, stats) =
+        prune_row_groups_async(&mut reader, &arrow_meta, column, probe, pred).await?;
+    let mut stream = builder
+        .with_projection(output_mask)
+        .with_row_filter(row_filter)
+        .with_row_groups(row_groups)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let mut ids = Vec::new();
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
+        query_core::collect_ids(&batch, &mut ids)?;
+    }
+    Ok((ids, stats))
 }
 
 /// The shared body of the async id and feature visits: an exact UTF-8
@@ -1230,5 +1297,52 @@ mod tests {
             crate::query::feature_lookup_visit(&table_file, &feature).unwrap()
         );
         assert!(got.0.objects >= 1);
+    }
+
+    /// The async spatial geometry query and id-returning attribute filter
+    /// return exactly what their sync counterparts return, pruning included.
+    #[tokio::test]
+    async fn bbox_query_geometry_and_attr_filter_ids_async_match_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table_with(dir.path(), small_groups()).await;
+        let table_file = dir.path().join("building.parquet");
+        let e = crate::query::full_read_visit(&table_file).unwrap().extent;
+        let half = [
+            e[0],
+            e[1],
+            e[2],
+            (e[0] + e[3]) / 2.0,
+            (e[1] + e[4]) / 2.0,
+            e[5],
+        ];
+        for window in [e, half] {
+            let got = bbox_query_geometry_async(Arc::clone(&store), &path, window)
+                .await
+                .unwrap();
+            assert_eq!(
+                got,
+                crate::query::bbox_query_geometry(&table_file, window).unwrap()
+            );
+            assert!(got.geometries > 0);
+        }
+        let id = every_id(&table_file).remove(7);
+        for pred in [
+            AttrPredicate::Eq(serde_json::Value::String("BuildingPart".into())),
+            AttrPredicate::Eq(serde_json::Value::String(id)),
+            AttrPredicate::Eq(serde_json::Value::String("no-such-id".into())),
+        ] {
+            let column = if matches!(&pred, AttrPredicate::Eq(v) if v == "BuildingPart") {
+                "object_type"
+            } else {
+                "id"
+            };
+            let got = attr_filter_ids_async(Arc::clone(&store), &path, column, &pred)
+                .await
+                .unwrap();
+            assert_eq!(
+                got,
+                crate::query::attr_filter_ids(&table_file, column, &pred).unwrap()
+            );
+        }
     }
 }
