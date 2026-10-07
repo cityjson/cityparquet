@@ -30,6 +30,6 @@ mod vertices;
 pub mod writer;
 mod xml;
 
-pub use header::parse_header;
+pub use header::{parse_header, parse_header_from};
 pub use reader::FeatureReader;
-pub use sniff::{CityGmlVersion, is_citygml, sniff_citygml};
+pub use sniff::{CityGmlVersion, is_citygml, sniff_citygml, sniff_citygml_from};

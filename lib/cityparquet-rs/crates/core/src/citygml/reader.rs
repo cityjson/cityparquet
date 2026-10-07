@@ -9,7 +9,7 @@
 //! non-building objects are out of scope for this milestone.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use cityparquet_schema::{CityParquetError, Result};
@@ -48,7 +48,7 @@ fn citygml_object_type(local: &[u8]) -> Option<&'static str> {
 }
 
 pub struct FeatureReader {
-    reader: NsReader<BufReader<File>>,
+    reader: NsReader<Box<dyn BufRead + Send>>,
     buf: Vec<u8>,
     scale: [f64; 3],
     translate: [f64; 3],
@@ -145,6 +145,21 @@ impl FeatureReader {
         Self::open_inner(path, transform, false)
     }
 
+    /// Stream features from any `BufRead` — an HTTP response body, say —
+    /// quantising vertices against `transform`.
+    ///
+    /// Always one pass, WITHOUT the CityModel-level appearance pre-pass (it
+    /// would need a second read of a stream that can be read once): features
+    /// stream exactly as from [`Self::open_without_appearance`]. Nothing is
+    /// read beyond what the features pulled so far need, so a caller that
+    /// stops early and drops the reader never reads the rest of the input.
+    /// `input` must start at the document's first byte; a caller that ran
+    /// [`super::sniff_citygml_from`]/[`super::parse_header_from`] on the same
+    /// stream replays the bytes they consumed ahead of the rest.
+    pub fn from_reader(input: Box<dyn BufRead + Send>, transform: &Transform) -> Result<Self> {
+        Self::from_parts(input, transform, ModelAppearance::default())
+    }
+
     /// Every `cityObjectMember` object whose element name this reader does not
     /// map, by document-spelled name (`tran:Track` -> 3). Empty for a document
     /// every member of which was read.
@@ -167,14 +182,22 @@ impl FeatureReader {
         let file = File::open(path).map_err(|e| {
             CityParquetError::io_source(format!("cannot reopen {}", path.display()), e)
         })?;
-        let scale = triple(&transform.scale, "scale")?;
-        let translate = triple(&transform.translate, "translate")?;
         let model_appearance = if with_appearance {
             read_model_appearance(path)?
         } else {
             ModelAppearance::default()
         };
-        let mut reader = NsReader::from_reader(BufReader::new(file));
+        Self::from_parts(Box::new(BufReader::new(file)), transform, model_appearance)
+    }
+
+    fn from_parts(
+        input: Box<dyn BufRead + Send>,
+        transform: &Transform,
+        model_appearance: ModelAppearance,
+    ) -> Result<Self> {
+        let scale = triple(&transform.scale, "scale")?;
+        let translate = triple(&transform.translate, "translate")?;
+        let mut reader = NsReader::from_reader(input);
         // Self-closing elements (`<gml:surfaceMember xlink:href=.../>`) must
         // arrive as Start+End so the geometry parsers see the xlink; otherwise
         // quick-xml emits Event::Empty, which the Start-matching loops drop.

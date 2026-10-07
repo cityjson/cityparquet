@@ -10,7 +10,7 @@
 //! "not CityGML", so the caller falls back to CityJSON as before.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use quick_xml::events::Event;
@@ -33,8 +33,14 @@ pub enum CityGmlVersion {
 /// `Some(Other(v))` means "CityGML, but not a version we read" — which the
 /// caller must report as a version error rather than a JSON parse failure.
 pub fn sniff_citygml(path: &Path) -> Option<CityGmlVersion> {
-    let file = File::open(path).ok()?;
-    let mut reader = NsReader::from_reader(BufReader::new(file));
+    sniff_citygml_from(BufReader::new(File::open(path).ok()?))
+}
+
+/// [`sniff_citygml`] over any `BufRead`. It consumes what it reads (the
+/// declaration and the root element's start tag), so a streaming caller that
+/// still needs those bytes records them and replays them ahead of the rest.
+pub fn sniff_citygml_from<R: BufRead>(input: R) -> Option<CityGmlVersion> {
+    let mut reader = NsReader::from_reader(input);
     let mut buf = Vec::new();
     // Bound the scan: the root element appears within the first handful of
     // events (declaration, comments, then the root Start).
