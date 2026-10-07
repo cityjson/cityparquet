@@ -295,12 +295,18 @@ which `readbench-prepare` always passes; `id` is never indexed, Caveat
 19). If the attribute index cannot answer, the runner falls back to a
 full walk and **says so in the CSV `notes`**: `no-attr-index` when the
 column carries no B+-tree at all, `attr-index-failed` when the index
-query errored or returned a hit list longer than the file&#x27;s feature
-count. The second case is a known truncation in `fcb_core` 0.7.6: its
-attribute-index iterator stops after as many entries as the file has
-features, while the index holds one entry per matching CityObject, so a
-predicate that matches more CityObjects than there are features would
-otherwise lose matches silently. An index-vs-scan measurement is
+query errored, returned a hit list longer than the file&#x27;s feature
+count, or, over HTTP, returned no hits. The second case is a known
+truncation in `fcb_core` 0.7.6: its attribute-index iterator stops
+after as many entries as the file has features, while the index holds
+one entry per matching CityObject, so a predicate that matches more
+CityObjects than there are features would otherwise lose matches
+silently. The third is a defect in the same library&#x27;s HTTP index
+reader, which answers no hits for a key that names 4,096 or more
+features (see &quot;FlatCityBuf&#x27;s HTTP attribute index drops every key that
+names 4,096 or more features&quot; later in this section), so the HTTP arm
+verifies an empty answer by the full walk; a walk that also finds
+nothing is a verified empty result. An index-vs-scan measurement is
 therefore never mislabelled. That fallback is a raw-flatbuffer walk, not a
 CityJSON conversion — see Caveat 32. No artefact is read through an
 external compression layer: `citygml`, `cityjson` and `cityjsonseq` are
@@ -1022,12 +1028,37 @@ returned extent, and every count, digest and total, are still compared.</li><li>
   to the end of the file) from that feature&#x27;s offset; the next hit
   usually falls outside that buffer again. The spatial window does not
   show this because its iterator sets its own request size and visits
-  the features in file order. A text equality filter does not reach
-  this path on this corpus: Vienna&#x27;s `roofType = FLACHDACH` names 600
+  the features in file order. Neither text equality filter on this
+  corpus reaches this path. Vienna&#x27;s `roofType = FLACHDACH` names 600
   CityObjects in a 307-feature file, so its hit list is longer than the
   feature count and the row falls back to a `select_all` walk (tagged
-  `attr-index-failed`; 9 requests, 4.6 MB for a 3.6 MB file). The
+  `attr-index-failed`; 9 requests, 4.6 MB for a 3.6 MB file). Tokyo&#x27;s
+  `usage = &quot;401&quot;` gets no hits from the HTTP index at all and takes the
+  same tagged walk (next item). The
   attribute filter&#x27;s bytes, requests and time over HTTP are therefore a
   property of this client, and a reader should not cite them as the
   cost of FlatCityBuf&#x27;s attribute index; the local arm reads a file
-  handle and is not affected.</li></ul></section>
+  handle and is not affected.
+
+- **FlatCityBuf&#x27;s HTTP attribute index drops every key that names 4,096 or more features**, and the cause is the pinned library, not the format.
+  On Tokyo (a 265 MB `.fcb`), `usage = &quot;401&quot;` names 12,348 CityObjects
+  through the local index, but the same query through `fcb_core` 0.7.6&#x27;s
+  `HttpFcbReader` returns an empty hit list after 4 requests and 1.09 MB.
+  The same happens to `class = &quot;3001&quot;` (11,599 locally) and to
+  `延べ面積換算係数 = &quot;1&quot;` (19,956), while keys with 566 and 84 matches
+  come back whole. A key&#x27;s B+-tree payload entry is 4 bytes plus 8 per
+  matching feature. The HTTP reader prefetches 16 KiB of the payload
+  section for a column with few distinct values
+  (`compute_payload_prefetch_size`). It re-fetches an entry that does not
+  fit in that prefetch with a fixed 32 KiB request
+  (`batch_resolve_payloads`, `static_btree/stree.rs`). An entry longer
+  than 32 KiB, which is any key naming 4,096 or more features, then fails
+  to decode, and the reader drops it without an error. The local reader
+  reads the whole entry from the file handle and is not affected. The HTTP
+  arm therefore never publishes an empty index answer: it verifies it by
+  the full `select_all` walk, tagged `attr-index-failed`. On Tokyo that
+  walk returns the 12,348 objects, with the same identifier digest as the
+  local index, for 254 requests and 261.4 MB. A genuine miss costs the
+  same walk. A range predicate is not guarded: one heavy key inside the
+  range would be dropped from a non-empty answer, which only the
+  cross-format consistency check detects.</li></ul></section>
