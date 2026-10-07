@@ -195,3 +195,39 @@ def test_page_section_states_the_derived_rows(tmp_path):
     assert network.DERIVED_FOOTNOTE in lines[0]
     # bench_data.json carries the block as loaded: every record says whether it is derived.
     assert json.loads(json.dumps(block))["records"][-1]["derived"] in (True, False)
+
+
+def test_figure_uses_display_labels_and_the_factor_colours(tmp_path):
+    from matplotlib import colors
+
+    from benchviz import figures
+
+    block = network.load(_derived_fixture(tmp_path / "data"), "full")
+    grid = network.figure_grid(block["records"])
+    assert grid["format_labels"] == ["CityGML", "CityParquet"]
+    assert grid["query_labels"] == ["Read all", "Spatial 1 %"]
+    cells = grid["cells"]
+
+    def rgb(key):
+        return colors.to_rgb(cells[key]["colour"])
+
+    # CityGML is the baseline: 1x is the page colour.
+    assert cells[("time_s", "citygml", "full-read")]["colour"] == figures.BG
+    # Better than CityGML: teal (green dominates red); the absolute value stays printed.
+    r, g, _b = rgb(("time_s", "cityparquet", "full-read"))
+    assert g > r
+    assert cells[("time_s", "cityparquet", "full-read")]["text"].startswith("0.25 s")
+    # Request counts and derived times are never coloured as factors.
+    assert cells[("http_requests", "cityparquet", "full-read")]["colour"] == figures.BG
+    assert cells[("time_s", "citygml", "bbox-1pct")]["colour"] == figures.BG
+
+
+def test_worse_than_citygml_is_the_warm_accent(tmp_path):
+    from matplotlib import colors
+
+    block = network.load(_fixture(tmp_path / "data"), "full")
+    for r in block["records"]:
+        if r["format"] == "cityparquet" and r["query"] == "full-read":
+            r["bytes_read"] = 28000000  # twice CityGML's
+    r, g, _b = colors.to_rgb(network.figure_grid(block["records"])["cells"][("bytes_read", "cityparquet", "full-read")]["colour"])
+    assert r > g

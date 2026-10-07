@@ -215,13 +215,34 @@ def _write(path: Path, rows: list[dict]) -> Path:
 
 
 def _factor_text(factor: float) -> str:
-    return f"({factor:.2g}x)" if factor < 10 else f"({factor:.0f}x)"
+    return f"{factor:.2g}×" if factor < 10 else f"{factor:.0f}×"
+
+
+def _factor_colour(factor: float | None) -> str:
+    """The format figures' factor vocabulary: teal better than CityGML, the
+    page colour at 1x, the warm accent worse."""
+    import math
+
+    from matplotlib import colors
+
+    from . import figures  # imports this module, so not at the top
+
+    if factor is None:
+        return figures.BG
+    if math.isclose(factor, 1.0):
+        return figures.BG
+    limit = figures.FACTOR_COLOUR_LIMIT
+    norm = colors.TwoSlopeNorm(vmin=-limit, vcenter=0, vmax=limit)
+    return colors.to_hex(figures.CMAP_FACTOR(norm(max(-limit, min(limit, math.log2(factor))))))
 
 
 def figure_grid(records: list[dict]) -> dict:
-    """What the figure prints: formats, queries (measured order first) and,
-    per (metric, format, query), the cell's text and its factor against
-    CityGML (None where no factor is citable)."""
+    """What the figure prints: formats and queries (measured order first, with
+    the format figures' display labels) and, per (metric, format, query), the
+    cell's text, kind, factor against CityGML (None where none is citable)
+    and fill colour."""
+    from . import figures  # imports this module, so not at the top
+
     formats = [f for f in FORMATS if any(r["format"] == f for r in records)]
     queries = list(dict.fromkeys([r["query"] for r in records if not r.get("derived")] + [r["query"] for r in records]))
     by = {(r["format"], r["query"]): r for r in records}
@@ -246,43 +267,65 @@ def figure_grid(records: list[dict]) -> dict:
                         factor = ref / value
                         if fmt != BASELINE_FORMAT:
                             text += "\n" + _factor_text(factor)
-                cells[(metric, fmt, query)] = {"text": text, "kind": kind, "factor": factor}
-    return {"formats": formats, "queries": queries, "cells": cells}
+                fill = figures.BAD_CELL if kind in ("missing", "unavailable") else _factor_colour(factor)
+                cells[(metric, fmt, query)] = {"text": text, "kind": kind, "factor": factor, "colour": fill}
+    return {
+        "formats": formats,
+        "queries": queries,
+        "format_labels": [figures._label(f) for f in formats],
+        "query_labels": [figures._label(q) for q in queries],
+        "cells": cells,
+    }
 
 
 def _figure(records: list[dict], profile: dict, statistic: str, out: Path) -> list[Path]:
+    import textwrap
+
     import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    from . import figures  # imports this module, so not at the top
 
     grid = figure_grid(records)
     formats, queries = grid["formats"], grid["queries"]
     repeat = max((r["repeat"] or 0) for r in records) or None
     derived = any(r.get("derived") for r in records)
-    fig, axes = plt.subplots(
-        1, 3, figsize=(5.0 * 3, 1.0 + 0.5 * len(queries)), constrained_layout=True
+    note = (
+        caption(profile, statistic, repeat, derived=derived)
+        + ". Cell text: absolute value over its factor against CityGML (CityGML's value ÷ the format's; "
+        "higher is better); colour: teal better than CityGML, page colour at 1×, warm accent worse; "
+        "request counts uncoloured."
     )
-    colours = {"missing": "#999", "unavailable": "#b33", "derived": "#555", "measured": "#111"}
+    # The paper's text width, as the format heatmaps.
+    fig, axes = plt.subplots(
+        1, 3, figsize=(7.2, 1.7 + 0.36 * len(queries)), layout="constrained", facecolor=figures.BG
+    )
+    ink = {"missing": figures.MUTED, "unavailable": "#b33", "derived": figures.MUTED, "measured": figures.INK}
     for ax, (metric, title, _unit) in zip(axes, METRICS):
+        ax.set_facecolor(figures.BG)
         ax.set_xlim(0, len(formats))
         ax.set_ylim(len(queries), 0)
-        ax.set_xticks([i + 0.5 for i in range(len(formats))], formats, fontsize=8, rotation=20)
-        ax.set_yticks([i + 0.5 for i in range(len(queries))], queries if ax is axes[0] else [], fontsize=8)
+        ax.set_xticks(
+            [i + 0.5 for i in range(len(formats))], grid["format_labels"], fontsize=6, rotation=35, ha="right"
+        )
+        ax.set_yticks(
+            [i + 0.5 for i in range(len(queries))], grid["query_labels"] if ax is axes[0] else [], fontsize=6
+        )
         ax.tick_params(length=0)
         for spine in ax.spines.values():
             spine.set_visible(False)
-        ax.set_title(title, fontsize=10, loc="left")
+        ax.set_title(title, fontsize=8, loc="left")
         for x, fmt in enumerate(formats):
             for y, query in enumerate(queries):
                 cell = grid["cells"][(metric, fmt, query)]
-                ax.text(x + 0.5, y + 0.5, cell["text"], ha="center", va="center", fontsize=7, color=colours[cell["kind"]])
-    fig.suptitle(
-        caption(profile, statistic, repeat, derived=derived) + "; (Nx) = CityGML's value / the format's",
-        fontsize=8, x=0.01, ha="left", wrap=True,
-    )
+                ax.add_patch(Rectangle((x, y), 1, 1, facecolor=cell["colour"], edgecolor=figures.CELL_EDGE, lw=0.5))
+                ax.text(x + 0.5, y + 0.5, cell["text"], ha="center", va="center", fontsize=5, color=ink[cell["kind"]])
+    fig.suptitle(textwrap.fill(note, 170), fontsize=5, x=0.01, ha="left", color=figures.INK)
     written = []
     for ext in ("svg", "png"):
         path = out / f"network.{ext}"
         out.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=150)
+        fig.savefig(path, dpi=200, facecolor=figures.BG)
         written.append(path)
     plt.close(fig)
     return written
