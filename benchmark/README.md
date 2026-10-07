@@ -162,13 +162,70 @@ record the resolved host or the caching headers (`cf-cache-status`, `age`) of
 the objects it read, so whether a request was served from the CDN's cache is
 not known from the result.
 
+**Measured and derived cells.** The indexed formats (`flatcitybuf`,
+`cityparquet`) are measured on every query. The three text formats
+(`citygml`, `cityjson`, `cityjsonseq`) fetch the whole object with one `GET`
+for every query, so their bytes read and request count are the same for
+every query, and so is most of their time: in the end-to-end runs on
+Rotterdam and Vienna, their time for any query was within 0.92–1.15× of
+read all, and the transfer was 83–94 % of it at `typical`. By default they
+are therefore measured on read all and on the four identifier lookups, and
+the other six queries (count, the three spatial windows, the attribute
+filter, the attribute statistics) are emitted as derived rows. A derived
+row is written only after the run has proven the premise for that format
+and dataset: every sample of its measured cells, warm-ups included, made
+exactly one request and read exactly the artefact's size (the served
+file's length on the simulated network, the `Content-Length` of a `HEAD`
+against a real target). A derived row copies bytes read and the request
+count from the format's read all, leaves every time and memory field and
+`result_count` empty, has `repeat` 0, and carries
+`derived-from=full-read;status=derived` in `notes`. When the premise fails,
+the run prints `WARNING: NOT DERIVED for <format>`, writes no derived rows
+for that format and records the reason in the params sidecar's
+`whole_file_derivation` block, which otherwise lists the derived cells.
+The cross-format consistency check skips derived cells and says how many it
+skipped. Which queries the text formats measure is set by
+`[network] whole_file_scenarios` in `manifest.toml` (`full-read,id-lookup`
+by default), overridden with `--network-whole-file-scenarios`:
+`full-read,id-lookup` measures read all and the identifier lookups,
+`full-read` derives the identifier lookups too, and `all` measures every
+query. Over HTTP an identifier lookup in CityGML or CityJSONSeq still
+downloads the whole object before it parses, so its early exit at the hit
+saves parse time, not transfer; a single CityJSON document cannot stop
+early at all.
+
+**Run time.** The text formats' transfers dominate the family's run time.
+With 4 samples per measured cell (one warm-up and 3 timed), the transfer
+alone (`bytes * 8 / bandwidth + latency` per sample, parsing and the
+indexed formats excluded) of the three text formats comes to:
+
+| Dataset | `fast`, all 11 queries → default 5 | `typical` | `slow` |
+| --- | --- | --- | --- |
+| Rotterdam | 0.1 → 0.1 min | 1.2 → 0.5 min | 5.9 → 2.7 min |
+| Vienna | 0.2 → 0.1 min | 1.8 → 0.8 min | 9.0 → 4.1 min |
+| New York | 4.6 → 2.1 min | 46 → 21 min | 3.8 → 1.7 h |
+| Zurich | 12 → 5.3 min | 1.9 → 0.9 h | 9.6 → 4.4 h |
+| Tokyo | 12 → 5.6 min | 2.1 → 0.9 h | 10.3 → 4.7 h |
+| Montréal | 24 → 11 min | 4.0 → 1.8 h | 20 → 9.2 h |
+| 3DBAG slice (1M) | 1.7 → 0.8 h | 16.7 → 7.6 h | 83 → 38 h |
+| Total | 2.6 → 1.2 h | 25.5 → 11.6 h | 128 → 58 h |
+
+The slice's CityGML alone (10.8 GB) takes about 14 minutes per sample at
+`typical`. Parsing adds about 6–20 % on top at `typical`, judging by the
+transfer share above, and proportionally more on `fast`.
+
 **Rendering.** `just bench-summary` discovers the network profile directories
 and renders, per profile and dataset, a figure with three panels (time, bytes
-read, HTTP requests; formats as columns, queries as rows, CityGML's value
-divided by the format's in brackets), `network/network_factors.csv` with the
+read, HTTP requests; formats as columns, queries as rows, with the display
+labels of the format figures and each value's factor against CityGML
+coloured as in the format heatmaps), `network/network_factors.csv` with the
 model time beside the measured statistic, and `network_bloom.csv` per profile
-for the Bloom pair. A summary with no network results states that the family
-was not measured.
+for the Bloom pair. A derived cell shows its bytes and requests with a `†`
+and, in the time panel, "= read all transfer †" instead of a time; the
+caption explains the mark. `network_factors.csv` marks such a row in its
+`derived` column and leaves its time empty, and `bench_data.json` carries a
+`derived` flag on every network record. A summary with no network results
+states that the family was not measured.
 
 **The simulation.** Each request waits the profile's latency before its first
 response byte. Response bodies leave through ONE bandwidth budget shared by
@@ -195,6 +252,7 @@ the usual per-cell time budget.
 ```sh
 just bench-run --families network --profile short                     # typical
 just bench-run --families network --profile short --network-profile all
+just bench-run --families network --profile short --network-whole-file-scenarios all
 just bench-run --families network --datasets rotterdam --network-target real \
   --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v8
 ```

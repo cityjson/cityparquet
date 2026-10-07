@@ -106,9 +106,19 @@ just bench-run --families network --network-target real --network-profile typica
   --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v8 --key-layout bucket
 ```
 
+The indexed formats (FlatCityBuf, CityParquet) are measured on every query.
+The text formats (CityGML, CityJSON, CityJSONSeq) download the whole object
+for every query, so by default they are measured on read all and the four
+identifier lookups. Their other six queries are derived rows: these copy
+read all's bytes and request count once the run has proven that the client
+made one whole-object request, and they carry no time. `[network]
+whole_file_scenarios` in `manifest.toml`, or `--network-whole-file-scenarios
+{full-read,id-lookup|full-read|all}`, chooses which queries are measured.
+
 Its results go to `runs/network/<suite-profile>/<network-profile>/`; the
-benchmark README's network section describes the profiles, the simulation and
-what each target records.
+benchmark README's network section describes the profiles, the simulation,
+the derived rows and the evidence for them, the run time and what each target
+records.
 
 The `formats` family compares read performance across file formats, and the
 `sizes` family records each format's file or package size. The `bloom` family

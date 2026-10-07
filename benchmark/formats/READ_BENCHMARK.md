@@ -1400,7 +1400,10 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     snapshot of one path at one time. How each client issues its requests
     decides what the latency multiplies: the CityGML, CityJSON and
     CityJSONSeq arms fetch the whole object with one `GET` per query, so
-    every query costs the whole file's transfer plus one latency; the
+    every query costs the whole file's transfer plus one latency (an
+    identifier lookup's early exit in CityGML or CityJSONSeq saves parse
+    time, not transfer, because the object is downloaded before it is
+    parsed); the
     CityParquet arm reads `metadata.json`, then each Parquet file through
     `parquet`'s `ParquetObjectReader` over `object_store` (a `HEAD` for the
     size, the footer, then the column chunks of the row groups that
@@ -1408,6 +1411,21 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     issue concurrently); the FlatCityBuf arm reads through
     `http-range-client`'s buffered client, one ranged `GET` at a time, for
     the header, the spatial or attribute index and then the features.
+    Because the text formats' bytes and requests are the same for every
+    query, and their time nearly so (within 0.92–1.15× of read all in the
+    end-to-end runs on Rotterdam and Vienna, with the transfer 83–94 % of
+    it at `typical`), they are measured by default only on read all and the
+    four identifier lookups; their other six queries are derived rows.
+    A derived row is written only when every sample of the format's
+    measured cells made one request and read exactly the artefact's size,
+    copies read all's bytes and request count, and has no time, memory or
+    result count (`notes` carries `derived-from=full-read;status=derived`).
+    It states that the query costs the same transfer as read all; it is not
+    a measured time, the figure marks it with `†`, and the cross-format
+    consistency check skips it. `[network] whole_file_scenarios` in
+    `manifest.toml` (`--network-whole-file-scenarios`) selects
+    `full-read,id-lookup` (the default), `full-read` or `all`, the last
+    measuring every query.
 
 - **FlatCityBuf's indexed attribute filter over HTTP reads many times its
     file, and the cause is the pinned library, not the format.** On
