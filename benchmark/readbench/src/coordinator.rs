@@ -463,10 +463,17 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         "bytes_read": sum("bytes_read"),
     });
     if let Some(t) = server {
+        // The server counts body bytes its socket accepted; the clients count
+        // body bytes they received. They are equal unless a transfer was
+        // abandoned (a streaming format's id-lookup hit), where what was in
+        // flight — socket buffers, the client's read-ahead — was sent but
+        // never received. That gap is reported, never folded into either
+        // total.
         record["server"] = serde_json::json!({
             "requests": t.requests,
             "body_bytes": t.body_bytes,
             "connections": t.connections,
+            "unreceived_bytes": t.body_bytes.saturating_sub(sum("bytes_read")),
         });
     }
     let sidecar = params_sidecar_path(&opts.out);

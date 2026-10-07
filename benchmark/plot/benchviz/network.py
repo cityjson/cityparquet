@@ -110,10 +110,16 @@ def load(data_root: Path, suite_profile: str, statistic: str = "median") -> dict
                     entry.setdefault(key, net[key])
             server, clients = net.get("server", {}), net.get("clients", {})
             # A real target has no server of ours to count; only net-sim's totals can be compared.
+            # On an abandoned transfer (a streaming format's id-lookup hit) the server sent more than the
+            # client received; the gap is the sidecar's `unreceived_bytes`, and the totals still match.
             if server:
-                entry["totals_match"] &= server.get("requests") == clients.get("requests") and server.get(
-                    "body_bytes"
-                ) == clients.get("bytes_read")
+                sent, received = server.get("body_bytes"), clients.get("bytes_read")
+                entry["totals_match"] &= (
+                    server.get("requests") == clients.get("requests")
+                    and sent is not None
+                    and received is not None
+                    and sent - received == server.get("unreceived_bytes", 0)
+                )
             model = {}
             model_path = path.with_name(f"{dataset}.model.csv")
             if model_path.exists():

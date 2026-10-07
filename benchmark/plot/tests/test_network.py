@@ -95,6 +95,29 @@ def test_absent_family_is_not_measured(tmp_path):
     assert network.NOT_MEASURED_SECTION in names
 
 
+def _with_server(root: Path, body_bytes: int, unreceived_bytes: int) -> Path:
+    data_root = _fixture(root)
+    path = data_root / "network" / "full" / "typical" / "rotterdam.csv.params.json"
+    params = json.loads(path.read_text())
+    params["network"]["server"].update(body_bytes=body_bytes, unreceived_bytes=unreceived_bytes)
+    path.write_text(json.dumps(params))
+    return data_root
+
+
+def test_an_abandoned_transfer_matches_when_its_unreceived_bytes_account_for_the_gap(tmp_path):
+    # A streaming format's id-lookup hit abandons its transfer: the server sent more than was received.
+    (profile,) = network.load(_with_server(tmp_path, 28800000, 100000), "full")["profiles"]
+    assert profile["totals_match"] is True
+
+
+def test_a_gap_the_sidecar_does_not_account_for_is_a_mismatch(tmp_path):
+    (profile,) = network.load(_with_server(tmp_path / "a", 28800000, 0), "full")["profiles"]
+    assert profile["totals_match"] is False
+    # The server can never have sent less than the clients received.
+    (profile,) = network.load(_with_server(tmp_path / "b", 28600000, 0), "full")["profiles"]
+    assert profile["totals_match"] is False
+
+
 def test_load_discovers_profiles_and_keeps_missing_cells_explicit(tmp_path):
     block = network.load(_fixture(tmp_path), "full")
     assert block["measured"] is True
