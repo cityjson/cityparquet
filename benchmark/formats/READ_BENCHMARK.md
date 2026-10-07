@@ -197,7 +197,7 @@ what it RETURNS.
 | `full-read`                      | every record, all fields, in the format's native form                                                                           | reads the stream of `cityObjectMember`s, each converted in full by the library's CityGML reader (appearance excluded); then visits as `cityjsonseq` does | parses the whole document; visits every CityObject's every field, every geometry's coordinates resolved through the shared `vertices` and `transform`, its semantic values and surfaces | parses every line; visits every CityObject as `cityjson` does, with the feature's own `vertices` and the header `transform`; `result_count` is the FEATURE count | `select_all` over every feature; the stored integer vertices are converted to real coordinates and visited, and semantic values, semantic-surface objects, attribute bytes and each template instance's anchor and transform are read (raw accessors, no CityJSON conversion; Caveat 32)                                                         | `full_read_visit`: every row group, every column; Arrow arrays and WKB walked in place, no CityJSON-shaped object built                                                                                                                         |
 | `count`                          | the number of objects                                                                                                           | converts every member in full (as `full-read` does), then counts them — not a tag count                                                                  | parses the whole document; size of the `CityObjects` map                                                                                                                                | parses every line; counts the features                                                                                                                           | header feature count (O(1))                                                                                                                                                                                                                                                                                                                      | footer `num_rows` (O(1), no scan)                                                                                                                                                                                                               |
 | `bbox-query` (1%/5%/25% of rows) | count and identifiers of the matching CityObjects, plus each match's highest-LoD geometry with its coordinates visited in place | converts every member; then as `cityjsonseq`                                                                                                             | parses the whole document; tests each CityObject's box over its `children` subtree (coordinates resolved through `transform`); visits each match's highest-LoD geometry                 | parses every line; tests each CityObject of the feature against its subtree box with feature-local vertices; visits each match's highest-LoD geometry            | hits from its 2D per-FEATURE R-tree (z dropped; Caveat 4); each hit feature read once, every CityObject in it tested against its subtree box, and each match's highest-LoD geometry walked                                                                                                                                                       | row groups pruned by `bbox` statistics; only `id`, `bbox` and the geometry columns read; a row filter on `bbox` runs first, so a rejected row decodes no geometry; the highest non-null LoD column of each kept row walked in place — **exact** |
-| `attr-filter`                    | count and identifiers of the matching CityObjects                                                                               | converts every member; tests each CityObject's `attributes`                                                                                              | parses the whole document; tests each CityObject's `attributes`                                                                                                                         | parses every line; tests each CityObject's `attributes`                                                                                                          | the features its B+-tree attribute index hits are read once each, without decoding geometry, and every CityObject in them is re-tested; a column outside the index, or a hit list longer than the file's feature count (tagged `attr-index-failed`, Caveat 11), falls back to a `select_all` walk that decodes only that column (Caveats 19, 32) | row groups pruned by the Bloom filter (an `==` predicate), then by min/max statistics; only the predicate column and `id` read; matching ids returned                                                                                           |
+| `attr-filter`                    | count and identifiers of the matching CityObjects                                                                               | converts every member; tests each CityObject's `attributes`                                                                                              | parses the whole document; tests each CityObject's `attributes`                                                                                                                         | parses every line; tests each CityObject's `attributes`                                                                                                          | the features its B+-tree attribute index hits are read once each, without decoding geometry, and every CityObject in them is re-tested; a column outside the index, a hit list longer than the file's feature count, or an empty hit list over HTTP (both tagged `attr-index-failed`, Caveat 11), falls back to a `select_all` walk that decodes only that column (Caveats 19, 32) | row groups pruned by the Bloom filter (an `==` predicate), then by min/max statistics; only the predicate column and `id` read; matching ids returned                                                                                           |
 | `attr-stats`                     | `(min, max, sum, count)` of a numeric attribute                                                                                 | converts every member; folds over every numeric value (Caveat 35)                                                                                        | parses the whole document; folds over every numeric value (Caveat 35)                                                                                                                   | parses every line; folds over every numeric value (Caveat 35)                                                                                                    | a walk that decodes only that attribute, no geometry, folding the four values (no numeric-range index; Caveat 35)                                                                                                                                                                                                                                | min/max from column-chunk statistics; sum/count from a one-column scan                                                                                                                                                                          |
 | `id-lookup` (x4)                 | the whole object, every field                                                                                                   | converts members until the hit (early exit), then visits every field of the object; a miss reads to the end of the document                              | parses the whole document; one map lookup, then every field of the object visited                                                                                                       | parses lines until the feature holding the hit, then visits every field of the object                                                                            | a `select_all` walk that stops at the hit (`fcb ser -A` builds no `id` index; Caveat 19); every field of the object read                                                                                                                                                                                                                         | row groups pruned by the Bloom filter, then by min/max statistics on `id`; a row filter on `id`; every field of the hit visited natively                                                                                                        |
 
@@ -662,12 +662,18 @@ each cold number stands alone, one per format, one `full-read` only.
     19). If the attribute index cannot answer, the runner falls back to a
     full walk and **says so in the CSV `notes`**: `no-attr-index` when the
     column carries no B+-tree at all, `attr-index-failed` when the index
-    query errored or returned a hit list longer than the file's feature
-    count. The second case is a known truncation in `fcb_core` 0.7.6: its
-    attribute-index iterator stops after as many entries as the file has
-    features, while the index holds one entry per matching CityObject, so a
-    predicate that matches more CityObjects than there are features would
-    otherwise lose matches silently. An index-vs-scan measurement is
+    query errored, returned a hit list longer than the file's feature
+    count, or, over HTTP, returned no hits. The second case is a known
+    truncation in `fcb_core` 0.7.6: its attribute-index iterator stops
+    after as many entries as the file has features, while the index holds
+    one entry per matching CityObject, so a predicate that matches more
+    CityObjects than there are features would otherwise lose matches
+    silently. The third is a defect in the same library's HTTP index
+    reader, which answers no hits for a key that names 4,096 or more
+    features (see "FlatCityBuf's HTTP attribute index drops every key that
+    names 4,096 or more features" under "HTTP transport"), so the HTTP arm
+    verifies an empty answer by the full walk; a walk that also finds
+    nothing is a verified empty result. An index-vs-scan measurement is
     therefore never mislabelled. That fallback is a raw-flatbuffer walk, not a
     CityJSON conversion — see Caveat 32. No artefact is read through an
     external compression layer: `citygml`, `cityjson` and `cityjsonseq` are
@@ -1453,15 +1459,40 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
   to the end of the file) from that feature's offset; the next hit
   usually falls outside that buffer again. The spatial window does not
   show this because its iterator sets its own request size and visits
-  the features in file order. A text equality filter does not reach
-  this path on this corpus: Vienna's `roofType = FLACHDACH` names 600
+  the features in file order. Neither text equality filter on this
+  corpus reaches this path. Vienna's `roofType = FLACHDACH` names 600
   CityObjects in a 307-feature file, so its hit list is longer than the
   feature count and the row falls back to a `select_all` walk (tagged
-  `attr-index-failed`; 9 requests, 4.6 MB for a 3.6 MB file). The
+  `attr-index-failed`; 9 requests, 4.6 MB for a 3.6 MB file). Tokyo's
+  `usage = "401"` gets no hits from the HTTP index at all and takes the
+  same tagged walk (next item). The
   attribute filter's bytes, requests and time over HTTP are therefore a
   property of this client, and a reader should not cite them as the
   cost of FlatCityBuf's attribute index; the local arm reads a file
   handle and is not affected.
+
+- **FlatCityBuf's HTTP attribute index drops every key that names 4,096 or more features**, and the cause is the pinned library, not the format.
+  On Tokyo (a 265 MB `.fcb`), `usage = "401"` names 12,348 CityObjects
+  through the local index, but the same query through `fcb_core` 0.7.6's
+  `HttpFcbReader` returns an empty hit list after 4 requests and 1.09 MB.
+  The same happens to `class = "3001"` (11,599 locally) and to
+  `延べ面積換算係数 = "1"` (19,956), while keys with 566 and 84 matches
+  come back whole. A key's B+-tree payload entry is 4 bytes plus 8 per
+  matching feature. The HTTP reader prefetches 16 KiB of the payload
+  section for a column with few distinct values
+  (`compute_payload_prefetch_size`). It re-fetches an entry that does not
+  fit in that prefetch with a fixed 32 KiB request
+  (`batch_resolve_payloads`, `static_btree/stree.rs`). An entry longer
+  than 32 KiB, which is any key naming 4,096 or more features, then fails
+  to decode, and the reader drops it without an error. The local reader
+  reads the whole entry from the file handle and is not affected. The HTTP
+  arm therefore never publishes an empty index answer: it verifies it by
+  the full `select_all` walk, tagged `attr-index-failed`. On Tokyo that
+  walk returns the 12,348 objects, with the same identifier digest as the
+  local index, for 254 requests and 261.4 MB. A genuine miss costs the
+  same walk. A range predicate is not guarded: one heavy key inside the
+  range would be dropped from a non-empty answer, which only the
+  cross-format consistency check detects.
 
 ## Environment
 

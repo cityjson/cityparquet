@@ -255,3 +255,172 @@ async fn http_feature_walks_match_the_local_transport() {
         );
     }
 }
+
+/// The first line of `stderr` that starts with `marker`, split into the
+/// fields after it.
+fn marker(stderr: &str, marker: &str) -> Option<Vec<String>> {
+    stderr
+        .lines()
+        .find_map(|l| l.strip_prefix(marker))
+        .map(|rest| rest.split_whitespace().map(str::to_string).collect())
+}
+
+/// A string-equality attribute filter on the committed Tokyo cut
+/// (`usage = "401"`: 11 of its 50 CityObjects, counted with Python over the
+/// CityJSONSeq) returns the same objects over HTTP as locally — the same
+/// count AND the same identifier digest. On the full Tokyo file the HTTP
+/// arm once published 0 objects for this predicate while the local arm
+/// found 12,348.
+#[tokio::test(flavor = "multi_thread")]
+async fn http_string_attr_filter_matches_the_local_transport_on_tokyo() {
+    if fcb_cli_missing() {
+        eprintln!("skipping: `fcb` CLI not found on PATH");
+        return;
+    }
+    const DIGEST: &str = "cityparquet-readbench: id-digest";
+
+    let parent = tempfile::tempdir().unwrap();
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/tokyo_chiyoda_40.city.jsonl");
+    let fcb_path = parent.path().join("tokyo_chiyoda_40.fcb");
+    let output = Command::new("fcb")
+        .arg("ser")
+        .arg(&src)
+        .arg(&fcb_path)
+        .arg("-A")
+        .output()
+        .expect("failed to run `fcb ser`");
+    assert!(
+        output.status.success(),
+        "fcb ser failed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let local_input = fcb_path.to_str().unwrap().to_string();
+    let addr = spawn_server(parent.path().to_path_buf()).await;
+    let base_url = format!("http://{addr}");
+    let filter = ["--attr-column", "usage", "--attr-eq", "401"];
+
+    let mut local_args = vec![
+        "--child",
+        "--format",
+        "flatcitybuf",
+        "--scenario",
+        "attr-filter",
+        "--input",
+        &local_input,
+    ];
+    local_args.extend_from_slice(&filter);
+    let (ok, out, local_err) = run_child(&local_args);
+    assert!(ok, "local child failed: {local_err}");
+    let local = result_line(&out);
+    assert_eq!(local[3], "11", "the local transport's own count changed");
+
+    let mut http_args = vec![
+        "--child",
+        "--format",
+        "flatcitybuf",
+        "--scenario",
+        "attr-filter",
+        "--transport",
+        "http",
+        "--base-url",
+        &base_url,
+        "--input",
+        "tokyo_chiyoda_40.fcb",
+    ];
+    http_args.extend_from_slice(&filter);
+    let (ok, out, http_err) = run_child(&http_args);
+    assert!(ok, "http child failed: {http_err}");
+    let http = result_line(&out);
+    assert_eq!(
+        http[3], local[3],
+        "the http and local transports must agree on the string attr-filter \
+         (http {}, local {}); http stderr:\n{http_err}",
+        http[3], local[3]
+    );
+    let local_digest = marker(&local_err, DIGEST).expect("local id-digest marker");
+    assert_eq!(local_digest[0], "11");
+    assert_eq!(
+        marker(&http_err, DIGEST).expect("http id-digest marker"),
+        local_digest,
+        "the http and local transports must return the same identifiers"
+    );
+}
+
+/// An attribute filter the HTTP index answers with no hits is verified by
+/// the full walk, never published as 0 on the index's word: `fcb_core`
+/// 0.7.6's HTTP reader also answers 0 for a key naming 4,096 or more
+/// features (on Tokyo, `usage = "401"`: 12,348 objects locally, 0 over
+/// HTTP). A value absent from the cut (`usage = "999"`) drives that path:
+/// the HTTP arm discloses `attr-index-failed`, reads the whole file and
+/// returns the same verified 0 as the local arm, which trusts its index.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_http_attr_index_answer_is_verified_by_the_full_walk() {
+    if fcb_cli_missing() {
+        eprintln!("skipping: `fcb` CLI not found on PATH");
+        return;
+    }
+    let parent = tempfile::tempdir().unwrap();
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/tokyo_chiyoda_40.city.jsonl");
+    let fcb_path = parent.path().join("tokyo_chiyoda_40.fcb");
+    let output = Command::new("fcb")
+        .arg("ser")
+        .arg(&src)
+        .arg(&fcb_path)
+        .arg("-A")
+        .output()
+        .expect("failed to run `fcb ser`");
+    assert!(output.status.success(), "fcb ser failed");
+    let fcb_len = std::fs::metadata(&fcb_path).unwrap().len();
+    let local_input = fcb_path.to_str().unwrap().to_string();
+    let addr = spawn_server(parent.path().to_path_buf()).await;
+    let base_url = format!("http://{addr}");
+    let filter = ["--attr-column", "usage", "--attr-eq", "999"];
+
+    let mut local_args = vec![
+        "--child",
+        "--format",
+        "flatcitybuf",
+        "--scenario",
+        "attr-filter",
+        "--input",
+        &local_input,
+    ];
+    local_args.extend_from_slice(&filter);
+    let (ok, out, local_err) = run_child(&local_args);
+    assert!(ok, "local child failed: {local_err}");
+    assert_eq!(result_line(&out)[3], "0");
+    assert!(
+        !local_err.contains("attr-index-failed"),
+        "the local arm trusts its index's empty answer: {local_err}"
+    );
+
+    let mut http_args = vec![
+        "--child",
+        "--format",
+        "flatcitybuf",
+        "--scenario",
+        "attr-filter",
+        "--transport",
+        "http",
+        "--base-url",
+        &base_url,
+        "--input",
+        "tokyo_chiyoda_40.fcb",
+    ];
+    http_args.extend_from_slice(&filter);
+    let (ok, out, http_err) = run_child(&http_args);
+    assert!(ok, "http child failed: {http_err}");
+    let http = result_line(&out);
+    assert_eq!(http[3], "0", "the verified answer is still empty");
+    assert!(
+        http_err.contains("(attr-index-failed)"),
+        "an empty HTTP index answer must be disclosed as a fallback: {http_err}"
+    );
+    assert!(
+        http[4].parse::<u64>().unwrap() >= fcb_len.saturating_sub(64 * 1024),
+        "the verifying walk reads the whole file ({} bytes of {fcb_len})",
+        http[4]
+    );
+}

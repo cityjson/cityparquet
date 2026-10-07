@@ -801,12 +801,14 @@ async fn fold_http(url: &str, tally: RangeTally, select: Select, step: Step<'_>)
                 .await?
         }
         Select::Attr(query, label) => match reader.select_attr_query(&query).await {
-            Ok(iter) if !truncates(iter.features_count(), features) => iter,
-            Ok(_) => {
-                index_failed(label, &TRUNCATED);
-                fold.seen = None;
-                open_http(url, tally).await?.select_all().await?
-            }
+            Ok(iter) => match http_index_doubt(iter.features_count(), features) {
+                None => iter,
+                Some(reason) => {
+                    index_failed(label, &reason);
+                    fold.seen = None;
+                    open_http(url, tally).await?.select_all().await?
+                }
+            },
             Err(e) => {
                 index_failed(label, &e);
                 fold.seen = None;
@@ -846,6 +848,31 @@ const TRUNCATED: &str = "the hit list is longer than the file's feature count, \
 /// by the iterator over a file of `features` features (see [`TRUNCATED`]).
 fn truncates(hits: Option<usize>, features: u64) -> bool {
     hits.is_some_and(|n| n as u64 > features)
+}
+
+/// Why an empty HTTP hit list cannot be trusted: `fcb_core` 0.7.6's HTTP
+/// index reader drops every key whose payload entry (4 bytes plus 8 per
+/// matching feature) is longer than the 32 KiB it fetches for it, without
+/// an error, so a key naming 4,096 or more features answers 0 (on Tokyo,
+/// `usage = "401"` names 12,348 objects locally and 0 over HTTP). The local
+/// reader reads the whole entry, so only the HTTP arm verifies a 0 by the
+/// full walk; a walk that also finds nothing is a verified empty answer.
+const UNVERIFIED_EMPTY: &str = "the HTTP index answered no hits, which fcb_core 0.7.6 \
+                                also answers for a key naming 4,096 or more features";
+
+/// Whether the HTTP arm must answer an attribute query of `hits` index
+/// entries over `features` features by the full walk, and why: a hit list
+/// the iterator truncates (see [`TRUNCATED`]) or an empty one the HTTP
+/// reader may have emptied (see [`UNVERIFIED_EMPTY`]). The HTTP iterator's
+/// `features_count()` reports an empty hit list as `None`, not `Some(0)`.
+fn http_index_doubt(hits: Option<usize>, features: u64) -> Option<&'static str> {
+    if truncates(hits, features) {
+        Some(TRUNCATED)
+    } else if hits.unwrap_or(0) == 0 {
+        Some(UNVERIFIED_EMPTY)
+    } else {
+        None
+    }
 }
 
 /// The disclosure for an attribute without a B+-tree index.
@@ -1371,7 +1398,8 @@ mod tests {
     use anyhow::Result;
 
     use super::{
-        AttrPred, Select, Step, attr_stats, fold_local, join_url, matches_predicate, open,
+        AttrPred, Select, Step, TRUNCATED, UNVERIFIED_EMPTY, attr_stats, fold_local,
+        http_index_doubt, join_url, matches_predicate, open,
     };
 
     // ---------------------------------------------------------------
@@ -1662,5 +1690,19 @@ mod tests {
     #[test]
     fn join_url_rejects_a_base_that_cannot_be_a_base() {
         assert!(join_url("not a url", "delft.fcb").is_err());
+    }
+
+    /// The HTTP arm walks the whole file for a hit list the iterator would
+    /// truncate and for an empty one, which `fcb_core` 0.7.6's HTTP reader
+    /// also returns for a key naming 4,096 or more features; any other hit
+    /// list is read as the index answered it.
+    #[test]
+    fn the_http_arm_doubts_an_empty_or_truncating_hit_list() {
+        assert_eq!(http_index_doubt(Some(0), 40), Some(UNVERIFIED_EMPTY));
+        assert_eq!(http_index_doubt(Some(0), 0), Some(UNVERIFIED_EMPTY));
+        assert_eq!(http_index_doubt(Some(41), 40), Some(TRUNCATED));
+        assert_eq!(http_index_doubt(Some(1), 40), None);
+        assert_eq!(http_index_doubt(Some(40), 40), None);
+        assert_eq!(http_index_doubt(None, 40), Some(UNVERIFIED_EMPTY));
     }
 }
