@@ -10,6 +10,7 @@
 
 pub mod bloom_columns;
 pub mod format;
+pub mod http_client;
 pub mod isolation;
 pub mod lod;
 pub mod naming;

@@ -125,6 +125,23 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(manifest["measurement"], {"read_repeat": 1, "cell_budget_s": None, "min_repeat": 7, "fixed_configuration": "test",
                                                        "isolation": {"requested": bench_suite.DEFAULT_ISOLATION, "applied": {"pinning": {"status": "not applied: not Linux"}}}})
 
+    def test_a_network_run_manifest_carries_the_network_record(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "r.city.jsonl"; source.write_text("source\n")
+            result = root / "r.csv"; result.write_text("dataset\n")
+            network = {"target": "real", "snapshot": "real object storage, one snapshot: one network path at one time",
+                       "base_url": "https://h/v8", "host": "h", "resolved_ips": ["192.0.2.1"],
+                       "objects": [{"url": "https://h/v8/citygml/r.gml", "first": {"status": 206, "cf_cache_status": "HIT", "age": "3"}, "last": {"status": 206, "cf_cache_status": "HIT", "age": "9"}}]}
+            Path(f"{result}.params.json").write_text(json.dumps({"network": network}))
+            bench_suite.write_run_manifest(source, result, family="network", repeat=1, smoke=True, fixed_configuration="network=real; target=real")
+            self.assertEqual(json.loads(result.with_suffix(".run.json").read_text())["network"], network)
+            other = root / "f.csv"; other.write_text("dataset\n")
+            bench_suite.write_run_manifest(source, other, family="formats", repeat=1, smoke=True, fixed_configuration="test")
+            self.assertNotIn("network", json.loads(other.with_suffix(".run.json").read_text()))
+
     def test_run_suite_forwards_the_isolation_to_the_read_recipes(self):
         from unittest import mock
         calls = []

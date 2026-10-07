@@ -292,7 +292,7 @@ async fn resolve_http_main_table(
     // so it is set unconditionally rather than sniffed from `base_url`.
     let store = HttpBuilder::new()
         .with_url(base_url)
-        .with_client_options(object_store::ClientOptions::new().with_allow_http(true))
+        .with_client_options(cityparquet_readbench::http_client::client_options())
         .build()?;
     let counting = Arc::new(CountingObjectStore::new(store));
 

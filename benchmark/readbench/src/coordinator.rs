@@ -404,6 +404,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     }
     let mut record = serde_json::json!({
         "profile": network.name,
+        "user_agent": cityparquet_readbench::http_client::USER_AGENT,
         "whole_file_scenarios": network.whole_file.as_str(),
     });
     let server = match network.simulated {
@@ -423,9 +424,30 @@ pub fn run(opts: &RunOptions) -> Result<()> {
             Some(sim.totals())
         }
         None => {
+            let base_url = opts
+                .base_url
+                .clone()
+                .context("a real network run needs --base-url")?;
+            let (host, ips) = cityparquet_readbench::http_client::resolve_host(&base_url);
+            let urls = real_target_objects(opts, &base_url)?;
+            let first = cityparquet_readbench::http_client::observe_cache_all(&urls);
             run_matrix(opts)?;
+            let last = cityparquet_readbench::http_client::observe_cache_all(&urls);
             record["target"] = "real".into();
-            record["base_url"] = opts.base_url.clone().into();
+            record["snapshot"] = REAL_SNAPSHOT.into();
+            record["base_url"] = base_url.into();
+            record["host"] = host.into();
+            record["resolved_ips"] = ips.into();
+            record["cache_probe"] = CACHE_PROBE.into();
+            record["objects"] = urls
+                .iter()
+                .zip(first)
+                .zip(last)
+                .map(|((url, first), last)| {
+                    serde_json::json!({ "url": url, "first": first, "last": last })
+                })
+                .collect::<Vec<_>>()
+                .into();
             None
         }
     };
@@ -453,6 +475,50 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     )?;
     json["network"] = record;
     write_params(&sidecar, &json)
+}
+
+/// The tag a real-target run's params carry: what it measured is one
+/// network path at one time, not a reproducible condition.
+const REAL_SNAPSHOT: &str = "real object storage, one snapshot: one network path at one time";
+
+/// How a real-target run observes the cache headers (object_store exposes
+/// neither `cf-cache-status` nor `age`).
+const CACHE_PROBE: &str = "a one-byte ranged GET (Range: bytes=0-0) per object, before the first \
+                           and after the last measured request, outside the measured section";
+
+/// The object URLs a real-target run reads, for its cache probes: each
+/// requested format's artefact under `base_url`, laid out by `key_layout`,
+/// and for an artefact that is a directory (the CityParquet package) every
+/// file the prepared copy holds.
+fn real_target_objects(opts: &RunOptions, base_url: &str) -> Result<Vec<String>> {
+    let dataset = opts
+        .input
+        .file_name()
+        .and_then(|n| n.to_str())
+        .context("cannot derive a dataset name from the input path")?;
+    let base = strip_known_extension(dataset);
+    let formats = match &opts.formats {
+        Some(v) if !v.is_empty() => v.clone(),
+        _ => Format::ALL.to_vec(),
+    };
+    let root = base_url.trim_end_matches('/');
+    let mut urls = Vec::new();
+    for format in formats {
+        let key = format.key(base, opts.key_layout);
+        let local = opts.prepared_dir.join(format.artefact(base));
+        if local.is_dir() {
+            let mut names: Vec<String> = fs::read_dir(&local)?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_file())
+                .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                .collect();
+            names.sort();
+            urls.extend(names.into_iter().map(|n| format!("{root}/{key}/{n}")));
+        } else {
+            urls.push(format!("{root}/{key}"));
+        }
+    }
+    Ok(urls)
 }
 
 fn run_matrix(opts: &RunOptions) -> Result<()> {
@@ -1179,7 +1245,11 @@ fn artefact_size(source: &Source, simulated_root: Option<&Path>) -> Option<u64> 
                 .build()
                 .ok()?;
             runtime.block_on(async {
-                let response = reqwest::Client::new().head(&url).send().await.ok()?;
+                let response = cityparquet_readbench::http_client::reqwest_client()
+                    .head(&url)
+                    .send()
+                    .await
+                    .ok()?;
                 if !response.status().is_success() {
                     return None;
                 }

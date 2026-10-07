@@ -156,11 +156,16 @@ formats that download whole files; latency penalises formats that make many
 range requests. The secondary target (`--network-target real --base-url <url>
 --key-layout bucket`) reads real object storage, such as the hosted corpus at
 `https://other-data.open3d.city/cityparquet-paper/benchmark/v8`; its result is a
-snapshot of one network path at one time, not a repeatable measurement. It
-records the base URL in the params sidecar's `network` block; it does not yet
-record the resolved host or the caching headers (`cf-cache-status`, `age`) of
-the objects it read, so whether a request was served from the CDN's cache is
-not known from the result.
+snapshot of one network path at one time, not a repeatable measurement, and
+its params sidecar's `network` block (copied into the run manifest) says so
+(`snapshot`). That block records the base URL, the host and the addresses it
+resolved to at run start, and, per object read, the `cf-cache-status` and `age`
+response headers before the first and after the last measured request.
+object_store does not expose those two headers, so they come from a one-byte
+ranged `GET` per object, outside the measured section; the first of these
+probes can itself fill the CDN's cache. Every request, measured or probe, sends
+the corpus downloader's User-Agent (`cityparquet-bench-prep/1`), so the
+benchmark reads with the identity that prepared its inputs.
 
 **Measured and derived cells.** The indexed formats (`flatcitybuf`,
 `cityparquet`) are measured on every query. The three text formats

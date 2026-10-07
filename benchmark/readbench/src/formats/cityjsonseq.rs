@@ -307,7 +307,7 @@ async fn run_http(
     // disable or otherwise affect `https://` targets (real S3/R2 buckets).
     let store = HttpBuilder::new()
         .with_url(base_url)
-        .with_client_options(object_store::ClientOptions::new().with_allow_http(true))
+        .with_client_options(cityparquet_readbench::http_client::client_options())
         .build()?;
     let counting = CountingObjectStore::new(store);
 

@@ -146,7 +146,8 @@ def load(data_root: Path, suite_profile: str, statistic: str = "median") -> dict
 def caption(profile: dict, statistic: str, repeat: int | None = None, derived: bool = False) -> str:
     """The profile's conditions, stated on every figure and table."""
     if profile.get("target") == "real":
-        where = f"real object storage ({profile.get('base_url', 'base URL not recorded')}), one snapshot"
+        ips = ", ".join(profile.get("resolved_ips") or []) or "address not recorded"
+        where = f"real object storage, one snapshot ({profile.get('base_url', 'base URL not recorded')}, {ips})"
     else:
         where = "simulated network (net-sim, local)"
     bw, lat = profile.get("bandwidth_mbps"), profile.get("latency_ms")

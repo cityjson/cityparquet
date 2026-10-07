@@ -1165,7 +1165,7 @@ async fn open_http(
     tally: RangeTally,
 ) -> Result<HttpFcbReader<CountingRangeClient<reqwest::Client>>> {
     let client = CountingRangeClient {
-        inner: reqwest::Client::new(),
+        inner: cityparquet_readbench::http_client::reqwest_client(),
         tally,
     };
     let buffered = AsyncBufferedHttpRangeClient::with(client, url);

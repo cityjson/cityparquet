@@ -231,3 +231,10 @@ def test_worse_than_citygml_is_the_warm_accent(tmp_path):
             r["bytes_read"] = 28000000  # twice CityGML's
     r, g, _b = colors.to_rgb(network.figure_grid(block["records"])["cells"][("bytes_read", "cityparquet", "full-read")]["colour"])
     assert r > g
+
+
+def test_a_real_target_caption_says_one_snapshot_and_names_the_path():
+    text = network.caption({"name": "real", "target": "real", "base_url": "https://h/v8", "host": "h", "resolved_ips": ["192.0.2.1"]}, "median")
+    assert "real object storage, one snapshot" in text
+    assert "https://h/v8" in text and "192.0.2.1" in text
+    assert "real object storage, one snapshot" not in network.caption({"name": "typical", "target": "simulated", "bandwidth_mbps": 100, "latency_ms": 20}, "median")

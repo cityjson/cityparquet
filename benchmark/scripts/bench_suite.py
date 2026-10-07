@@ -260,6 +260,10 @@ def write_run_manifest(source_path: Path, result_csv: Path, *, family: str, repe
         "machine": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "processor": platform.processor(), "python": sys.version.split()[0]},
         "tools": {"rust": version("rustc", "--version"), "fcb": version("fcb", "--version"), "cjseq": version("cjseq", "--version"), "cityparquet": version("lib/cityparquet-rs/target/release/cityparquet", "--version")},
     }
+    # A network run's own record (target, link or real path, cache headers).
+    network = json.loads(params.read_text()).get("network") if params.is_file() else None
+    if network is not None:
+        manifest["network"] = network
     target = result_csv.with_suffix(".run.json")
     temporary = target.with_suffix(".run.json.tmp")
     temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

@@ -1406,3 +1406,76 @@ fn a_network_run_derives_the_whole_file_formats_unmeasured_cells() {
         serde_json::json!(["cityjsonseq/count"])
     );
 }
+
+/// A real-target run records the path it measured: the base URL, the host
+/// and the addresses it resolved to, per object the cache headers before the
+/// first and after the last measured request, and the snapshot tag. A
+/// net-sim stands in for the object store (it sends no cache headers, so
+/// those are null).
+#[test]
+fn a_real_target_run_records_the_host_the_cache_headers_and_the_snapshot_tag() {
+    use cityparquet_readbench::netsim::{NetProfile, NetSim};
+    let parent = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    convert(&ConvertOptions::new(
+        input.clone(),
+        parent.path().join("delft.parquet"),
+    ))
+    .unwrap();
+    let sim = NetSim::start(
+        parent.path(),
+        NetProfile {
+            bandwidth_mbps: 1000.0,
+            latency_ms: 0.0,
+        },
+    )
+    .unwrap();
+    let out_csv = parent.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        parent.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet",
+        "--transport",
+        "http",
+        "--network-profile",
+        "real",
+        "--base-url",
+        &sim.base_url(),
+        "--key-layout",
+        "flat",
+    ]);
+    let sidecar: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(cityparquet_readbench_params_path(&out_csv)).unwrap(),
+    )
+    .unwrap();
+    let net = &sidecar["network"];
+    assert_eq!(net["target"], "real");
+    assert_eq!(net["base_url"], sim.base_url());
+    assert_eq!(net["host"], "127.0.0.1");
+    assert_eq!(net["resolved_ips"], serde_json::json!(["127.0.0.1"]));
+    assert_eq!(
+        net["user_agent"],
+        cityparquet_readbench::http_client::USER_AGENT
+    );
+    assert!(net["snapshot"].as_str().unwrap().contains("one snapshot"));
+    let objects = net["objects"].as_array().unwrap();
+    assert!(!objects.is_empty(), "{net}");
+    for object in objects {
+        assert!(object["url"].as_str().unwrap().starts_with(&sim.base_url()));
+        for when in ["first", "last"] {
+            let seen = &object[when];
+            assert!(seen["status"].as_u64().unwrap() < 300, "{object}");
+            assert!(seen["cf_cache_status"].is_null());
+            assert!(seen["age"].is_null());
+        }
+    }
+}
