@@ -477,6 +477,17 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     write_params(&sidecar, &json)
 }
 
+/// Whether a measured sample is one the whole-object premise is proven on:
+/// read all, and the identifier MISS (which reads the whole file whatever the
+/// format). An identifier HIT is not: over HTTP the streaming formats
+/// (`cityjsonseq`, `citygml`) abandon the transfer at the hit, so a hit's
+/// `bytes_read` is below the file size by design, not because the premise
+/// fails.
+fn proves_whole_file(scenario: &str, query_tag: &str) -> bool {
+    scenario == Scenario::FullRead.to_string()
+        || (scenario == Scenario::IdLookup.to_string() && query_tag.contains("id-miss"))
+}
+
 /// The tag a real-target run's params carry: what it measured is one
 /// network path at one time, not a reproducible condition.
 const REAL_SNAPSHOT: &str = "real object storage, one snapshot: one network path at one time";
@@ -1144,7 +1155,10 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
             .and_then(|n| n.simulated)
             .map(|_| opts.prepared_dir.as_path());
         let mut measured = crate::derive::MeasuredTransfers::new();
-        for s in samples.iter().filter(|s| s.dataset == dataset) {
+        for s in samples
+            .iter()
+            .filter(|s| s.dataset == dataset && proves_whole_file(&s.scenario, &s.query_tag))
+        {
             measured
                 .entry(s.format.clone())
                 .or_default()
@@ -2377,6 +2391,18 @@ fn write_sizes(out: &Path, base: &str, sizes: &[SizeRow]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_premise_is_proven_on_read_all_and_the_id_miss_never_on_an_id_hit() {
+        let full = Scenario::FullRead.to_string();
+        let id = Scenario::IdLookup.to_string();
+        assert!(proves_whole_file(&full, ""));
+        assert!(proves_whole_file(&id, "id-miss"));
+        for hit in ["id-10pct", "id-50pct", "id-90pct"] {
+            assert!(!proves_whole_file(&id, hit), "{hit}");
+        }
+        assert!(!proves_whole_file(&Scenario::Count.to_string(), ""));
+    }
+
     use super::*;
 
     #[test]

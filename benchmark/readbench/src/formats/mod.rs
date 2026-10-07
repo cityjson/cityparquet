@@ -2,6 +2,7 @@
 //! implements, plus [`resolve`] — the `--format <name>` dispatch the
 //! `--child` process (`main.rs`) uses.
 
+mod body_stream;
 pub mod citygml;
 pub mod cityjson;
 pub mod cityjsonseq;

@@ -108,6 +108,7 @@ anyhow = "1"
 tokio = { version = "1.53.1", features = ["rt", "macros", "rt-multi-thread", "net", "io-util", "time", "sync", "fs"] }
 object_store = { version = "0.13", features = ["http"] }
 bytes = "1.12.1"
+futures-util = "0.3"
 async-trait = "0.1.91"
 http-range-client = { version = "0.9", default-features = false, features = ["reqwest-async"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

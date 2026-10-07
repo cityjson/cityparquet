@@ -37,10 +37,12 @@
 //! milestone's methodology doc is responsible for disclosing it alongside
 //! the numbers.
 
+use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result, anyhow, bail};
-use cityparquet::cjseq::{CityJSONFeature, CityObject, Transform};
+use cityparquet::cjseq::{CityJSON, CityJSONFeature, CityObject, Transform};
 use cityparquet::counting_store::CountingObjectStore;
 use cityparquet::source::Source;
 use object_store::ObjectStoreExt;
@@ -362,7 +364,74 @@ impl FormatRunner for CityJsonSeqRunner {
             TransportSource::Http { base_url, key } => (base_url, key),
         };
 
+        if scenario == Scenario::IdLookup {
+            return id_lookup_streamed(base_url, key, params);
+        }
         let handle = tokio::runtime::Handle::current();
         handle.block_on(run_http(base_url, key, scenario, params))
     }
+}
+
+/// [`Scenario::IdLookup`] over HTTP: the GET's body is parsed as it arrives
+/// and the transfer is abandoned at the hit (see [`super::body_stream`]), so
+/// `bytes_read` is the bytes received up to the hit — the whole file only on a
+/// miss. The found object is read in full, as the local arm reads it: the
+/// same line parser as [`Source`]'s CityJSONSeq iterator, the same
+/// [`visit_object`].
+fn id_lookup_streamed(base_url: &str, key: &str, params: &QueryParams) -> Result<RunOutcome> {
+    let id = require(&params.target_id, "target-id", Scenario::IdLookup)?;
+    let mut body = BufReader::new(super::body_stream::BodyStream::get(base_url, key)?);
+    let received = body.get_ref().received();
+    let mut line = String::new();
+    body.read_line(&mut line)
+        .with_context(|| format!("reading the header line of {key}"))?;
+    if line.trim_start().starts_with('<') {
+        bail!(
+            "{key} is a CityGML document, not CityJSONSeq; --format cityjsonseq must never be \
+             pointed at CityGML"
+        );
+    }
+    let header = CityJSON::from_str(line.trim_end())
+        .map_err(|e| anyhow!("invalid CityJSONSeq header in {key}: {e}"))?;
+    let transform = header.transform;
+    let mut totals = ComparableTotals::default();
+    let mut found = 0;
+    loop {
+        line.clear();
+        if body
+            .read_line(&mut line)
+            .with_context(|| format!("reading {key}"))?
+            == 0
+        {
+            break;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let feature = CityJSONFeature::from_str(line.trim_end())
+            .map_err(|e| anyhow!("invalid CityJSONFeature line in {key}: {e}"))?;
+        if let Some(co) = feature.city_objects.get(id) {
+            let verts = Vertices {
+                vertices: &feature.vertices,
+                transform: &transform,
+            };
+            visit_object(co, verts, &mut totals)?;
+            found = 1;
+            break;
+        }
+    }
+    // Dropping the body abandons the rest of the transfer; only then is the
+    // received count final.
+    drop(body);
+    let answer = Answer::reading(found, totals);
+    Ok(RunOutcome {
+        result_count: answer.result_count,
+        io: Some(IoStats {
+            bytes: received.load(Ordering::Relaxed),
+            requests: 1,
+        }),
+        lookup: None,
+        attr_stats: answer.attr_stats,
+        returned: answer.returned,
+    })
 }

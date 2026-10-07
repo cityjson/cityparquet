@@ -499,6 +499,7 @@ dependencies = [
  "cjseq2",
  "clap",
  "fcb_core",
+ "futures-util",
  "http-range-client",
  "libc",
  "object_store",

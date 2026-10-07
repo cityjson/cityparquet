@@ -96,6 +96,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use std::io::Read as _;
+
 use anyhow::{Context, Result, anyhow, bail};
 use cityparquet::citygml::FeatureReader;
 use cityparquet::cjseq::{CityJSONFeature, Transform};
@@ -105,6 +107,7 @@ use object_store::ObjectStoreExt;
 use object_store::http::HttpBuilder;
 use object_store::path::Path as ObjectPath;
 
+use super::body_stream::{BodyStream, Recording};
 use super::cityjsonseq::{column_value, matches_predicate, push_numeric, require};
 use super::cjvisit::{Vertices, visit_object, window_objects};
 use super::returned::{ComparableTotals, IdDigest, ReturnedGeometry};
@@ -258,25 +261,42 @@ where
 /// document with unmapped members can never reach a published `id-lookup`
 /// row — it fails at `count` first. An `id-lookup` MISS still drains by
 /// necessity and still consults the guard.
-fn stream_members_until<F>(doc: &Document, mut visit: F) -> Result<bool>
+///
+/// It takes the reader rather than opening one, so the HTTP arm's streaming
+/// lookup ([`id_lookup_streamed`]) runs the very same loop over a
+/// [`FeatureReader::from_reader`] on the response body.
+fn stream_members_until<F>(mut reader: FeatureReader, origin: &str, mut visit: F) -> Result<bool>
 where
     F: FnMut(CityJSONFeature) -> Result<bool>,
 {
-    let mut reader = FeatureReader::open_without_appearance(&doc.path, &doc.transform)
-        .map_err(|e| anyhow!(e))
-        .with_context(|| format!("streaming {}", doc.origin))?;
     for feature in reader.by_ref() {
         let feature = feature.map_err(|e| anyhow!(e))?;
         if visit(feature)? {
             return Ok(true);
         }
     }
-    ensure_every_member_was_mapped(
-        reader.emitted_members(),
-        reader.skipped_members(),
-        &doc.origin,
-    )?;
+    ensure_every_member_was_mapped(reader.emitted_members(), reader.skipped_members(), origin)?;
     Ok(false)
+}
+
+/// The identifier lookup's visit: reads EVERY field of the object `id` names
+/// into `totals` and stops; any other feature is passed over.
+fn visit_hit<'a>(
+    id: &'a str,
+    transform: &'a Transform,
+    totals: &'a mut ComparableTotals,
+) -> impl FnMut(CityJSONFeature) -> Result<bool> + 'a {
+    move |feature| {
+        let Some(co) = feature.city_objects.get(id) else {
+            return Ok(false);
+        };
+        let verts = Vertices {
+            vertices: &feature.vertices,
+            transform,
+        };
+        visit_object(co, verts, totals)?;
+        Ok(true)
+    }
 }
 
 /// The scenario dispatch shared by the local and HTTP branches of
@@ -356,17 +376,14 @@ fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Res
         Scenario::IdLookup => {
             let id = require(&params.target_id, "target-id", scenario)?;
             let mut totals = ComparableTotals::default();
-            let found = stream_members_until(doc, |feature| {
-                let Some(co) = feature.city_objects.get(id) else {
-                    return Ok(false);
-                };
-                let verts = Vertices {
-                    vertices: &feature.vertices,
-                    transform: &doc.transform,
-                };
-                visit_object(co, verts, &mut totals)?;
-                Ok(true)
-            })?;
+            let reader = FeatureReader::open_without_appearance(&doc.path, &doc.transform)
+                .map_err(|e| anyhow!(e))
+                .with_context(|| format!("streaming {}", doc.origin))?;
+            let found = stream_members_until(
+                reader,
+                &doc.origin,
+                visit_hit(id, &doc.transform, &mut totals),
+            )?;
             Ok(Answer::reading(found as u64, totals))
         }
         Scenario::FeatureLookup | Scenario::AttrLookup => {
@@ -464,9 +481,54 @@ impl FormatRunner for CityGmlRunner {
             TransportSource::Http { base_url, key } => (base_url, key),
         };
 
+        if scenario == Scenario::IdLookup {
+            return id_lookup_streamed(base_url, key, params);
+        }
         let handle = tokio::runtime::Handle::current();
         handle.block_on(run_http(base_url, key, scenario, params))
     }
+}
+
+/// [`Scenario::IdLookup`] over HTTP: the GET's body is parsed as it arrives
+/// and the transfer is abandoned at the hit (see [`super::body_stream`]), so
+/// `bytes_read` is the bytes received up to the hit — the whole file only on a
+/// miss. The sniff and the header scan read the stream's start through a
+/// [`Recording`], which is then replayed ahead of the rest into
+/// [`FeatureReader::from_reader`] — one pass, no appearance pre-pass, the
+/// same [`stream_members_until`] loop and [`visit_hit`] as the local arm.
+fn id_lookup_streamed(base_url: &str, key: &str, params: &QueryParams) -> Result<RunOutcome> {
+    let id = require(&params.target_id, "target-id", Scenario::IdLookup)?;
+    let body = BodyStream::get(base_url, key)?;
+    let received = body.received();
+    let mut start = Recording::new(std::io::BufReader::new(body));
+    match cityparquet::citygml::sniff_citygml_from(&mut start) {
+        Some(cityparquet::citygml::CityGmlVersion::V2_0) => {}
+        other => bail!(
+            "{key} is not a CityGML 2.0 document ({other:?}); --format citygml must never be \
+             pointed at anything else"
+        ),
+    }
+    let prefix = std::io::Cursor::new(start.log().to_vec());
+    let header = cityparquet::citygml::parse_header_from(prefix.chain(&mut start))
+        .map_err(|e| anyhow!(e))
+        .with_context(|| format!("reading the CityGML header of {key}"))?;
+    let reader = FeatureReader::from_reader(Box::new(start.replay()), &header.transform)
+        .map_err(|e| anyhow!(e))?;
+    let mut totals = ComparableTotals::default();
+    let found = stream_members_until(reader, key, visit_hit(id, &header.transform, &mut totals))?;
+    // `stream_members_until` consumed (and dropped) the reader, abandoning
+    // the rest of the transfer; the received count is final.
+    let answer = Answer::reading(found as u64, totals);
+    Ok(RunOutcome {
+        result_count: answer.result_count,
+        io: Some(IoStats {
+            bytes: received.load(std::sync::atomic::Ordering::Relaxed),
+            requests: 1,
+        }),
+        lookup: None,
+        attr_stats: answer.attr_stats,
+        returned: answer.returned,
+    })
 }
 
 #[cfg(test)]
@@ -488,9 +550,13 @@ mod tests {
     /// The `IdLookup` traversal, with the member count the scenario itself
     /// discards — the observable this test needs. Four members means a
     /// timing comparison would be noise; the visit count is exact.
+    fn local_reader(doc: &Document) -> FeatureReader {
+        FeatureReader::open_without_appearance(&doc.path, &doc.transform).expect("opening")
+    }
+
     fn count_members_until_id(doc: &Document, id: &str) -> Result<(bool, u64)> {
         let mut visited = 0u64;
-        let found = stream_members_until(doc, |feature| {
+        let found = stream_members_until(local_reader(doc), &doc.origin, |feature| {
             visited += 1;
             Ok(feature.city_objects.contains_key(id))
         })?;
@@ -506,7 +572,7 @@ mod tests {
 
         // Whatever the first member's own CityObject is called.
         let mut first_key = None;
-        stream_members_until(&doc, |feature| {
+        stream_members_until(local_reader(&doc), &doc.origin, |feature| {
             first_key = feature.city_objects.keys().next().cloned();
             Ok(true)
         })
