@@ -15,14 +15,14 @@ renders existing results. Rendering never starts a benchmark.
 On this machine the data and output root is
 `benchmark/runs/`. Its layout is:
 
-| Path                                          | Contents                                          |
-| --------------------------------------------- | ------------------------------------------------- |
-| `data/benchmark/`, `data/3dbag/`              | Source corpus and the 3DBAG slice                 |
-| `data/readbench/`                             | Prepared format artefacts                         |
-| `formats/results/`, `formats/bloom_results/`  | Full format, size and bloom measurements          |
-| `formats/{quick,short,smoke}/`                | The same families under the `quick`, `short` and `smoke` profiles |
-| `databases/{prepared,results,quick,short,smoke}/` | Database lifecycle inputs and measurements    |
-| `summary/{full,short,smoke}/`                 | Rendered figures and combined HTML                |
+| Path                                              | Contents                                                          |
+| ------------------------------------------------- | ----------------------------------------------------------------- |
+| `data/benchmark/`, `data/3dbag/`                  | Source corpus and the 3DBAG slice                                 |
+| `data/readbench/`                                 | Prepared format artefacts                                         |
+| `formats/results/`, `formats/bloom_results/`      | Full format, size and bloom measurements                          |
+| `formats/{quick,short,smoke}/`                    | The same families under the `quick`, `short` and `smoke` profiles |
+| `databases/{prepared,results,quick,short,smoke}/` | Database lifecycle inputs and measurements                        |
+| `summary/{full,short,smoke}/`                     | Rendered figures and combined HTML                                |
 
 Benchmark inputs, derived artefacts, results and rendered summaries are generated
 beneath this ignored directory. The paper checkout may explicitly export figures
@@ -56,12 +56,12 @@ the upload; the read harness maps a format to its folder in `Format::key`
 
 `just bench-prep` has four modes:
 
-| Mode | Downloads | Builds locally | Uploads |
-| --- | --- | --- | --- |
-| default | every artefact of the selected datasets | nothing | nothing |
-| `--no-cache` | `cityjson/` and `citygml/` | CityJSONSeq, FlatCityBuf and the CityParquet package, with the current code | those artefacts, then the manifest |
-| `--rebuild-sources` | the published sources (`fetch-data`, `fetch-3dbag`) | everything: normalisation, compaction, CityGML synthesis, every artefact | everything, then the manifest |
-| `--local` | the published sources | everything | nothing; no bucket access |
+| Mode                | Downloads                                           | Builds locally                                                              | Uploads                            |
+| ------------------- | --------------------------------------------------- | --------------------------------------------------------------------------- | ---------------------------------- |
+| default             | every artefact of the selected datasets             | nothing                                                                     | nothing                            |
+| `--no-cache`        | `cityjson/` and `citygml/`                          | CityJSONSeq, FlatCityBuf and the CityParquet package, with the current code | those artefacts, then the manifest |
+| `--rebuild-sources` | the published sources (`fetch-data`, `fetch-3dbag`) | everything: normalisation, compaction, CityGML synthesis, every artefact    | everything, then the manifest      |
+| `--local`           | the published sources                               | everything                                                                  | nothing; no bucket access          |
 
 The `smoke` profile always prepares locally. The default mode checks every
 file against the manifest (bytes and sha256), resumes an interrupted download
@@ -143,11 +143,11 @@ network turns them into.
 default) reads the prepared directory through `net-sim`, a local HTTP/1.1
 server in `readbench/src/netsim.rs` that imposes a deterministic profile:
 
-| Profile | Bandwidth | Latency per request |
-| --- | --- | --- |
-| `fast` | 1,000 Mbps | 5 ms |
-| `typical` (default) | 100 Mbps | 20 ms |
-| `slow` | 20 Mbps | 50 ms |
+| Profile             | Bandwidth  | Latency per request |
+| ------------------- | ---------- | ------------------- |
+| `fast`              | 1,000 Mbps | 5 ms                |
+| `typical` (default) | 100 Mbps   | 20 ms               |
+| `slow`              | 20 Mbps    | 50 ms               |
 
 The profiles are data in `manifest.toml` (`[network_profiles.*]`); select them
 with `--network-profile fast,slow` or `all`, or give a custom one with
@@ -178,8 +178,11 @@ are therefore measured on read all and on the four identifier lookups, and
 the other six queries (count, the three spatial windows, the attribute
 filter, the attribute statistics) are emitted as derived rows. A derived
 row is written only after the run has proven the premise for that format
-and dataset: every sample of its measured cells, warm-ups included, made
-exactly one request and read exactly the artefact's size (the served
+and dataset: every sample of its read all and identifier miss, warm-ups
+included, made exactly one request and read exactly the artefact's size
+(an identifier hit cannot prove it: over HTTP, `cityjsonseq` and `citygml`
+read the body as a stream and abandon the transfer at the hit, reporting
+the bytes received; `cityjson` cannot stop early) (the served
 file's length on the simulated network, the `Content-Length` of a `HEAD`
 against a real target). A derived row copies bytes read and the request
 count from the format's read all, leaves every time and memory field and
@@ -204,16 +207,16 @@ With 4 samples per measured cell (one warm-up and 3 timed), the transfer
 alone (`bytes * 8 / bandwidth + latency` per sample, parsing and the
 indexed formats excluded) of the three text formats comes to:
 
-| Dataset | `fast`, all 11 queries → default 5 | `typical` | `slow` |
-| --- | --- | --- | --- |
-| Rotterdam | 0.1 → 0.1 min | 1.2 → 0.5 min | 5.9 → 2.7 min |
-| Vienna | 0.2 → 0.1 min | 1.8 → 0.8 min | 9.0 → 4.1 min |
-| New York | 4.6 → 2.1 min | 46 → 21 min | 3.8 → 1.7 h |
-| Zurich | 12 → 5.3 min | 1.9 → 0.9 h | 9.6 → 4.4 h |
-| Tokyo | 12 → 5.6 min | 2.1 → 0.9 h | 10.3 → 4.7 h |
-| Montréal | 24 → 11 min | 4.0 → 1.8 h | 20 → 9.2 h |
-| 3DBAG slice (1M) | 1.7 → 0.8 h | 16.7 → 7.6 h | 83 → 38 h |
-| Total | 2.6 → 1.2 h | 25.5 → 11.6 h | 128 → 58 h |
+| Dataset          | `fast`, all 11 queries → default 5 | `typical`     | `slow`        |
+| ---------------- | ---------------------------------- | ------------- | ------------- |
+| Rotterdam        | 0.1 → 0.1 min                      | 1.2 → 0.5 min | 5.9 → 2.7 min |
+| Vienna           | 0.2 → 0.1 min                      | 1.8 → 0.8 min | 9.0 → 4.1 min |
+| New York         | 4.6 → 2.1 min                      | 46 → 21 min   | 3.8 → 1.7 h   |
+| Zurich           | 12 → 5.3 min                       | 1.9 → 0.9 h   | 9.6 → 4.4 h   |
+| Tokyo            | 12 → 5.6 min                       | 2.1 → 0.9 h   | 10.3 → 4.7 h  |
+| Montréal         | 24 → 11 min                        | 4.0 → 1.8 h   | 20 → 9.2 h    |
+| 3DBAG slice (1M) | 1.7 → 0.8 h                        | 16.7 → 7.6 h  | 83 → 38 h     |
+| Total            | 2.6 → 1.2 h                        | 25.5 → 11.6 h | 128 → 58 h    |
 
 The slice's CityGML alone (10.8 GB) takes about 14 minutes per sample at
 `typical`. Parsing adds about 6–20 % on top at `typical`, judging by the
@@ -368,12 +371,12 @@ or "not applied: <reason>" in each CSV's `.params.json` (`isolation`) and in
 the results directory's `MACHINE.md`. Off Linux nothing is applied and the
 records say why.
 
-| Setting | Flag / recipe parameter | Default | Applied by |
-| --- | --- | --- | --- |
-| NUMA node | `--numa-node`, `NUMA_NODE` (env `BENCH_NUMA_NODE`) | `auto`: the node with the most free memory at start | `numactl --physcpubind=<node cores minus the first> --membind=N`; else `taskset -c` (CPU only); the coordinator pins itself to the node's first core |
-| Memory ceiling | `--memory-max`, `MEMORY_MAX` (decimal bytes, or `off`) | 64,000,000,000 (64 GB) under `full`, `quick` and `short`; off under `smoke` | `systemd-run --user --scope -p MemoryMax=`, probed once; a refusal is recorded, never fatal |
-| Load gate | `--max-load`, `MAX_LOAD` | `auto`: half the pinned node's cores | before every sample, `load1 * node_cores / total_cores` above the threshold waits in 10 s steps |
-| Longest wait | `--max-load-wait-s`, `MAX_LOAD_WAIT_S` | 600 | a cell that proceeds while still contended is tagged `busy` in `notes` |
+| Setting        | Flag / recipe parameter                                | Default                                                                     | Applied by                                                                                                                                           |
+| -------------- | ------------------------------------------------------ | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| NUMA node      | `--numa-node`, `NUMA_NODE` (env `BENCH_NUMA_NODE`)     | `auto`: the node with the most free memory at start                         | `numactl --physcpubind=<node cores minus the first> --membind=N`; else `taskset -c` (CPU only); the coordinator pins itself to the node's first core |
+| Memory ceiling | `--memory-max`, `MEMORY_MAX` (decimal bytes, or `off`) | 64,000,000,000 (64 GB) under `full`, `quick` and `short`; off under `smoke` | `systemd-run --user --scope -p MemoryMax=`, probed once; a refusal is recorded, never fatal                                                          |
+| Load gate      | `--max-load`, `MAX_LOAD`                               | `auto`: half the pinned node's cores                                        | before every sample, `load1 * node_cores / total_cores` above the threshold waits in 10 s steps                                                      |
+| Longest wait   | `--max-load-wait-s`, `MAX_LOAD_WAIT_S`                 | 600                                                                         | a cell that proceeds while still contended is tagged `busy` in `notes`                                                                               |
 
 One node rather than the whole machine keeps memory local and leaves the other
 node to co-tenants. The load threshold is half the node because our own child
@@ -405,12 +408,12 @@ and `memory`).
 
 ## Experimental matrix
 
-| Family      | Data                             | Measurements                                               | Read queries                                                                            |
-| ----------- | -------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `sizes`     | Corpus with the 3DBAG slice      | Complete file or package size; CityParquet bytes by column | None                                                                                    |
-| `formats`   | Same corpus                      | Read time and peak memory                                  | All format queries                                                                      |
-| `bloom`     | The 3DBAG slice alone            | Size; lookup time, memory and row-group counters           | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss`; `attr-lookup` at `attr-<column>-50pct`/`attr-<column>-miss` per `bloom_attributes` column |
-| `databases` | The 3DBAG slice                  | Storage with and without indexes; query time and peak working memory | Database query suite                                                                    |
+| Family      | Data                        | Measurements                                                         | Read queries                                                                                                                                                                       |
+| ----------- | --------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sizes`     | Corpus with the 3DBAG slice | Complete file or package size; CityParquet bytes by column           | None                                                                                                                                                                               |
+| `formats`   | Same corpus                 | Read time and peak memory                                            | All format queries                                                                                                                                                                 |
+| `bloom`     | The 3DBAG slice alone       | Size; lookup time, memory and row-group counters                     | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss`; `attr-lookup` at `attr-<column>-50pct`/`attr-<column>-miss` per `bloom_attributes` column |
+| `databases` | The 3DBAG slice             | Storage with and without indexes; query time and peak working memory | Database query suite                                                                                                                                                               |
 
 The corpus is Rotterdam, Vienna, New York, Zurich, Tokyo (Chiyoda) and
 Montréal, with the 3DBAG slice
@@ -468,15 +471,15 @@ columns alike. The CSVs keep the raw byte counts as the measurement; one helper,
 `benchmark/plot/benchviz/units.py`, derives MB and GB from them for the
 renderer and the scripts.
 
-| Figure                                                  | Content                                                                                                                                                                    |
-| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `formats/sizes`                                         | Vertical size bars, one subplot per dataset; actual sizes and factors against CityGML                                                                                      |
-| `formats/<dataset>/time`, `formats/<dataset>/rss`       | One heatmap per dataset and metric: read time or read peak memory per query and format, with factors against CityGML                                                       |
-| `formats/size_factors.csv`, `formats/size_extremes.csv` | Bytes and size factors against CityGML per dataset; the best and worst dataset by CityParquet's factor                                                                     |
-| `formats/query_factors.csv`                             | Time and peak memory per dataset, query and format, with both factors against CityGML                                                                                      |
+| Figure                                                  | Content                                                                                                                                                                        |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `formats/sizes`                                         | Vertical size bars, one subplot per dataset; actual sizes and factors against CityGML                                                                                          |
+| `formats/<dataset>/time`, `formats/<dataset>/rss`       | One heatmap per dataset and metric: read time or read peak memory per query and format, with factors against CityGML                                                           |
+| `formats/size_factors.csv`, `formats/size_extremes.csv` | Bytes and size factors against CityGML per dataset; the best and worst dataset by CityParquet's factor                                                                         |
+| `formats/query_factors.csv`                             | Time and peak memory per dataset, query and format, with both factors against CityGML                                                                                          |
 | `formats/compression.csv`                               | CityParquet bytes per dataset by column group, column and non-column part, copied from the `sizes` family's results ([breakdown](formats/README.md#the-compression-breakdown)) |
-| `bloom`                                                 | Package size, the two read heatmaps and the row groups each lookup pruned for the 3DBAG slice; a configured lookup the run lacks reads "not measured"                    |
-| `databases`                                             | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote) |
+| `bloom`                                                 | Package size, the two read heatmaps and the row groups each lookup pruned for the 3DBAG slice; a configured lookup the run lacks reads "not measured"                          |
+| `databases`                                             | Storage bars; time/memory heatmaps, `threads=single` and `threads=parallel` apart; the write tier as rows below the reads (`threads=single` only, Caveat 19 as a footnote)     |
 
 Every results CSV carries the same seven-column timing block,
 `time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s`

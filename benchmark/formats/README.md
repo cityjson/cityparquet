@@ -39,14 +39,14 @@ published source, then the normalised, compact CityJSON (`cityjson/`), then
 every other artefact; `cityjson20/` beside it holds the two derived sources,
 Tokyo and Montréal.
 
-| id                     | Dataset             | Source                                                                                                                    | `attr-filter`                                  | `attr-stats`                                   |
-| ---------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |
-| `rotterdam_delfshaven` | Rotterdam           | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json>                                      | `TerrainHeight >=` its 0.75 quantile (2.45)    | `TerrainHeight`                                |
-| `vienna_102081`        | Vienna              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json>                                        | `roofType == "FLACHDACH"`                      | `measuredHeight`                               |
-| `nyc_da13_buildings`   | New York            | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json>                             | `BIN == "1000000"`                             | none (no numeric attribute)                    |
-| `zurich_building_lod2` | Zurich              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json>                             | `class == "BB01"`                              | `GebaeudeStatus`                               |
-| `tokyo`                | Tokyo (Chiyoda)     | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/tokyo.city.json>              | `usage == "401"`                               | `measuredHeight`, `-9999` placeholder included |
-| `montreal`             | Montréal            | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json>           | `measuredHeight >=` its 0.75 quantile (15.543) | `measuredHeight`                               |
+| id                     | Dataset             | Source                                                                                                             | `attr-filter`                                  | `attr-stats`                                   |
+| ---------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- | ---------------------------------------------- |
+| `rotterdam_delfshaven` | Rotterdam           | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json>                               | `TerrainHeight >=` its 0.75 quantile (2.45)    | `TerrainHeight`                                |
+| `vienna_102081`        | Vienna              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json>                                 | `roofType == "FLACHDACH"`                      | `measuredHeight`                               |
+| `nyc_da13_buildings`   | New York            | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json>                      | `BIN == "1000000"`                             | none (no numeric attribute)                    |
+| `zurich_building_lod2` | Zurich              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json>                      | `class == "BB01"`                              | `GebaeudeStatus`                               |
+| `tokyo`                | Tokyo (Chiyoda)     | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/tokyo.city.json>       | `usage == "401"`                               | `measuredHeight`, `-9999` placeholder included |
+| `montreal`             | Montréal            | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json>    | `measuredHeight >=` its 0.75 quantile (15.543) | `measuredHeight`                               |
 | `3dbag_n1000000`       | 3DBAG (Netherlands) | cut by `just fetch-3dbag` from <https://flatcitybuf.open3d.city/data/3dbag_subset2_all_index.fcb>, without LoD 1.2 | `b3_dak_type == "slanted"`                     | `b3_bag_bag_overlap`                           |
 
 Every CityJSON/CityJSONSeq source is normalised before any artefact is built,
@@ -108,8 +108,12 @@ just bench-run --families network --network-target real --network-profile typica
 
 The indexed formats (FlatCityBuf, CityParquet) are measured on every query.
 The text formats (CityGML, CityJSON, CityJSONSeq) download the whole object
-for every query, so by default they are measured on read all and the four
-identifier lookups. Their other six queries are derived rows: these copy
+for every query, except that the identifier lookup of CityGML and
+CityJSONSeq reads the body as a stream and abandons the transfer at the hit
+(its `bytes_read` is the bytes received; a miss reads the whole file;
+CityJSON cannot stop early). By default they are measured on read all and
+the four identifier lookups, and the whole-object premise is proven on read
+all and the identifier miss. Their other six queries are derived rows: these copy
 read all's bytes and request count once the run has proven that the client
 made one whole-object request, and they carry no time. `[network]
 whole_file_scenarios` in `manifest.toml`, or `--network-whole-file-scenarios
@@ -150,7 +154,7 @@ See [`../README.md`](../README.md) for the experimental matrix and figure list.
   by the renderer, in one place.
 - **The compression breakdown says where a package's bytes go.**
   `benchmark/scripts/compression_contribution.py` (`just bench-compression
-  [PREPARED] [OUT]`, and part of the `sizes` family) reads every object table
+[PREPARED] [OUT]`, and part of the `sizes` family) reads every object table
   of each prepared package with DuckDB's `parquet_metadata()` and writes
   `compression.csv`. See [The compression breakdown](#the-compression-breakdown).
 
@@ -164,15 +168,15 @@ every row group and every object table, the column chunks'
 struct, list or map) counts towards its top-level column, and each top-level
 column belongs to one group by its specification name:
 
-| Group                   | Columns                                                                     |
-| ----------------------- | --------------------------------------------------------------------------- |
-| `geometry`              | `geometry_lod*`                                                             |
-| `geometry_properties`   | `geometry_properties_lod*`                                                  |
-| `appearance`            | `material_lod*`, `texture_lod*`                                             |
+| Group                   | Columns                                                                    |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `geometry`              | `geometry_lod*`                                                            |
+| `geometry_properties`   | `geometry_properties_lod*`                                                 |
+| `appearance`            | `material_lod*`, `texture_lod*`                                            |
 | `attributes`            | `address` and every column that is not reserved                            |
 | `identifiers_structure` | `id`, `feature_id`, `object_type`, `parents`, `children`, `children_roles` |
-| `bbox`                  | `bbox`                                                                      |
-| `other`                 | `other`, `implicit_geometry`                                                |
+| `bbox`                  | `bbox`                                                                     |
+| `other`                 | `other`, `implicit_geometry`                                               |
 
 **"Uncompressed" is the size after encoding and before the codec.**
 `total_uncompressed_size` counts the column's pages once dictionary, delta or
@@ -186,13 +190,13 @@ dictionary-encoded column is visible as `RLE_DICTIONARY`.
 **Everything that is not column data is a part**, so the column groups and
 the parts add up to the package size in `sizes.csv`:
 
-| Part                      | Bytes                                                                                  |
-| ------------------------- | -------------------------------------------------------------------------------------- |
-| `bloom_filters`           | The object tables' Bloom filters (`bloom_filter_length`)                               |
-| `footer_and_page_indexes` | The rest of each object table: footer, column and offset indexes, magic bytes          |
+| Part                      | Bytes                                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------------- |
+| `bloom_filters`           | The object tables' Bloom filters (`bloom_filter_length`)                                          |
+| `footer_and_page_indexes` | The rest of each object table: footer, column and offset indexes, magic bytes                     |
 | `sidecar_tables`          | The `cityparquet-sidecar` assets of `metadata.json` (materials, textures, templates), whole files |
-| `metadata`                | `metadata.json`                                                                        |
-| `other_files`             | Any other file in the package directory                                                |
+| `metadata`                | `metadata.json`                                                                                   |
+| `other_files`             | Any other file in the package directory                                                           |
 
 `compression.csv` has the columns
 `dataset,status,level,name,group,encodings,compressed_bytes,uncompressed_bytes,compressed_mb_decimal,share_of_column_bytes,share_of_package_bytes,compression_ratio`.
@@ -203,6 +207,7 @@ size, ratio or column share. A dataset whose package is missing gets one row
 with status `missing` and empty values, and the script exits 1. The `sizes`
 family writes the file beside `sizes.csv`, and `just bench-summary` copies it
 to `<figures>/formats/compression.csv`, beside `size_factors.csv`.
+
 - **Seven timing statistics over `repeat` read samples** — default 25, run back to back after one discarded warm-up; see `READ_BENCHMARK.md` "Sampling" for the optional cell time budget —
   reported at 6-decimal precision: `time_mean_s`, the **population standard
   deviation** `time_std_s` (the warm repeats are the whole measured set, not
