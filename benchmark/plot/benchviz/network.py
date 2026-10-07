@@ -105,11 +105,12 @@ def load(data_root: Path, suite_profile: str, statistic: str = "median") -> dict
             dataset = path.stem
             params_path = Path(f"{path}.params.json")
             net = json.loads(params_path.read_text())["network"] if params_path.exists() else {}
-            for key in ("target", "bandwidth_mbps", "latency_ms", "burst_ms", "base_url"):
+            for key in ("target", "bandwidth_mbps", "latency_ms", "burst_ms", "base_url", "host", "resolved_ips"):
                 if net.get(key) is not None:
                     entry.setdefault(key, net[key])
             server, clients = net.get("server", {}), net.get("clients", {})
-            if server or clients:
+            # A real target has no server of ours to count; only net-sim's totals can be compared.
+            if server:
                 entry["totals_match"] &= server.get("requests") == clients.get("requests") and server.get(
                     "body_bytes"
                 ) == clients.get("bytes_read")
@@ -151,7 +152,12 @@ def caption(profile: dict, statistic: str, repeat: int | None = None, derived: b
     else:
         where = "simulated network (net-sim, local)"
     bw, lat = profile.get("bandwidth_mbps"), profile.get("latency_ms")
-    link = f"{bw:g} Mbps, {lat:g} ms per request" if bw is not None and lat is not None else "link not recorded"
+    if bw is not None and lat is not None:
+        link = f"{bw:g} Mbps, {lat:g} ms per request"
+    elif profile.get("target") == "real":
+        link = "link as found, not controlled"
+    else:
+        link = "link not recorded"
     reps = f", {repeat} repetitions" if repeat else ""
     text = f"Network profile '{profile['name']}': {where}; {link}; time = {statistic}{reps}"
     return f"{text}. {DERIVED_FOOTNOTE}" if derived else text

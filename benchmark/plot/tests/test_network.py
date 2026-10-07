@@ -238,3 +238,25 @@ def test_a_real_target_caption_says_one_snapshot_and_names_the_path():
     assert "real object storage, one snapshot" in text
     assert "https://h/v8" in text and "192.0.2.1" in text
     assert "real object storage, one snapshot" not in network.caption({"name": "typical", "target": "simulated", "bandwidth_mbps": 100, "latency_ms": 20}, "median")
+
+
+def test_a_loaded_real_target_names_its_path_and_does_not_flag_missing_server_totals(tmp_path):
+    folder = tmp_path / "network" / "full" / "real"
+    _write(folder / "rotterdam.csv", [_row("citygml", "full-read", "2.6", "14000000", "1")])
+    params = {
+        "network": {
+            "profile": "real",
+            "target": "real",
+            "base_url": "https://h/v8",
+            "host": "h",
+            "resolved_ips": ["192.0.2.1"],
+            "clients": {"requests": 4, "bytes_read": 56000000},
+        }
+    }
+    (folder / "rotterdam.csv.params.json").write_text(json.dumps(params))
+    block = network.load(tmp_path, "full")
+    ((_, _, lines),) = network.sections({"network": block})
+    text = " ".join(lines)
+    assert "192.0.2.1" in text and "address not recorded" not in text
+    assert "totals differ" not in text
+    assert "link not recorded" not in text
