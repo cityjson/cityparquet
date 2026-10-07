@@ -9,7 +9,12 @@ and the slice's Bloom pair under ``bloom/``. Network profiles are discovered
 from the directories, never listed here.
 
 A cell with no citable value stays explicit (``unavailable`` names why): it
-is never drawn or written as zero.
+is never drawn or written as zero. A DERIVED cell (notes tag
+``derived-from=full-read``) is a whole-file format's query that the run did
+not measure: the harness proved that the format's client issues one
+whole-object GET, so the cell carries read all's bytes and request count and
+no time. It is shown as "same transfer as read all", never as a measured
+time.
 """
 
 from __future__ import annotations
@@ -30,6 +35,15 @@ METRICS = (
     ("http_requests", "HTTP requests", ""),
 )
 BLOOM_FORMATS = ("cityparquet", "cityparquet+nobloom")
+DERIVED_TAG = "derived-from=full-read"
+DERIVED_MARK = "†"
+DERIVED_TIME_TEXT = f"= read all\ntransfer {DERIVED_MARK}"
+DERIVED_NOTE = "derived: same transfer as read all (one whole-object GET, proven on this run); time not measured"
+DERIVED_FOOTNOTE = (
+    f"{DERIVED_MARK} derived, not measured: the format's client issues one whole-object GET "
+    "(proven on this run's measured cells: 1 request, bytes = file size), so the cell repeats "
+    "read all's bytes and requests; its time is that transfer plus parsing, not a measurement"
+)
 
 
 def _csvs(folder: Path) -> list[Path]:
@@ -47,7 +61,23 @@ def _stem(dataset: str) -> str:
     return dataset.split(".", 1)[0]
 
 
+def is_derived(row: dict) -> bool:
+    """Whether a CSV row is a derived cell rather than a measurement."""
+    return DERIVED_TAG in (t.strip() for t in str(row.get("notes", "") or "").split(";"))
+
+
 def _cell(row: dict, statistic: str) -> dict:
+    if is_derived(row):
+        return {
+            "query": _scenario_key(row),
+            "format": row["format"],
+            "time_s": None,
+            "bytes_read": _int(row.get("bytes_read")),
+            "http_requests": _int(row.get("http_requests")),
+            "repeat": _int(row.get("repeat")),
+            "unavailable": None,
+            "derived": True,
+        }
     reason = unavailable_reason(row)
     value = timing(row, statistic)["time_s"] if reason is None else None
     return {
@@ -58,6 +88,7 @@ def _cell(row: dict, statistic: str) -> dict:
         "http_requests": _int(row.get("http_requests")) if reason is None else None,
         "repeat": _int(row.get("repeat")),
         "unavailable": reason,
+        "derived": False,
     }
 
 
@@ -112,7 +143,7 @@ def load(data_root: Path, suite_profile: str, statistic: str = "median") -> dict
     }
 
 
-def caption(profile: dict, statistic: str, repeat: int | None = None) -> str:
+def caption(profile: dict, statistic: str, repeat: int | None = None, derived: bool = False) -> str:
     """The profile's conditions, stated on every figure and table."""
     if profile.get("target") == "real":
         where = f"real object storage ({profile.get('base_url', 'base URL not recorded')}), one snapshot"
@@ -121,7 +152,8 @@ def caption(profile: dict, statistic: str, repeat: int | None = None) -> str:
     bw, lat = profile.get("bandwidth_mbps"), profile.get("latency_ms")
     link = f"{bw:g} Mbps, {lat:g} ms per request" if bw is not None and lat is not None else "link not recorded"
     reps = f", {repeat} repetitions" if repeat else ""
-    return f"Network profile '{profile['name']}': {where}; {link}; time = {statistic}{reps}"
+    text = f"Network profile '{profile['name']}': {where}; {link}; time = {statistic}{reps}"
+    return f"{text}. {DERIVED_FOOTNOTE}" if derived else text
 
 
 def _fmt(metric: str, value) -> str:
@@ -156,6 +188,7 @@ def factor_rows(block: dict, statistic: str) -> list[dict]:
             "latency_ms": p.get("latency_ms", ""),
             "format": r["format"],
             "query": r["query"],
+            "derived": "full-read" if r.get("derived") else "",
             "statistic": statistic,
             "repeat": r["repeat"] or "",
             "time_s": r["time_s"] if r["time_s"] is not None else "",
@@ -166,7 +199,7 @@ def factor_rows(block: dict, statistic: str) -> list[dict]:
         for metric, name in (("time_s", "time"), ("bytes_read", "bytes"), ("http_requests", "requests")):
             mine, theirs = r.get(metric), b.get(metric)
             row[f"{name}_factor_vs_citygml"] = round(theirs / mine, 4) if mine and theirs else ""
-        row["note"] = r["unavailable"] or ""
+        row["note"] = DERIVED_NOTE if r.get("derived") else (r["unavailable"] or "")
         rows.append(row)
     return rows
 
@@ -181,17 +214,53 @@ def _write(path: Path, rows: list[dict]) -> Path:
     return path
 
 
+def _factor_text(factor: float) -> str:
+    return f"({factor:.2g}x)" if factor < 10 else f"({factor:.0f}x)"
+
+
+def figure_grid(records: list[dict]) -> dict:
+    """What the figure prints: formats, queries (measured order first) and,
+    per (metric, format, query), the cell's text and its factor against
+    CityGML (None where no factor is citable)."""
+    formats = [f for f in FORMATS if any(r["format"] == f for r in records)]
+    queries = list(dict.fromkeys([r["query"] for r in records if not r.get("derived")] + [r["query"] for r in records]))
+    by = {(r["format"], r["query"]): r for r in records}
+    base = {r["query"]: r for r in records if r["format"] == BASELINE_FORMAT}
+    cells = {}
+    for metric, _title, _unit in METRICS:
+        for fmt in formats:
+            for query in queries:
+                cell, factor = by.get((fmt, query)), None
+                if cell is None:
+                    text, kind = "not measured", "missing"
+                elif cell["unavailable"]:
+                    text, kind = cell["unavailable"][:18], "unavailable"
+                elif cell.get("derived") and metric == "time_s":
+                    text, kind = DERIVED_TIME_TEXT, "derived"
+                else:
+                    value, ref = cell[metric], base.get(query, {}).get(metric)
+                    text, kind = _fmt(metric, value), "derived" if cell.get("derived") else "measured"
+                    if kind == "derived":
+                        text += f" {DERIVED_MARK}"
+                    if metric != "http_requests" and value and ref:
+                        factor = ref / value
+                        if fmt != BASELINE_FORMAT:
+                            text += "\n" + _factor_text(factor)
+                cells[(metric, fmt, query)] = {"text": text, "kind": kind, "factor": factor}
+    return {"formats": formats, "queries": queries, "cells": cells}
+
+
 def _figure(records: list[dict], profile: dict, statistic: str, out: Path) -> list[Path]:
     import matplotlib.pyplot as plt
 
-    formats = [f for f in FORMATS if any(r["format"] == f for r in records)]
-    queries = list(dict.fromkeys(r["query"] for r in records))
-    cells = {(r["format"], r["query"]): r for r in records}
-    base = {r["query"]: r for r in records if r["format"] == BASELINE_FORMAT}
+    grid = figure_grid(records)
+    formats, queries = grid["formats"], grid["queries"]
     repeat = max((r["repeat"] or 0) for r in records) or None
+    derived = any(r.get("derived") for r in records)
     fig, axes = plt.subplots(
         1, 3, figsize=(5.0 * 3, 1.0 + 0.5 * len(queries)), constrained_layout=True
     )
+    colours = {"missing": "#999", "unavailable": "#b33", "derived": "#555", "measured": "#111"}
     for ax, (metric, title, _unit) in zip(axes, METRICS):
         ax.set_xlim(0, len(formats))
         ax.set_ylim(len(queries), 0)
@@ -203,19 +272,12 @@ def _figure(records: list[dict], profile: dict, statistic: str, out: Path) -> li
         ax.set_title(title, fontsize=10, loc="left")
         for x, fmt in enumerate(formats):
             for y, query in enumerate(queries):
-                cell = cells.get((fmt, query))
-                if cell is None:
-                    text, colour = "not measured", "#999"
-                elif cell["unavailable"]:
-                    text, colour = cell["unavailable"][:18], "#b33"
-                else:
-                    value, ref = cell[metric], base.get(query, {}).get(metric)
-                    text, colour = _fmt(metric, value), "#111"
-                    if metric != "http_requests" and fmt != BASELINE_FORMAT and value and ref:
-                        factor = ref / value
-                        text += f"\n({factor:.2g}x)" if factor < 10 else f"\n({factor:.0f}x)"
-                ax.text(x + 0.5, y + 0.5, text, ha="center", va="center", fontsize=7, color=colour)
-    fig.suptitle(caption(profile, statistic, repeat) + "; (Nx) = CityGML's value / the format's", fontsize=8, x=0.01, ha="left")
+                cell = grid["cells"][(metric, fmt, query)]
+                ax.text(x + 0.5, y + 0.5, cell["text"], ha="center", va="center", fontsize=7, color=colours[cell["kind"]])
+    fig.suptitle(
+        caption(profile, statistic, repeat, derived=derived) + "; (Nx) = CityGML's value / the format's",
+        fontsize=8, x=0.01, ha="left", wrap=True,
+    )
     written = []
     for ext in ("svg", "png"):
         path = out / f"network.{ext}"
@@ -269,7 +331,12 @@ def sections(data: dict) -> list[tuple[str, str, list[str]]]:
     result = []
     for profile in block["profiles"]:
         for dataset in profile["datasets"]:
-            lines = [caption(profile, statistic)]
+            derived = any(
+                r.get("derived")
+                for r in block["records"]
+                if r["network_profile"] == profile["name"] and r["dataset"] == dataset
+            )
+            lines = [caption(profile, statistic, derived=derived)]
             if not profile.get("totals_match", True):
                 lines.append("server and client request/byte totals differ")
             result.append(

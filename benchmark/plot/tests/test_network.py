@@ -127,3 +127,71 @@ def test_factor_table_and_figures(tmp_path):
     assert (out / "network" / "typical" / "network_bloom.csv").exists()
     caption = network.caption(block["profiles"][0], "median")
     assert "simulated" in caption and "100 Mbps" in caption and "20 ms" in caption
+
+
+DERIVED = "derived-from=full-read;status=derived"
+
+
+def _derived_fixture(root: Path) -> Path:
+    """A run whose CityGML spatial cell is derived from its proven read all."""
+    folder = root / "network" / "full" / "typical"
+    derived = _row("citygml", "bbox-query", "", "14000000", "1", notes=f"bbox-1pct;{DERIVED}", selectivity="")
+    derived["repeat"] = "0"
+    _write(
+        folder / "rotterdam.csv",
+        [
+            _row("citygml", "full-read", "1.0", "14000000", "1"),
+            _row("cityparquet", "full-read", "0.25", "700000", "4"),
+            _row("cityparquet", "bbox-query", "0.05", "70000", "3", notes="bbox-1pct"),
+            derived,
+        ],
+    )
+    return root
+
+
+def test_derived_cell_keeps_transfer_and_no_time(tmp_path):
+    block = network.load(_derived_fixture(tmp_path / "data"), "full")
+    cell = next(r for r in block["records"] if r["format"] == "citygml" and r["query"] == "bbox-1pct")
+    assert cell["derived"] is True
+    assert cell["time_s"] is None and cell["unavailable"] is None
+    assert (cell["bytes_read"], cell["http_requests"]) == (14000000, 1)
+    measured = next(r for r in block["records"] if r["format"] == "cityparquet" and r["query"] == "bbox-1pct")
+    assert measured["derived"] is False
+
+
+def test_factor_table_marks_derived_cells(tmp_path):
+    block = network.load(_derived_fixture(tmp_path / "data"), "full")
+    out = tmp_path / "figures"
+    network.render({"network": block, "statistic": "median"}, out)
+    rows = {(r["format"], r["query"]): r for r in csv.DictReader((out / "network" / "network_factors.csv").open())}
+    derived = rows[("citygml", "bbox-1pct")]
+    assert derived["derived"] == "full-read"
+    assert derived["time_s"] == "" and derived["time_factor_vs_citygml"] == ""
+    assert derived["bytes_read"] == "14000000" and derived["http_requests"] == "1"
+    assert "same transfer as read all" in derived["note"]
+    measured = rows[("cityparquet", "bbox-1pct")]
+    assert measured["derived"] == ""
+    assert float(measured["bytes_factor_vs_citygml"]) == 200.0
+    # The time factor needs a measured CityGML time; a derived one is not.
+    assert measured["time_factor_vs_citygml"] == ""
+
+
+def test_figure_shows_derived_time_as_transfer_marker(tmp_path):
+    block = network.load(_derived_fixture(tmp_path / "data"), "full")
+    grid = network.figure_grid(block["records"])
+    time_text = grid["cells"][("time_s", "citygml", "bbox-1pct")]["text"]
+    assert time_text == network.DERIVED_TIME_TEXT and "0" not in time_text
+    assert grid["cells"][("bytes_read", "citygml", "bbox-1pct")]["text"].startswith("14 MB")
+    assert grid["cells"][("http_requests", "citygml", "bbox-1pct")]["text"].startswith("1")
+    # Derived rows sort with their query, not after every measured row.
+    assert grid["queries"] == ["full-read", "bbox-1pct"]
+    caption = network.caption(block["profiles"][0], "median", derived=True)
+    assert network.DERIVED_MARK in caption and "one whole-object GET" in caption
+
+
+def test_page_section_states_the_derived_rows(tmp_path):
+    block = network.load(_derived_fixture(tmp_path / "data"), "full")
+    (_key, _title, lines), = network.sections({"network": block, "statistic": "median"})
+    assert network.DERIVED_FOOTNOTE in lines[0]
+    # bench_data.json carries the block as loaded: every record says whether it is derived.
+    assert json.loads(json.dumps(block))["records"][-1]["derived"] in (True, False)
