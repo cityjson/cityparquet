@@ -671,7 +671,7 @@ each cold number stands alone, one per format, one `full-read` only.
     silently. The third is a defect in the same library's HTTP index
     reader, which answers no hits for a key that names 4,096 or more
     features (see "FlatCityBuf's HTTP attribute index drops every key that
-    names 4,096 or more features" under "HTTP transport"), so the HTTP arm
+    names 4,096 or more features" later in this section), so the HTTP arm
     verifies an empty answer by the full walk; a walk that also finds
     nothing is a verified empty result. An index-vs-scan measurement is
     therefore never mislabelled. That fallback is a raw-flatbuffer walk, not a
