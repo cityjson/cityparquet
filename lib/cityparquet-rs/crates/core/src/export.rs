@@ -1844,9 +1844,17 @@ fn write_output(
         OutputFormat::Seq => {
             writeln!(file, "{}", serde_json::to_string(&header)?)
                 .map_err(|e| CityParquetError::io_source("write error", e))?;
-            for feature in &features {
-                writeln!(file, "{}", serde_json::to_string(feature)?)
-                    .map_err(|e| CityParquetError::io_source("write error", e))?;
+            // Serialised a chunk at a time across cores, written in order.
+            use rayon::prelude::*;
+            for chunk in features.chunks(1024) {
+                let lines = chunk
+                    .par_iter()
+                    .map(serde_json::to_string)
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                for line in lines {
+                    writeln!(file, "{line}")
+                        .map_err(|e| CityParquetError::io_source("write error", e))?;
+                }
             }
         }
         OutputFormat::Doc => {
