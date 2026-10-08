@@ -1,0 +1,401 @@
+//! `cityparquet::validate` against real packages: what this crate writes from
+//! the real fixtures conforms, and a real package mutated the way a faulty
+//! writer could have written it reports exactly the violated rule.
+
+mod support;
+
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+
+use arrow_array::cast::AsArray;
+use arrow_array::types::Int32Type;
+use arrow_array::{Array, ArrayRef, BinaryArray, ListArray, StringArray, StructArray, make_array};
+use arrow_buffer::OffsetBuffer;
+use arrow_schema::{DataType, Field};
+use cityparquet::validate::{Severity, ValidationReport, validate_package};
+use serde_json::{Value, json};
+
+use support::{FileContent, convert_fixture, convert_fixture_with};
+
+fn validate(pkg: &Path) -> ValidationReport {
+    validate_package(pkg).expect("the package directory is readable")
+}
+
+fn assert_error(report: &ValidationReport, code: &str) {
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == code && v.severity == Severity::Error),
+        "expected an error `{code}`, got:\n{report}"
+    );
+}
+
+#[test]
+fn rs_written_packages_from_the_real_fixtures_conform() {
+    for name in [
+        "delft.city.jsonl",
+        "lod3_railway.city.json",
+        "b1_lod2_cs_w_sem.gml",
+        "b1_lod2_s.gml",
+    ] {
+        // With and without the synthesised LoD0 footprint column.
+        for generate_lod0 in [false, true] {
+            let (_dir, pkg) = convert_fixture_with(name, |o| o.generate_lod0 = generate_lod0);
+            let report = validate(&pkg);
+            assert!(
+                report.violations.is_empty(),
+                "{name} (LoD0 synthesis {generate_lod0}) must validate clean:\n{report}"
+            );
+        }
+    }
+}
+
+/// Conformance is at the Parquet logical-type level: the same content
+/// rewritten with no `ARROW:schema` footer entry, a plain (undictionaried)
+/// `object_type`, Parquet's default row-group sizing and compression, still
+/// conforms.
+#[test]
+fn a_package_rewritten_by_a_writer_without_arrow_metadata_conforms() {
+    let (_dir, pkg) = convert_fixture("lod3_railway.city.json");
+    for entry in fs::read_dir(&pkg).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) == Some("parquet") {
+            FileContent::read(&path).write(&path);
+        }
+    }
+    let report = validate(&pkg);
+    assert!(report.violations.is_empty(), "{report}");
+}
+
+fn rewrite(path: &Path, f: impl FnOnce(&mut FileContent)) {
+    let mut content = FileContent::read(path);
+    f(&mut content);
+    content.write(path);
+}
+
+#[test]
+fn a_footer_without_city_version_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        let mut city = c.key_json("city");
+        city.as_object_mut().unwrap().remove("version");
+        c.set_key_value("city", city.to_string());
+    });
+    assert_error(&validate(&pkg), "footer.version-missing");
+}
+
+#[test]
+fn a_file_without_the_city_footer_key_is_reported() {
+    let (_dir, pkg) = convert_fixture("lod3_railway.city.json");
+    rewrite(&pkg.join("materials.parquet"), |c| {
+        c.remove_key_value("city")
+    });
+    assert_error(&validate(&pkg), "footer.city-missing");
+}
+
+#[test]
+fn a_json_column_stored_as_plain_utf8_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        c.untag_json(Some("other"))
+    });
+    let report = validate(&pkg);
+    assert_error(&report, "column.json-type");
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == "column.json-type" && v.message.contains("`other`")),
+        "{report}"
+    );
+}
+
+/// The declaration rule: a column carrying `PolyhedralSurface Z` MUST NOT be
+/// declared in `geo.columns`.
+#[test]
+fn a_solid_column_declared_in_geo_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        let mut geo = c.key_json("geo");
+        let columns = geo["columns"].as_object_mut().unwrap();
+        let entry = columns.values().next().unwrap().clone();
+        let mut solid = entry.clone();
+        solid["geometry_types"] = json!(["PolyhedralSurface Z"]);
+        columns.insert("geometry_lod2_2".to_string(), solid);
+        c.set_key_value("geo", geo.to_string());
+    });
+    let report = validate(&pkg);
+    assert!(
+        report.violations.iter().any(|v| v.code == "geo.declaration"
+            && v.severity == Severity::Error
+            && v.message.contains("geometry_lod2_2")),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_null_feature_id_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        c.map_column("feature_id", |field, column, batch| {
+            let values = column.as_string::<i32>();
+            let replaced: StringArray = (0..values.len())
+                .map(|i| (batch != 0 || i != 0).then(|| values.value(i)))
+                .collect();
+            (
+                field.clone().with_nullable(true),
+                Arc::new(replaced) as ArrayRef,
+            )
+        });
+    });
+    let report = validate(&pkg);
+    assert_error(&report, "value.required-null");
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == "column.nullability"
+                && v.severity == Severity::Warning
+                && v.message.contains("feature_id")),
+        "{report}"
+    );
+}
+
+/// `children_roles`, when present, MUST have exactly one entry per child.
+#[test]
+fn children_roles_of_the_wrong_length_are_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        let children = c.batches[0]
+            .column_by_name("children")
+            .unwrap()
+            .as_list::<i32>()
+            .clone();
+        c.map_column("children_roles", |field, column, batch| {
+            if batch != 0 {
+                return (field.clone(), column.clone());
+            }
+            // One role more than there are children, on every row with
+            // children; null elsewhere.
+            let mut offsets = vec![0i32];
+            let mut nulls = Vec::new();
+            for i in 0..children.len() {
+                let n = if children.is_null(i) {
+                    0
+                } else {
+                    children.value_length(i) + 1
+                };
+                offsets.push(offsets.last().unwrap() + n);
+                nulls.push(!children.is_null(i));
+            }
+            let values = StringArray::from(vec![None::<&str>; *offsets.last().unwrap() as usize]);
+            let DataType::List(item) = field.data_type() else {
+                panic!("children_roles is a list")
+            };
+            let list = ListArray::new(
+                item.clone(),
+                OffsetBuffer::new(offsets.into()),
+                Arc::new(values),
+                Some(nulls.into()),
+            );
+            (field.clone(), Arc::new(list) as ArrayRef)
+        });
+    });
+    assert_error(&validate(&pkg), "value.children-roles");
+}
+
+#[test]
+fn an_object_table_named_after_the_wrong_module_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    fs::rename(
+        pkg.join("building.parquet"),
+        pkg.join("transportation.parquet"),
+    )
+    .unwrap();
+    let item_path = pkg.join("metadata.json");
+    let text = fs::read_to_string(&item_path)
+        .unwrap()
+        .replace("building.parquet", "transportation.parquet");
+    fs::write(&item_path, text).unwrap();
+    assert_error(&validate(&pkg), "package.object-type-module");
+}
+
+#[test]
+fn a_parquet_asset_without_its_package_role_is_reported() {
+    let (_dir, pkg) = convert_fixture("lod3_railway.city.json");
+    let item_path = pkg.join("metadata.json");
+    let mut item: Value = serde_json::from_str(&fs::read_to_string(&item_path).unwrap()).unwrap();
+    for asset in item["assets"].as_object_mut().unwrap().values_mut() {
+        if asset["href"] == "./textures.parquet" {
+            asset["roles"] = json!(["data"]);
+        }
+    }
+    fs::write(&item_path, item.to_string()).unwrap();
+    let report = validate(&pkg);
+    assert!(
+        report.violations.iter().any(|v| v.code == "stac.asset-role"
+            && v.severity == Severity::Error
+            && v.message.contains("textures.parquet")),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_reserved_column_of_the_wrong_logical_type_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        c.map_column("id", |field, column, _| {
+            let ids = column.as_string::<i32>();
+            let blobs: BinaryArray = ids.iter().map(|v| v.map(str::as_bytes)).collect();
+            (
+                Field::new(field.name(), DataType::Binary, false),
+                Arc::new(blobs) as ArrayRef,
+            )
+        });
+    });
+    let report = validate(&pkg);
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == "column.logical-type"
+                && v.severity == Severity::Error
+                && v.message.contains("`id`")),
+        "{report}"
+    );
+}
+
+/// `TIMESTAMP` columns MUST be UTC-adjusted.
+#[test]
+fn a_timestamp_attribute_that_is_not_utc_adjusted_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        c.map_column("tijdstipregistratie", |field, column, _| {
+            let DataType::Timestamp(unit, _) = field.data_type() else {
+                panic!("tijdstipregistratie is a timestamp")
+            };
+            let naive = DataType::Timestamp(*unit, None);
+            let data = column
+                .to_data()
+                .into_builder()
+                .data_type(naive.clone())
+                .build()
+                .unwrap();
+            (
+                Field::new(field.name(), naive, true).with_metadata(field.metadata().clone()),
+                make_array(data),
+            )
+        });
+    });
+    let report = validate(&pkg);
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == "attribute.timestamp-utc"
+                && v.severity == Severity::Error
+                && v.message.contains("tijdstipregistratie")),
+        "{report}"
+    );
+}
+
+/// Geometry is little-endian ISO WKB.
+#[test]
+fn a_big_endian_geometry_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        c.map_column("geometry_lod2_2", |field, column, batch| {
+            let blobs = column.as_binary::<i32>();
+            let mut flipped = batch != 0;
+            let rewritten: BinaryArray = blobs
+                .iter()
+                .map(|cell| {
+                    cell.map(|bytes| {
+                        let mut bytes = bytes.to_vec();
+                        if !flipped {
+                            bytes[0] = 0x00;
+                            flipped = true;
+                        }
+                        bytes
+                    })
+                })
+                .collect();
+            (field.clone(), Arc::new(rewritten) as ArrayRef)
+        });
+    });
+    assert_error(&validate(&pkg), "value.wkb");
+}
+
+#[test]
+fn a_package_with_no_object_table_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    fs::remove_file(pkg.join("building.parquet")).unwrap();
+    assert_error(&validate(&pkg), "package.no-object-table");
+}
+
+/// `len(face_semantics)` MUST equal the WKB face count.
+#[test]
+fn face_semantics_shorter_than_the_face_count_are_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        c.map_column("geometry_properties_lod2_2", |field, column, batch| {
+            let props = column.as_struct();
+            let semantics = props
+                .column_by_name("face_semantics")
+                .unwrap()
+                .as_list::<i32>();
+            let mut shortened = batch != 0;
+            let rows: Vec<Option<Vec<Option<i32>>>> = (0..semantics.len())
+                .map(|i| {
+                    (!semantics.is_null(i)).then(|| {
+                        let mut faces: Vec<Option<i32>> = semantics
+                            .value(i)
+                            .as_primitive::<Int32Type>()
+                            .iter()
+                            .collect();
+                        if !shortened {
+                            faces.pop();
+                            shortened = true;
+                        }
+                        faces
+                    })
+                })
+                .collect();
+            let replaced = ListArray::from_iter_primitive::<Int32Type, _, _>(rows);
+            let DataType::Struct(fields) = field.data_type() else {
+                panic!("geometry_properties is a struct")
+            };
+            let columns: Vec<ArrayRef> = fields
+                .iter()
+                .zip(props.columns())
+                .map(|(f, col)| {
+                    if f.name() == "face_semantics" {
+                        Arc::new(replaced.clone()) as ArrayRef
+                    } else {
+                        col.clone()
+                    }
+                })
+                .collect();
+            let rebuilt = StructArray::new(fields.clone(), columns, props.nulls().cloned());
+            (field.clone(), Arc::new(rebuilt) as ArrayRef)
+        });
+    });
+    assert_error(&validate(&pkg), "value.face-semantics");
+}
+
+/// Every non-null material id MUST match an `id` in `materials.parquet`.
+#[test]
+fn a_material_reference_into_a_missing_sidecar_is_reported() {
+    let (_dir, pkg) = convert_fixture("lod3_railway.city.json");
+    fs::remove_file(pkg.join("materials.parquet")).unwrap();
+    let item_path = pkg.join("metadata.json");
+    let mut item: Value = serde_json::from_str(&fs::read_to_string(&item_path).unwrap()).unwrap();
+    item["assets"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|_, asset| asset["href"] != "./materials.parquet");
+    fs::write(&item_path, item.to_string()).unwrap();
+    assert_error(&validate(&pkg), "value.material");
+}

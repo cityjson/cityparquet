@@ -7,6 +7,7 @@ use cityparquet::package::{ConvertOptions, RowOrder, convert_source};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::recipe::{BloomPolicy, Codec, RecipePreset, WriterRecipe};
 use cityparquet::source::{Source, SourceFormat};
+use cityparquet::validate::validate_package;
 use cityparquet_cli::bench::{self, BenchOptions};
 use cityparquet_schema::Result as CpResult;
 use clap::{Parser, Subcommand};
@@ -174,6 +175,15 @@ enum Commands {
         /// Exclude GeometryInstance geometries from comparison
         #[arg(long)]
         exclude_instances: bool,
+    },
+
+    /// Check a CityParquet package against the specification. Prints one
+    /// line per violation (a MUST is an error, a SHOULD a warning) and exits
+    /// with status 2 when there is any error
+    Validate {
+        /// CityParquet package directory
+        #[arg(value_name = "PACKAGE_DIR")]
+        package_dir: PathBuf,
     },
 
     /// Run the variant-matrix benchmark harness, appending one CSV row per
@@ -752,6 +762,21 @@ fn main() -> std::process::ExitCode {
                 }
             }
         }
+
+        Commands::Validate { package_dir } => match validate_package(&package_dir) {
+            Ok(report) => {
+                println!("{report}");
+                if report.is_conformant() {
+                    std::process::ExitCode::SUCCESS
+                } else {
+                    std::process::ExitCode::from(2)
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {}", render_error(&e));
+                std::process::ExitCode::FAILURE
+            }
+        },
 
         Commands::Bench {
             input,

@@ -173,6 +173,22 @@ skip appearance/`GeometryInstance` comparison, for a package whose sidecars
 were left out of the comparison on purpose. This is how a round-trip is
 proven: `convert` → `export` → `compare` against the source.
 
+### validate — conformance against the specification
+
+```bash
+cargo run -p cityparquet-cli -- validate PACKAGE_DIR
+```
+
+Checks a package from any writer against the specification at the level of
+Parquet logical types: the package layout and `metadata.json` STAC Item, each
+file's `city`/`geo` footer objects, the reserved, per-LoD and attribute
+columns' logical types, the sidecar schemas, and the value-level invariants
+(required columns non-null, the `feature_id` rule, WKB encoding, `face_semantics`
+/ `shells` / appearance lengths, sidecar references). Prints one line per
+violation — `error[code] file: message (spec page)` for a MUST, `warning[…]`
+for a SHOULD — then `N error(s), M warning(s)`. Exit `0` when there is no
+error, `2` otherwise.
+
 ### bench — variant-matrix benchmark
 
 ```bash

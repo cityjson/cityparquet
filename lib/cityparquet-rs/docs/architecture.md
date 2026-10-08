@@ -9,11 +9,11 @@ document is about the _code_.
 
 Three crates, layered so the type system has no I/O dependencies:
 
-| Crate                    | Responsibility                                                                                                                 | Notable dependency line                                       |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| **`cityparquet-schema`** | The CityParquet spec _as code_: types, CityGML taxonomy, Arrow schema, profiles, manifest, metadata. No buffers, no Parquet.   | **zero** `arrow-array` / `parquet` deps — only `arrow-schema` |
-| **`cityparquet`**        | The Parquet read/write path: scan, encode, write, read, decode, export, compare, WKB, appearance, sidecars, ordering, recipes. | `arrow-*`, `parquet`, `wkb`, `cjseq`                          |
-| **`cityparquet-cli`**    | The `cityparquet` binary (convert/export/compare/bench) and the benchmark harness library.                                     | `clap`, the two crates above                                  |
+| Crate                    | Responsibility                                                                                                                           | Notable dependency line                                       |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| **`cityparquet-schema`** | The CityParquet spec _as code_: types, CityGML taxonomy, Arrow schema, profiles, manifest, metadata. No buffers, no Parquet.             | **zero** `arrow-array` / `parquet` deps — only `arrow-schema` |
+| **`cityparquet`**        | The Parquet read/write path: scan, encode, write, read, decode, export, compare, validate, WKB, appearance, sidecars, ordering, recipes. | `arrow-*`, `parquet`, `wkb`, `cjseq`                          |
+| **`cityparquet-cli`**    | The `cityparquet` binary (convert/export/compare/validate/bench) and the benchmark harness library.                                      | `clap`, the two crates above                                  |
 
 The **schema/Parquet isolation** is enforced in CI: `just isolation` fails if
 `cityparquet-schema` ever pulls in `arrow-array` or `parquet`. Keeping the
@@ -179,6 +179,27 @@ face positions all normalise away, and every index is dereferenced to its
 definition, so the comparison is of appearance content rather than of CityJSON
 spelling. `Exclusions::appearance` turns that off for the Core profile's
 deliberate drops.
+
+## Validator
+
+`validate` checks a package against the specification without trusting
+anything this crate's writer does. It reads each file's Parquet schema and
+footer key-value pairs, and decodes values with `ARROW:schema` ignored, so a
+file from any writer is judged by what the Parquet logical types and the
+`city`/`geo` objects say. The expected types are not restated: the reserved
+columns come from `CityParquetSchema::to_arrow_schema`, the per-LoD and sidecar
+columns from `cityparquet_schema::model` and `sidecar_schemas`, and a Parquet
+type matches an Arrow field by logical type and nullability, descending into
+`LIST` and `MAP` groups by their annotation rather than their child names.
+
+Each check cites the specification page it comes from; a MUST is an error and
+a SHOULD a warning. Where the spec states a rule about values (a required
+column non-null on every row), the values are checked, and a nullable
+declaration alone is a warning. The submodules split the work by subject:
+`layout` (file names, object-table modules), `stac` (`metadata.json`),
+`footer` (`city`, `geo`, the `GEOMETRY` annotation and its CRS), `types`
+(logical types), `wkb`, `values` (per-cell invariants) and `tables` (object
+tables and sidecars).
 
 ## Benchmark harness
 

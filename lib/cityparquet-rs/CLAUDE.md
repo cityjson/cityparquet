@@ -74,6 +74,7 @@ CLI (add `--release` for realistic timing):
 cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite  # CityJSON/Seq/CityGML → package
 cargo run -p cityparquet-cli -- export  PACKAGE_DIR  OUT.city.jsonl    # package → CityJSON/Seq
 cargo run -p cityparquet-cli -- compare A.city.jsonl B.city.jsonl      # semantic equality (round-trip proof)
+cargo run -p cityparquet-cli -- validate PACKAGE_DIR                   # conformance against the spec (exit 2 on an error)
 cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 ```
 

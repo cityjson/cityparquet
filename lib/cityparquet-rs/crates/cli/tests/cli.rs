@@ -1219,3 +1219,44 @@ fn convert_writes_hilbert_order_by_default_and_ordering_source_opts_out() {
         "convert without --ordering must write Hilbert order"
     );
 }
+
+/// `validate` reports a conformant package with exit status 0, and a package
+/// violating a MUST with a non-zero status naming the rule.
+#[test]
+fn validate_exits_zero_on_a_conformant_package_and_non_zero_on_a_violation() {
+    let out = tempfile::tempdir().unwrap();
+    let pkg = out.path().join("pkg");
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let convert = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(&pkg)
+        .output()
+        .unwrap();
+    assert!(convert.status.success());
+
+    let valid = Command::new(binary)
+        .arg("validate")
+        .arg(&pkg)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&valid.stdout);
+    assert!(valid.status.success(), "{stdout}");
+    assert!(stdout.contains("0 error(s), 0 warning(s)"), "{stdout}");
+
+    // A package with its object table removed violates spec 01's "at least
+    // one object table is required".
+    std::fs::remove_file(pkg.join("building.parquet")).unwrap();
+    let invalid = Command::new(binary)
+        .arg("validate")
+        .arg(&pkg)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&invalid.stdout);
+    assert!(!invalid.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("error[package.no-object-table]"),
+        "{stdout}"
+    );
+}

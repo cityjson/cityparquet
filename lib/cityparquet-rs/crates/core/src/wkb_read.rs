@@ -286,6 +286,9 @@ impl<'a> Cursor<'a> {
 /// one [`ring_end`](Self::ring_end) with `n`, where the owned decoder
 /// ([`wkb_to_geometry`]) keeps `n - 1` (it strips the closing vertex).
 pub trait WkbVisitor {
+    /// A geometry with WKB type code `type_code` begins: the top-level
+    /// geometry, and then each member of a `GeometryCollectionZ`.
+    fn geometry(&mut self, _type_code: u32) {}
     /// One stored XYZ vertex, in buffer order.
     fn coord(&mut self, _xyz: [f64; 3]) {}
     /// A ring (or linestring) of `n_points` stored points has ended.
@@ -362,6 +365,7 @@ impl Cursor<'_> {
                 "WKB geometry nesting exceeds the maximum depth of {MAX_DEPTH}"
             )));
         }
+        v.geometry(type_code);
         let n = self.read_u32()? as usize;
         for _ in 0..n {
             match type_code {

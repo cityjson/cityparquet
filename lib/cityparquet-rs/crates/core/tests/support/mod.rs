@@ -9,8 +9,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
-use arrow_schema::Schema;
+use arrow_array::{ArrayRef, RecordBatch, make_array};
+use arrow_schema::{DataType, Field, Fields, Schema};
 use cityparquet::package::{ConvertOptions, convert};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -28,10 +28,20 @@ pub fn fixture(name: &str) -> PathBuf {
 
 /// Convert a real fixture into `<tempdir>/pkg` with the default options.
 pub fn convert_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
+    convert_fixture_with(name, |_| {})
+}
+
+/// Convert a real fixture into `<tempdir>/pkg`, with `configure` applied to
+/// the default options first.
+pub fn convert_fixture_with(
+    name: &str,
+    configure: impl FnOnce(&mut ConvertOptions),
+) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("pkg");
-    convert(&ConvertOptions::new(fixture(name), out.clone()))
-        .unwrap_or_else(|e| panic!("convert {name}: {e}"));
+    let mut opts = ConvertOptions::new(fixture(name), out.clone());
+    configure(&mut opts);
+    convert(&opts).unwrap_or_else(|e| panic!("convert {name}: {e}"));
     (dir, out)
 }
 
@@ -90,6 +100,76 @@ impl FileContent {
         self.key_values.retain(|(k, _)| k != key);
     }
 
+    /// The parsed JSON value of the footer key `key`.
+    pub fn key_json(&self, key: &str) -> serde_json::Value {
+        serde_json::from_str(
+            self.key_value(key)
+                .unwrap_or_else(|| panic!("no {key} key")),
+        )
+        .unwrap()
+    }
+
+    /// Replace column `name` in every batch by `f(field, column, batch
+    /// index)`, which returns the new field and column.
+    pub fn map_column(
+        &mut self,
+        name: &str,
+        mut f: impl FnMut(&Field, &ArrayRef, usize) -> (Field, ArrayRef),
+    ) {
+        let index = self.schema.index_of(name).unwrap();
+        let mut new_field = None;
+        let mut batches = Vec::with_capacity(self.batches.len());
+        for (b, batch) in self.batches.iter().enumerate() {
+            let (field, column) = f(self.schema.field(index), batch.column(index), b);
+            let mut columns = batch.columns().to_vec();
+            columns[index] = column;
+            let mut fields: Vec<Field> = self
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect();
+            fields[index] = field.clone();
+            let schema = Arc::new(Schema::new(fields));
+            batches.push(RecordBatch::try_new(schema, columns).unwrap());
+            new_field = Some(field);
+        }
+        let mut fields: Vec<Field> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        fields[index] = new_field.unwrap();
+        self.schema = Arc::new(Schema::new(fields));
+        self.batches = batches;
+    }
+
+    /// Store the JSON columns as plain UTF8, the way a writer that does not
+    /// annotate them would: every column when `only` is `None`, else just
+    /// the top-level column `only`.
+    pub fn untag_json(&mut self, only: Option<&str>) {
+        let names: Vec<String> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .filter(|n| only.is_none_or(|o| o == n))
+            .collect();
+        for name in names {
+            self.map_column(&name, |field, column, _| {
+                let field = untag(field);
+                let data = column
+                    .to_data()
+                    .into_builder()
+                    .data_type(field.data_type().clone())
+                    .build()
+                    .unwrap();
+                (field, make_array(data))
+            });
+        }
+    }
+
     /// Write this content to `path`, with no embedded `ARROW:schema`: what
     /// lands in the file is only what the Parquet schema and the footer
     /// key-value pairs say, as it would be for a writer that is not Arrow
@@ -114,4 +194,21 @@ impl FileContent {
         }
         writer.close().unwrap();
     }
+}
+
+/// `field` with any `arrow.json` extension tag removed, recursively through
+/// struct children.
+fn untag(field: &Field) -> Field {
+    let data_type = match field.data_type() {
+        DataType::Struct(children) => DataType::Struct(Fields::from(
+            children.iter().map(|c| untag(c)).collect::<Vec<_>>(),
+        )),
+        other => other.clone(),
+    };
+    let mut metadata = field.metadata().clone();
+    if metadata.get("ARROW:extension:name").map(String::as_str) == Some("arrow.json") {
+        metadata.remove("ARROW:extension:name");
+        metadata.remove("ARROW:extension:metadata");
+    }
+    Field::new(field.name(), data_type, field.is_nullable()).with_metadata(metadata)
 }

@@ -29,6 +29,7 @@ pub mod scan;
 pub mod sidecar;
 pub mod source;
 pub mod stac;
+pub mod validate;
 pub mod variant;
 pub mod visit;
 pub mod wkb_read;
