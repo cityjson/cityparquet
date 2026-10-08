@@ -61,6 +61,9 @@ pub struct FeatureReader {
     /// (CG-3). Empty when the caller opened via
     /// [`FeatureReader::open_without_appearance`].
     model_appearance: ModelAppearance,
+    /// The document's allowance for expanding xlinks to surface aggregates,
+    /// shared by every object it holds.
+    xlink_budget: std::sync::Arc<super::building::XlinkBudget>,
     /// Whether the reader is currently positioned directly inside a
     /// `cityObjectMember`, i.e. the next `Start` is that member's own object.
     /// Cleared as soon as that object has been seen (mapped or not), so
@@ -210,6 +213,7 @@ impl FeatureReader {
             index: 0,
             done: false,
             model_appearance,
+            xlink_budget: std::sync::Arc::default(),
             inside_member: false,
             skipped_members: std::collections::BTreeMap::new(),
         })
@@ -263,6 +267,7 @@ impl FeatureReader {
                             &self.translate,
                             self.index,
                             &self.model_appearance,
+                            &self.xlink_budget,
                         )?;
                         // This member's object has been consumed whole; the
                         // member's own `End` is next.
@@ -279,6 +284,7 @@ impl FeatureReader {
                             &self.translate,
                             self.index,
                             &self.model_appearance,
+                            &self.xlink_budget,
                         )?;
                         // This member's object has been consumed whole; the
                         // member's own `End` is next.

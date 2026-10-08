@@ -253,3 +253,82 @@ fn an_exponential_xlink_fan_out_is_refused() {
     let error = convert_error(gml);
     assert!(error.contains("FAN0"), "{error}");
 }
+
+/// A chain of aggregates, each xlinking once to the next, is linear in the
+/// document but as deep as it is long; resolving it recursively would
+/// overflow the stack before any budget is spent. No real file nests
+/// xlinked aggregates more than a few levels — GML has no reason to — so
+/// this is the real fixture with a chain of 100 000 MultiSurfaces added and
+/// the lod4Solid's Wall South member pointed at its head. It must be
+/// refused by a depth limit, with an error, not a crash.
+#[test]
+fn a_deep_chain_of_xlinked_aggregates_is_refused() {
+    const LENGTH: usize = 100_000;
+    let polygon = "PolyID10204_1916_571790_369478";
+    let mut chain = String::with_capacity(LENGTH * 120);
+    for i in 0..LENGTH {
+        let next = if i + 1 == LENGTH {
+            polygon.to_string()
+        } else {
+            format!("CHAIN{}", i + 1)
+        };
+        chain.push_str(&format!(
+            r##"<gml:surfaceMember><gml:MultiSurface gml:id="CHAIN{i}"><gml:surfaceMember xlink:href="#{next}"/></gml:MultiSurface></gml:surfaceMember>"##
+        ));
+    }
+    let shell_member = format!(r##"<gml:surfaceMember xlink:href="#{WALL_SOUTH}"/>"##);
+    let gml = with_extra_members(&chain).replacen(
+        &shell_member,
+        r##"<gml:surfaceMember xlink:href="#CHAIN0"/>"##,
+        1,
+    );
+    let error = convert_error(gml);
+    assert!(
+        error.contains("CHAIN0") && error.contains("deep"),
+        "{error}"
+    );
+}
+
+/// The budget is a multiple of the polygons the document defines, each
+/// counted once. Wrapping one polygon in many nested identified aggregates
+/// adds tags, not polygons, and must not raise it: otherwise those wrappers
+/// would pay for a fan-out of the same order. Derived from the real fixture
+/// like the fan-out test, with one polygon wrapped 2 000 deep beside a
+/// 2^11-copy fan-out of it — far beyond the document's few dozen polygons,
+/// but within a budget that counted the polygon once per wrapper.
+#[test]
+fn nested_aggregate_wrappers_do_not_raise_the_expansion_budget() {
+    const WRAPPERS: usize = 2_000;
+    const FAN_DEPTH: usize = 11;
+    let mut members = String::from("<gml:surfaceMember>");
+    for i in 0..WRAPPERS {
+        members.push_str(&format!(
+            r#"<gml:MultiSurface gml:id="WRAP{i}"><gml:surfaceMember>"#
+        ));
+    }
+    members.push_str(
+        r#"<gml:Polygon gml:id="WRAPPED"><gml:exterior><gml:LinearRing><gml:posList>458878.5 5438350 113.2 458878.5 5438350 114.2 458878.5 5438350.1 114.2 458878.5 5438350 113.2</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon>"#,
+    );
+    for _ in 0..WRAPPERS {
+        members.push_str("</gml:surfaceMember></gml:MultiSurface>");
+    }
+    members.push_str("</gml:surfaceMember>");
+    for level in 0..FAN_DEPTH {
+        let next = if level + 1 == FAN_DEPTH {
+            "WRAPPED".to_string()
+        } else {
+            format!("FAN{}", level + 1)
+        };
+        members.push_str(&format!(
+            r##"<gml:surfaceMember><gml:CompositeSurface gml:id="FAN{level}"><gml:surfaceMember xlink:href="#{next}"/><gml:surfaceMember xlink:href="#{next}"/></gml:CompositeSurface></gml:surfaceMember>"##
+        ));
+    }
+    let shell_member = format!(r##"<gml:surfaceMember xlink:href="#{WALL_SOUTH}"/>"##);
+    let gml = with_extra_members(&members).replacen(
+        &shell_member,
+        r##"<gml:surfaceMember xlink:href="#FAN0"/>"##,
+        1,
+    );
+    let error = convert_error(gml);
+    assert!(error.contains("FAN0"), "{error}");
+}

@@ -365,10 +365,22 @@ pub struct Collected {
     /// references rather than inline polygons.
     pub xlinks: Vec<String>,
     /// Every surface aggregate (`gml:CompositeSurface`, `gml:MultiSurface`)
-    /// carrying a `gml:id`, with its members in document order — inline
-    /// polygons and `xlink:href`s alike, at any depth — the targets an
+    /// carrying a `gml:id`, with its members in document order — what an
     /// `xlink:href` to the aggregate stands for.
-    pub aggregates: Vec<(String, Vec<RefTarget>)>,
+    pub aggregates: Vec<(String, Vec<AggregateMember>)>,
+}
+
+/// One member of an identified surface aggregate. A member is recorded once,
+/// in the innermost identified aggregate holding it; an identified aggregate
+/// nested in another is a [`AggregateMember::Ref`] member of it, so the
+/// record stays linear in the document however deep aggregates nest.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AggregateMember {
+    /// The polygon at this index of [`Collected::polygons`].
+    Polygon(usize),
+    /// An `xlink:href` member, or a nested identified aggregate: the
+    /// `gml:id` it names.
+    Ref(String),
 }
 
 /// Harvest every `gml:Polygon` (with its `gml:id`, if any) inside the current
@@ -395,7 +407,7 @@ pub fn collect_surfaces<R: BufRead>(
 ) -> Result<Collected> {
     let mut out = Collected::default();
     // Open identified aggregates: (depth inside them, id, members so far).
-    let mut open: Vec<(usize, String, Vec<RefTarget>)> = Vec::new();
+    let mut open: Vec<(usize, String, Vec<AggregateMember>)> = Vec::new();
     let mut depth = 1usize;
     loop {
         buf.clear();
@@ -410,8 +422,8 @@ pub fn collect_surfaces<R: BufRead>(
                     let id = gml_id(&e);
                     let mut poly = read_polygon(reader, buf)?;
                     poly.id = id.clone();
-                    for (_, _, members) in &mut open {
-                        members.push(RefTarget::Inline(poly.clone()));
+                    if let Some((_, _, members)) = open.last_mut() {
+                        members.push(AggregateMember::Polygon(out.polygons.len()));
                     }
                     out.polygons.push((id, poly));
                 } else if gml
@@ -420,9 +432,9 @@ pub fn collect_surfaces<R: BufRead>(
                 {
                     // An xlink surfaceMember (empty under expand_empty_elements):
                     // record the fragment and consume through its End. It is
-                    // a member of every enclosing identified aggregate too.
-                    for (_, _, members) in &mut open {
-                        members.push(RefTarget::Xlink(frag.clone()));
+                    // a member of the innermost enclosing identified aggregate.
+                    if let Some((_, _, members)) = open.last_mut() {
+                        members.push(AggregateMember::Ref(frag.clone()));
                     }
                     out.xlinks.push(frag);
                     skip_element(reader, buf)?;
@@ -432,6 +444,9 @@ pub fn collect_surfaces<R: BufRead>(
                         && matches!(local.as_ref(), b"CompositeSurface" | b"MultiSurface")
                         && let Some(id) = gml_id(&e)
                     {
+                        if let Some((_, _, members)) = open.last_mut() {
+                            members.push(AggregateMember::Ref(id.clone()));
+                        }
                         open.push((depth, id, Vec::new()));
                     }
                 }
