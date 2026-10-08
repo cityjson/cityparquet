@@ -31,11 +31,11 @@ use crate::encode::{LocalDefs, encode, encode_in_order, rewrite_geometry_appeara
 use crate::lod0::Lod0Options;
 use crate::order::hilbert_order;
 use crate::recipe::WriterRecipe;
-use crate::scan::{ScanResult, city_and_geo_for_file, scan};
+use crate::scan::{ScanResult, city_and_geo_for_file, scan_keeping};
 use crate::sidecar::{
     ImplicitGeometryRow, write_implicit_geometries, write_materials, write_textures,
 };
-use crate::source::Source;
+use crate::source::{OrderedFeatures, Source};
 use crate::stac::properties::PackageTables;
 use crate::stac::{ItemOptions, build_item};
 use crate::wkb_write::{VertexPool, geometry_to_wkb};
@@ -1002,6 +1002,7 @@ fn write_package(
     opts: &ConvertOptions,
     source: &Source,
     scan_result: &ScanResult,
+    kept_features: Option<Vec<cjseq::CityJSONFeature>>,
     arrow_schema: Arc<Schema>,
     props: WriterProperties,
     tmp_dir: &Path,
@@ -1041,7 +1042,18 @@ fn write_package(
                 &scan_result.dataset_bbox.unwrap_or([0.0; 6]),
                 scan_result.axis_order,
             );
-            encode_in_order(source, scan_result, order, opts.batch_size)?
+            // A source readable only front to back had its features kept
+            // by the scan rather than read a second time.
+            let features = match kept_features {
+                Some(kept) => OrderedFeatures::parsed(kept, order),
+                None => source.features_in_order(order)?,
+            };
+            encode_in_order(
+                features,
+                &source.header().transform,
+                scan_result,
+                opts.batch_size,
+            )?
         }
     };
     // Set BEFORE either the main encode loop below or `build_implicit_geometry_rows`
@@ -1335,7 +1347,11 @@ pub(crate) fn convert_source_impl(
         )));
     }
 
-    let mut scan_result = scan(source)?;
+    // A source readable only front to back, in Hilbert order, keeps its
+    // features from the scan instead of being read again to reorder them.
+    let mut kept_features =
+        (opts.ordering == RowOrder::Hilbert && source.reads_front_to_back()).then(Vec::new);
+    let mut scan_result = scan_keeping(source, kept_features.as_mut())?;
     if let Some(canon) = schema_override {
         scan_result.schema = canon.schema.clone();
         scan_result.lods = canon.lods.clone();
@@ -1422,7 +1438,15 @@ pub(crate) fn convert_source_impl(
         )
     })?;
 
-    let written = match write_package(opts, source, &scan_result, arrow_schema, props, &tmp_dir) {
+    let written = match write_package(
+        opts,
+        source,
+        &scan_result,
+        kept_features,
+        arrow_schema,
+        props,
+        &tmp_dir,
+    ) {
         Ok(written) => written,
         Err(e) => {
             // Nothing in `opts.output_dir` was ever touched: only the

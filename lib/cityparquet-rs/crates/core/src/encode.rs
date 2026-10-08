@@ -1892,20 +1892,19 @@ pub fn encode<'a>(
 
 /// Sibling entry point to [`encode`] for a caller that has already decided
 /// the feature order — the Hilbert row ordering (`crate::package::convert`):
-/// the features come from [`Source::features_in_order`] with `order`, as
-/// indices into [`Source::features`]. Everything else (schema, transform,
-/// batch size, appearance interning, stats) is identical, because both entry
-/// points build the SAME [`BatchIter`] and share its [`BatchIter::advance`]
-/// loop.
+/// the features come from [`Source::features_in_order`] (or an
+/// [`OrderedFeatures`] over features already parsed), quantised against
+/// `transform`, the source header's. Everything else (schema, batch size,
+/// appearance interning, stats) is identical, because both entry points
+/// build the SAME [`BatchIter`] and share its [`BatchIter::advance`] loop.
 pub fn encode_in_order<'a>(
-    source: &'a Source,
+    features: OrderedFeatures<'a>,
+    transform: &Transform,
     scan: &ScanResult,
-    order: Vec<usize>,
     batch_size: usize,
 ) -> Result<BatchIter<'a>> {
     let schema = Arc::new(scan.schema.to_arrow_schema()?);
-    let features = source.features_in_order(order)?;
-    let transform = source.header().transform.clone();
+    let transform = transform.clone();
     let writer = RowWriter::new(scan);
     Ok(BatchIter {
         features: FeatureStream::Ordered(features),

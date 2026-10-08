@@ -17,7 +17,7 @@ use cityparquet_schema::{
 
 use cardinality_estimator::CardinalityEstimator;
 
-use cjseq::GeometryType;
+use cjseq::{CityJSONFeature, GeometryType};
 
 use crate::source::{Source, SourceFormat};
 use cityparquet_schema::crs::AxisOrder;
@@ -238,6 +238,16 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 /// or class carrying a declared namespace prefix — rejects the source before
 /// anything is written.
 pub fn scan(source: &Source) -> Result<ScanResult> {
+    scan_keeping(source, None)
+}
+
+/// [`scan`], also moving every feature it reads into `keep` when given — so
+/// a source that can only be read front to back need not be read twice by a
+/// caller that wants the features afterwards.
+pub(crate) fn scan_keeping(
+    source: &Source,
+    mut keep: Option<&mut Vec<CityJSONFeature>>,
+) -> Result<ScanResult> {
     let header = source.header();
     let extensions =
         cityparquet_schema::extensions::declarations_from_cityjson(header.extensions.as_ref())?;
@@ -308,7 +318,17 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
 
     let mut feature_centres = Vec::new();
     for feature in source.features()? {
-        let feature = feature?;
+        let owned;
+        let feature: &CityJSONFeature = match keep.as_deref_mut() {
+            Some(kept) => {
+                kept.push(feature?);
+                kept.last().expect("just pushed")
+            }
+            None => {
+                owned = feature?;
+                &owned
+            }
+        };
         feature_centres.push(crate::order::feature_centre(
             &feature.vertices,
             &header.transform,

@@ -380,17 +380,40 @@ impl Source {
                     }
                 }
                 SourceFormat::CityJson => Access::Doc(self.doc.as_ref().expect("doc set")),
-                SourceFormat::CityGml | SourceFormat::FlatCityBuf => Access::Parsed(
-                    self.features()?
-                        .map(|f| f.map(Some))
-                        .collect::<Result<Vec<_>>>()?,
-                ),
+                SourceFormat::CityGml | SourceFormat::FlatCityBuf => {
+                    return Ok(OrderedFeatures::parsed(
+                        self.features()?.collect::<Result<Vec<_>>>()?,
+                        order,
+                    ));
+                }
             }
         };
         Ok(OrderedFeatures {
             order: order.into_iter(),
             access,
         })
+    }
+
+    /// Whether this source can only be read front to back — a CityGML or
+    /// FlatCityBuf file — so that reading its features in another order
+    /// means holding them all parsed.
+    pub(crate) fn reads_front_to_back(&self) -> bool {
+        self.buffered.is_none()
+            && matches!(
+                self.format,
+                SourceFormat::CityGml | SourceFormat::FlatCityBuf
+            )
+    }
+}
+
+impl OrderedFeatures<'static> {
+    /// `features` — every feature of a source, already parsed in its
+    /// [`Source::features`] order — handed out in `order`.
+    pub(crate) fn parsed(features: Vec<CityJSONFeature>, order: Vec<usize>) -> Self {
+        OrderedFeatures {
+            order: order.into_iter(),
+            access: Access::Parsed(features.into_iter().map(Some).collect()),
+        }
     }
 }
 
