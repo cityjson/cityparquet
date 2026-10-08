@@ -120,8 +120,11 @@ hits are mixed between the two and depend on where the object sits in the file.
 **CityParquet's spatial window prunes nothing on five of the six datasets.**
 At the writer's default of 65,536 rows per row group, only Zurich spans more
 than one group, so the bounding-box statistics cannot skip any part of the
-other five packages. The window reads the identifier and bounding-box columns
-of every row and decodes the geometry of the matches only.
+other five packages. The window reads the identifier, bounding-box and
+geometry columns of every row in the groups it touches, so the whole geometry
+column is decompressed, and walks the WKB of the matches only. That is why the
+1 % window costs CityParquet tens of milliseconds where FlatCityBuf's R-tree
+answers in one or two.
 
 **The text formats scale with file size.** CityGML, CityJSON and CityJSONSeq
 carry no index, so every query parses the whole file, except an identifier hit
