@@ -1357,9 +1357,10 @@ ls benchmark/runs/data benchmark/runs/formats/results 2>&1
 git log --oneline -3 -- benchmark/runs/formats/results
 ```
 
-The two methodology documents beside them state what a committed run means, and
-are kept current: `benchmark/formats/READ_BENCHMARK.md` (the cross-format read benchmark and
-its fairness caveats — the CSVs it describes are committed) and
+No results are committed until the full run on the benchmark host, so on a
+fresh clone the results directory is absent. The two methodology documents
+state what a run means, and are kept current: `benchmark/formats/READ_BENCHMARK.md`
+(the cross-format read benchmark and its fairness caveats) and
 `benchmark/formats/README.md` (file sizes and the configuration benchmark).
 
 Two things worth knowing before a re-run, because neither is visible from a

@@ -12,16 +12,17 @@ conversion time would not compare like with like. Preparing an artefact
 (`readbench_prepare.sh`, `convert-all`, the variant packages the bloom family
 builds) is never a measurement.
 
-**The committed evidence is `benchmark/runs/formats/results/`**, where the
-`formats` family writes its per-dataset read rows and its package `sizes.csv`,
-alongside the bloom family's `bloom_results/`; both carry a
-`MACHINE.md` describing the host they were measured on. What the figures cite
+**The evidence is `benchmark/runs/formats/results/`**, where a full run of
+the `formats` family writes its per-dataset read rows and its package
+`sizes.csv`, alongside the bloom family's `bloom_results/`; both carry a
+`MACHINE.md` describing the host they were measured on. None is committed
+until the full run on the benchmark host. What the figures cite
 is the ratios within a single directory. Nothing in this document quotes a
 number, so the methodology here cannot go stale against a re-run; the CSVs
 themselves can.
 
-**The committed evidence was measured on packages that carry bloom filters,
-and reports one timing statistic.** Both disclosures are
+**The evidence is measured on packages that carry bloom filters, and reports
+one timing statistic.** Both disclosures are
 [`READ_BENCHMARK.md`](READ_BENCHMARK.md)'s fairness caveats 30 and 31, which
 is where every family's caveats are kept: `benchviz` renders that one numbered
 list onto the summary page, so a caveat written only here would never reach a
@@ -264,8 +265,7 @@ list is to be confirmed with `just bloom-columns` on the host that runs it.
 Every lookup row carries `row_groups_total`, `bloom_pruned`, `stats_pruned`
 (the row groups min/max statistics ruled out among those the filters kept)
 and `filter_bytes` (the bitset bytes of the filters examined), the last four
-of the 22 columns the coordinator writes (the committed evidence predates
-`stats_pruned` and has 21; `READ_BENCHMARK.md` Caveat 30). Each miss probe is a stored identifier with
+of the 22 columns the coordinator writes (`READ_BENCHMARK.md` Caveat 30). Each miss probe is a stored identifier with
 `-readbench-absent` appended, inside the row groups' identifier ranges, so
 statistics alone cannot reject it. Both packages are written in Hilbert
 order: the coordinator builds every variant package that way and refuses a

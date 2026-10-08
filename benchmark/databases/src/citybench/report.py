@@ -1,7 +1,7 @@
 """The results CSV contract.
 
 The first eighteen columns (``dataset`` through ``http_requests``) match the
-format harness's committed CSVs (``benchmark/runs/formats/results/*.csv``) in
+format harness's CSVs (``benchmark/runs/formats/results/*.csv``) in
 name and order; ``bytes_read``/``http_requests`` are always empty here.
 the ``server_time_*`` block/``size_bytes``/``size_bytes_no_index``/``status`` and the
 raw-sample columns are this harness's own, added once server-bound databases

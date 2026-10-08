@@ -219,8 +219,8 @@ of; `benchmark/readbench/tests/strip_extension.rs` holds it in
 lockstep with the Rust and shell implementations of the same rule.
 
 Downloaded benchmark data (`benchmark/runs/data/`) and generated packages
-(`out/`) are gitignored. The committed measurement artefacts are under
-`benchmark/runs/` (`benchmark/runs/RESULTS.md` lists them), and their
+(`out/`) are gitignored. Measurement artefacts land under `benchmark/runs/`
+(none is committed until the full run on the benchmark host), and their
 methodology is in `benchmark/formats/READ_BENCHMARK.md` and
 `benchmark/formats/README.md` — see
 [benchmark/README.md](../../benchmark/README.md).

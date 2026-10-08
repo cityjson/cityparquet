@@ -196,8 +196,8 @@ unconditionally, so the harness stays uniform across variants and datasets
 
 The methodology and its comparability caveats live in
 [`benchmark/formats/README.md`](../../../benchmark/formats/README.md) (write side) and
-[`benchmark/formats/READ_BENCHMARK.md`](../../../benchmark/formats/READ_BENCHMARK.md) (read side, which is
-where the committed CSVs are).
+[`benchmark/formats/READ_BENCHMARK.md`](../../../benchmark/formats/READ_BENCHMARK.md) (read side, which
+describes the CSVs a run writes).
 
 ### Recipe presets (the benchmark variable)
 

@@ -7,7 +7,7 @@ A high-level overview of the work that brings the benchmark in line with the pap
 - The commander session plans, briefs and verifies; an Opus subagent implements.
 - Small commits on `develop` in this repository, nothing pushed until the author has looked. The parent paper repository's submodule pointer is bumped once, when a task is finished.
 - Code only. The author edits the paper text separately.
-- Citable numbers come from the benchmark host. On a laptop we change code, run the test suites and smoke runs, and re-render from committed evidence.
+- Citable numbers come from the benchmark host. On a laptop we change code, run the test suites and smoke runs, and re-render the local short-profile run.
 
 ## Tasks, in order
 
@@ -54,7 +54,7 @@ The author reviewed the pipeline stage by stage; each finding became a change. W
 
 ### 3a. Before the host run
 
-Nothing Linux-specific has run on Linux, and all committed evidence under `benchmark/runs/` predates the current harness. The first run on the host is a `quick` run and checks, in this order:
+Nothing Linux-specific has run on Linux, and there is no committed evidence under `benchmark/runs/` until the host run. The first run on the host is a `quick` run and checks, in this order:
 
 1. Choose the preparation mode (benchmark/README.md, "The hosted corpus"). `v8/` holds the six city datasets, so `just bench-prep` downloads them, verified against the manifest. The 3DBAG slice needs `just bench-prep --rebuild-sources --datasets 3dbag_n1000000` once, on a machine with the R2 token and enough memory: its CityGML synthesis takes hours, and its log shows `0 geometries dropped` and no LoD 1.2. Everything else downloads.
 2. `MACHINE.md` and the manifests record the isolation actually applied: NUMA pinning, the memory ceiling, the load gate. A step the host refuses is recorded as not applied.

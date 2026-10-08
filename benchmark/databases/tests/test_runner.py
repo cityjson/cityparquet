@@ -70,11 +70,11 @@ def test_cross_check_of_empty_dict_is_vacuously_fine():
 
 
 def test_cross_check_publishes_a_small_spread_as_an_explained_deviation():
-    """The committed 3DBAG bbox counts differ by 0.03-0.04 % for reasons
+    """3DBAG bbox counts differ by a few hundredths of a percent for reasons
     that are properties of the compared systems, not of the query: cjdb's
     importer drops 2/16/60 BuildingPart footprints whose non-vertical faces
-    share one Z, and PostGIS's float4 `&&` admits 4 extra objects at the
-    25 % window (review §5). The decomposition is what a reader can act on;
+    share one Z, and PostGIS's float4 `&&` admits objects just outside a
+    window (review §5); the counts below are fixture values of that shape. The decomposition is what a reader can act on;
     a binary pass/fail was not."""
     note, status = cross_check({"duckdb-cityparquet": 221005, "cjdb": 220949,
                                 "3dcitydb": 221008})

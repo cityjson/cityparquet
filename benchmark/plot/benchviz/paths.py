@@ -11,10 +11,10 @@ else to put them (the paper workspace renders the page into its docs tree and
 the figures into ``paper/assets/bench``) passes the paths in.
 
 INPUTS AND OUTPUTS SIT IN DIFFERENT SIBLINGS, deliberately. The CSVs this
-reads are the committed evidence under ``benchmark/runs/formats/`` (the
+reads are the run's evidence under ``benchmark/runs/formats/`` (the
 databases' beside it, in ``benchmark/runs/databases/``); a bare run's summary
 goes to the ignored ``benchmark/summary/``, so it never overwrites the
-committed one, which ``just bench-summary`` writes to
+full-profile one, which ``just bench-summary`` writes to
 ``benchmark/runs/summary/full/``.
 
 stdlib only: ``prep`` imports this and must stay runnable from a bare Python.

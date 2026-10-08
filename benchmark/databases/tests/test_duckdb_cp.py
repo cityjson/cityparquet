@@ -190,7 +190,7 @@ def test_both_tags_read_the_one_cityparquet_package(tmp_path):
 
 
 def test_prepare_turns_off_the_geoparquet_footer_conversion(tmp_path, monkeypatch):
-    """The committed run left this at its default (true). It governs the
+    """DuckDB's default is true. It governs the
     `geo`-footer conversion path; it does NOT re-type `geometry_lod0_0`,
     which CityParquet writes with Parquet's own GEOMETRY logical type
     (measured — README Caveat 18)."""
@@ -206,9 +206,9 @@ def test_prepare_turns_off_the_geoparquet_footer_conversion(tmp_path, monkeypatc
 
 
 def test_the_primary_thread_configuration_is_one_thread(tmp_path, monkeypatch):
-    """The committed run gave DuckDB 16 threads against a PostgreSQL with
-    parallel query disabled, which concentrated a 5-8x advantage on exactly
-    the headline rows (review §4.3). One thread is the primary figure; the
+    """DuckDB on 16 threads against a PostgreSQL with parallel query
+    disabled concentrates DuckDB's advantage on exactly the headline rows
+    (review §4.3). One thread is the primary figure; the
     parallel pass is a disclosed second column."""
     commands = []
 

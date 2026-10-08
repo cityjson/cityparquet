@@ -931,8 +931,7 @@ DB_THREADS = ("single", "parallel")
 DB_CITABLE = frozenset({"ok", "ok-deviation"})
 # The memory column, current name first. `peak_working_mem_bytes` is the
 # working-memory metric (PostgreSQL backend RssAnon, a fresh DuckDB process);
-# `peak_rss_bytes` is the earlier process-RSS metric, which committed evidence
-# still carries. The two are different measurements, so the loader keeps the
+# `peak_rss_bytes` is the earlier harness's process-RSS metric. The two are different measurements, so the loader keeps the
 # name it read (`memory_metric`) and the figure labels the panel by it.
 DB_MEMORY_COLUMNS = ("peak_working_mem_bytes", "peak_rss_bytes")
 DB_MEMORY_LABELS = {

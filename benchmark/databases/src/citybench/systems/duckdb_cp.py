@@ -96,7 +96,7 @@ class DuckDBCityParquet:
         self._conn.execute(f"SET memory_limit = '{self._memory_limit}'")
         temp_directory = str(duckdb_temp_directory()).replace("'", "''")
         self._conn.execute(f"SET temp_directory = '{temp_directory}'")
-        # The committed run left this at its default (true). It governs the
+        # DuckDB's default is true. It governs the
         # `geo`-FOOTER conversion path, so turning it off keeps a GeoParquet
         # footer from silently re-typing a column mid-run. MEASURED, not
         # assumed: it does NOT change `geometry_lod0_0`, which CityParquet

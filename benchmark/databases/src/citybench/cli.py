@@ -62,10 +62,9 @@ def _dataset(source: Path, prepared_dir: Path | None = None) -> Dataset:
 #: `single` is the PRIMARY figure: DuckDB on one thread, PostgreSQL in one
 #: backend. It is the condition under which the two engines are asked for
 #: the same amount of CPU, and it matches the format harness's
-#: single-threaded readers. The committed run's DuckDB ran on 16 threads
-#: against a PostgreSQL with parallel query disabled, which concentrated a
-#: 5-8x advantage on exactly the headline rows
-#: (`notes/benchmark-fairness-review-2026-09-22.md` §4.3).
+#: single-threaded readers. DuckDB on 16 threads against a PostgreSQL with
+#: parallel query disabled concentrates DuckDB's advantage on exactly the
+#: headline rows (`notes/benchmark-fairness-review-2026-09-22.md` §4.3).
 #:
 #: `parallel` gives both engines a parallel budget. PostgreSQL's planner
 #: thresholds (`parallel_setup_cost`, `min_parallel_table_scan_size`) stay

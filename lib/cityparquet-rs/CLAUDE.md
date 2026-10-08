@@ -115,6 +115,6 @@ round-trip is proven by `convert` → `export` → `compare` against the source.
 
 - `docs/design.md` — data model & format (package layout, columns, geometry/appearance encoding, round-trip semantics).
 - `docs/architecture.md` — the code: crates, the two-pass conversion pipeline, reader/export/compare, the benchmark harness.
-- `../../benchmark/README.md` — what the three benchmark families measure, which evidence is committed and which is re-measured, and the caveats that are load-bearing.
+- `../../benchmark/README.md` — what the three benchmark families measure, where their results land, and the caveats that are load-bearing.
 - `../../benchmark/formats/README.md` — the write/compression benchmark's methodology and comparability caveats (no CSVs committed).
-- `../../benchmark/formats/READ_BENCHMARK.md` — the cross-format read benchmark: methodology, the six-dataset cityjson.org corpus, the two benchmark sets, and 35 fairness caveats. The committed results are in `benchmark/runs/formats/results/`, populated by `just bench-run --families formats` from the repository root.
+- `../../benchmark/formats/READ_BENCHMARK.md` — the cross-format read benchmark: methodology, the six-dataset cityjson.org corpus, the two benchmark sets, and 35 fairness caveats. A full run writes its results to `benchmark/runs/formats/results/` (`just bench-run --families formats` from the repository root); none is committed until the run on the benchmark host.

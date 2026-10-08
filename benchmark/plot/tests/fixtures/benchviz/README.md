@@ -34,7 +34,7 @@ manifest's slice dataset, so the `bloom` headline renders its "slice dataset
 was not measured" placeholder. Tests that need
 the slice derive it from these rows (`_mixed_bloom_fixture` in
 `tests/test_benchviz.py`). No measured `bloom` run is committed under
-`benchmark/formats/`; these stand in for one, and are to be replaced by a
+`benchmark/runs/formats/`; these stand in for one, and are to be replaced by a
 measured run's rows rather than kept beside them.
 
 The methodology document is deliberately NOT copied here. `fixture_bench` in

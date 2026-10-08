@@ -281,7 +281,7 @@ def test_bloom_axis_keys_the_attribute_lookups_with_their_probe_values(tmp_path:
 
 
 def test_unmeasured_attribute_lookups_are_listed_and_drawn_as_not_measured(tmp_path: Path):
-    """The fixture, like the committed slice evidence, has no attribute rows:
+    """The fixture has no attribute rows:
     the configured columns stay on the axis as `not measured`."""
     import matplotlib.pyplot as plt
 
@@ -436,7 +436,7 @@ def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path)
         "the same verified-absent string as `id-miss`",
         "counts the requests the reader made after",
         # 30-31: the evidence carries default-on filters and one timing statistic.
-        "The current evidence was measured on bloom-enabled packages.",
+        "The format evidence is measured on bloom-enabled packages.",
         "One generation of results, one timing block, one header.",
         "refuses to",
     ):

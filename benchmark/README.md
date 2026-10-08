@@ -25,7 +25,9 @@ On this machine the data and output root is
 | `summary/{full,short,smoke}/`                     | Rendered figures and combined HTML                                |
 
 Benchmark inputs, derived artefacts, results and rendered summaries are generated
-beneath this ignored directory. The paper checkout may explicitly export figures
+beneath this ignored directory. Only the full profile's result directories and
+`summary/full/` are re-included in git, so that the run on the benchmark host can
+be committed; no results are committed before it. The paper checkout may explicitly export figures
 to `paper/assets/bench/`.
 
 ## The hosted corpus

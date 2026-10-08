@@ -40,35 +40,21 @@ The CityParquet-based systems read a package prepared beforehand by
 seconds: the absence of a load step is the property under discussion, not a
 measurement gap.
 
-## Committed evidence
+## Evidence
 
-The committed database results are one run over the 1,000,001-object 3DBAG
-slice (`3dbag_n1000000`), in both thread configurations, with the write
-tier. That run **predates the current harness**: it reports process RSS in a
-column named `peak_rss_bytes` rather than working memory, uses seven samples
-per row, and predates the bbox recheck, the attribute resolution and the
-3DCityDB object-geometry gathering described below. Its numbers belong to
-that evidence and are to be re-measured with the current harness before
-they are cited.
+A full-profile run writes its results to `benchmark/runs/databases/results/`,
+one set of files per dataset; the `quick`, `short` and `smoke` profiles write
+to `benchmark/runs/databases/<profile>/`. No database results are committed
+until the full run on the benchmark host; the directory is re-included in
+`.gitignore` so that run's files can be.
 
-| File                                                                | Contents                                                                                                                                                        |
-| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `benchmark/runs/databases/results/3dbag_n1000000.csv`               | 102 rows: the read scenarios for every system under `threads=single` and `threads=parallel`, then the write tier; `repeat` = 7                                  |
-| `benchmark/runs/databases/results/3dbag_n1000000.manifest.json`     | source SHA-256, host, versions, `pg_settings` per configuration, ingest times, sizes, the cjdb patch disclosure, SRIDs, memory scope, the count tolerance       |
-| `benchmark/runs/databases/results/3dbag_n1000000.params.json`       | the query parameters: windows with achieved fractions, the attribute predicates, the four id probes, the append feature                                         |
-| `benchmark/runs/databases/results/3dbag_n1000000.indexes.sql`       | the DDL this harness added, plus a live `pg_indexes` dump for both PostgreSQL schemas                                                                           |
-| `benchmark/runs/databases/results/3dbag_n1000000.append.city.jsonl` | the one-feature CityJSONSeq file the `append-object` scenario imports                                                                                           |
-
-Of its 102 rows, 82 are `ok`, 18 are `ok-deviation` (the spatial rows, with
-the decomposition in `notes`) and two are `error`: the CityParquet
-`append-object` rows, because the DuckDB CityJSON extension build that run
-loaded by name refuses `PRAGMA insert_cityjsonseq` into a
-`cityparquet_read` package (see the write tier below). The current harness
-loads an explicitly chosen build instead ("Which build of the DuckDB
-CityJSON extension"). `benchmark/runs/RESULTS.md` describes the run and its
-limitations; read it before citing a number. The native-reader systems were
-not part of it, so `peak_heap_bytes` is empty on every row, and its manifest
-records no Git revision and no timestamp.
+| File                          | Contents                                                                                                                                                  |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<dataset>.csv`               | the read scenarios for every system under `threads=single` and `threads=parallel`, then the write tier (see "Metrics and the CSV contract")             |
+| `<dataset>.manifest.json`     | source SHA-256, host, versions, `pg_settings` per configuration, ingest times, sizes, the cjdb patch disclosure, SRIDs, memory scope, the count tolerance |
+| `<dataset>.params.json`       | the query parameters: windows with achieved fractions, the attribute predicates, the four id probes, the append feature, the dataset's LoDs             |
+| `<dataset>.indexes.sql`       | the DDL this harness added, plus a live `pg_indexes` dump for both PostgreSQL schemas                                                                     |
+| `<dataset>.append.city.jsonl` | the one-feature CityJSONSeq file the `append-object` scenario imports                                                                                     |
 
 ## Systems
 
@@ -321,12 +307,13 @@ stamped into `notes` (`city-object-rows-added` on cjdb,
 > into a package loaded with `cityparquet_read`: the insert fails with a
 > `BinderException` saying a column of the loaded package "cannot be
 > widened" to the incoming type (the community build tested rejected
-> `material_lod2_0`). The committed run's two DuckDB `append-object` rows
-> are that error. The fix — an insert that keeps the package's column
-> types, including the LoD 0 `GEOMETRY` column — is in the submodule
-> `lib/duckdb-cityjson` (commit `062279e`), so the harness loads an
+> `material_lod2_0`). An insert that keeps the package's column types,
+> including the LoD 0 `GEOMETRY` column, is in the submodule
+> `lib/duckdb-cityjson` (commit `062279e`), so the harness loads that
 > explicitly chosen build by path rather than by name (see
 > [Which build of the DuckDB CityJSON extension](#which-build-of-the-duckdb-cityjson-extension)).
+> The append under that build is measured in the full run on the benchmark
+> host.
 > The harness does **not** work around a refused insert: a system that
 > cannot answer is a result, recorded as `error: BinderException`, and
 > `citybench run` exits non-zero.
@@ -519,7 +506,7 @@ container engine and its version are under `isolation.containers.engine`.
 `docker/postgresql.conf` is mounted read-only, as the same file, into both
 containers. Stock PostgreSQL defaults (128 MB `shared_buffers`) would make
 either database a strawman. The manifest's `pg_settings` block records the
-values the committed run read back with `current_setting()`, in PostgreSQL's
+values the run reads back with `current_setting()`, in PostgreSQL's
 own memory units, which are binary (1 GB = 1024 MB):
 
 | setting                | cjdb  | 3dcitydb |
@@ -736,9 +723,7 @@ the manifest's `ingest.index_build_s`, apart from the import time.
 
 `<dataset>.indexes.sql` records both the DDL this harness added and a live
 `pg_indexes` dump of each PostgreSQL schema taken at run time (`pg.dump_indexes`),
-so the complete index set each system queried against is auditable. The
-committed 3DBAG file predates the attribute indexes, so it lists 15 cjdb
-and 59 3DCityDB indexes without them.
+so the complete index set each system queried against is auditable.
 
 `EXPLAIN` on the Rotterdam (Delfshaven) databases confirms the plans use the
 intended indexes. Rotterdam's `attr-filter` is the numeric bound
@@ -1002,10 +987,9 @@ Read these before citing a number.
    the `time_*` block.** The `time_*` block is the uninstrumented end-to-end figure for every
    system. The `server_time_*` block comes from a separate `EXPLAIN (ANALYZE,
 BUFFERS)` execution, whose per-node timing and buffer counters (and
-   `track_io_timing`) add overhead. In the committed 3DBAG CSV, 13 of the 56
-   PostgreSQL rows that carry a server time have a mean server time greater
-   than the mean end-to-end time, which a "subset of wall-clock" reading
-   cannot explain. **Do not subtract the two
+   `track_io_timing`) add overhead, so a row's server time can exceed its
+   end-to-end time, which a "subset of wall-clock" reading cannot explain.
+   **Do not subtract the two
    to compute a client-server tax.** Read them side by side, qualitatively.
 
 5. **The two thread configurations are not one number.** Under `single`,
@@ -1026,9 +1010,9 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
      `parallel`, its parallel workers (found from a second connection through
      `pg_stat_activity.leader_pid`). `RssAnon` is the backend's own heap,
      sort and hash memory; it leaves out `RssShmem`, where the 8 GB
-     `shared_buffers` land (the ~8.2–8.6 GiB of process RSS the committed
-     evidence's `peak_rss_bytes` column reports for 3DCityDB is essentially
-     that buffer pool), and also `RssFile`,
+     `shared_buffers` land (process RSS counts every buffer-pool page a
+     backend has touched, so it would report the shared pool as the
+     backend's own memory), and also `RssFile`,
      the OS page cache, other backends, background processes and the client
      process. The status files are read from the host `/proc` every 5 ms
      where containers share the host kernel (rootless podman on Linux), or by
@@ -1142,11 +1126,10 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     (`notes/benchmark-fairness-review-2026-09-22.md` §5) leaves 2, 16 and
     60 objects inside the 1 / 5 / 25 % windows (4,903, 63,745 and 221,005
     objects by CityParquet's count) with a NULL footprint, which is exactly
-    what cjdb lacks there. The committed evidence also shows, at the 25 %
-    window, 4 objects that PostGIS's float4 `&&` admitted on cjdb and 3 on
-    3DCityDB; that evidence predates the double-precision recheck, which
-    removes such objects (Caveat 12), so the re-run's `notes` carry only
-    the NULL-footprint and outside-window decomposition (Caveat 10).
+    what cjdb lacks there. PostGIS's float4 `&&` can also admit objects
+    just outside a window on cjdb and 3DCityDB; the double-precision
+    recheck removes them (Caveat 12), so a row's `notes` carry only the
+    NULL-footprint and outside-window decomposition (Caveat 10).
 
     Of the 60 NULL-footprint BuildingParts at the 25 % window, 39 have no
     lower horizontal face in the minimum-LoD geometry and 21 have one that
@@ -1169,8 +1152,7 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     probe admitted +14 / +15 / +20 objects on 3DCityDB at the 1 / 5 / 25 %
     windows; with the recheck 3DCityDB's set equals `duckdb-cityparquet`'s
     exactly at all three, so `envelope` is the box over the object's
-    subtree, as CityParquet's `bbox` is. Caveat 11's 3DBAG table predates
-    the recheck and still shows the float4 term (+4 / +3 at 25 %).
+    subtree, as CityParquet's `bbox` is.
     `duckdb-cityparquet` and the native reader compare double-precision
     bounds directly.
 
@@ -1213,9 +1195,7 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     `skipped: dataset carries no LoD 2.2 geometry ...` on all three. No
     system then runs a query that DuckDB could fold at plan time into an
     empty result: the count cross-check compares answers, not work, and
-    would not tell such a row from one that scanned the data. The committed
-    evidence's `lod-query` rows (all three systems count 500,296) answer an LoD
-    1.2 form of the scenario and are not comparable with an LoD 2.2 run.
+    would not tell such a row from one that scanned the data.
 
 16. **CityParquet's `bbox` is NULL for an object whose only geometry is a
     `GeometryInstance`.** The writer computes `bbox` from the object's own
@@ -1227,8 +1207,8 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     `bbox-query` on CityParquet excludes it, while cjdb and 3DCityDB resolve
     the placed geometry and can include it. Such a row is also outside the
     query-window derivation's denominator, which is recorded as
-    `window_rows` in the params sidecar. On the committed 3DBAG slice this
-    caveat does not operate: 0 of 1,000,001 rows has a NULL `bbox`.
+    `window_rows` in the params sidecar. On the 3DBAG slice this caveat
+    does not operate: 0 of 1,000,001 rows has a NULL `bbox`.
 
 17. **3DCityDB answers `id-lookup` and `lod-query` in its own shape.**
     `id-lookup` returns the whole object on every system, as one row:
@@ -1334,10 +1314,9 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
 22. **`duckdb-cityparquet`'s `id-lookup` hit is a row-group decode, not an
     index miss.** DuckDB does use the bloom filters; what the hit rows
     measure is DuckDB materialising every column of the one surviving row
-    group for a `SELECT *`. A diagnostic probe on 25 September 2026, on the
-    committed 1M Hilbert package with the harness's own probe ids, the same
-    DuckDB 1.5.5 the committed evidence used, one thread, five samples after a
-    warm-up (a probe, not the committed rows' means) measured:
+    group for a `SELECT *`. A diagnostic probe on the 1M Hilbert package
+    with the harness's own probe ids, DuckDB 1.5.5, one thread, five samples
+    after a warm-up (a probe, not benchmark rows) measured:
 
     | query                            | hit            | miss           |
     | -------------------------------- | -------------- | -------------- |
@@ -1346,11 +1325,11 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     | `SELECT count(*) … WHERE id = ?` | as `SELECT id` | as `SELECT id` |
 
     `parquet_bloom_probe` confirms that the miss id is excluded by the
-    filters of every row group. The committed `threads=single` rows agree
-    in shape: 374, 373 and 274 ms for the three hits, 44 ms for the miss.
-    The id-only probe is faster than the native Rust reader's own lookup
-    (the `bloom` family reports 150 ms for a hit and 16 ms for a miss), so
-    the bloom filters are not what is missing. DuckDB has no late
+    filters of every row group, and the id-only hit costs a fraction of the
+    `SELECT *` hit, so the bloom filters are not what is missing; how the
+    benchmark's `threads=single` rows and the native Rust reader's own
+    lookup (the `bloom` family) compare with the probe is to be measured on
+    the host. DuckDB has no late
     materialisation for Parquet: once the filters leave one 65 536-row row
     group, a `SELECT *` decodes that whole row group across all 84
     columns, four geometry columns included, before it keeps one row. The
@@ -1360,8 +1339,8 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     **different operations** — the whole object through a SQL engine,
     against the reader's own lookup — and must not be compared across
     figures. A smaller row group would cut the cost of the hit, at a
-    price elsewhere that the suite does not measure; the committed
-    package uses the writer's default.
+    price elsewhere that the suite does not measure; the package uses the
+    writer's default.
 
 ## Running the benchmark
 
@@ -1516,14 +1495,4 @@ database servers: each PostgreSQL system's server and PostGIS versions, for
 engine's digest of every image the run used. The images are pinned in
 `src/citybench/lifecycle.py` (PostgreSQL 16.4, PostGIS 3.4.3, 3DCityDB
 5.1.2) and `docker/citydb.Dockerfile` (`citydb-tool` 1.3.2 on
-`eclipse-temurin:21-jre`). The committed manifest predates the live
-provenance block; it records:
-
-```
-platform:  Linux-6.8.0-136-generic-x86_64-with-glibc2.39
-processor: x86_64
-python:    3.12.1
-duckdb (Python client): 1.5.5
-cjdb:      2.2.0+ground-surfaces-tie-patch (patch SHA-256 a54a9fd1909a…, identical to the committed patch file)
-SRID:      7415 (cjdb and 3dcitydb)
-```
+`eclipse-temurin:21-jre`).

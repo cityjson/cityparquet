@@ -13,8 +13,10 @@ monorepo root. The format family measures reads only; the suite does not
 time writes.
 
 Result files must be interpreted with their own query-parameter sidecars and
-run provenance. The committed results (`benchmark/runs/formats/results/`)
-describe the datasets and configurations named in those files. Some caveats
+run provenance. A full run writes its results to
+`benchmark/runs/formats/results/`, which describe the datasets and
+configurations named in those files; none is committed until the full run on
+the benchmark host. Some caveats
 below record observations made on an earlier corpus; they remain
 qualifications until equivalent checks have been made on a new run.
 
@@ -96,7 +98,7 @@ just how long it takes locally.
   same-machine timing block, an http-transport row's timing
   variance includes real network latency/jitter — the standard deviation
   (`time_std_s`) column now also captures that, not just OS/filesystem-cache
-  noise. A committed http-transport run is a snapshot of one network path at
+  noise. An http-transport run is a snapshot of one network path at
   one time, not a reproducible local benchmark.
 - **Two extra metrics, per scenario: bytes transferred and HTTP request
   count — successful, LOGICAL reads, not raw wire traffic.** The CSV's
@@ -341,9 +343,8 @@ dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_med
   `getrusage(RUSAGE_SELF).ru_maxrss`, **normalised to bytes** by
   `rss_to_bytes` in `benchmark/readbench/src/main.rs` (`ru_maxrss` is
   natively KiB on Linux per `getrusage(2)`, bytes on macOS/BSD). The column
-  is bytes throughout. **Every CSV committed before the `VmHWM` change is
-  floored at the coordinator's own RSS** — see Caveat 34 — so its small
-  values are not the child's.
+  is bytes throughout. On Linux it is the child's own peak, not one
+  floored at the coordinator's RSS — see Caveat 34.
 - `selectivity` = `result_count / total_object_count`, empty where N/A
   (`count`, `full-read`). See Caveat 2 for what `total_object_count` means
   per scenario.
@@ -590,9 +591,9 @@ each cold number stands alone, one per format, one `full-read` only.
 8. **Sub-millisecond deltas are noise; single-threaded reads are pinned.**
    As in `benchmark/formats/README.md`'s own methodology, deltas under roughly 10 ms at
    `repeat = 7` are within scheduler/filesystem-cache noise and are not
-   cited as a finding by themselves. That threshold describes the committed
-   evidence, which was taken at `repeat = 7`; the default is 25, and a run at
-   25 samples is read against its own spread (the interquartile range under
+   cited as a finding by themselves. That threshold applies to a run at
+   `repeat = 7`; the default is 25, and a run at 25 samples is read against
+   its own spread (the interquartile range under
    the median default), not against this figure. Every format's reads here run
    single-threaded (no Parquet multi-threaded row-group decode) — a
    deliberate, disclosed choice so timing differences reflect the
@@ -685,7 +686,7 @@ each cold number stands alone, one per format, one `full-read` only.
     (Codex, 2026-07-08) confirmed the query primitives, bbox prune + row-level
     filter, and allocator placement correct; its two flagged "dictionary"
     criticals were verified FALSE POSITIVES — `TypedDictionaryArray::value(i)`
-    resolves the row's key, and the then-committed `attr-filter(object_type)` run
+    resolves the row's key, and an `attr-filter(object_type)` run
     over 2231 rows with ~4 distinct types would have panicked at row 4 had the
     alleged raw-index reading been real.
 
@@ -1061,9 +1062,9 @@ each cold number stands alone, one per format, one `full-read` only.
     factor against CityGML has its baseline. On the slice, as on every
     corpus dataset, that CityGML is a `citygml-tools` serialisation the
     preparation chain synthesises, not a published file (Caveat 14), and it
-    is the largest artefact the chain writes: about 3.7 times the
-    CityJSONSeq it derives from in the committed `sizes.csv` (10.8 GB
-    against 2.9 GB). Synthesising it is the longest step of `just
+    is the largest artefact the chain writes, larger than the CityJSONSeq
+    it derives from by the factor the run's `sizes.csv` records.
+    Synthesising it is the longest step of `just
 bench-prep`, and parsing it dominates the slice's `citygml` rows; quote
     those rows as the cost of reading this serialisation of the slice, with
     the same qualification as every other `citygml` number.
@@ -1077,9 +1078,8 @@ bench-prep`, and parsing it dominates the slice's `citygml` rows; quote
     65 536 CityObjects and is a single row group. The family therefore runs
     on the slice only. Its probes are three lookups, each as a hit and a
     miss: `id-lookup`, `feature-lookup` and `attr-lookup`, an equality
-    lookup on each configured text attribute (`bloom_attributes`; the
-    committed slice evidence predates `attr-lookup` and has no attribute
-    rows, which the summary shows as not measured). A hit still costs the
+    lookup on each configured text attribute (`bloom_attributes`; a run
+    without attribute rows is shown in the summary as not measured). A hit still costs the
     row groups that hold the value, because a filter cannot narrow the
     search inside a group: on a 3DBAG tile written with 9 row groups,
     `documentnummer`'s hit returned 23 rows and its filters pruned 6 of the
@@ -1120,30 +1120,26 @@ stats_pruned` on the `*-miss` rows is how many the reader still
     object_store coalesced nearby ranges — not raw wire traffic, retries or
     connection reuse.
 
-30. **The current evidence was measured on bloom-enabled packages.** The
-    `formats`, `sizes` and `bloom` evidence under `benchmark/runs/formats/`
-    was measured on 23–24 September 2026 on packages the bloom-enabled
-    writer produced (chain version 3, `MACHINE.md` beside the results), and is
-    recorded in the coordinator's 21-column shape with the three lookup counters (its
-    timing block recomputed from the samples sidecars by
-    `benchmark/scripts/migrate_timing_columns.py`). The writer puts
-    filters on `id`, `feature_id` and high-cardinality string attributes by
-    default, so its packages are larger and its lookups prune; the `bloom`
-    family's `cityparquet+nobloom` variant is the one package measured
-    without them. The coordinator now writes 22 columns, with `stats_pruned` after
-    `bloom_pruned`, so that evidence predates the `stats_pruned` column and
-    the return rule of "The six scenarios".
+30. **The format evidence is measured on bloom-enabled packages.** The
+    `formats`, `sizes` and `bloom` families read packages the bloom-enabled
+    writer produces, and each results directory carries a `MACHINE.md`
+    describing the host it was measured on. The writer puts filters on
+    `id`, `feature_id` and high-cardinality string attributes by default, so
+    its packages are larger and its lookups prune; the `bloom` family's
+    `cityparquet+nobloom` variant is the one package measured without them.
+    The coordinator writes 22 columns, with `stats_pruned` after
+    `bloom_pruned`, and applies the return rule of "The six scenarios".
 
 31. **One generation of results, one timing block, one header.** Every
-    committed results CSV reports the seven-column timing block
-    (`time_mean_s` .. `time_q3_s`) over the warm samples, in the 21-column
-    shape the coordinator wrote before it added `stats_pruned` (Caveat 30);
-    the coordinator now writes 22 columns, and a re-run's CSVs carry them.
-    Results from before 2026-09-24 (a median
-    with `time_mad_s`) and from before default-on bloom filters exist only in
-    git history and must not be set beside these: a median absolute deviation
-    and an interquartile range are different spreads, and an `id-lookup` without filters is a different
-    operation. The shapes keep them apart mechanically: the coordinator's
+    results CSV reports the seven-column timing block
+    (`time_mean_s` .. `time_q3_s`) over the warm samples, in the
+    coordinator's 22-column shape (Caveat 30). Results with a median and
+    `time_mad_s`, results measured on packages without default-on bloom
+    filters, and results in the 21-column shape that predates `stats_pruned`
+    exist only in git history and must not be set beside these: a median
+    absolute deviation and an interquartile range are different spreads, and
+    an `id-lookup` without filters is a different operation. The shapes keep
+    them apart mechanically: the coordinator's
     `CSV_HEADER` (`benchmark/readbench/src/coordinator.rs`) is the only
     writer of a results header, `benchmark/plot/tests/test_csv_contract.py`
     holds the renderer's `READ_COLUMNS` to a leading prefix of it, and the
@@ -1212,27 +1208,22 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     written `fcb ser -A --index-node-size 64` panics with a capacity
     overflow on every `bbox-query`. Reproduced here, not inferred.
 
-34. **`peak_rss_bytes` in every CSV committed before 2026-09-22 is floored
-    at the coordinator's own RSS, and the floor hides every format that
-    used less.** The child used to report `getrusage(RUSAGE_SELF).ru_maxrss`.
-    Linux's `exec_mmap` folds the high-water mark of the address space a
-    task had BEFORE `exec` into `signal->maxrss`, and under
-    `posix_spawn`/`vfork` that address space is the parent's, so a freshly
-    exec'd child can never report less than the coordinator's peak. On the
-    committed 1M 3DBAG run 36 of the 43 read rows — every `citygml`,
-    `cityjson`, `flatcitybuf` and CityParquet row — carry the
-    identical value 269 963 264 B, the coordinator's RSS after deriving the
-    query parameters from the package; only `cityjsonseq` (4.3 GB) rose
-    above it. On Zurich 35 rows share 54 816 768 B. Those numbers are the
-    coordinator's memory, not the format's, and any read-memory ratio
-    computed from them (the read-memory figures) is a ratio of floors.
+34. **`peak_rss_bytes` is the child's own `VmHWM` on Linux, because
+    `ru_maxrss` there is floored at the coordinator's RSS.** A child that
+    reported `getrusage(RUSAGE_SELF).ru_maxrss` could never report less
+    than the coordinator's peak: Linux's `exec_mmap` folds the high-water
+    mark of the address space a task had BEFORE `exec` into
+    `signal->maxrss`, and under `posix_spawn`/`vfork` that address space is
+    the parent's. Every format that used less than the coordinator would
+    then carry the coordinator's memory, not its own, and any read-memory
+    ratio computed from such values would be a ratio of floors.
 
-    Fixed by reading `VmHWM` from `/proc/self/status` in the child (its own
+    The child therefore reads `VmHWM` from `/proc/self/status` (its own
     `mm`, created by `exec`, is not inherited; measured 10.5 MB for a child
-    under a 420 MB parent, against 419 MB from `ru_maxrss`). The fix changes
-    no timing. **Read-memory figures from before and after this
-    change must not be mixed**, and the pre-change CSVs' `peak_rss_bytes`
-    must not be quoted for any format whose value equals the run's floor.
+    under a 420 MB parent, against 419 MB from `ru_maxrss`). Reading it
+    changes no timing. **Read-memory figures taken with `ru_maxrss` on Linux
+    must not be set beside these**, and a value equal to the coordinator's
+    own RSS is not a format's memory.
 
 35. **Before 2026-09-23, only CityParquet's `attr-stats` computed the
     aggregate.** The scenario's contract is `(min, max, sum, count)` of a
@@ -1534,8 +1525,8 @@ identifies the bytes that were measured.
 ### Machine
 
 **Captured beside the results.** `benchmark/runs/formats/results/MACHINE.md`
-records the committed run's host: kernel, CPU, memory, the Rust toolchain and
-the commit. Treat the committed numbers as internally comparable (one machine,
+records a run's host: kernel, CPU, memory, the Rust toolchain and
+the commit. Treat a run's numbers as internally comparable (one machine,
 one sitting, per dataset) but do not quote an absolute time against another
 paper's hardware.
 
