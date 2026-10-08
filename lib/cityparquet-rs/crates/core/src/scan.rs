@@ -317,7 +317,7 @@ pub(crate) fn scan_keeping(
     };
 
     let mut feature_centres = Vec::new();
-    for feature in source.features()? {
+    for feature in source.features_batched()? {
         let owned;
         let feature: &CityJSONFeature = match keep.as_deref_mut() {
             Some(kept) => {

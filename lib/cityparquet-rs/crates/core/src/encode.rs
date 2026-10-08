@@ -1871,7 +1871,7 @@ pub fn encode<'a>(
     batch_size: usize,
 ) -> Result<BatchIter<'a>> {
     let schema = Arc::new(scan.schema.to_arrow_schema()?);
-    let features = source.features()?;
+    let features = source.features_batched()?;
     let transform = source.header().transform.clone();
     let writer = RowWriter::new(scan);
     Ok(BatchIter {

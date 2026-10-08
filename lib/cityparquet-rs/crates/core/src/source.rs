@@ -324,6 +324,25 @@ impl Source {
         }
     }
 
+    /// [`Source::features`], with a CityJSONSeq file's lines parsed a batch
+    /// at a time across cores — the same features in the same order, for a
+    /// caller doing enough per feature to overlap with (a conversion). Every
+    /// other source streams exactly as [`Source::features`] does.
+    pub fn features_batched(&self) -> Result<FeatureIter<'_>> {
+        if self.buffered.is_none() && self.format == SourceFormat::CityJsonSeq {
+            let file = File::open(&self.path).map_err(|e| {
+                CityParquetError::io_source(format!("cannot reopen {}", self.path.display()), e)
+            })?;
+            let mut lines = BufReader::new(file).lines();
+            lines.next(); // skip header line
+            return Ok(FeatureIter::SeqBatched(SeqFeatures {
+                lines,
+                ready: Vec::new().into_iter(),
+            }));
+        }
+        self.features()
+    }
+
     pub fn features(&self) -> Result<FeatureIter<'_>> {
         if let Some(buffered) = &self.buffered {
             return Ok(FeatureIter::Buffered(buffered.features.iter()));
@@ -376,7 +395,7 @@ impl Source {
                     Access::Lines {
                         file,
                         spans,
-                        line: String::new(),
+                        ready: Vec::new().into_iter(),
                     }
                 }
                 SourceFormat::CityJson => Access::Doc(self.doc.as_ref().expect("doc set")),
@@ -465,7 +484,7 @@ enum Access<'a> {
     Lines {
         file: File,
         spans: Vec<(u64, usize)>,
-        line: String,
+        ready: std::vec::IntoIter<Result<CityJSONFeature>>,
     },
     Doc(&'a CityJSON),
     Buffered(&'a [CityJSONFeature]),
@@ -477,18 +496,41 @@ impl Iterator for OrderedFeatures<'_> {
     type Item = Result<CityJSONFeature>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Access::Lines { file, spans, ready } = &mut self.access {
+            if let Some(next) = ready.next() {
+                return Some(next);
+            }
+            // The next batch of lines in order, read by their spans, then
+            // parsed across cores.
+            let mut batch = Vec::new();
+            let mut bytes = 0;
+            let mut failure = None;
+            while batch.len() < PARSE_BATCH_LINES && bytes < PARSE_BATCH_BYTES {
+                let Some(i) = self.order.next() else { break };
+                let Some(&(start, len)) = spans.get(i) else {
+                    failure = Some(err(format!("feature {i} is not in the source")));
+                    break;
+                };
+                match read_span(file, start, len) {
+                    Ok(line) => {
+                        bytes += line.len();
+                        batch.push(line);
+                    }
+                    Err(e) => {
+                        failure = Some(e);
+                        break;
+                    }
+                }
+            }
+            let mut parsed = parse_feature_lines(batch);
+            parsed.extend(failure.map(Err));
+            *ready = parsed.into_iter();
+            return ready.next();
+        }
         let i = self.order.next()?;
         let missing = || err(format!("feature {i} is not in the source"));
         Some(match &mut self.access {
-            Access::Lines { file, spans, line } => {
-                let Some(&(start, len)) = spans.get(i) else {
-                    return Some(Err(missing()));
-                };
-                read_span(file, start, len, line).and_then(|()| {
-                    CityJSONFeature::from_str(line)
-                        .map_err(|e| err(format!("invalid CityJSONFeature line: {e}")))
-                })
-            }
+            Access::Lines { .. } => unreachable!("handled above"),
             Access::Doc(doc) => doc.get_cjfeature(i).ok_or_else(missing),
             Access::Buffered(features) => features.get(i).cloned().ok_or_else(missing),
             Access::Parsed(features) => features
@@ -499,17 +541,68 @@ impl Iterator for OrderedFeatures<'_> {
     }
 }
 
-fn read_span(file: &mut File, start: u64, len: usize, line: &mut String) -> Result<()> {
+fn read_span(file: &mut File, start: u64, len: usize) -> Result<String> {
     use std::io::{Read, Seek, SeekFrom};
     let io = |e| CityParquetError::io_source("read error", e);
     file.seek(SeekFrom::Start(start)).map_err(io)?;
-    let mut bytes = std::mem::take(line).into_bytes();
-    bytes.clear();
-    bytes.resize(len, 0);
+    let mut bytes = vec![0; len];
     file.read_exact(&mut bytes).map_err(io)?;
-    *line =
-        String::from_utf8(bytes).map_err(|e| err(format!("invalid CityJSONFeature line: {e}")))?;
-    Ok(())
+    String::from_utf8(bytes).map_err(|e| err(format!("invalid CityJSONFeature line: {e}")))
+}
+
+/// Up to how many feature lines, and bytes of them, are parsed together.
+const PARSE_BATCH_LINES: usize = 512;
+const PARSE_BATCH_BYTES: usize = 8 << 20;
+
+/// Parse feature lines on the rayon pool, results in line order.
+fn parse_feature_lines(lines: Vec<String>) -> Vec<Result<CityJSONFeature>> {
+    use rayon::prelude::*;
+    lines
+        .into_par_iter()
+        .map(|line| {
+            CityJSONFeature::from_str(&line)
+                .map_err(|e| err(format!("invalid CityJSONFeature line: {e}")))
+        })
+        .collect()
+}
+
+/// A CityJSONSeq file's features, front to back: its non-blank lines after
+/// the header, read a batch at a time and parsed across cores, handed out in
+/// file order.
+pub struct SeqFeatures {
+    lines: std::io::Lines<BufReader<File>>,
+    ready: std::vec::IntoIter<Result<CityJSONFeature>>,
+}
+
+impl Iterator for SeqFeatures {
+    type Item = Result<CityJSONFeature>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(next) = self.ready.next() {
+            return Some(next);
+        }
+        let mut batch = Vec::new();
+        let mut bytes = 0;
+        let mut failure = None;
+        while batch.len() < PARSE_BATCH_LINES && bytes < PARSE_BATCH_BYTES {
+            match self.lines.next() {
+                None => break,
+                Some(Err(e)) => {
+                    failure = Some(CityParquetError::io_source("read error", e));
+                    break;
+                }
+                Some(Ok(line)) if line.trim().is_empty() => {}
+                Some(Ok(line)) => {
+                    bytes += line.len();
+                    batch.push(line);
+                }
+            }
+        }
+        let mut ready = parse_feature_lines(batch);
+        ready.extend(failure.map(Err));
+        self.ready = ready.into_iter();
+        self.ready.next()
+    }
 }
 
 /// cjseq's own rule (`CityObject::is_toplevel`, private): an object is
@@ -613,6 +706,8 @@ fn validate_document_hierarchy(doc: &CityJSON) -> Result<()> {
 
 pub enum FeatureIter<'a> {
     Seq(std::io::Lines<BufReader<File>>),
+    /// [`Source::features_batched`]'s CityJSONSeq stream.
+    SeqBatched(SeqFeatures),
     Doc {
         doc: &'a CityJSON,
         i: usize,
@@ -643,6 +738,7 @@ impl Iterator for FeatureIter<'_> {
                     }
                 }
             },
+            FeatureIter::SeqBatched(features) => features.next(),
             FeatureIter::Doc { doc, i } => {
                 let f = doc.get_cjfeature(*i)?;
                 *i += 1;

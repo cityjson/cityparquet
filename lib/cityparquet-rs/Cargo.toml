@@ -72,6 +72,8 @@ jsonschema = "0.26"
 # (`scan`). Deterministic WyHash default: the selected columns, and so the
 # package layout, are identical run to run.
 cardinality-estimator = "1.0.3"
+# Parses CityJSONSeq feature lines a batch at a time across cores.
+rayon = "1.12"
 # FlatCityBuf input (the `fcb` feature). The exact pin the read benchmark
 # (`benchmark/readbench`) carries, so the two resolve to one version.
 fcb_core = "=0.7.6"

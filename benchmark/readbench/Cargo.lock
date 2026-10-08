@@ -484,6 +484,7 @@ dependencies = [
  "object_store",
  "parquet",
  "quick-xml",
+ "rayon",
  "serde",
  "serde_json",
 ]
