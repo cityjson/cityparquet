@@ -5,164 +5,188 @@ sidebar:
   icon: gauge
 ---
 
-CityParquet is designed for compact storage and analytical reads. These results
-show where that design pays off, and where an indexed format or a database is a
-better fit.
+The benchmark measures how much space a 3D city model takes in each format and
+what it costs to read it back with each format's own reader. This page shows
+the results that exist today and names the parts that have not been measured
+yet.
 
-**The main result:** CityParquet has the smallest measured files and strong
-selective-read performance. FlatCityBuf leads some spatial and full-read
-workloads; databases retain advantages for indexed lookups and transactions.
+:::warning[Preliminary results]
+The read timings on this page come from a run on the author's laptop (Apple
+silicon, macOS) without host isolation: no NUMA pinning, no memory ceiling and
+no load gate. They show the pattern, not citable values, and the run on the
+benchmark host replaces them. The file sizes are exact byte counts and do not
+depend on the machine.
+:::
 
-## File size: less data to store and transfer
+## What is measured
 
-This benchmark measures the files needed to represent each dataset in CityGML,
-CityJSON, CityJSONSeq, FlatCityBuf, and Hilbert-ordered CityParquet. Smaller files
-reduce storage and transfer requirements; they do not, by themselves, guarantee
-faster queries.
+**Five formats.** CityGML 2.0, CityJSON, CityJSONSeq, FlatCityBuf and
+CityParquet (rows in Hilbert-curve order). CityGML is the baseline: every factor
+on this page is CityGML's value divided by the format's, so a larger factor is
+better (smaller, faster or leaner than CityGML).
 
-**CityParquet is the smallest of the five representations measured on all six
-datasets.** Its size is 21–31% of uncompressed CityJSONSeq. That is a result for
-these encodings and writer settings, not a claim about every format or compression
-configuration.
+**Corpus.** Six city datasets: Zurich (198,699 CityObjects), Tokyo (Chiyoda,
+49,915), Montréal (31,415), New York (23,777), Vienna (1,322) and Rotterdam
+(853). Each dataset's five artefacts derive from one normalised CityJSON source, and the
+corpus holds only content CityGML 2.0 can express. A 3DBAG slice of 1,000,001
+CityObjects belongs to the corpus but has not been measured with the current
+harness.
 
-![File size across six city-model datasets, with CityParquet the smallest measured representation.](/benchmarks/sizes.png)
+**Queries.** Every format answers each query through its own mechanism and
+returns the same thing:
 
-For the **3DBAG slice of 1,000,001 CityObjects**, the stored sizes are:
+| Query                  | Returned by every format                                                   |
+| ---------------------- | -------------------------------------------------------------------------- |
+| Read all               | Every record, all fields, in the format's native form                      |
+| Count                  | The number of objects                                                      |
+| Spatial 1 %, 5 %, 25 % | Matching CityObjects, each with its highest-LoD geometry visited in place  |
+| Attribute filter       | Count and identifiers of the CityObjects matching an attribute predicate   |
+| Attribute stats        | Minimum, maximum, sum and count of a numeric attribute                     |
+| ID lookup (×4)         | One whole object, every field: hits at 10, 50 and 90 % of the file, a miss |
 
-| Format | Size, decimal GB |
-| --- | ---: |
-| CityGML | 10.80 |
-| CityJSON | 3.37 |
-| CityJSONSeq | 2.89 |
-| FlatCityBuf | 2.21 |
-| CityParquet, Hilbert-ordered | **0.78** |
+Appearance (textures and materials) is excluded for every format.
 
-CityParquet uses approximately **93% less space than CityGML**, **77% less than
-CityJSON**, and **65% less than FlatCityBuf** on this slice. Columnar encoding
-and compression provide compact storage while keeping individual columns
-accessible. The PNG's MB/GB labels use binary divisors; the table above uses
-explicit decimal GB (one billion bytes).
+**Protocol.** Reads are warm-cache and single-threaded. Each cell runs one
+discarded warm-up and 25 timed samples, each in a fresh process; the figures
+report the median with the interquartile range, and peak resident memory.
+Sizes are on-disk bytes, in decimal units (1 MB = 10⁶ bytes).
 
-## Format comparison: choose by the query
+## File size
 
-The format benchmark exercises counting, attribute filtering and aggregation,
-column projection, spatial windows, ID lookups, and full reads. It measures the
-cost of opening and reading each representation with its own reader. The
-heatmap reports time and memory relative to CityJSONSeq; lower ratios are better.
+![File size on disk for six city datasets in five formats, with the factor against CityGML above each bar.](/benchmarks/sizes.png)
 
-![Format comparison across datasets and queries: CityParquet is strong on selective attribute reads; FlatCityBuf is strong on spatial and full reads.](/benchmarks/heatmap.png)
+A file's size is its length; a CityParquet package's size is the sum of every
+file in its directory. The factor is CityGML bytes divided by CityParquet bytes.
 
-**CityParquet balances compact files with fast analytical access.** On the
-million-object 3DBAG slice, reading one attribute takes **0.011 s**, compared
-with **45.47 s** for CityJSONSeq, **71.42 s** for CityJSON, and **142.51 s** for
-CityGML. Aggregating that attribute takes **0.016 s**, versus **46.14 s** for
-CityJSONSeq. Reading selected columns avoids parsing the rest of the model.
+| Dataset         | CityObjects |  CityGML | CityJSON | CityJSONSeq | FlatCityBuf | CityParquet | Factor |
+| --------------- | ----------: | -------: | -------: | ----------: | ----------: | ----------: | -----: |
+| Zurich          |     198,699 |  1.42 GB | 292.5 MB |    259.1 MB |    206.3 MB |     71.9 MB |  19.7× |
+| Tokyo (Chiyoda) |      49,915 |  1.48 GB | 316.0 MB |    303.9 MB |    265.4 MB |     80.2 MB |  18.5× |
+| Montréal        |      31,415 |  3.26 GB | 498.4 MB |    372.3 MB |    366.2 MB |    159.0 MB |  20.5× |
+| New York        |      23,777 | 568.3 MB | 110.1 MB |    100.1 MB |     85.0 MB |     17.2 MB |  33.0× |
+| Vienna          |       1,322 |  21.1 MB |   4.7 MB |      4.4 MB |      3.6 MB |      1.4 MB |  15.1× |
+| Rotterdam       |         853 |  14.0 MB |   2.7 MB |      2.8 MB |      3.0 MB |      0.7 MB |  19.7× |
 
-**FlatCityBuf, the FlatBuffers-based format, is particularly effective for
-spatial access and full reads.** Its measured 1% spatial-window query takes
-about **0.0018 s**, versus **0.103 s** for CityParquet. These spatial timings are
-not an exact like-for-like comparison: FlatCityBuf's index is 2D and the readers
-use different feature/object counting conventions. Treat the sub-10 ms figure
-as indicative rather than a precise speedup factor.
+**CityParquet is the smallest of the five formats on all six datasets**, from
+15.1× smaller than CityGML (Vienna) to 33.0× (New York). The ranking applies to
+these encodings and the writers' default settings; it is not a claim about
+every format or compression configuration.
 
-Full-read times on that same slice are **23.26 s** for FlatCityBuf, **45.24 s**
-for CityJSONSeq, **51.89 s** for CityParquet, **79.46 s** for CityJSON, and
-**149.00 s** for CityGML. CityParquet therefore does **not** beat every text
-format on a complete read. Full reads also decode different native
-representations; they are useful workload costs, not identical operations.
+## Format read timings
 
-The practical distinction is the amount of the model a query needs: CityParquet
-is well suited to selecting and aggregating attributes, while FlatCityBuf's
-spatial index and full-read performance make it a strong alternative for those
-access patterns.
+One figure per dataset: read time per query and format, each cell giving the
+median and its factor against CityGML.
 
-## Database comparison: analytical delivery, without a database service
+![Zurich: read time per query and format.](/benchmarks/formats/zurich_building_lod2/time.png)
 
-This benchmark compares **DuckDB reading CityParquet files**, **cjdb**, and
-**3DCityDB**, using the million-object 3DBAG slice. It measures stored size
-including indexes, query time, and execution-process memory. It compares whole
-systems, so its timings must not be mixed with the native-reader format
-benchmark above.
+![Tokyo (Chiyoda): read time per query and format.](/benchmarks/formats/tokyo/time.png)
 
-![Database comparison: CityParquet with DuckDB uses less storage and is faster on many analytical queries, while indexed databases lead ID and hierarchy lookups; spatial results are marked mismatch.](/benchmarks/databases.png)
+![Montréal: read time per query and format.](/benchmarks/formats/montreal/time.png)
 
-**The CityParquet package needs substantially less storage:** approximately
-**0.78 GB**, compared with **3.87 GB** for cjdb and **23.10 GB** for 3DCityDB,
-including their indexes. The database suite uses a separately prepared
-CityParquet package, so its byte size differs slightly from the format suite.
-That is about **80% less than cjdb** and **97% less
-than 3DCityDB**. These are stored dataset sizes, not complete server footprints.
+![New York: read time per query and format.](/benchmarks/formats/nyc_da13_buildings/time.png)
 
-DuckDB over CityParquet performs well on the measured scans, attribute
-aggregation, projection, LoD extraction, and semantic-surface queries. For
-example, the database suite's full-read scenario reports **1.20 s**, compared
-with **61.84 s** for cjdb and **276.41 s** for 3DCityDB. Each system forces
-materialisation differently: DuckDB hashes columns, whereas the PostgreSQL
-systems use representation-specific expressions. This is not the WKB-decoding
-full read in the format benchmark.
+![Vienna: read time per query and format.](/benchmarks/formats/vienna_102081/time.png)
 
-**Indexed databases remain better for some access patterns.** The measured ID
-lookup takes about **1.3–1.5 ms** in cjdb and 3DCityDB, versus **273 ms** with
-DuckDB over CityParquet; hierarchy lookups favour the databases too. The spatial
-query results are marked **mismatch** in the report and are excluded from
-performance conclusions because the systems returned different results.
+![Rotterdam: read time per query and format.](/benchmarks/formats/rotterdam_delfshaven/time.png)
 
-CityParquet is primarily a **read-oriented delivery format**, not a transactional
-database. It does not provide in-place row updates, concurrent transactions, or
-the operational services needed for a frequently edited city database. Use the
-storage and read results to assess published analytical datasets, not to claim
-that CityParquet replaces a transactional system.
+Peak memory, in the same layout: [Zurich](/benchmarks/formats/zurich_building_lod2/rss.png),
+[Tokyo](/benchmarks/formats/tokyo/rss.png),
+[Montréal](/benchmarks/formats/montreal/rss.png),
+[New York](/benchmarks/formats/nyc_da13_buildings/rss.png),
+[Vienna](/benchmarks/formats/vienna_102081/rss.png),
+[Rotterdam](/benchmarks/formats/rotterdam_delfshaven/rss.png).
+
+:::caution[A laptop run]
+These timings are preliminary. The run had no host isolation and will be
+replaced by the run on the benchmark host. The numbers below are this run's
+medians and describe a pattern only.
+:::
+
+**CityParquet is fastest where a query needs few columns.** It answers the
+attribute statistics and the identifier miss fastest on every dataset measured,
+and the attribute filter on five of six. On Montréal in this run, the attribute
+filter took 1.5 ms with CityParquet, 26.5 ms with FlatCityBuf and 15.6 s with
+CityGML. On New York, FlatCityBuf's attribute index answers the filter faster
+(0.39 ms against 1.45 ms); there the predicate is an identifier equality that
+matches 0.7 % of the objects. New York has no numeric attribute, so it has no
+attribute-statistics result.
+
+**FlatCityBuf is fastest on read all, count and every spatial window**, on all
+six datasets. On Montréal in this run, read all took 0.076 s with FlatCityBuf
+and 0.57 s with CityParquet, and the 1 % window 1.5 ms and 48 ms. Both formats
+count in well under a millisecond, from a header or a footer. The identifier
+hits are mixed between the two and depend on where the object sits in the file.
+
+**CityParquet's spatial window prunes nothing on five of the six datasets.**
+At the writer's default of 65,536 rows per row group, only Zurich spans more
+than one group, so the bounding-box statistics cannot skip any part of the
+other five packages. The window reads the identifier and bounding-box columns
+of every row and decodes the geometry of the matches only.
+
+**The text formats scale with file size.** CityGML, CityJSON and CityJSONSeq
+carry no index, so every query parses the whole file, except an identifier hit
+in CityGML and CityJSONSeq, which stops at the object. CityGML's read all took
+16.1 s on Montréal (3.26 GB) and 0.098 s on Rotterdam (14.0 MB) in this run.
+
+## Not yet measured
+
+The following families exist in the harness. None has been measured with the
+current harness, so this page reports no numbers for them.
+
+### Bloom filters
+
+A comparison of two CityParquet packages of the 3DBAG slice, one with Bloom
+filters and one without, on identifier, feature and attribute-equality lookups,
+each as a hit and a miss. It records size, lookup time, memory and how many row
+groups the filters and the min/max statistics rule out. Not yet measured with
+the current harness.
+
+### Database comparison
+
+DuckDB reading CityParquet, compared with cjdb and 3DCityDB on the 3DBAG slice:
+stored size with and without indexes, query time and peak working memory, under
+a single-threaded and a parallel configuration. It compares whole systems, so
+its timings are not comparable with the format reads above. Not yet measured
+with the current harness.
+
+### Network
+
+The format reads over HTTP: per query, the time, the bytes read and the number
+of HTTP requests, against a simulated network with fixed bandwidth and latency
+and against real object storage. Not yet measured with the current harness.
 
 ## How to interpret the results
 
-- **Dataset scope:** the headline 3DBAG results concern a slice of 1,000,001
-  CityObjects, not the entire national dataset used by the playground.
-- **Cache and execution:** the format reads use warm-cache, single-threaded
-  measurements. The database suite has its own execution settings, including
-  a multithreaded DuckDB configuration. These are local native measurements,
-  not HTTP delivery or browser WebAssembly timings.
-- **Aggregation:** the format timings and the database timings both record
-  the same seven-column timing block over the measured runs (`time_mean_s`,
-  `time_std_s` as the population standard deviation, `time_median_s`,
-  `time_min_s`, `time_max_s`, `time_q1_s`, `time_q3_s`); the median and the
-  quartiles interpolate linearly at position p·(n−1) on the sorted samples.
-  Each read cell takes one discarded warm-up and 25 timed samples by default,
-  run back to back; the format reads can stop a cell earlier under an optional
-  time budget (`--cell-budget-s`, never below `--min-repeat` samples), and the
-  database write tier has its own protocol. The measured processes are pinned
-  to one NUMA node, optionally memory-capped and gated on host load, with each
-  measure recorded as applied or `not applied: <reason>`. The figures plot the
-  median with the interquartile range by default (the mean ± the standard
-  deviation with `--statistic mean`), and each figure's caption names the
-  statistic.
-- **Counting and geometry:** feature-level and CityObject-level operations are
-  not interchangeable. Attribute filtering, aggregation, projection, and ID
-  queries use CityObject granularity; full-read and spatial comparisons require
-  the additional qualifications above.
-- **Memory:** execution-process RSS is not total server memory, filesystem
-  cache, or a complete deployment footprint.
-- **Coverage:** the completeness file records family/metric presence, not a
-  blanket correctness certificate. Failed or mismatched results remain visible.
-- **Compression:** size rankings apply to the tested settings.
+- **Warm and single-threaded.** Every sample is a fresh process reading from a
+  warm page cache, on one thread; no format uses parallel decoding. These are
+  local native reads, not HTTP or browser timings.
+- **Median of 25.** Each cell reports the median of 25 timed samples after one
+  discarded warm-up, with the interquartile range as its spread. Differences
+  smaller than that spread are not findings.
+- **Memory is the reader's peak RSS**, not total system memory or the
+  filesystem cache.
+- **Decimal units** throughout: 1 MB = 10⁶ bytes, 1 GB = 10⁹ bytes.
+- **Isolation belongs to the host run.** On the benchmark host the measured
+  processes are pinned to one NUMA node, memory-capped and gated on host load,
+  and each measure is recorded as applied or not. None was applied to the run
+  on this page.
+- **Every format must return the same answer.** After a run, the harness
+  compares each query's result count, the digest of the returned identifiers
+  and the extent of the visited geometry across the five formats. A
+  disagreement fails the run; no result on this page carries one.
+- **Counting grain.** Read all and count report CityObjects in CityParquet and
+  CityJSON but top-level features in CityGML, CityJSONSeq and FlatCityBuf. The
+  spatial windows, the attribute queries and the identifier lookups count
+  CityObjects in every format.
 
 The implementation is experimental. See the
 [format methodology](https://github.com/cityjson/cityparquet/tree/develop/benchmark/formats)
 and [database methodology](https://github.com/cityjson/cityparquet/tree/develop/benchmark/databases)
-for reader behaviour, query definitions, and limitations.
+for reader behaviour, query definitions and the full list of caveats.
 
-## Reproduce the report
+## Reproduce
 
-The figures below are PNG exports from the repository's **`just bench-summary`**
-report, published here with its [underlying data](/benchmarks/bench_data.json),
-[completeness record](/benchmarks/completeness.json), and
-[export provenance](/benchmarks/provenance.json). They reuse the saved full-run
-summary, exported to this site on **21 September 2026**; no measurements were
-rerun for this page. [Open the complete benchmark report](/benchmarks/summary.html)
-for the configuration experiments and detailed caveats as well.
-
-
-From the CityParquet repository, with benchmark inputs and results in the
-configured data root:
+From the CityParquet repository:
 
 ```sh
 just bench-prep
@@ -170,7 +194,18 @@ just bench-run
 just bench-summary
 ```
 
-`bench-prep` prepares inputs; `bench-run` performs measurements; `bench-summary`
-only renders existing results. To update this website, export the rendered PNGs
-and matching report data together into `documents/public/benchmarks/`, retaining
-any incomplete or invalid results and updating the provenance record.
+`bench-prep` obtains the prepared inputs, `bench-run` measures them and
+`bench-summary` renders existing results without measuring anything.
+
+The figures on this page are copied unmodified from the rendered summary into
+`documents/public/benchmarks/`, together with the
+[underlying data](/benchmarks/bench_data.json), the
+[completeness record](/benchmarks/completeness.json), the three factor tables
+([sizes](/benchmarks/size_factors.csv),
+[size extremes](/benchmarks/size_extremes.csv),
+[queries](/benchmarks/query_factors.csv)) and a
+[provenance record](/benchmarks/provenance.json) naming the source run and every
+file's sha256. An update exports all of them together, keeps incomplete or
+failed results visible, and rewrites the provenance record.
+[Open the complete benchmark summary](/benchmarks/summary.html) for every figure
+and the measurement caveats.

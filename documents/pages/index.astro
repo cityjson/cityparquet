@@ -109,12 +109,13 @@ const family = [
   },
 ];
 
-// Snapshot exported from benchmark/runs/summary/full/bench_data.json.
-// Scope: 3DBAG slice, 1,000,001 CityObjects; details on /benchmark.
+// File sizes from public/benchmarks/size_factors.csv (sizes family, exact bytes,
+// preparation chain 8). Scope: Montréal, 31,415 CityObjects, the corpus's largest
+// dataset by bytes; details on /benchmark.
 const measurements = [
-  { figure: "93%", label: "smaller than CityGML", detail: "0.78 GB versus 10.80 GB" },
-  { figure: "77%", label: "smaller than CityJSON", detail: "0.78 GB versus 3.37 GB" },
-  { figure: "0.016 s", label: "for an attribute aggregate", detail: "CityJSONSeq: 46.14 s · warm cache" },
+  { figure: "95%", label: "smaller than CityGML", detail: "159 MB versus 3.26 GB" },
+  { figure: "68%", label: "smaller than CityJSON", detail: "159 MB versus 498 MB" },
+  { figure: "57%", label: "smaller than FlatCityBuf", detail: "159 MB versus 366 MB" },
 ];
 
 // `slug` is the repository the card links to, shown as its own label — a reader
@@ -418,8 +419,8 @@ const queryTokens = tokeniseSql(query);
           <h2>Measured behaviour</h2>
           <span class="cp-heading-note">Benchmark</span>
         </div>
-        <p class="cp-lede">Measured on a 3DBAG slice of <strong>1,000,000 CityObjects</strong> (rounded),
-          using Hilbert-ordered CityParquet. These are local native reads, not browser timings.</p>
+        <p class="cp-lede">File sizes on disk for Montréal, <strong>31,415 CityObjects</strong>, the
+          largest dataset in the benchmark corpus, using Hilbert-ordered CityParquet.</p>
         <div class="cp-stats">
           {
             measurements.map((measurement) => (
