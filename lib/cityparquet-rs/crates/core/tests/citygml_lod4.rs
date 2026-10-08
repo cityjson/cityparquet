@@ -130,7 +130,7 @@ fn a_citygml_lod4_solid_round_trips_through_the_package() {
             .unwrap()
             .contains("\"lod\":\"4.0\"")
     );
-    assert!(exported.lod4_geometries >= 1, "{exported:?}");
+    assert!(exported.lod4_geometries.contains_key("4.0"), "{exported:?}");
 }
 
 /// An xlink to a `gml:CompositeSurface` whose members are themselves

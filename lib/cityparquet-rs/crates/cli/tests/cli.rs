@@ -1278,8 +1278,11 @@ fn export_of_lod4_geometry_to_cityjson_warns() {
         .unwrap();
     assert!(export.status.success());
     let stderr = String::from_utf8_lossy(&export.stderr);
+    let written = std::fs::read_to_string(&out).unwrap();
+    assert!(written.contains(r#""lod":"4.0""#), "exported as LoD 4.0");
+    // The warning names the label the document actually carries.
     assert!(
-        stderr.contains("warning:") && stderr.contains("LoD 4"),
+        stderr.contains("warning:") && stderr.contains(r#"LoD 4, written as "4.0""#),
         "{stderr}"
     );
 }

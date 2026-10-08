@@ -43,7 +43,7 @@
 //! dropped instead (counted in [`ExportReport::appearance_refs_dropped`]):
 //! exporting them would leave dangling references — invalid CityJSON.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -82,7 +82,7 @@ pub struct ExportOptions {
 }
 
 /// Outcome of one [`export`] call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportReport {
     pub feature_count: usize,
     pub object_count: usize,
@@ -98,10 +98,11 @@ pub struct ExportReport {
     /// (M4 sidecar data), so exporting them would leave dangling references
     /// — invalid CityJSON, same reasoning as the GeometryInstance drop.
     pub appearance_refs_dropped: usize,
-    /// Object geometries written at LoD 4 (as `"4.x"`). CityJSON 2.0 defines
-    /// LoDs 0 to 3 only, so such a document carries a LoD its specification
-    /// does not; the CLI warns when this is non-zero.
-    pub lod4_geometries: usize,
+    /// Object geometries written at LoD 4, counted per LoD label written
+    /// (e.g. `"4.0"`). CityJSON 2.0 defines LoDs 0 to 3 only, so such a
+    /// document carries a LoD its specification does not; the CLI warns when
+    /// this is non-empty.
+    pub lod4_geometries: BTreeMap<String, usize>,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -1627,7 +1628,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
 
     let mut instance_geometries_dropped = 0usize;
     let mut appearance_refs_dropped = 0usize;
-    let mut lod4_geometries = 0usize;
+    let mut lod4_geometries: BTreeMap<String, usize> = BTreeMap::new();
     let mut features: Vec<CityJSONFeature> = Vec::with_capacity(groups.items.len());
     for (feature_id, entries) in groups.into_ordered() {
         let mut feature = CityJSONFeature::new();
@@ -1727,8 +1728,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     }
                 }
 
-                if lod.is_some_and(|l| l.major() == 4) {
-                    lod4_geometries += 1;
+                if let Some(l) = lod.filter(|l| l.major() == 4) {
+                    *lod4_geometries.entry(l.to_string()).or_default() += 1;
                 }
                 geoms.push(Geometry {
                     thetype: gtype,

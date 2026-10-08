@@ -693,7 +693,7 @@ $CP export $OUT/lod4 $OUT/lod4_rt.gml
 
 ```
 1 1 0 0
-warning: 1 geometries are LoD 4, written as "4.x"; CityJSON 2.0 defines LoDs 0 to 3 only
+warning: 1 geometries are LoD 4, written as "4.0"; CityJSON 2.0 defines LoDs 0 to 3 only
 1 buildings written; 0 non-building skipped, 0 without geometry, 0 composite solids written, 0 multi-solids skipped, 0 lod columns skipped, 5 attributes written, 0 attributes skipped
 ```
 

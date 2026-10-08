@@ -755,11 +755,17 @@ fn main() -> std::process::ExitCode {
                             report.instance_geometries_dropped,
                             report.appearance_refs_dropped
                         );
-                        if report.lod4_geometries > 0 {
+                        if !report.lod4_geometries.is_empty() {
+                            let count: usize = report.lod4_geometries.values().sum();
+                            let labels = report
+                                .lod4_geometries
+                                .keys()
+                                .map(|l| format!("\"{l}\""))
+                                .collect::<Vec<_>>()
+                                .join(", ");
                             eprintln!(
-                                "warning: {} geometries are LoD 4, written as \"4.x\"; \
-                                 CityJSON 2.0 defines LoDs 0 to 3 only",
-                                report.lod4_geometries
+                                "warning: {count} geometries are LoD 4, written as {labels}; \
+                                 CityJSON 2.0 defines LoDs 0 to 3 only"
                             );
                         }
                         std::process::ExitCode::SUCCESS
