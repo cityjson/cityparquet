@@ -61,7 +61,8 @@ describe("createEngine", () => {
 describe("createEngine without the sandbox", () => {
   it("leaves the local filesystem reachable", async () => {
     const engine = await createEngine({ sandbox: false, extensionDirectory });
-    await expect(engine.connection.run("SELECT * FROM read_csv('/etc/hostname')")).resolves.toBeDefined();
+    // The same file the sandbox blocks above; /etc/passwd exists on Linux and macOS alike.
+    await expect(engine.connection.run("SELECT * FROM read_csv('/etc/passwd')")).resolves.toBeDefined();
     await engine.close();
   });
 });
