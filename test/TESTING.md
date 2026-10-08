@@ -506,11 +506,11 @@ flag to opt into them any more.)
 
 ### 1.6 Round-trip: convert → export → compare
 
-This is the core semantic-losslessness claim. **Pass `--no-lod0`:**
+This is the core semantic-losslessness claim:
 
 ```sh
 $CP convert lib/cityparquet-rs/tests/fixtures/delft.city.jsonl \
-    -o $OUT/delft_rt --no-lod0 --overwrite
+    -o $OUT/delft_rt --overwrite
 $CP export $OUT/delft_rt $OUT/delft_rt.city.jsonl
 $CP compare lib/cityparquet-rs/tests/fixtures/delft.city.jsonl $OUT/delft_rt.city.jsonl
 echo "exit=$?"
@@ -525,9 +525,9 @@ equal (excluded: 20)
 exit=0
 ```
 
-> **Gotcha — LoD0 synthesis breaks a naive round-trip.** By default the CLI
+> **Gotcha — LoD0 synthesis breaks a naive round-trip.** With `--lod0` the CLI
 > _synthesises_ an LoD0 footprint for objects that lack one, so the
-> GeoParquet-legal `geometry_lod0_0` column is populated. Exporting the default
+> GeoParquet-legal `geometry_lod0_0` column is populated. Exporting such a
 > package and comparing gives **exit 2**, with one difference per affected
 > object:
 >
@@ -536,8 +536,8 @@ exit=0
 >   present in B, missing in A
 > ```
 >
-> That is the default working as designed — but it means **round-trip equality must be
-> tested with `--no-lod0`**.
+> That is synthesis working as designed — but it means **round-trip equality is
+> tested without `--lod0`**, the default.
 
 ### 1.7 The bundled interop script
 
@@ -1241,7 +1241,7 @@ cityparquet-rs → CityJSON
 
 ```sh
 rm -rf /tmp/n && mkdir -p /tmp/n
-lib/cityparquet-rs/target/release/cityparquet convert lib/cityparquet-rs/tests/fixtures/delft.city.jsonl -o /tmp/n/rs --no-lod0 --overwrite
+lib/cityparquet-rs/target/release/cityparquet convert lib/cityparquet-rs/tests/fixtures/delft.city.jsonl -o /tmp/n/rs --overwrite
 ```
 
 ```
@@ -1277,7 +1277,7 @@ exit=0
 > column of the schema, including `geometry_lod0_0`, and keeps a `GEOMETRY`-typed
 > column `GEOMETRY`-typed through the `COPY`. The flag would change nothing in any
 > case: promotion follows the Parquet logical type, not the `geo` footer.
-> `--no-lod0` on the initial convert **is** required, for the reason
+> `--lod0` on the initial convert **must** stay off, for the reason
 > 1.6 already documents — LoD0 synthesis would otherwise legitimately add a
 > footprint and fail `compare` with exit 2.
 >
@@ -1494,7 +1494,7 @@ was the conformant side throughout.
 | 4   | **The `test/cpp` harness could not run**                                                                                                                                  | Fixed by #3, plus `run_fcb_selective_tests.sh`'s stale-library guard is no longer hardcoded to the Linux `libduckdb.so`. Verified in 2.10                                                                                                                                                                                                                                                                                                                                                       |
 | 5   | **`just interop` was broken** — `lib/cityparquet-rs/scripts/interop.sh` still passed the removed `--profile compatibility`                                                | Flag dropped; stale by-family comments corrected to by-module; the cross-module union now uses `union_by_name = true`. Verified in 1.7                                                                                                                                                                                                                                                                                                                                                          |
 | 7   | **`Railway.city.jsonl` fails conversion** — `material index 2 in theme 'visual' out of range (local defs len 2)`                                                          | **No longer an open decision.** cityparquet-rs gained `--tolerate-invalid-appearance`, which drops the dangling reference and counts it in the report's tenth field rather than aborting the whole conversion. Strict remains the default — a bare `convert` still refuses the file with the message above. Verified: `convert benchmark/formats/data/Railway.city.jsonl -o … --tolerate-invalid-appearance` reports `121 13 0 0 6 6 84 34 3 1` (84 materials written, one dropped) and exits 0 |
-| 10  | `cityparquet-rs/CLAUDE.md` + `AGENTS.md` documented `convert INPUT OUTPUT_DIR` positionally                                                                               | Both now show `--output`, list the flags added since (`--partition`, `--crs`, `--no-lod0`), and the catalogue suite count is 265, not 219                                                                                                                                                                                                                                                                                                                                                       |
+| 10  | `cityparquet-rs/CLAUDE.md` + `AGENTS.md` documented `convert INPUT OUTPUT_DIR` positionally                                                                               | Both now show `--output`, list the flags added since (`--partition`, `--crs`, `--lod0`), and the catalogue suite count is 265, not 219                                                                                                                                                                                                                                                                                                                                                       |
 
 ### Open — needing a decision, not a patch
 
@@ -1514,7 +1514,7 @@ was the conformant side throughout.
 | #   | Issue                                                                    | Status                                                                             |
 | --- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
 | 8   | Read-bench runner rejects multi-table packages                           | Unchanged; one test `#[ignore]`d. `benchmark/readbench/src/formats/cityparquet.rs` |
-| 9   | Default LoD0 synthesis breaks a naive round-trip `compare`               | Unchanged (behavioural, by design). Needs `--no-lod0`                              |
+| 9   | LoD0 synthesis breaks a naive round-trip `compare`                       | Synthesis is opt-in (`--lod0`); the default convert round-trips                    |
 | 6   | `vendor-check` + the new CityGML fixtures are undocumented prerequisites | Documented here in 0.1 / 0.2 rather than changed in code                           |
 
 ### Fixed before this pass

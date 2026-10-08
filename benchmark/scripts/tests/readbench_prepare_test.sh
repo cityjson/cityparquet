@@ -1244,8 +1244,8 @@ case_cityjson_input_builds_a_real_seq_artefact() {
 #                       later change of default from publishing, under the
 #                       same name, a package whose bbox rows prune far fewer
 #                       row groups.
-#   --no-lod0           without it every object lacking a source LoD 0
-#                       gains a synthesised footprint, so the package holds
+#   no --lod0           with it every object lacking a source LoD 0 gains a
+#                       synthesised footprint, so the package holds
 #                       geometries no other format holds and is published as
 #                       the same content.
 #   fcb ser -A          without it there is no B+-tree attribute index, so
@@ -1256,7 +1256,7 @@ case_cityjson_input_builds_a_real_seq_artefact() {
 # Asserted from the stubs' own recorded argv, not from the script's echo.
 # --------------------------------------------------------------------------
 case_measurement_flags_are_passed() {
-  local name="--ordering hilbert, --no-lod0 and fcb -A all reach the tools"
+  local name="--ordering hilbert and fcb -A reach the tools, --lod0 does not"
   local dir
   dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
   run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
@@ -1273,7 +1273,7 @@ case_measurement_flags_are_passed() {
     )"
     return
   fi
-  if ! grep -qFx -- "--no-lod0" "$dir/out/tiny.parquet/stub-argv.txt"; then
+  if grep -qFx -- "--lod0" "$dir/out/tiny.parquet/stub-argv.txt"; then
     fail "$name" "the package was written with LoD 0 synthesis on: $(
       tr '\n' ' ' <"$dir/out/tiny.parquet/stub-argv.txt"
     )"

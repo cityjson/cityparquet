@@ -44,7 +44,7 @@ PARAMS = make_params(numeric_column="h")
 
 
 def test_dataset_reads_the_format_benchmarks_prepared_package_by_default():
-    # The package `readbench_prepare.sh` wrote with `--no-lod0`, under the
+    # The package `readbench_prepare.sh` wrote without `--lod0`, under the
     # suite's data root: the same bytes the format family measured.
     d = _dataset(Path("/somewhere/delft.city.jsonl"))
     assert d.name == "delft"

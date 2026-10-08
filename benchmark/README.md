@@ -448,10 +448,10 @@ geometries were dropped (Caveat 41).
 The format comparison measures five formats: `citygml`, `cityjson`,
 `cityjsonseq`, `flatcitybuf` and `cityparquet`. CityParquet is one package per
 dataset, its rows written in Hilbert-curve order and without LoD 0 synthesis
-(`cityparquet convert --ordering hilbert --no-lod0`: Hilbert order is the
-writer's default, pinned explicitly so the benchmark states its configuration,
-and `--no-lod0` turns off the CLI's default LoD 0 synthesis so every format
-holds the same geometries), displayed as **CityParquet**. The CityJSON
+(`cityparquet convert --ordering hilbert`: Hilbert order is the writer's
+default, pinned explicitly so the benchmark states its configuration, and
+LoD 0 synthesis, off unless `--lod0` is given, stays off so every format holds
+the same geometries), displayed as **CityParquet**. The CityJSON
 artefact is written without optional whitespace, like the CityGML one. The bloom experiment compares `cityparquet` with
 `cityparquet+nobloom`, both Hilbert-ordered, and holds ordering, codec and
 row-group size fixed. It measures the 3DBAG slice alone: a filter rules out

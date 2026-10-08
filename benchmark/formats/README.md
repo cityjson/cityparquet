@@ -134,10 +134,10 @@ lookups described under "The bloom family" below.
 The format comparison measures five formats — CityGML, CityJSON, CityJSONSeq,
 FlatCityBuf and CityParquet — with one artefact each per dataset. The
 CityParquet artefact is one package written in Hilbert-curve order
-without LoD 0 synthesis (`cityparquet convert --ordering hilbert
---no-lod0`: Hilbert order is the writer's default, pinned explicitly so the
-benchmark states its configuration, and `--no-lod0` turns off the CLI's
-default LoD 0 synthesis so every format holds the same geometries), and the
+without LoD 0 synthesis (`cityparquet convert --ordering hilbert`: Hilbert
+order is the writer's default, pinned explicitly so the benchmark states its
+configuration, and LoD 0 synthesis, off unless `--lod0` is given, stays off so
+every format holds the same geometries), and the
 CityJSON artefact is written without optional whitespace; displayed as
 **CityParquet** in figures. The bloom figures are `bloom`,
 for the 3DBAG slice, and `bloom-corpus`, for the corpus datasets.

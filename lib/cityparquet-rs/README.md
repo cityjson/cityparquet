@@ -42,7 +42,8 @@ Status: milestones **M1–M5 complete** — schema, native writer, reader
 suite. Every LoD,
 **including LoD0, is a suffixed geometry column** (`geometry_lod0_0`, `geometry_lod2_2`, …);
 the writer can **synthesise** an LoD0 footprint from higher-LoD geometry when
-the source lacks it (CLI default; `--no-lod0` to disable) — see `src/lod0.rs`.
+the source lacks it (opt-in, `--lod0`; by default a package holds only what the
+source carries) — see `src/lod0.rs`.
 Async / object-store I/O, native (non-WKB) geometry, and Python bindings are
 post-1.0 future work.
 
@@ -88,6 +89,7 @@ a meaningless single-Item Collection.
 | `--no-bloom`                    | off           | write no Parquet bloom filter (by default `id`, `feature_id` and high-cardinality string attributes carry one)                                                         |
 | `--bloom-fpp`                   | `0.01`        | target false-positive probability of every bloom filter, strictly between 0 and 1                                                                                      |
 | `--batch-size`                  | `4096`        | encode batch size                                                                                                                                                      |
+| `--lod0`                        | off           | synthesise an LoD0 footprint into `geometry_lod0_0` for every object without a source LoD0 (ground surfaces first, else downward-facing faces)                         |
 | `--crs`                         | unset         | operator-supplied CRS (`EPSG:25832` or bare `25832`) for a source that declares none; ignored for a source that declares its own                                       |
 | `--tolerate-invalid-appearance` | off           | drop a material/texture index that falls outside its local definitions array instead of aborting; counted in the report's trailing field, never silent                 |
 | `--partition`                   | unset         | split the output into one package per partition: `count` (+`--number N`), `features` (+`--feature-num M`), or `box` (+`--cell-size METRES`). Omit to write one package |

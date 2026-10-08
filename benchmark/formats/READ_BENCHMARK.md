@@ -46,7 +46,7 @@ left-to-right from "what the data ships as today" to "what we propose":
 | `cityjson`    | plain, whole-document CityJSON (`.city.json`): one JSON document, one `CityObjects` map, one shared document-level `vertices` array; written without optional whitespace (Caveat 40)                                                                                                               | **none** — the document must be parsed in one piece before any object is readable, so every scenario is a full parse (see Caveat 13)                 |
 | `cityjsonseq` | CityJSONSeq, one self-contained JSON feature per line, feature-local vertices. Read from the PREPARED `<base>.city.jsonl` — `readbench_prepare.sh` always materialises one (copied from a `.city.jsonl` input, `cjseq cat` from anything else), and the runner refuses a CityGML document outright | **none** — every scenario is a full parse                                                                                                            |
 | `flatcitybuf` | FlatCityBuf, written `fcb ser -A` and NOTHING else — every other index knob at its `fcb ser` default (attribute B+-tree branching factor 256, R-tree node size 16). One configuration, measured once, not a swept axis; see Caveat 33                                                              | R-tree spatial index (**2D only**, see Caveat 4) + B+-tree index over **every** attribute (`-A`)                                                     |
-| `cityparquet` | our CityParquet package, one per dataset (`<x>.parquet/`), its rows written in Hilbert-curve order (`cityparquet convert --ordering hilbert --no-lod0`; Caveat 37); displayed as **CityParquet**                                                                                                   | Parquet row-group min/max statistics, tightened by the spatial clustering of Hilbert order, + column projection                                      |
+| `cityparquet` | our CityParquet package, one per dataset (`<x>.parquet/`), its rows written in Hilbert-curve order (`cityparquet convert --ordering hilbert`, no LoD 0 synthesis; Caveat 37); displayed as **CityParquet**                                                                                                   | Parquet row-group min/max statistics, tightened by the spatial clustering of Hilbert order, + column projection                                      |
 
 The first three are **unindexed by construction**: a published `.gml`,
 `.city.json` or `.city.jsonl` carries no way to answer any question without
@@ -754,7 +754,7 @@ each cold number stands alone, one per format, one `full-read` only.
     ```
     CityGML --citygml-tools 2.5.0 to-cityjson--> CityJSON --cjseq 0.3.1 cat--> CityJSONSeq
                                                      |                    |--fcb ser -A---------> FlatCityBuf
-                                                     |                    |--cityparquet convert --no-lod0-> CityParquet
+                                                     |                    |--cityparquet convert----------> CityParquet
                                                      |
                                                      |--citygml-tools from-cityjson -v 2.0--> CityGML
                                                         (only when the source is not itself CityGML)
@@ -1260,12 +1260,11 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     figure compares a FlatCityBuf file without addresses against files with
     them.
 
-37. **The package is written without LoD 0 synthesis (`--no-lod0`), so it
-    holds the same geometries as every other artefact.** By default
-    `cityparquet convert` synthesises an LoD 0 footprint for every object
-    without a source LoD 0, which no other format's artefact holds.
-    `readbench_prepare.sh` and the coordinator's variant packages turn it
-    off; the library default is unchanged. A source LoD 0 is kept: Tokyo's
+37. **The package is written without LoD 0 synthesis, so it holds the same
+    geometries as every other artefact.** `cityparquet convert --lod0`
+    synthesises an LoD 0 footprint for every object without a source LoD 0,
+    which no other format's artefact holds; `readbench_prepare.sh` and the
+    coordinator's variant packages leave it off, the writer's default. A source LoD 0 is kept: Tokyo's
     38,743 `Building`s keep theirs, and its 11,172 `BuildingInstallation`s
     (LoD 2 or 3 in the source) gain none. With synthesis on, the package
     gained a footprint for 788 of those installations and for the 12

@@ -39,7 +39,7 @@ READBENCH_BIN = BENCHMARK_DIR / "readbench" / "target" / "release" / "cityparque
 def _dataset(source: Path, prepared_dir: Path | None = None) -> Dataset:
     name = Dataset.name_from_path(source)
     # By default the package the format benchmark's preparation wrote
-    # (`readbench_prepare.sh`, `--no-lod0`) under the suite's data root, so
+    # (`readbench_prepare.sh`, no `--lod0`) under the suite's data root, so
     # both families read the same bytes and no LoD 0 is synthesised.
     prepared = prepared_dir or BENCHMARK_DIR / "runs" / "data" / "readbench"
     if source.name.endswith(".city.json"):

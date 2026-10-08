@@ -54,7 +54,7 @@
 #
 #   CityGML --citygml-tools to-cityjson--> CityJSON --cjseq cat--> CityJSONSeq
 #                                                 |           |--fcb ser -A------------------------> FlatCityBuf
-#                                                 |           |--cityparquet convert --ordering hilbert --no-lod0--> CityParquet
+#                                                 |           |--cityparquet convert --ordering hilbert----------> CityParquet
 #                                                 |
 #                                                 |--citygml-tools from-cityjson -v 2.0--> CityGML
 #                                                    (only when INPUT is not itself CityGML)
@@ -699,7 +699,7 @@ fi
 #   5  `<x>.parquet` is written in Hilbert order (`--ordering hilbert`), the
 #      benchmark's one CityParquet configuration.
 #   6  the CityJSON artefact is written without optional whitespace, and the
-#      package without LoD 0 synthesis (`--no-lod0`).
+#      package without LoD 0 synthesis (no `--lod0`).
 #   7  the source is normalised to one geometry per LoD and object before
 #      any artefact is built.
 #   8  the artefacts are reproducible byte for byte: the CityJSONSeq cut by
@@ -1074,7 +1074,7 @@ if want cityparquet; then
   if dir_is_valid "$PARQUET_OUT"; then
     echo "skip $PARQUET_OUT (already present)"
   else
-    echo "-- convert --ordering hilbert --no-lod0 $SEQ_INPUT -> $PARQUET_OUT"
+    echo "-- convert --ordering hilbert $SEQ_INPUT -> $PARQUET_OUT"
     # By-type is the only, mandatory table layout (2026-07-21): one
     # `<snake>.parquet` table per 1st-level CityObject family. The
     # read-benchmark's CityParquetRunner only supports a package whose
@@ -1082,15 +1082,15 @@ if want cityparquet; then
     # single-family dataset (e.g. a Building-only 3D BAG tile) — a
     # multi-family INPUT prepares fine here but the read-benchmark itself
     # rejects it later with a clear error.
-    # `--no-lod0`: the package holds the source's geometries and no others.
-    # The CLI's default synthesises an LoD 0 footprint for every object
-    # without a source LoD 0, which no other format's artefact holds, so the
-    # package would be measured with more content than its competitors. A
-    # SOURCE LoD 0 (Tokyo, 3DBAG) is kept either way.
+    # No `--lod0`: the package holds the source's geometries and no others.
+    # `--lod0` would synthesise an LoD 0 footprint for every object without a
+    # source LoD 0, which no other format's artefact holds, so the package
+    # would be measured with more content than its competitors. A SOURCE
+    # LoD 0 (Tokyo, 3DBAG) is kept either way.
     # The writer's report line: object_count files skipped_same_lod_geometries
     # ... After the normalisation it must have skipped nothing; a non-zero
     # count means the package holds fewer geometries than the other formats.
-    CONVERT_LOG="$("$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --ordering hilbert --no-lod0 --datetime "$CORPUS_DATETIME" --overwrite)"
+    CONVERT_LOG="$("$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --ordering hilbert --datetime "$CORPUS_DATETIME" --overwrite)"
     printf '%s\n' "$CONVERT_LOG"
     SKIPPED_SAME_LOD="$(awk 'NF == 10 && $3 ~ /^[0-9]+$/ { s = $3 } END { print s }' <<<"$CONVERT_LOG")"
     if [[ -z "$SKIPPED_SAME_LOD" ]]; then

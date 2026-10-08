@@ -103,14 +103,12 @@ pub struct ConvertOptions {
     pub recipe: WriterRecipe,
     pub ordering: RowOrder,
     /// Synthesise an LoD0 footprint into the `geometry_lod0_0` column when an
-    /// object has no source LoD0 (§9 "LoD0 synthesis"). A synthesised footprint
-    /// is marked in `geometry_properties` and exported with the canonical
-    /// `"0.0"` LoD string (minor defaults to `0` per M1's canonicalisation).
-    /// The reference **CLI enables this by default** (the writer's
-    /// convenience for 2D consumers; `--no-lod0` disables it), but
-    /// [`ConvertOptions::new`] leaves it **off** so a library round trip is
-    /// source-faithful unless the caller opts in — synthesis is an additive
-    /// enrichment, not part of losslessness.
+    /// object has no source LoD0 (§9 "LoD0 synthesis"). A synthesised
+    /// footprint is stored like any source LoD0 geometry — nothing in the
+    /// package marks it as synthesised — and exports with the canonical
+    /// `"0.0"` LoD string. Off by default, in [`ConvertOptions::new`] and in
+    /// the CLI (`--lod0` turns it on): synthesis is an additive enrichment,
+    /// so the default package holds only what the source carries.
     pub generate_lod0: bool,
     /// Thresholds for LoD0 synthesis (used only when `generate_lod0`).
     pub lod0: Lod0Options,
@@ -162,7 +160,7 @@ impl ConvertOptions {
             batch_size: 4096,
             recipe: WriterRecipe::default(),
             ordering: RowOrder::default(),
-            // Off here (source-faithful library default); the CLI turns it on.
+            // Off: the package holds only what the source carries.
             generate_lod0: false,
             lod0: Lod0Options::default(),
             crs_override: None,

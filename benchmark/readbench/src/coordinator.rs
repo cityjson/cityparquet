@@ -2171,7 +2171,7 @@ fn run_measurement(
 /// and its size, not how long it took to build.
 ///
 /// `ConvertOptions` is filled the way the prepare script's `cityparquet
-/// convert --ordering hilbert --no-lod0` fills it (Hilbert row order, no
+/// convert --ordering hilbert` fills it (Hilbert row order, no
 /// LoD 0 synthesis, the default batch size), so a variant package has the
 /// same content as `<base>.parquet` and differs from it only in the recipe
 /// under test. Without LoD 0 synthesis the package holds the source's

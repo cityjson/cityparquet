@@ -109,13 +109,13 @@ enum Commands {
         #[arg(long, value_enum, default_value = "hilbert")]
         ordering: OrderingArg,
 
-        /// Do NOT synthesise an LoD0 footprint into the primary `geometry`
-        /// column for objects lacking a source LoD0. By default a footprint is
-        /// derived from the lowest higher LoD (§9 "LoD0 synthesis") so the
-        /// GeoParquet primary column is populated; pass this to keep the output
-        /// strictly source-faithful.
+        /// Synthesise an LoD0 footprint into `geometry_lod0_0` for every
+        /// object that lacks a source LoD0, derived from its higher-LoD
+        /// geometry (ground surfaces first, else downward-facing faces), so
+        /// the GeoParquet-legal footprint column is populated. Off by default:
+        /// the package then holds only what the source carries.
         #[arg(long, default_value_t = false)]
-        no_lod0: bool,
+        lod0: bool,
 
         /// Operator-supplied CRS (e.g. EPSG:25832, or the bare 25832) used
         /// ONLY when the source declares none — it is ignored for a source
@@ -424,7 +424,7 @@ fn main() -> std::process::ExitCode {
             no_bloom,
             bloom_fpp,
             ordering,
-            no_lod0,
+            lod0,
             crs,
             tolerate_invalid_appearance,
             datetime,
@@ -475,7 +475,7 @@ fn main() -> std::process::ExitCode {
                 batch_size,
                 recipe,
                 ordering,
-                generate_lod0: !no_lod0,
+                generate_lod0: lod0,
                 lod0: cityparquet::lod0::Lod0Options::default(),
                 crs_override: None,
                 tolerate_invalid_appearance,

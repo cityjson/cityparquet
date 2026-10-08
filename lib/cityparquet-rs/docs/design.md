@@ -211,8 +211,8 @@ writer can synthesise a footprint from its lowest higher LoD — semantics-first
 (`GroundSurface` faces), else a geometric fallback (downward-facing faces →
 2D union → Z re-drape → `MultiPolygonZ`). The footprint is
 exported as a real `lod:"0.0"` geometry, landing in `geometry_lod0_0` like any
-other LoD. The CLI enables it by default (`--no-lod0` to disable); the
-library `ConvertOptions` is source-faithful unless `generate_lod0` is set.
+other LoD. It is opt-in — `--lod0` on the CLI, `generate_lod0` in
+`ConvertOptions` — so by default a package holds only what the source carries.
 
 ### Bounding box & spatial ordering
 

@@ -82,7 +82,7 @@ class PackageTests(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.prepared = Path(cls.tmp.name) / "prepared"
         cls.package = cls.prepared / "railway.parquet"
-        subprocess.run([str(CLI), "convert", str(FIXTURE), "-o", str(cls.package), "--no-lod0"], check=True, capture_output=True)
+        subprocess.run([str(CLI), "convert", str(FIXTURE), "-o", str(cls.package)], check=True, capture_output=True)
         cls.out = Path(cls.tmp.name) / "out"
         cls.result = run_script("--prepared", str(cls.prepared), "--out", str(cls.out))
         if cls.result.returncode != 0:

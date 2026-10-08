@@ -236,8 +236,9 @@ fetch-3dbag DEST=(BENCH / "runs/data/3dbag") SIZES='1000000':
 # (recursive) into a CityParquet package under OUT (default out/cityparquet),
 # one OUT/<name>/ package directory per input where <name> is the input's
 # basename minus its known input extension (see KNOWN_INPUT_EXTENSIONS at the
-# top of this file; core profile, and existing packages of the same name are
-# overwritten).
+# top of this file; existing packages of the same name are overwritten). Each
+# package gets a synthesised LoD 0 footprint (`--lod0`) for every object
+# without a source one, so its GeoParquet footprint column is populated.
 [doc("Convert every city-model input under FOLDER into a CityParquet package")]
 convert-all FOLDER OUT='out/cityparquet':
     #!/usr/bin/env bash
@@ -252,7 +253,7 @@ convert-all FOLDER OUT='out/cityparquet':
         dest="{{OUT}}/${name}"
         echo ">> ${f} -> ${dest}"
         cargo run --release {{CARGO}} -p cityparquet-cli --bin cityparquet -- convert \
-            "$f" --output "$dest" --overwrite
+            "$f" --output "$dest" --overwrite --lod0
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
         \( {{KNOWN_INPUT_FIND}} \) ! -name 'metadata.json' -print0 \

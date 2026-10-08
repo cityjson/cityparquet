@@ -60,7 +60,7 @@ until the full run on the benchmark host; the directory is re-included in
 
 | tag                            | what it is                                                                                                                                                                           | runs                                                                       | index support                                                                                                                                                                  |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `duckdb-cityparquet`           | DuckDB 1.5.4 (Python client) over the format benchmark's prepared CityParquet package `<prepared>/<dataset>.parquet` (Hilbert-ordered, `--no-lod0`), through an explicitly chosen build of the `cityjson` extension; no separate ingest | every scenario                                                             | Parquet statistics used by DuckDB's own scan, and the package's bloom filters on `id`, `feature_id` and high-cardinality string attributes for equality predicates (Caveat 21) |
+| `duckdb-cityparquet`           | DuckDB 1.5.4 (Python client) over the format benchmark's prepared CityParquet package `<prepared>/<dataset>.parquet` (Hilbert-ordered, no LoD 0 synthesis), through an explicitly chosen build of the `cityjson` extension; no separate ingest | every scenario                                                             | Parquet statistics used by DuckDB's own scan, and the package's bloom filters on `id`, `feature_id` and high-cardinality string attributes for equality predicates (Caveat 21) |
 | `duckdb-cityparquet-writeback` | the same as `duckdb-cityparquet`, with `cityparquet_write` inside the timed window                                                                                                   | the write tier only                                                        | —                                                                                                                                                                              |
 | `cjdb`                         | cjdb 2.2.0, **patched (Caveat 2)**, imported into PostgreSQL 16.4/PostGIS 3.4.3. Full geometry is JSONB (`city_object.geometry`); only a 2D footprint is a PostGIS geometry (`ground_geometry`) | every scenario                                                             | cjdb's defaults, plus btree(`object_id`) and per-dataset attribute expression indexes — "Index sets"                                                                                             |
 | `3dcitydb`                     | 3DCityDB v5.1.2, imported with `citydb-tool` 1.3.2 into PostgreSQL 16.4/PostGIS 3.4.3. Generic `feature`/`property`/`geometry_data` schema: CityGML classes are rows, attributes are EAV rows   | every scenario                                                             | the indexes `citydb-tool import` creates, plus one numeric attribute index — "Index sets"                                                                                                  |
@@ -390,7 +390,7 @@ import` pays a container start and a JVM start, which for a one-feature
   and the `bbox` rectangle's area otherwise; which one was used is stamped
   into `notes`.
 - **The LoD 0 footprint is the source's own.** The package is the format
-  benchmark's, written with `--no-lod0`, so `geometry_lod0_0` holds only
+  benchmark's, written without `--lod0`, so `geometry_lod0_0` holds only
   LoD 0 geometry the source carries. On the 3DBAG slice every `Building`
   has a source LoD 0 footprint and no `BuildingPart` has one; the
   statement's `object_type = 'Building'` touches exactly the Buildings,
@@ -1464,7 +1464,7 @@ just down
 
 `just bench` passes no `--prepared-dir`, so packages are read from
 `benchmark/runs/data/readbench/`, where `just bench-prep` leaves the format
-benchmark's packages (written with `--no-lod0`). `just smoke` has no `--dataset`
+benchmark's packages (written without LoD 0 synthesis). `just smoke` has no `--dataset`
 argument and therefore needs `benchmark/databases/data/delft.city.jsonl`.
 `just capture-schema <dataset>` reads both schemas from these fixed ports and
 overwrites `docs/cjdb-schema.md` and `docs/3dcitydb-v5-schema.md` with fresh

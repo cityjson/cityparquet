@@ -358,12 +358,9 @@ fn export_and_compare_source_vs_exported_is_equal() {
     let package_dir = tempfile::tempdir().unwrap();
     let binary = env!("CARGO_BIN_EXE_cityparquet");
 
-    // Convert delft to package. `--no-lod0`: the CLI synthesises an LoD0
-    // footprint by default (§9), but this test asserts a source-faithful round
-    // trip, and synthesis is an additive enrichment.
+    // Convert delft to package.
     let status = Command::new(binary)
         .arg("convert")
-        .arg("--no-lod0")
         .arg(fixture("delft.city.jsonl"))
         .arg("-o")
         .arg(package_dir.path())
@@ -440,11 +437,9 @@ fn export_and_compare_railway_with_exclusions() {
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
     let binary = env!("CARGO_BIN_EXE_cityparquet");
 
-    // Convert railway to package (`--no-lod0` for a source-faithful round trip;
-    // railway has no source LoD0, so synthesis would otherwise add one).
+    // Convert railway to package.
     let status = Command::new(binary)
         .arg("convert")
-        .arg("--no-lod0")
         .arg(&railway_path)
         .arg("-o")
         .arg(package_dir.path())
@@ -536,7 +531,6 @@ fn convert_with_compression_override_changes_output_size_and_round_trips() {
         let out = tempfile::tempdir().unwrap();
         let status = Command::new(binary)
             .arg("convert")
-            .arg("--no-lod0") // source-faithful round trip (see the compare below)
             .arg(fixture("delft.city.jsonl"))
             .arg("-o")
             .arg(out.path())
@@ -731,20 +725,21 @@ fn export_package_to_gml_writes_citygml() {
     );
 }
 
-/// The CLI synthesises an LoD0 footprint by default (§9): converting railway
-/// (LoD3 solids, no source LoD0) and exporting yields a real `lod:"0.0"`
-/// geometry (canonical spelling), and `--no-lod0` suppresses it.
+/// The CLI encodes only what the source carries unless asked: converting
+/// railway (LoD3, no source LoD0) and exporting yields no LoD0 geometry by
+/// default, and `--lod0` synthesises one, exported with the canonical
+/// `"0.0"` spelling.
 #[test]
-fn convert_synthesises_lod0_by_default_and_no_lod0_suppresses_it() {
+fn convert_synthesises_lod0_only_with_the_lod0_flag() {
     let binary = env!("CARGO_BIN_EXE_cityparquet");
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
 
-    let export_lod0_present = |no_lod0: bool| -> bool {
+    let export_lod0_present = |lod0: bool| -> bool {
         let pkg = tempfile::tempdir().unwrap();
         let mut cmd = Command::new(binary);
         cmd.arg("convert");
-        if no_lod0 {
-            cmd.arg("--no-lod0");
+        if lod0 {
+            cmd.arg("--lod0");
         }
         let status = cmd
             .arg(&railway_path)
@@ -769,13 +764,10 @@ fn convert_synthesises_lod0_by_default_and_no_lod0_suppresses_it() {
     };
 
     assert!(
-        export_lod0_present(false),
-        "default convert must synthesise LoD0"
+        !export_lod0_present(false),
+        "the default convert must not synthesise LoD0"
     );
-    assert!(
-        !export_lod0_present(true),
-        "--no-lod0 must suppress synthesis"
-    );
+    assert!(export_lod0_present(true), "--lod0 must synthesise LoD0");
 }
 
 /// A real CityJSON fixture copied with its `referenceSystem` removed — the

@@ -98,7 +98,7 @@ fn lod0_geometries_in(package: &std::path::Path) -> usize {
 }
 
 /// A variant package holds the source's geometries and no others, as the
-/// prepare script's `--no-lod0` package does: Delft's 1,116 BuildingParts
+/// prepare script's package (no `--lod0`) does: Delft's 1,116 BuildingParts
 /// carry no source LoD 0, so a synthesised footprint for each would be
 /// content no other format's artefact holds.
 #[test]
