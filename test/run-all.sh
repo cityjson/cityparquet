@@ -115,6 +115,9 @@ cj_skip=""
 stage "duckdb-cityjson: unittest" "$cj_skip" -- \
     bash -c 'cd lib/duckdb-cityjson && ./build/release/test/unittest "test/sql/*"'
 
+stage "cross-writer conformance (rs <-> duckdb-cityjson)" \
+    "${rs_skip:-$cj_skip}" -- ./test/conformance.sh
+
 d3_skip=""
 [[ -d lib/duckdb-3d/.git || -f lib/duckdb-3d/Makefile ]] \
     || d3_skip="submodule not checked out; run 'just setup'"

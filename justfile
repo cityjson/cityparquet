@@ -87,6 +87,13 @@ check:
 test-all:
     ./test/run-all.sh
 
+# Both writers against the specification and each other, on real fixtures:
+# each package is checked by `cityparquet validate` and exported and compared
+# with its source. Needs a duckdb-cityjson build and the rs fixtures.
+[doc("Cross-writer conformance: rs and duckdb-cityjson packages (test/conformance.sh)")]
+conformance:
+    ./test/conformance.sh
+
 # ---------------------------------------------------------------------------
 # Specification site (documents/)
 # ---------------------------------------------------------------------------
