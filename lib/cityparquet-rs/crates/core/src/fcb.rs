@@ -64,9 +64,13 @@ mod reader {
     pub struct FcbFeatures {
         path: std::path::PathBuf,
         iter: fcb_core::FeatureIter<BufReader<File>, NotSeekable>,
-        /// Features still to read: `FeatureIter::next` does not end the
-        /// stream by itself, so the header's `features_count` bounds it.
-        remaining: u64,
+        /// The header's `features_count`; `None` when it is 0, which
+        /// `fcb_core` reads as "not stated": the stream then runs to the end
+        /// of the feature section.
+        declared: Option<u64>,
+        /// Features yielded so far.
+        read: u64,
+        done: bool,
     }
 
     impl FcbFeatures {
@@ -74,11 +78,13 @@ mod reader {
             let iter = open(path)?
                 .select_all_seq()
                 .map_err(|e| err(path, "cannot read the features", e))?;
-            let remaining = iter.header().features_count();
+            let declared = Some(iter.header().features_count()).filter(|&n| n > 0);
             Ok(Self {
                 path: path.to_path_buf(),
                 iter,
-                remaining,
+                declared,
+                read: 0,
+                done: false,
             })
         }
     }
@@ -87,16 +93,30 @@ mod reader {
         type Item = Result<CityJSONFeature>;
 
         fn next(&mut self) -> Option<Self::Item> {
-            if self.remaining == 0 {
+            if self.done || self.declared.is_some_and(|n| self.read >= n) {
                 return None;
             }
-            self.remaining -= 1;
             let path = &self.path;
             let feature = match self.iter.next() {
-                Err(e) => return Some(Err(err(path, "cannot read a feature", e))),
-                Ok(None) => return None,
+                Err(e) => {
+                    self.done = true;
+                    return Some(Err(err(path, "cannot read a feature", e)));
+                }
+                Ok(None) => {
+                    self.done = true;
+                    // A stated count the feature section falls short of is a
+                    // truncated file, not a smaller dataset.
+                    return self.declared.map(|n| {
+                        Err(CityParquetError::Schema(format!(
+                            "{}: the header declares {n} features but the file holds {}",
+                            path.display(),
+                            self.read
+                        )))
+                    });
+                }
                 Ok(Some(iter)) => iter.cur_cj_feature(),
             };
+            self.read += 1;
             Some(
                 feature
                     .map_err(|e| err(path, "cannot decode a feature", e))
