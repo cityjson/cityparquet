@@ -365,9 +365,10 @@ pub struct Collected {
     /// references rather than inline polygons.
     pub xlinks: Vec<String>,
     /// Every surface aggregate (`gml:CompositeSurface`, `gml:MultiSurface`)
-    /// carrying a `gml:id`, with the inline polygons it holds — the target an
-    /// `xlink:href` to the aggregate resolves to.
-    pub aggregates: Vec<(String, Vec<Polygon>)>,
+    /// carrying a `gml:id`, with its members in document order — inline
+    /// polygons and `xlink:href`s alike, at any depth — the targets an
+    /// `xlink:href` to the aggregate stands for.
+    pub aggregates: Vec<(String, Vec<RefTarget>)>,
 }
 
 /// Harvest every `gml:Polygon` (with its `gml:id`, if any) inside the current
@@ -393,8 +394,8 @@ pub fn collect_surfaces<R: BufRead>(
     buf: &mut Vec<u8>,
 ) -> Result<Collected> {
     let mut out = Collected::default();
-    // Open identified aggregates: (depth inside them, id, polygons so far).
-    let mut open: Vec<(usize, String, Vec<Polygon>)> = Vec::new();
+    // Open identified aggregates: (depth inside them, id, members so far).
+    let mut open: Vec<(usize, String, Vec<RefTarget>)> = Vec::new();
     let mut depth = 1usize;
     loop {
         buf.clear();
@@ -410,7 +411,7 @@ pub fn collect_surfaces<R: BufRead>(
                     let mut poly = read_polygon(reader, buf)?;
                     poly.id = id.clone();
                     for (_, _, members) in &mut open {
-                        members.push(poly.clone());
+                        members.push(RefTarget::Inline(poly.clone()));
                     }
                     out.polygons.push((id, poly));
                 } else if gml
@@ -418,7 +419,11 @@ pub fn collect_surfaces<R: BufRead>(
                     && let Some(frag) = xlink_fragment(&e)?
                 {
                     // An xlink surfaceMember (empty under expand_empty_elements):
-                    // record the fragment and consume through its End.
+                    // record the fragment and consume through its End. It is
+                    // a member of every enclosing identified aggregate too.
+                    for (_, _, members) in &mut open {
+                        members.push(RefTarget::Xlink(frag.clone()));
+                    }
                     out.xlinks.push(frag);
                     skip_element(reader, buf)?;
                 } else {

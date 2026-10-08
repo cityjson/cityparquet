@@ -2,8 +2,8 @@
 //! example as citygml4j ships it — survives CityGML → package → CityGML and
 //! package → CityJSON at LoD 4.
 //!
-//! Its `bldg:lod4Solid` composes its shell from `xlink:href`s to the
-//! `gml:CompositeSurface` each `boundedBy` surface wraps its polygons in, so
+//! Its `bldg:lod4Solid` composes its shell from `xlink:href`s, two of them to
+//! the `gml:CompositeSurface` a `boundedBy` wall wraps its polygons in, so
 //! reading it also proves an xlink to a surface aggregate resolves to the
 //! aggregate's member polygons.
 
@@ -26,6 +26,15 @@ fn fixture(name: &str) -> PathBuf {
     assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
     p
 }
+
+/// The faces of the Building's `bldg:lod4Solid`. Its exterior shell has ten
+/// `xlink:href` members: eight name a `gml:Polygon`, and two name a wall's
+/// `gml:CompositeSurface`, of 9 (`GML_1d350a50…`, Wall South) and 5
+/// (`GML_6286ffa9…`, Wall East) inline polygons — 8 + 9 + 5 = 22. Counted
+/// with an XPath walk over the fixture: for each `surfaceMember` of
+/// `bldg:Building/bldg:lod4Solid//gml:exterior/gml:CompositeSurface`, 1 for a
+/// `gml:Polygon` target, else the target's `gml:Polygon` descendants.
+const LOD4_SOLID_FACES: usize = 22;
 
 fn convert_to(input: &Path, out: &Path) {
     convert(&ConvertOptions::new(input.to_path_buf(), out.to_path_buf()))
@@ -87,12 +96,7 @@ fn a_citygml_lod4_solid_round_trips_through_the_package() {
 
     let (cm_type, faces) = building_lod4(&pkg);
     assert_eq!(cm_type, "Solid");
-    // Ten shell members, each an xlink to a boundedBy surface's
-    // CompositeSurface of several polygons.
-    assert!(
-        faces > 10,
-        "the composites expand to their polygons: {faces}"
-    );
+    assert_eq!(faces, LOD4_SOLID_FACES);
     let report = validate_package(&pkg).unwrap();
     assert!(report.is_conformant(), "{report}");
 
@@ -127,4 +131,49 @@ fn a_citygml_lod4_solid_round_trips_through_the_package() {
             .contains("\"lod\":\"4.0\"")
     );
     assert!(exported.lod4_geometries >= 1, "{exported:?}");
+}
+
+/// An xlink to a `gml:CompositeSurface` whose members are themselves
+/// `xlink:href`s stands for the polygons those name. Derived from the real
+/// LoD4 fixture: Wall South's CompositeSurface (`GML_1d350a50…`) keeps its id
+/// but its nine inline polygons move out beside it, each replaced by an
+/// `xlink:href` to the moved polygon — the same geometry, spelled the other
+/// way GML permits.
+#[test]
+fn a_composite_surface_of_xlinked_members_expands_to_the_polygons_they_name() {
+    let text = std::fs::read_to_string(fixture("lod4_building_v2.gml")).unwrap();
+    let open = r#"<gml:CompositeSurface gml:id="GML_1d350a50-6acc-4d3c-8c28-326ca4305fd1">"#;
+    let start = text.find(open).expect("Wall South's CompositeSurface");
+    let end = start + text[start..].find("</gml:CompositeSurface>").unwrap();
+    let inner = &text[start + open.len()..end];
+    let mut polygons = Vec::new();
+    let mut xlinks = String::new();
+    let mut rest = inner;
+    while let Some(at) = rest.find("<gml:Polygon gml:id=\"") {
+        let close = at + rest[at..].find("</gml:Polygon>").unwrap() + "</gml:Polygon>".len();
+        let polygon = &rest[at..close];
+        let id_start = "<gml:Polygon gml:id=\"".len();
+        let id = &polygon[id_start..id_start + polygon[id_start..].find('"').unwrap()];
+        xlinks.push_str(&format!(r##"<gml:surfaceMember xlink:href="#{id}"/>"##));
+        polygons.push(format!("<gml:surfaceMember>{polygon}</gml:surfaceMember>"));
+        rest = &rest[close..];
+    }
+    assert_eq!(polygons.len(), 9);
+    // The polygons follow the surfaceMember that held the composite.
+    let member_end =
+        end + text[end..].find("</gml:surfaceMember>").unwrap() + "</gml:surfaceMember>".len();
+    let derived = format!(
+        "{}{open}{xlinks}</gml:CompositeSurface>{}{}{}",
+        &text[..start],
+        &text[end + "</gml:CompositeSurface>".len()..member_end],
+        polygons.concat(),
+        &text[member_end..]
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let gml = dir.path().join("xlinked_members.gml");
+    std::fs::write(&gml, derived).unwrap();
+
+    let pkg = dir.path().join("pkg");
+    convert_to(&gml, &pkg);
+    assert_eq!(building_lod4(&pkg), ("Solid".to_string(), LOD4_SOLID_FACES));
 }

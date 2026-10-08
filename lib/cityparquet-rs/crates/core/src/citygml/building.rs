@@ -101,7 +101,7 @@ pub struct RawBuilding {
     /// Every identified surface aggregate (`gml:CompositeSurface`,
     /// `gml:MultiSurface`) by `gml:id`, with its polygons: an xlink to the
     /// aggregate stands for all of them.
-    aggregates: HashMap<String, Vec<Polygon>>,
+    aggregates: HashMap<String, Vec<RefTarget>>,
     /// Semantic surface kinds (`"WallSurface"`, ...), in document order.
     surfaces: Vec<String>,
     /// `gml:id` of a boundary polygon -> its index into `surfaces`.
@@ -849,45 +849,60 @@ impl RawBuilding {
     }
 
     /// The polygons an xlink target names: one identified polygon, or every
-    /// polygon of an identified surface aggregate. Empty when the id names
-    /// neither.
-    fn xlink_polygons(&self, id: &str) -> Vec<&Polygon> {
-        match self.polygons.get(id) {
-            Some(poly) => vec![poly],
-            None => self
-                .aggregates
-                .get(id)
-                .map(|members| members.iter().collect())
-                .unwrap_or_default(),
-        }
+    /// polygon an identified surface aggregate stands for. Empty when the id
+    /// resolves to no polygon.
+    fn xlink_polygons(&self, id: &str) -> Vec<Polygon> {
+        let sref = SurfaceRef {
+            reverse: false,
+            target: RefTarget::Xlink(id.to_string()),
+        };
+        self.expand(&sref)
+            .iter()
+            .filter_map(|r| self.resolve(r).ok().cloned())
+            .collect()
     }
 
     /// `sref`, with an xlink to a surface aggregate expanded into one
-    /// reference per member polygon (each keeping `sref`'s orientation) —
-    /// by the member's own id when it is registered, so its semantics
-    /// resolve, else inline.
+    /// reference per polygon the aggregate stands for, following xlinked
+    /// members into further aggregates. Each keeps `sref`'s orientation, and a
+    /// member polygon is referenced by its own id when that is registered, so
+    /// its semantics resolve, else inline.
     fn expand(&self, sref: &SurfaceRef) -> Vec<SurfaceRef> {
-        let RefTarget::Xlink(id) = &sref.target else {
-            return vec![sref.clone()];
-        };
-        if self.polygons.contains_key(id) {
-            return vec![sref.clone()];
-        }
-        match self.aggregates.get(id) {
-            Some(members) => members
-                .iter()
-                .map(|member| SurfaceRef {
-                    reverse: sref.reverse,
-                    target: match &member.id {
-                        Some(mid) if self.polygons.contains_key(mid) => {
-                            RefTarget::Xlink(mid.clone())
+        let mut out = Vec::new();
+        self.expand_into(sref.reverse, &sref.target, 0, &mut out);
+        out
+    }
+
+    fn expand_into(
+        &self,
+        reverse: bool,
+        target: &RefTarget,
+        depth: usize,
+        out: &mut Vec<SurfaceRef>,
+    ) {
+        if let RefTarget::Xlink(id) = target
+            && !self.polygons.contains_key(id)
+            && depth <= MAX_PART_DEPTH
+            && let Some(members) = self.aggregates.get(id)
+        {
+            for member in members {
+                let member = match member {
+                    RefTarget::Inline(poly) => match &poly.id {
+                        Some(pid) if self.polygons.contains_key(pid) => {
+                            RefTarget::Xlink(pid.clone())
                         }
-                        _ => RefTarget::Inline(member.clone()),
+                        _ => member.clone(),
                     },
-                })
-                .collect(),
-            None => vec![sref.clone()],
+                    RefTarget::Xlink(_) => member.clone(),
+                };
+                self.expand_into(reverse, &member, depth + 1, out);
+            }
+            return;
         }
+        out.push(SurfaceRef {
+            reverse,
+            target: target.clone(),
+        });
     }
 
     /// Record a non-building object's standalone surface geometry at `lod`
@@ -1310,7 +1325,7 @@ impl RawBuilding {
                 );
                 continue;
             }
-            for poly in polys {
+            for poly in &polys {
                 boundaries.push(surface_rings(poly, false, vb)?);
                 values.push(json!(sem_idx));
                 face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
