@@ -77,21 +77,46 @@ pub(super) fn is_map(t: &Type) -> bool {
         )
 }
 
-/// The element of a standard three-level `LIST` group, whatever its
-/// intermediate names (a reader MUST NOT require a particular child name).
+/// The element type of a `LIST` column, in any layout Parquet's
+/// backward-compatibility rules admit (`LogicalTypes.md`, "Lists"): a reader
+/// MUST NOT require a particular child name (spec 02), and the two-level
+/// forms are the same logical type.
+///
+/// - a repeated field with no `LIST`/`MAP` annotation is a required list of
+///   required elements of its own type;
+/// - in a `LIST`-annotated group, a repeated primitive is the element; so is
+///   a repeated group with several fields, or with one field when it is named
+///   `array` or `<list>_tuple`; any other repeated group wraps the element as
+///   its single child (the standard three-level form).
 pub(super) fn list_element(t: &Type) -> Option<&Type> {
+    let info = t.get_basic_info();
+    if info.has_repetition()
+        && info.repetition() == Repetition::REPEATED
+        && !is_list(t)
+        && !is_map(t)
+    {
+        return Some(t);
+    }
     if !t.is_group() || !is_list(t) {
         return None;
     }
     let [repeated] = t.get_fields() else {
         return None;
     };
-    if !repeated.is_group() || repeated.get_basic_info().repetition() != Repetition::REPEATED {
+    if repeated.get_basic_info().repetition() != Repetition::REPEATED {
         return None;
     }
+    if !repeated.is_group() {
+        return Some(repeated);
+    }
     match repeated.get_fields() {
-        [element] => Some(element),
-        _ => None,
+        [element]
+            if repeated.name() != "array" && repeated.name() != format!("{}_tuple", t.name()) =>
+        {
+            Some(element)
+        }
+        [] => None,
+        _ => Some(repeated),
     }
 }
 

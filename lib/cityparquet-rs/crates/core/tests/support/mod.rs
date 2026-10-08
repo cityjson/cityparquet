@@ -12,11 +12,12 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, RecordBatch, make_array};
 use arrow_schema::{DataType, Field, Fields, Schema};
 use cityparquet::package::{ConvertOptions, convert};
-use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::arrow_writer::ArrowWriterOptions;
+use parquet::arrow::{ArrowSchemaConverter, ArrowWriter};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
+use parquet::schema::types::{SchemaDescriptor, Type, TypePtr};
 
 pub fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -188,6 +189,22 @@ impl FileContent {
     /// key-value pairs say, as it would be for a writer that is not Arrow
     /// based.
     pub fn write(&self, path: &Path) {
+        self.write_with_schema(path, |_| {});
+    }
+
+    /// [`Self::write`], with `edit` applied to the Parquet schema the Arrow
+    /// schema converts to: it receives the root's fields and may replace
+    /// any of them, as long as the levels of the replaced column stay those
+    /// the Arrow data produces.
+    pub fn write_with_schema(&self, path: &Path, edit: impl FnOnce(&mut Vec<TypePtr>)) {
+        let converted = ArrowSchemaConverter::new().convert(&self.schema).unwrap();
+        let root = converted.root_schema();
+        let mut fields = root.get_fields().to_vec();
+        edit(&mut fields);
+        let root = Type::group_type_builder(root.name())
+            .with_fields(fields)
+            .build()
+            .unwrap();
         let kvs: Vec<KeyValue> = self
             .key_values
             .iter()
@@ -198,7 +215,8 @@ impl FileContent {
             .build();
         let options = ArrowWriterOptions::new()
             .with_properties(props)
-            .with_skip_arrow_metadata(true);
+            .with_skip_arrow_metadata(true)
+            .with_parquet_schema(SchemaDescriptor::new(Arc::new(root)));
         let file = fs::File::create(path).unwrap();
         let mut writer =
             ArrowWriter::try_new_with_options(file, self.schema.clone(), options).unwrap();

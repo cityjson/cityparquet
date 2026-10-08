@@ -468,3 +468,57 @@ fn nested_columns_of_the_wrong_type_are_reported_not_a_panic() {
         );
     }
 }
+
+/// Parquet's backward-compatibility rules admit a two-level `LIST` — a
+/// `LIST`-annotated group whose single repeated child is the element itself
+/// — and the spec types a column by its logical type, not by that layout.
+/// Delft's `parents` rewritten that way (elements required, which its values
+/// allow) still conforms.
+#[test]
+fn a_two_level_list_column_conforms() {
+    use parquet::basic::{LogicalType, Repetition, Type as PhysicalType};
+    use parquet::schema::types::Type;
+
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    let table = pkg.join("building.parquet");
+    let mut content = FileContent::read(&table);
+    content.map_column("parents", |field, column, _| {
+        let item = Arc::new(Field::new("element", DataType::Utf8, false));
+        let data_type = DataType::List(item);
+        let data = column
+            .to_data()
+            .into_builder()
+            .data_type(data_type.clone())
+            .build()
+            .unwrap();
+        (Field::new(field.name(), data_type, true), make_array(data))
+    });
+    content.write_with_schema(&table, |fields| {
+        let element = Type::primitive_type_builder("element", PhysicalType::BYTE_ARRAY)
+            .with_repetition(Repetition::REPEATED)
+            .with_logical_type(Some(LogicalType::String))
+            .build()
+            .unwrap();
+        let parents = Type::group_type_builder("parents")
+            .with_repetition(Repetition::OPTIONAL)
+            .with_logical_type(Some(LogicalType::List))
+            .with_fields(vec![Arc::new(element)])
+            .build()
+            .unwrap();
+        let at = fields.iter().position(|f| f.name() == "parents").unwrap();
+        fields[at] = Arc::new(parents);
+    });
+
+    // The file really holds the two-level form.
+    let reader =
+        parquet::file::reader::SerializedFileReader::new(fs::File::open(&table).unwrap()).unwrap();
+    use parquet::file::reader::FileReader;
+    let descr = reader.metadata().file_metadata().schema_descr_ptr();
+    assert!(
+        (0..descr.num_columns()).any(|i| descr.column(i).path().string() == "parents.element"),
+        "parents is written as a two-level list"
+    );
+
+    let report = validate(&pkg);
+    assert!(report.violations.is_empty(), "{report}");
+}
