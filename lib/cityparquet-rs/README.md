@@ -1,8 +1,9 @@
 # cityparquet-rs
 
 Rust reference implementation of **CityParquet** — a cloud-native, columnar
-Parquet encoding for 3D city models (CityJSON / CityJSONSeq), with an Arrow
-in-memory representation. Part of the CityParquet + CityLake research stack
+Parquet encoding for 3D city models, with an Arrow in-memory representation. It
+reads CityJSON, CityJSONSeq, CityGML 2.0 and FlatCityBuf, and writes CityJSON,
+CityJSONSeq and (for buildings) CityGML 2.0. Part of the CityParquet + CityLake research stack
 (TU Delft 3D Geoinformation).
 
 CityParquet stores a city model as a **directory of Parquet files** — one row
@@ -62,16 +63,29 @@ baseline additionally use `duckdb` if it's on `PATH`.
 ## CLI usage
 
 Run via `cargo run -p cityparquet-cli -- <command>` (add `--release` for
-realistic timing). Four subcommands:
+realistic timing). Six subcommands: `convert`, `export`, `compare`,
+`collection`, `validate` and `bench`.
 
-### convert — CityJSON/Seq → CityParquet package
+### convert — CityJSON/Seq, CityGML or FlatCityBuf → CityParquet package
 
 ```bash
 cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite
 ```
 
-Writes `OUTPUT_DIR/` containing one `<snake>.parquet` table per 1st-level
-CityObject family (e.g. `building.parquet`, `bridge.parquet`) + `metadata.json`,
+`INPUT` is a CityJSON (`.city.json`), CityJSONSeq (`.city.jsonl`), CityGML
+(`.gml`) or FlatCityBuf (`.fcb`) file, a directory of them, or a glob; several
+inputs merge into one dataset. The format is sniffed from the content.
+
+- **CityGML input is version 2.0 only**; another version is refused by name.
+  The reader covers buildings (solids, semantic surfaces and openings, parts,
+  installations, appearance, every LoD up to 4) and the geometry and attributes
+  of the other thematic modules but relief; what it does not read is listed in
+  [docs/citygml-reader-writer-limitations.md](docs/citygml-reader-writer-limitations.md).
+- **FlatCityBuf input** is behind the `fcb` cargo feature (on for the CLI): the
+  file is read front to back, its header standing in for the CityJSON one.
+
+Writes `OUTPUT_DIR/` containing one object table per CityGML module (e.g.
+`building.parquet`, `transportation.parquet`) + `metadata.json`,
 readable by any Parquet reader (DuckDB, pyarrow, …). `metadata.json` is a STAC
 Item (the `city3d:*` extension) describing that one package; `collection`
 (below) aggregates several packages' Items into a dataset-level STAC
@@ -151,15 +165,24 @@ source has no appearance/implicit geometries for that sidecar to write; `invalid
 unless `--tolerate-invalid-appearance` actually dropped a dangling
 material/texture reference).
 
-### export — package → CityJSON/Seq
+### export — package → CityJSON/Seq or CityGML
 
 ```bash
 cargo run -p cityparquet-cli -- export PACKAGE_DIR OUTPUT.city.jsonl
 ```
 
-Format is auto-detected from the extension (`.city.jsonl` → Seq, `.city.json`
-→ document). Prints `feature_count object_count instance_geometries_dropped
-appearance_refs_dropped appearance_lod_misses`.
+The format follows the extension: `.city.jsonl` → CityJSONSeq, `.city.json` →
+a CityJSON document, `.gml` → CityGML 2.0. CityJSON export prints
+`feature_count object_count instance_geometries_dropped
+appearance_refs_dropped`, and warns when it writes LoD 4 geometry (as `"4.0"`;
+CityJSON 2.0 defines LoDs 0 to 3 only).
+
+**CityGML export is limited to `Building` and `BuildingPart`**: their solids
+(`lod1Solid` to `lod4Solid`, CompositeSolid included), semantic surfaces,
+attributes and appearance. Every other object is skipped and counted in the
+printed report (`non_building_skipped`, …), and a MultiSolid has no CityGML 2.0
+building slot. See
+[docs/citygml-reader-writer-limitations.md](docs/citygml-reader-writer-limitations.md).
 
 ### compare — semantic equality of two datasets
 
