@@ -85,8 +85,9 @@ sort; `source` streams, the low-memory path),
 `--row-group-size`, `--zstd-level`,
 `--partition`, `--lod0` (opt-in LoD0 footprint synthesis), `--crs` (an operator-supplied CRS for a source that
 declares none — without it such a source still converts, writing `city.crs: null`), and
-`--tolerate-invalid-appearance` (drop a dangling material/texture index instead of
-aborting; off by default — strict is the oracle). The
+`--tolerate-invalid-appearance` (drop a dangling material/texture index, or the
+texture of a ring with fewer UVs than vertices, instead of aborting; off by
+default — strict is the oracle). The
 round-trip is proven by `convert` → `export` → `compare` against the source. See
 `README.md` for the full flag tables and the per-command stdout report formats, and
 `../../benchmark/formats/README.md` for benchmark methodology and comparability caveats.

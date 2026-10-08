@@ -132,7 +132,8 @@ enum Commands {
         crs: Option<String>,
 
         /// Drop a material/texture index that falls outside its local
-        /// definitions array instead of aborting conversion. Off by default:
+        /// definitions array (or a texture ring with fewer UVs than vertices,
+        /// which is left untextured) instead of aborting conversion. Off by default:
         /// this implementation is the appearance-resolution oracle, so a
         /// dangling reference is fatal unless explicitly waived — pass this
         /// for input another CityParquet implementation reads regardless. A
@@ -621,6 +622,14 @@ fn main() -> std::process::ExitCode {
                                 .iter()
                                 .map(|(_, r)| r.invalid_appearance_refs_dropped)
                                 .sum();
+                            if invalid_appearance_refs_dropped > 0 {
+                                eprintln!(
+                                    "warning: {} invalid material/texture reference(s) dropped \
+                                     (--tolerate-invalid-appearance): a dangling index, or a \
+                                     texture ring with fewer UVs than vertices, left untextured",
+                                    invalid_appearance_refs_dropped
+                                );
+                            }
                             println!(
                                 "partitions={} duplicate_ids={} invalid_appearance_refs_dropped={}",
                                 report.partitions.len(),
@@ -665,6 +674,14 @@ fn main() -> std::process::ExitCode {
                             // as the CRS diagnostic above.
                             for message in &report.dropped_colliding_member_diagnostics {
                                 eprintln!("warning: {message}");
+                            }
+                            if report.invalid_appearance_refs_dropped > 0 {
+                                eprintln!(
+                                    "warning: {} invalid material/texture reference(s) dropped \
+                                     (--tolerate-invalid-appearance): a dangling index, or a \
+                                     texture ring with fewer UVs than vertices, left untextured",
+                                    report.invalid_appearance_refs_dropped
+                                );
                             }
                             println!(
                                 "{} {} {} {} {} {} {} {} {} {}",

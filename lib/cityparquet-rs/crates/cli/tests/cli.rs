@@ -1390,3 +1390,28 @@ fn collection_aggregates_the_items_of_several_packages() {
         .collect();
     assert_eq!(targets, expected);
 }
+
+/// `--tolerate-invalid-appearance` drops what it cannot place, and says so on
+/// stderr — the derived Helsinki fixture has two texture rings one UV short
+/// (see `crates/core/tests/texture_uv_count_real_data.rs`).
+#[test]
+fn tolerated_appearance_drops_are_warned_about() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../core/tests/data/helsinki_tex_uv_count.city.jsonl");
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(&input)
+        .arg("-o")
+        .arg(dir.path().join("pkg"))
+        .arg("--tolerate-invalid-appearance")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning: 2 invalid material/texture reference(s) dropped"),
+        "{stderr}"
+    );
+}

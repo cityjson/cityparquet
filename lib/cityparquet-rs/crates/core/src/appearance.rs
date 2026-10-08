@@ -95,7 +95,9 @@ impl AppearanceInterner {
     }
 
     /// Opt into dropping (rather than erroring on) a material/texture index
-    /// that falls outside its local definitions array. Strict (the default,
+    /// that falls outside its local definitions array, and a texture ring
+    /// with fewer UV indices than vertices or a UV index outside the UV pool
+    /// (that ring is left untextured). Strict (the default,
     /// `tolerate = false`) is what every constructor leaves this at: the
     /// reference implementation is the appearance-resolution oracle, so a
     /// dangling reference stays fatal unless a caller explicitly opts out —
@@ -410,6 +412,13 @@ impl AppearanceInterner {
         };
         let refs = &items[1..];
         if refs.len() < vertices {
+            // Fewer UVs than the ring has vertices (CityJSON 2.0.1 §6.2 asks
+            // for one per vertex): which vertex lacks one is not stated, so
+            // the ring's texture cannot be placed.
+            if self.tolerate_invalid_refs {
+                self.invalid_refs_dropped += 1;
+                return Ok(bare);
+            }
             return Err(schema_err(format!(
                 "texture theme '{theme}' face {face} ring {ring}: {} uv indices for {vertices} \
                  distinct vertices",
@@ -425,12 +434,16 @@ impl AppearanceInterner {
                     "UV index in theme '{theme}' must be a non-negative integer, got {uv_ref}"
                 ))
             })? as usize;
-            let pair = local_uvs.get(idx).ok_or_else(|| {
-                schema_err(format!(
+            let Some(pair) = local_uvs.get(idx) else {
+                if self.tolerate_invalid_refs {
+                    self.invalid_refs_dropped += 1;
+                    return Ok(bare);
+                }
+                return Err(schema_err(format!(
                     "UV index {idx} in theme '{theme}' out of range (local uvs len {})",
                     local_uvs.len()
-                ))
-            })?;
+                )));
+            };
             if pair.len() < 2 {
                 return Err(schema_err(format!(
                     "UV vertex {idx} in theme '{theme}' has fewer than 2 coordinates"

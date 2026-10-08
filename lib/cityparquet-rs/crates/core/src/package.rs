@@ -129,7 +129,8 @@ pub struct ConvertOptions {
     /// this field cannot by itself make the output claim anything.
     pub crs_override: Option<String>,
     /// Drop a material/texture index that falls outside its local
-    /// definitions array instead of erroring — off (strict) by default: the
+    /// definitions array — and leave untextured a texture ring with fewer UV
+    /// indices than vertices — instead of erroring; off (strict) by default: the
     /// reference implementation is the appearance-resolution oracle, so a
     /// dangling reference aborts conversion unless an operator explicitly
     /// opts in. A dropped reference is counted in
