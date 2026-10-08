@@ -31,9 +31,19 @@ pub(super) struct WkbShape {
     pub(super) solids: Vec<usize>,
     pub(super) pending_rings: Vec<usize>,
     pub(super) in_solid: bool,
+    /// `[xmin, ymin, zmin, xmax, ymax, zmax]` over every stored vertex.
+    pub(super) extent: Option<[f64; 6]>,
 }
 
 impl WkbVisitor for WkbShape {
+    fn coord(&mut self, xyz: [f64; 3]) {
+        let point = [xyz[0], xyz[1], xyz[2], xyz[0], xyz[1], xyz[2]];
+        self.extent = Some(match self.extent {
+            None => point,
+            Some(e) => union_box(e, point),
+        });
+    }
+
     fn geometry(&mut self, type_code: u32) {
         self.codes.push(type_code);
         self.in_solid = type_code == POLYHEDRALSURFACE_Z;
@@ -111,4 +121,24 @@ pub(super) fn wkb_code_for_cm_type(cm: &str) -> Option<u32> {
         "MultiSolid" | "CompositeSolid" => GEOMETRYCOLLECTION_Z,
         _ => return None,
     })
+}
+
+/// The smallest box holding both boxes (`[xmin, ymin, zmin, xmax, ymax, zmax]`).
+pub(super) fn union_box(a: [f64; 6], b: [f64; 6]) -> [f64; 6] {
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[2].min(b[2]),
+        a[3].max(b[3]),
+        a[4].max(b[4]),
+        a[5].max(b[5]),
+    ]
+}
+
+/// Whether `outer` holds `inner`, to a relative tolerance of one part in
+/// 10^9 (both come from the same coordinates, rounded independently).
+pub(super) fn box_contains(outer: [f64; 6], inner: [f64; 6]) -> bool {
+    let slack = |v: f64| 1e-9 * v.abs().max(1.0);
+    (0..3).all(|k| outer[k] <= inner[k] + slack(inner[k]))
+        && (3..6).all(|k| outer[k] >= inner[k] - slack(inner[k]))
 }

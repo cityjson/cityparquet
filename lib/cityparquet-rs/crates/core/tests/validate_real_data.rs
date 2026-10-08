@@ -620,3 +620,88 @@ fn an_other_entry_duplicating_an_attribute_column_is_reported() {
     });
     assert_error(&validate(&pkg), "value.other-collision");
 }
+
+/// Set `bbox.<field>` of the rows `pick` selects (by object type) to
+/// `value(that row's bbox)`.
+fn edit_bbox(
+    c: &mut FileContent,
+    field: &str,
+    pick: impl Fn(&str) -> bool,
+    value: impl Fn([f64; 6]) -> f64,
+) {
+    use arrow_array::Float64Array;
+    use arrow_array::types::Float64Type;
+    const NAMES: [&str; 6] = ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"];
+    let picked: Vec<Vec<bool>> = c
+        .batches
+        .iter()
+        .map(|b| {
+            let types = b.column_by_name("object_type").unwrap();
+            let types = arrow_cast::cast(types, &DataType::Utf8).unwrap();
+            let types = types.as_string::<i32>();
+            (0..types.len()).map(|i| pick(types.value(i))).collect()
+        })
+        .collect();
+    let at = NAMES.iter().position(|n| *n == field).unwrap();
+    c.map_column("bbox", |f_, column, batch| {
+        let s = column.as_struct();
+        let DataType::Struct(fields) = f_.data_type() else {
+            panic!("bbox is a struct")
+        };
+        let leaf = |n: &str| {
+            s.column_by_name(n)
+                .unwrap()
+                .as_primitive::<Float64Type>()
+                .clone()
+        };
+        let leaves: Vec<_> = NAMES.iter().map(|n| leaf(n)).collect();
+        let edited: Float64Array = (0..s.len())
+            .map(|i| {
+                let current = leaves[at].value(i);
+                if s.is_null(i) || !picked[batch][i] {
+                    return current;
+                }
+                let bbox: [f64; 6] = std::array::from_fn(|k| leaves[k].value(i));
+                value(bbox)
+            })
+            .map(Some)
+            .collect();
+        let columns: Vec<ArrayRef> = fields
+            .iter()
+            .zip(s.columns())
+            .map(|(f, col)| {
+                if f.name() == field {
+                    Arc::new(edited.clone()) as ArrayRef
+                } else {
+                    col.clone()
+                }
+            })
+            .collect();
+        let rebuilt = StructArray::new(fields.clone(), columns, s.nulls().cloned());
+        (f_.clone(), Arc::new(rebuilt) as ArrayRef)
+    });
+}
+
+/// spec 03 "Spatial metadata": `bbox` is a superset of everything the row
+/// stores. A BuildingPart box narrowed to zero width leaves its solids
+/// outside it.
+#[test]
+fn a_bbox_not_containing_its_rows_geometry_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        edit_bbox(c, "xmax", |t| t == "BuildingPart", |b| b[0]);
+    });
+    assert_error(&validate(&pkg), "value.bbox");
+}
+
+/// spec 03 "Spatial metadata": `bbox` is the union over the object's whole
+/// subtree. A Building box cut down to its lowest point no longer contains
+/// its BuildingParts' boxes.
+#[test]
+fn a_bbox_not_containing_its_childrens_boxes_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        edit_bbox(c, "zmax", |t| t == "Building", |b| b[2]);
+    });
+    assert_error(&validate(&pkg), "value.bbox-subtree");
+}

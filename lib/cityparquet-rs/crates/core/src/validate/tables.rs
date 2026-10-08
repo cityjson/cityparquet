@@ -407,6 +407,7 @@ pub(super) fn check_object_values(
 
     for i in 0..batch.num_rows() {
         let row = offset + i;
+        let mut row_extent: Option<[f64; 6]> = None;
         // spec 02 "Reserved columns": `id`, `feature_id` and `object_type`
         // are required and non-null on every row.
         let mut required = |col: Option<&ArrayRef>, n: &str| {
@@ -432,24 +433,6 @@ pub(super) fn check_object_values(
             if let Some((code, problem)) = verdict {
                 r.error(code, PACKAGE, f, format!("object_type `{t}` {problem}"));
             }
-        }
-
-        if let Some(id_value) = id_value {
-            // spec 02 "feature_id rule": the chain to a root follows the
-            // FIRST entry of `parents`.
-            let first_parent = parents.filter(|p| !p.is_null(i)).and_then(|p| {
-                let values = p.value(i);
-                let values = values.as_string_opt::<i32>()?;
-                (!values.is_empty() && !values.is_null(0)).then(|| values.value(0).to_string())
-            });
-            hierarchy.insert(
-                id_value,
-                HierarchyRow {
-                    first_parent,
-                    feature_id: feature_value,
-                    file: name.to_string(),
-                },
-            );
         }
 
         // spec 02: `children_roles`, when present, has exactly one entry per
@@ -501,6 +484,7 @@ pub(super) fn check_object_values(
         }
 
         // spec 02 / 03: the six `bbox` fields are non-null in a non-null box.
+        let mut row_bbox = None;
         if let Some(bbox) = bbox.filter(|b| !b.is_null(i)) {
             *has_coordinates = true;
             if bbox.columns().iter().any(|c| c.is_null(i)) {
@@ -510,7 +494,20 @@ pub(super) fn check_object_values(
                     f,
                     format!("row {row}: a `bbox` field is null"),
                 );
+            } else {
+                row_bbox = bbox_at(bbox, i);
             }
+        }
+        // A box is finite and ordered.
+        if let Some(b) = row_bbox
+            && (b.iter().any(|v| !v.is_finite()) || (0..3).any(|k| b[k] > b[k + 3]))
+        {
+            r.error(
+                "value.bbox",
+                GEOMETRY,
+                f,
+                format!("row {row}: `bbox` {b:?} is not finite with each min <= max"),
+            );
         }
 
         if let Some(implicit) = implicit.filter(|g| !g.is_null(i)) {
@@ -547,10 +544,69 @@ pub(super) fn check_object_values(
             };
             let stat = stats.get_mut(suffix).expect("one stats entry per LoD");
             let before = stat.non_null;
-            check_geometry_cell(r, &cx, arrays, i, ids, stat);
+            if let Some(extent) = check_geometry_cell(r, &cx, arrays, i, ids, stat) {
+                row_extent = Some(row_extent.map_or(extent, |e| union_box(e, extent)));
+            }
             *has_coordinates |= stat.non_null > before;
         }
+
+        // spec 03 "Spatial metadata": `bbox` is the union over all of the
+        // row's stored geometry (a superset), and null only when nothing in
+        // the subtree has geometry.
+        match (row_bbox, row_extent) {
+            (Some(b), Some(extent)) if !box_contains(b, extent) => r.error(
+                "value.bbox",
+                GEOMETRY,
+                f,
+                format!("row {row}: `bbox` {b:?} does not contain the row's geometry {extent:?}"),
+            ),
+            (None, Some(_)) if bbox.is_some_and(|b| b.is_null(i)) => r.error(
+                "value.bbox",
+                GEOMETRY,
+                f,
+                format!("row {row}: `bbox` is null but the row has geometry"),
+            ),
+            _ => {}
+        }
+
+        if let Some(id_value) = id_value {
+            let parent_ids: Vec<String> = parents
+                .filter(|p| !p.is_null(i))
+                .and_then(|p| {
+                    let values = p.value(i);
+                    let values = values.as_string_opt::<i32>()?;
+                    Some(values.iter().flatten().map(str::to_string).collect())
+                })
+                .unwrap_or_default();
+            hierarchy.insert(
+                id_value,
+                HierarchyRow {
+                    // spec 02 "feature_id rule": the chain to a root follows
+                    // the FIRST entry of `parents`.
+                    first_parent: parent_ids.first().cloned(),
+                    parents: parent_ids,
+                    feature_id: feature_value,
+                    bbox: row_bbox,
+                    file: name.to_string(),
+                },
+            );
+        }
     }
+}
+
+/// Row `i` of the `bbox` struct as `[xmin, ymin, zmin, xmax, ymax, zmax]`.
+fn bbox_at(bbox: &StructArray, i: usize) -> Option<[f64; 6]> {
+    let mut out = [0.0; 6];
+    for (k, name) in ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"]
+        .iter()
+        .enumerate()
+    {
+        out[k] = bbox
+            .column_by_name(name)?
+            .as_primitive_opt::<Float64Type>()?
+            .value(i);
+    }
+    Some(out)
 }
 
 /// `None` when `object_type` belongs in `file`, else the violation code and
@@ -685,6 +741,41 @@ pub(super) fn check_feature_ids(hierarchy: &HashMap<String, HierarchyRow>, r: &m
                 Some(&row.file),
                 format!("`{id}` has feature_id `{feature_id}`, but its root (by first parent) is `{root}`"),
             );
+        }
+    }
+}
+
+/// spec 03 "Spatial metadata": `bbox` is the union over the object's whole
+/// subtree, so every parent's box holds each child's (and so, by induction,
+/// every descendant's), and a parent's box is null only when nothing below
+/// it has one.
+pub(super) fn check_bbox_subtree(hierarchy: &HashMap<String, HierarchyRow>, r: &mut Reporter) {
+    let mut ids: Vec<&String> = hierarchy.keys().collect();
+    ids.sort();
+    for id in ids {
+        let child = &hierarchy[id];
+        let Some(inner) = child.bbox else { continue };
+        for parent_id in &child.parents {
+            let Some(parent) = hierarchy.get(parent_id) else {
+                continue;
+            };
+            let problem = match parent.bbox {
+                None => Some("is null".to_string()),
+                Some(outer) if !box_contains(outer, inner) => {
+                    Some(format!("{outer:?} does not contain it"))
+                }
+                Some(_) => None,
+            };
+            if let Some(problem) = problem {
+                r.error(
+                    "value.bbox-subtree",
+                    GEOMETRY,
+                    Some(&parent.file),
+                    format!(
+                        "`{parent_id}`'s `bbox` {problem}: its child `{id}` has `bbox` {inner:?}"
+                    ),
+                );
+            }
         }
     }
 }

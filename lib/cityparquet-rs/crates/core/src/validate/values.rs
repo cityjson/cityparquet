@@ -125,7 +125,7 @@ pub(super) fn check_geometry_cell(
     i: usize,
     ids: &SidecarIds,
     stats: &mut GeometryStats,
-) {
+) -> Option<[f64; 6]> {
     let (file, suffix, row) = (Some(cx.file), cx.suffix, cx.row);
     let shape = match arrays.geometry {
         Some(g) if !g.is_null(i) => match parse_wkb(g.value(i)) {
@@ -142,7 +142,7 @@ pub(super) fn check_geometry_cell(
                     file,
                     format!("row {row}: `geometry_{suffix}` is not CityParquet WKB: {e}"),
                 );
-                return;
+                return None;
             }
         },
         _ => None,
@@ -160,7 +160,7 @@ pub(super) fn check_geometry_cell(
             );
         }
     }
-    let Some(shape) = shape else { return };
+    let shape = shape?;
 
     if let Some(props) = arrays.properties.filter(|p| !p.is_null(i)) {
         check_properties(r, cx, props, i, &shape);
@@ -181,6 +181,7 @@ pub(super) fn check_geometry_cell(
     if let Some(texture) = arrays.texture.filter(|m| !m.is_null(i)) {
         check_texture(r, cx, texture, i, &shape, ids);
     }
+    shape.extent
 }
 
 pub(super) fn check_properties(
