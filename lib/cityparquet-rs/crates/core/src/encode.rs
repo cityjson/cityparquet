@@ -50,14 +50,15 @@ pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 8] = [
     "geographicalExtent",
 ];
 
-/// The object serialised to its JSON member map — computed ONCE per row by
-/// [`RowWriter::push_object`] and shared by every consumer needing members
-/// cjseq has no typed field for (`children_roles`, `address`, the `other`
-/// leftovers), instead of each consumer re-serialising the whole object
-/// (review P5b: three whole-object serialisations per row).
+/// The object's members cjseq has no typed field for (`children_roles`,
+/// `address`, and the `other` leftovers) — read once per row by
+/// [`RowWriter::push_object`] and shared by every consumer of them. The typed
+/// fields (`type`, `attributes`, `geometry`, `children`, `parents`,
+/// `geographicalExtent`) are never in it, so no whole-object serialisation
+/// is needed to reach these.
 pub(crate) fn object_json(co: &CityObject) -> Result<serde_json::Map<String, Value>> {
-    match serde_json::to_value(co)? {
-        Value::Object(map) => Ok(map),
+    match co.other_members() {
+        Value::Object(map) => Ok(map.clone()),
         _ => Ok(serde_json::Map::new()),
     }
 }

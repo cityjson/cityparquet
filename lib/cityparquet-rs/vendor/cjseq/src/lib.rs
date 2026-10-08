@@ -537,6 +537,11 @@ impl CityObject {
     pub fn get_type(&self) -> String {
         self.thetype.clone()
     }
+    /// The members this struct has no typed field for (the flattened
+    /// `other`), as parsed.
+    pub fn other_members(&self) -> &serde_json::Value {
+        &self.other
+    }
     fn is_toplevel(&self) -> bool {
         match &self.parents {
             Some(x) => {
