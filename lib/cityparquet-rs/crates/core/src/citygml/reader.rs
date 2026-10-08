@@ -83,6 +83,50 @@ pub struct FeatureReader {
     skipped_members: std::collections::BTreeMap<String, usize>,
 }
 
+/// Whether the bytes of `path` may contain `needle` — `false` only when a
+/// document in an ASCII-compatible encoding certainly does not. A document
+/// that may be UTF-16 (a byte-order mark or a zero byte at its start) is
+/// assumed to contain it, since its element names are not stored as these
+/// bytes.
+fn may_contain(path: &Path, needle: &[u8]) -> Result<bool> {
+    may_contain_in_chunks(path, needle, 8 << 20)
+}
+
+fn may_contain_in_chunks(path: &Path, needle: &[u8], chunk: usize) -> Result<bool> {
+    use std::io::Read;
+    let io = |e| CityParquetError::io_source(format!("cannot read {}", path.display()), e);
+    let mut file = File::open(path).map_err(io)?;
+    let finder = memchr::memmem::Finder::new(needle);
+    let keep = needle.len() - 1;
+    let mut buf = vec![0u8; chunk.max(needle.len())];
+    let mut filled = 0;
+    let mut first = true;
+    loop {
+        let read = file.read(&mut buf[filled..]).map_err(io)?;
+        if first {
+            let head = &buf[..read.min(4)];
+            if head.starts_with(&[0xFE, 0xFF])
+                || head.starts_with(&[0xFF, 0xFE])
+                || head.contains(&0)
+            {
+                return Ok(true);
+            }
+            first = false;
+        }
+        let end = filled + read;
+        if finder.find(&buf[..end]).is_some() {
+            return Ok(true);
+        }
+        if read == 0 {
+            return Ok(false);
+        }
+        // Carry the tail over, so a needle across the boundary is found.
+        let tail = end.saturating_sub(keep);
+        buf.copy_within(tail..end, 0);
+        filled = end - tail;
+    }
+}
+
 /// Pre-pass: read every CityModel-level `app:appearanceMember` (the conformant
 /// CityGML 2.0 global-appearance property — a `_FeatureCollection` member of
 /// `CityModel`, distinct from a feature's own `app:appearance`) into one
@@ -90,6 +134,11 @@ pub struct FeatureReader {
 /// feature-level `app:appearance` (which uses the other property name) is NOT
 /// promoted to model scope.
 fn read_model_appearance(path: &Path) -> Result<ModelAppearance> {
+    // A document that never spells `appearanceMember` has no CityModel-level
+    // appearance; a byte search says so far faster than parsing it.
+    if !may_contain(path, b"appearanceMember")? {
+        return Ok(ModelAppearance::build(ReadAppearance::default()));
+    }
     let file = File::open(path)
         .map_err(|e| CityParquetError::io_source(format!("cannot reopen {}", path.display()), e))?;
     let mut reader = NsReader::from_reader(BufReader::new(file));
@@ -335,5 +384,34 @@ fn triple(v: &[f64], what: &str) -> Result<[f64; 3]> {
             "CityGML header transform {what} must have 3 components, got {}",
             v.len()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn data(name: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(name)
+    }
+
+    /// The byte search that lets the CityModel-appearance pre-pass be skipped
+    /// finds the element wherever it lies — including across the boundary
+    /// between two reads, exercised with reads shorter than the needle — and
+    /// reports a document without it.
+    #[test]
+    fn the_appearance_member_search_finds_it_across_read_boundaries() {
+        let with = data("tests/data/building_citymodel_appearance.gml");
+        let without = data("../../tests/fixtures/b1_lod2_s.gml");
+        for chunk in [5, 7, 4096, 8 << 20] {
+            assert!(
+                may_contain_in_chunks(&with, b"appearanceMember", chunk).unwrap(),
+                "{chunk}"
+            );
+            assert!(
+                !may_contain_in_chunks(&without, b"appearanceMember", chunk).unwrap(),
+                "{chunk}"
+            );
+        }
     }
 }

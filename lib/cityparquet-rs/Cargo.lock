@@ -890,6 +890,7 @@ dependencies = [
  "geo-traits",
  "glob",
  "jsonschema 0.26.2",
+ "memchr",
  "object_store 0.13.2",
  "parquet 58.3.0",
  "parquet-geospatial",

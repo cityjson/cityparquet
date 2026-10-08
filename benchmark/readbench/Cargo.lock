@@ -481,6 +481,7 @@ dependencies = [
  "futures-util",
  "geo",
  "glob",
+ "memchr",
  "object_store",
  "parquet",
  "quick-xml",

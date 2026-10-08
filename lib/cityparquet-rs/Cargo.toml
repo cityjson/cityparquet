@@ -74,6 +74,7 @@ jsonschema = "0.26"
 cardinality-estimator = "1.0.3"
 # Parses CityJSONSeq feature lines a batch at a time across cores.
 rayon = "1.12"
+memchr = "2.7"
 # FlatCityBuf input (the `fcb` feature). The exact pin the read benchmark
 # (`benchmark/readbench`) carries, so the two resolve to one version.
 fcb_core = "=0.7.6"

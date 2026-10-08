@@ -23,6 +23,7 @@ geo = { workspace = true }
 city3d-stac-types = { workspace = true }
 cardinality-estimator = { workspace = true }
 rayon = { workspace = true }
+memchr = { workspace = true }
 object_store = { workspace = true, optional = true }
 futures = { version = "0.3", optional = true }
 futures-util = { version = "0.3", optional = true }
