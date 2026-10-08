@@ -747,3 +747,44 @@ fn explicit_datetime_makes_metadata_reproducible() {
         "metadata.json differs between two conversions"
     );
 }
+
+/// spec 05 "Asset roles carry the package's file inventory": every `.parquet`
+/// asset of the Item declares `cityparquet-objects` or `cityparquet-sidecar`
+/// alongside `data` — so no table appears a second time without its role.
+#[test]
+fn every_parquet_asset_declares_its_package_role() {
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = convert_fixture("lod3_railway.city.json", &dir);
+    let item: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
+    let assets = item["assets"].as_object().unwrap();
+    let mut hrefs = Vec::new();
+    for (key, asset) in assets {
+        let href = asset["href"].as_str().unwrap();
+        if !href.ends_with(".parquet") {
+            continue;
+        }
+        let roles: Vec<&str> = asset["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r.as_str())
+            .collect();
+        assert!(roles.contains(&"data"), "asset `{key}`: {roles:?}");
+        assert!(
+            roles.contains(&"cityparquet-objects") || roles.contains(&"cityparquet-sidecar"),
+            "asset `{key}` ({href}) declares no package role: {roles:?}"
+        );
+        hrefs.push(href.to_string());
+    }
+    let listed = hrefs.len();
+    hrefs.sort();
+    hrefs.dedup();
+    assert_eq!(listed, hrefs.len(), "each file is one asset");
+    // The File extension stays declared.
+    assert!(item["stac_extensions"].as_array().unwrap().iter().any(|e| {
+        e.as_str()
+            .unwrap()
+            .contains("stac-extensions.github.io/file/")
+    }));
+}

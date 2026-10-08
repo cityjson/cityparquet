@@ -153,29 +153,15 @@ pub fn build_item(tables: &PackageTables, opts: &ItemOptions) -> Result<Item> {
 
     // The first table also goes through `data_asset`, purely because that is
     // the only `StacItemBuilder` method that flips on the STAC File
-    // extension (`uses_file_extension` is a private field it alone sets) —
-    // but the asset it inserts is keyed `"data"` with roles `["data"]`, and
-    // it is *not* replaced by the properly keyed and roled one below: the
-    // two live under different keys (`"data"` vs. the filename-derived key)
-    // in the builder's asset map, so both coexist in the built Item.
+    // extension (`uses_file_extension` is a private field it alone sets).
+    // The asset it inserts is keyed `"data"` with roles `["data"]` only — a
+    // `.parquet` asset without its package role, which spec 05 forbids
+    // ("Every `.parquet` asset MUST declare its role") — so it is removed
+    // from the built Item below; the File extension stays declared, and the
+    // table is still listed once, under its file name and with its role.
     //
-    // Without the filename-keyed asset the primary object table would be the
-    // one asset a reader cannot map back to a file by key, and the only
-    // table missing the `cityparquet-objects` role — which is exactly the
-    // role Plan 2b binds `export` to when it drops the manifest's
-    // `sidecar_files` list. Iterating that role would have silently skipped
-    // the first table.
-    //
-    // Known interop wart: a generic STAC consumer enumerating `assets` sees
-    // the first object table listed twice (once as `"data"`, once by
-    // filename) with the same `href`. This crate's own `open()` is
-    // unaffected — it filters by role and skips the `"data"`-only asset — so
-    // the wart is cosmetic for this codebase, but it is real for other STAC
-    // clients. It is not fixed here: `city3d_stac_types::StacItemBuilder`
-    // exposes no way to declare the File extension without inserting a
-    // `"data"`-keyed asset (no asset-removal method, no public
-    // `uses_file_extension` setter), and that builder lives in the separate
-    // `city3d-stac-tool` repo, not this one.
+    // `DATA_ASSET_KEY` cannot collide with a package file: those are keyed by
+    // their `.parquet` file names.
     let mut declared_file_extension = false;
     for path in &tables.tables {
         let (size, checksum) = assets::file_facts(path);
@@ -219,10 +205,15 @@ pub fn build_item(tables: &PackageTables, opts: &ItemOptions) -> Result<Item> {
         );
     }
 
-    builder
+    let mut item = builder
         .build()
-        .map_err(|e| CityParquetError::Metadata(format!("cannot build STAC item: {e}")))
+        .map_err(|e| CityParquetError::Metadata(format!("cannot build STAC item: {e}")))?;
+    item.assets.shift_remove(DATA_ASSET_KEY);
+    Ok(item)
 }
+
+/// The key `StacItemBuilder::data_asset` inserts its asset under.
+const DATA_ASSET_KEY: &str = "data";
 
 /// A STAC asset for one package file.
 fn package_asset(
