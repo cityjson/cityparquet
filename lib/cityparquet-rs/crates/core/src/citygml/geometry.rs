@@ -356,6 +356,20 @@ fn orientation_reversed(e: &quick_xml::events::BytesStart) -> bool {
     get_attr(e, b"orientation").as_deref() == Some("-")
 }
 
+/// What [`collect_surfaces`] harvests from a geometry subtree.
+#[derive(Debug, Default)]
+pub struct Collected {
+    /// Every inline `gml:Polygon`, with its `gml:id` if any, in document order.
+    pub polygons: Vec<(Option<String>, Polygon)>,
+    /// The fragment ids of `gml:surfaceMember`s that are `xlink:href`
+    /// references rather than inline polygons.
+    pub xlinks: Vec<String>,
+    /// Every surface aggregate (`gml:CompositeSurface`, `gml:MultiSurface`)
+    /// carrying a `gml:id`, with the inline polygons it holds — the target an
+    /// `xlink:href` to the aggregate resolves to.
+    pub aggregates: Vec<(String, Vec<Polygon>)>,
+}
+
 /// Harvest every `gml:Polygon` (with its `gml:id`, if any) inside the current
 /// element's subtree. Call right after the subtree's `Start`; consumes through
 /// its matching `End`.
@@ -363,7 +377,24 @@ pub fn collect_polygons<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
 ) -> Result<Vec<(Option<String>, Polygon)>> {
-    let mut out = Vec::new();
+    Ok(collect_surfaces(reader, buf)?.polygons)
+}
+
+/// Harvest a geometry subtree's inline polygons, its `xlink:href` surface
+/// members, and its identified surface aggregates (see [`Collected`]). The
+/// reader's `boundedBy` path uses the xlinks so a semantic surface whose
+/// geometry is xlinked to polygons defined elsewhere (typically inline in the
+/// building's `lodNSolid`) still contributes its semantics (CG-1); the
+/// aggregates let a solid's shell reference a whole `gml:CompositeSurface` by
+/// its id, as GML permits. Call right after the subtree's `Start`; consumes
+/// through its matching `End`.
+pub fn collect_surfaces<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Collected> {
+    let mut out = Collected::default();
+    // Open identified aggregates: (depth inside them, id, polygons so far).
+    let mut open: Vec<(usize, String, Vec<Polygon>)> = Vec::new();
     let mut depth = 1usize;
     loop {
         buf.clear();
@@ -371,18 +402,40 @@ pub fn collect_polygons<R: BufRead>(
         let gml = ns_is(&rr, NS_GML);
         match ev {
             Event::Start(e) => {
-                if gml && e.local_name().as_ref() == b"Polygon" {
+                let local = e.local_name();
+                if gml && local.as_ref() == b"Polygon" {
                     // `read_polygon` consumes the whole Polygon subtree, so the
                     // depth is unchanged by this branch.
                     let id = gml_id(&e);
                     let mut poly = read_polygon(reader, buf)?;
                     poly.id = id.clone();
-                    out.push((id, poly));
+                    for (_, _, members) in &mut open {
+                        members.push(poly.clone());
+                    }
+                    out.polygons.push((id, poly));
+                } else if gml
+                    && local.as_ref() == b"surfaceMember"
+                    && let Some(frag) = xlink_fragment(&e)?
+                {
+                    // An xlink surfaceMember (empty under expand_empty_elements):
+                    // record the fragment and consume through its End.
+                    out.xlinks.push(frag);
+                    skip_element(reader, buf)?;
                 } else {
                     depth += 1;
+                    if gml
+                        && matches!(local.as_ref(), b"CompositeSurface" | b"MultiSurface")
+                        && let Some(id) = gml_id(&e)
+                    {
+                        open.push((depth, id, Vec::new()));
+                    }
                 }
             }
             Event::End(_) => {
+                if open.last().is_some_and(|(d, _, _)| *d == depth) {
+                    let (_, id, members) = open.pop().expect("checked above");
+                    out.aggregates.push((id, members));
+                }
                 depth -= 1;
                 if depth == 0 {
                     break;
@@ -393,59 +446,6 @@ pub fn collect_polygons<R: BufRead>(
         }
     }
     Ok(out)
-}
-
-/// Like [`collect_polygons`], but also captures `gml:surfaceMember` members
-/// that are `xlink:href` references (rather than inline polygons), returning
-/// the referenced fragment ids alongside the inline polygons. Used by the
-/// reader's `boundedBy` path so a semantic surface whose geometry is xlinked to
-/// polygons defined elsewhere (typically inline in the building's `lodNSolid`)
-/// still contributes its semantics (CG-1). Call right after the subtree's
-/// `Start`; consumes through its matching `End`.
-#[allow(clippy::type_complexity)]
-pub fn collect_polygons_with_xlinks<R: BufRead>(
-    reader: &mut NsReader<R>,
-    buf: &mut Vec<u8>,
-) -> Result<(Vec<(Option<String>, Polygon)>, Vec<String>)> {
-    let mut polys = Vec::new();
-    let mut xlinks = Vec::new();
-    let mut depth = 1usize;
-    loop {
-        buf.clear();
-        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
-        let gml = ns_is(&rr, NS_GML);
-        match ev {
-            Event::Start(e) => {
-                if gml && e.local_name().as_ref() == b"Polygon" {
-                    let id = gml_id(&e);
-                    let mut poly = read_polygon(reader, buf)?;
-                    poly.id = id.clone();
-                    polys.push((id, poly));
-                } else if gml && e.local_name().as_ref() == b"surfaceMember" {
-                    if let Some(frag) = xlink_fragment(&e)? {
-                        // An xlink surfaceMember (empty under expand_empty_elements):
-                        // record the fragment and consume through its End.
-                        xlinks.push(frag);
-                        skip_element(reader, buf)?;
-                    } else {
-                        // Inline member: descend so its Polygon is caught above.
-                        depth += 1;
-                    }
-                } else {
-                    depth += 1;
-                }
-            }
-            Event::End(_) => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            Event::Eof => return Err(eof("polygon collection")),
-            _ => {}
-        }
-    }
-    Ok((polys, xlinks))
 }
 
 /// A `gml:Polygon` (positioned after its `Start`): exterior ring + holes.

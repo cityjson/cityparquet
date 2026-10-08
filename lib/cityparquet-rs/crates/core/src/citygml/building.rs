@@ -98,6 +98,10 @@ pub struct RawBuilding {
     solids: Vec<(String, SolidGeom)>,
     /// Every inline polygon by `gml:id`, resolvable by the solid's xlinks.
     polygons: HashMap<String, Polygon>,
+    /// Every identified surface aggregate (`gml:CompositeSurface`,
+    /// `gml:MultiSurface`) by `gml:id`, with its polygons: an xlink to the
+    /// aggregate stands for all of them.
+    aggregates: HashMap<String, Vec<Polygon>>,
     /// Semantic surface kinds (`"WallSurface"`, ...), in document order.
     surfaces: Vec<String>,
     /// `gml:id` of a boundary polygon -> its index into `surfaces`.
@@ -157,6 +161,7 @@ pub fn read_generic_object<R: BufRead>(
         plain_surfaces: Vec::new(),
         solids: Vec::new(),
         polygons: HashMap::new(),
+        aggregates: HashMap::new(),
         surfaces: Vec::new(),
         semantic_of_polygon: HashMap::new(),
         boundary_polys: Vec::new(),
@@ -273,6 +278,7 @@ fn read_abstract_building<R: BufRead>(
         plain_surfaces: Vec::new(),
         solids: Vec::new(),
         polygons: HashMap::new(),
+        aggregates: HashMap::new(),
         surfaces: Vec::new(),
         semantic_of_polygon: HashMap::new(),
         boundary_polys: Vec::new(),
@@ -332,11 +338,7 @@ fn read_abstract_building<R: BufRead>(
                     // A standalone lodNMultiSurface under the Building: harvest
                     // its polygons (they may be xlink targets, e.g. an internal
                     // ceiling). Emitting it as primary geometry is M4.
-                    for (id, poly) in geometry::collect_polygons(reader, buf)? {
-                        if let Some(id) = id {
-                            b.polygons.insert(id, poly);
-                        }
-                    }
+                    b.register(geometry::collect_surfaces(reader, buf)?);
                 } else if bldg && name == b"boundedBy" {
                     read_bounded_by(reader, buf, &mut b, NS_BLDG.as_bytes(), b"boundedBy")?;
                 } else if bldg && name == b"consistsOfBuildingPart" {
@@ -436,13 +438,14 @@ fn read_child_object<R: BufRead>(
                     for (id, poly) in &child.polygons {
                         b.polygons.entry(id.clone()).or_insert_with(|| poly.clone());
                     }
+                    for (id, members) in &child.aggregates {
+                        b.aggregates
+                            .entry(id.clone())
+                            .or_insert_with(|| members.clone());
+                    }
                     b.parts.push(child);
                 } else {
-                    for (id, poly) in geometry::collect_polygons(reader, buf)? {
-                        if let Some(id) = id {
-                            b.polygons.insert(id, poly);
-                        }
-                    }
+                    b.register(geometry::collect_surfaces(reader, buf)?);
                 }
             }
             Event::End(e) if e.local_name().as_ref() == prop_name => break,
@@ -788,7 +791,12 @@ fn read_semantic_surface<R: BufRead>(
                 let local = e.local_name();
                 let name = local.as_ref().to_vec();
                 if bldg && let Some(lod) = boundary_lod(&name) {
-                    let (polys, xlinks) = geometry::collect_polygons_with_xlinks(reader, buf)?;
+                    let geometry::Collected {
+                        polygons: polys,
+                        xlinks,
+                        aggregates,
+                    } = geometry::collect_surfaces(reader, buf)?;
+                    b.aggregates.extend(aggregates);
                     for (id, poly) in polys {
                         if let Some(id) = &id {
                             b.semantic_of_polygon.insert(id.clone(), sem_idx);
@@ -829,6 +837,59 @@ fn read_semantic_surface<R: BufRead>(
 }
 
 impl RawBuilding {
+    /// Register harvested geometry as xlink targets: every identified polygon
+    /// and every identified surface aggregate.
+    fn register(&mut self, collected: geometry::Collected) {
+        for (id, poly) in collected.polygons {
+            if let Some(id) = id {
+                self.polygons.insert(id, poly);
+            }
+        }
+        self.aggregates.extend(collected.aggregates);
+    }
+
+    /// The polygons an xlink target names: one identified polygon, or every
+    /// polygon of an identified surface aggregate. Empty when the id names
+    /// neither.
+    fn xlink_polygons(&self, id: &str) -> Vec<&Polygon> {
+        match self.polygons.get(id) {
+            Some(poly) => vec![poly],
+            None => self
+                .aggregates
+                .get(id)
+                .map(|members| members.iter().collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// `sref`, with an xlink to a surface aggregate expanded into one
+    /// reference per member polygon (each keeping `sref`'s orientation) —
+    /// by the member's own id when it is registered, so its semantics
+    /// resolve, else inline.
+    fn expand(&self, sref: &SurfaceRef) -> Vec<SurfaceRef> {
+        let RefTarget::Xlink(id) = &sref.target else {
+            return vec![sref.clone()];
+        };
+        if self.polygons.contains_key(id) {
+            return vec![sref.clone()];
+        }
+        match self.aggregates.get(id) {
+            Some(members) => members
+                .iter()
+                .map(|member| SurfaceRef {
+                    reverse: sref.reverse,
+                    target: match &member.id {
+                        Some(mid) if self.polygons.contains_key(mid) => {
+                            RefTarget::Xlink(mid.clone())
+                        }
+                        _ => RefTarget::Inline(member.clone()),
+                    },
+                })
+                .collect(),
+            None => vec![sref.clone()],
+        }
+    }
+
     /// Record a non-building object's standalone surface geometry at `lod`
     /// (CG-7/CG-5): register ided polygons (so a sibling solid may xlink to
     /// them) and keep the non-empty list as a plain MultiSurface.
@@ -1240,19 +1301,22 @@ impl RawBuilding {
             if !emitted.insert(href) {
                 continue; // already emitted (duplicate reference)
             }
-            let Some(poly) = self.polygons.get(href) else {
+            let polys = self.xlink_polygons(href);
+            if polys.is_empty() {
                 // A boundedBy xlink to an id defined in no accessible geometry:
                 // contribute no face, but do not stay silent.
                 eprintln!(
                     "warning: bldg:boundedBy references #{href}, which resolves to no polygon in this building; skipping"
                 );
                 continue;
-            };
-            boundaries.push(surface_rings(poly, false, vb)?);
-            values.push(json!(sem_idx));
-            face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
-            ring_ids.push(ring_ids_value(poly));
-            reverse.push(reverse_leaf(poly, false));
+            }
+            for poly in polys {
+                boundaries.push(surface_rings(poly, false, vb)?);
+                values.push(json!(sem_idx));
+                face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
+                ring_ids.push(ring_ids_value(poly));
+                reverse.push(reverse_leaf(poly, false));
+            }
         }
         // The object's standalone `lodNMultiSurface` at this same LoD is not
         // emitted as a geometry of its own — one LoD yields one geometry, and
@@ -1312,7 +1376,8 @@ impl RawBuilding {
             let mut faces_id = Vec::with_capacity(shell.len());
             let mut faces_ring = Vec::with_capacity(shell.len());
             let mut faces_rev = Vec::with_capacity(shell.len());
-            for sref in shell {
+            for sref in shell.iter().flat_map(|s| self.expand(s)) {
+                let sref = &sref;
                 let poly = self.resolve(sref)?;
                 faces_b.push(surface_rings(poly, sref.reverse, vb)?);
                 faces_v.push(self.semantic_value(sref));

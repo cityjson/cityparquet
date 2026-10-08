@@ -15,6 +15,10 @@ lenient reader still reads it back identically.
   surfaces (`bldg:boundedBy`) referenced inline or by `xlink:href` (CG-1),
   including nested `bldg:opening` Door/Window as their own semantic surfaces.
 - The boundedBy-only case (no `lodNSolid`) as a `MultiSurface` with semantics.
+- Every LoD the document spells, LoD 4 included (`lod4Solid`, `lod4MultiSurface`
+  → `geometry_lod4_0`). A shell member that is an `xlink:href` to an
+  identified `gml:CompositeSurface` or `gml:MultiSurface` stands for all of that
+  aggregate's polygons. Interior rooms and furniture are not read.
 - `BuildingPart` (`consistsOfBuildingPart`) and `{outer,interior}Building­Installation`
   (`BuildingInstallation`/`IntBuildingInstallation`) as child objects (CG-5).
 - Generic 1st-level **non-building** objects (CG-7): WaterBody, LandUse,
@@ -29,8 +33,8 @@ lenient reader still reads it back identically.
 
 **Writer (CityParquet → CityGML), scope W-M1…W-M5:**
 
-- `Building`/`BuildingPart` with LoD solids/CompositeSolid, semantic surfaces,
-  attributes, materials, textures.
+- `Building`/`BuildingPart` with LoD solids/CompositeSolid (`lod1Solid` to
+  `lod4Solid`), semantic surfaces, attributes, materials, textures.
 
 ## Deferred / not yet supported
 

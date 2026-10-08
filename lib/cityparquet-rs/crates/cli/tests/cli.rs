@@ -1252,3 +1252,34 @@ fn validate_exits_zero_on_a_conformant_package_and_non_zero_on_a_violation() {
         "{stdout}"
     );
 }
+
+/// Exporting LoD 4 geometry to CityJSON writes it as `"4.0"` and warns, since
+/// CityJSON 2.0 defines LoDs 0 to 3 only.
+#[test]
+fn export_of_lod4_geometry_to_cityjson_warns() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = dir.path().join("pkg");
+    let convert = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("lod4_building_v2.gml"))
+        .arg("-o")
+        .arg(&pkg)
+        .output()
+        .unwrap();
+    assert!(convert.status.success());
+
+    let out = dir.path().join("lod4.city.json");
+    let export = Command::new(binary)
+        .arg("export")
+        .arg(&pkg)
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(export.status.success());
+    let stderr = String::from_utf8_lossy(&export.stderr);
+    assert!(
+        stderr.contains("warning:") && stderr.contains("LoD 4"),
+        "{stderr}"
+    );
+}

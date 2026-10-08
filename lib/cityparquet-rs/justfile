@@ -102,6 +102,12 @@ fixtures:
     # started streaming 1.5 GiB would otherwise be paid for in full, on every
     # clone and every CI run, to produce a fixture that is 400 kB either way.
     curl {{curl_retry}} -sSf --fail-early -r 0-399999 -o tests/fixtures/freiburg_no_preamble_srs.gml https://geoportal.freiburg.de/stadtmodell/20260728_Freiburg_LoD2.gml
+    # Real CityGML 2.0 LoD4 building (the SIG3D "Simple 3D city model LOD4"
+    # example as citygml4j ships it, pinned to a commit SHA): a lod4Solid whose
+    # shell members are xlinks to the gml:CompositeSurface of each boundedBy
+    # surface, lod4MultiSurface boundaries with Door/Window openings, and an
+    # interior Room. Used by `citygml_lod4` for the LoD4 round trip.
+    curl {{curl_retry}} -sSfo tests/fixtures/lod4_building_v2.gml https://raw.githubusercontent.com/citygml4j/citygml4j/8f5a21bb956df032da91ed6aa096c145968a2335/citygml4j-samples/input/datasets/lod4_building_v2.gml
     # Zero-object CityJSONSeq fixture (synthetic, no network fetch needed):
     # a single CityJSON header line, empty CityObjects/vertices, no feature
     # lines — the minimal input that scans to zero city-object rows. Used by

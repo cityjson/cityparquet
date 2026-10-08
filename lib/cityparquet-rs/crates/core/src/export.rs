@@ -98,6 +98,10 @@ pub struct ExportReport {
     /// (M4 sidecar data), so exporting them would leave dangling references
     /// — invalid CityJSON, same reasoning as the GeometryInstance drop.
     pub appearance_refs_dropped: usize,
+    /// Object geometries written at LoD 4 (as `"4.x"`). CityJSON 2.0 defines
+    /// LoDs 0 to 3 only, so such a document carries a LoD its specification
+    /// does not; the CLI warns when this is non-zero.
+    pub lod4_geometries: usize,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -1623,6 +1627,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
 
     let mut instance_geometries_dropped = 0usize;
     let mut appearance_refs_dropped = 0usize;
+    let mut lod4_geometries = 0usize;
     let mut features: Vec<CityJSONFeature> = Vec::with_capacity(groups.items.len());
     for (feature_id, entries) in groups.into_ordered() {
         let mut feature = CityJSONFeature::new();
@@ -1724,6 +1729,9 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     }
                 }
 
+                if lod.is_some_and(|l| l.major() == 4) {
+                    lod4_geometries += 1;
+                }
                 geoms.push(Geometry {
                     thetype: gtype,
                     lod: lod.map(|l| l.to_string()),
@@ -1810,6 +1818,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         object_count,
         instance_geometries_dropped,
         appearance_refs_dropped,
+        lod4_geometries,
     })
 }
 

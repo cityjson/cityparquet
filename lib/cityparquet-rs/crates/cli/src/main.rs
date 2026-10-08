@@ -707,6 +707,13 @@ fn main() -> std::process::ExitCode {
                             report.instance_geometries_dropped,
                             report.appearance_refs_dropped
                         );
+                        if report.lod4_geometries > 0 {
+                            eprintln!(
+                                "warning: {} geometries are LoD 4, written as \"4.x\"; \
+                                 CityJSON 2.0 defines LoDs 0 to 3 only",
+                                report.lod4_geometries
+                            );
+                        }
                         std::process::ExitCode::SUCCESS
                     }
                     Err(e) => {
