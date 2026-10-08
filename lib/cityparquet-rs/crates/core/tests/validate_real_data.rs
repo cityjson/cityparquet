@@ -729,7 +729,8 @@ fn a_malformed_stac_item_is_reported() {
             .iter()
             .any(|v| v.code == code && v.severity == Severity::Error)
     };
-    let cases: [(&str, &str, Box<dyn FnOnce(&mut Value)>); 5] = [
+    type Edit = Box<dyn FnOnce(&mut Value)>;
+    let cases: [(&str, &str, Edit); 5] = [
         (
             "bbox of five numbers",
             "stac.not-an-item",
