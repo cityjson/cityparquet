@@ -51,6 +51,11 @@
    "tag": "id-miss"
   }
  ],
+ "lods": [
+  "0",
+  "1.3",
+  "2.2"
+ ],
  "numeric_column": "b3_extrusie",
  "point_xy": [
   196404.16101049806,

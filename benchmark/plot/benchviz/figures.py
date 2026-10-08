@@ -114,14 +114,21 @@ def _load(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
-def lod_query_label(params: dict | None) -> str:
-    """The `lod-query` row label: the LoD the database run actually targeted.
+def lod_query_label(params: dict) -> str:
+    """The `lod-query` row label: the highest LoD the database run carried.
 
-    The harness writes the dataset's LoDs (`lods`) into its params from the
-    change that made `lod-query` ask for LoD 2.2; params without the key come
-    from the earlier harness, whose `lod-query` asked for LoD 1.2.
+    `citybench` writes the dataset's LoDs (`lods`, read from the package's
+    `geometry_lod<d>_<d>` column names: "0", "1.3", "2.2") into every params
+    sidecar. `lod-query` targets `LOD_QUERY_TARGET` in
+    `citybench/scenarios/registry.py`, which the sidecar does not record; on
+    the database family's dataset that target is the highest LoD it carries.
+    A sidecar without `lods`, or with none, is not one the harness wrote: it
+    is refused.
     """
-    return "LoD 2.2 rows" if "lods" in (params or {}) else "LoD 1.2 rows"
+    lods = params.get("lods")
+    if not lods:
+        raise prep.PrepError("database params carry no `lods`: cannot label the lod-query row")
+    return f"LoD {max(lods, key=float)} rows"
 
 
 def _label(value: str) -> str:
@@ -1029,10 +1036,11 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
             "threads=parallel cells are n/a."
         )
         notes += [line for line in conditions if line.startswith(prep.DB_WRITE_NOTE_PREFIXES)]
+    row_labels = {"lod-query": lod_query_label(db["params"])} if "lod-query" in rows else {}
     for (query, config, deviation), number in sorted(footnotes.items(), key=lambda kv: kv[1]):
-        notes.append(f"*{number} ok-deviation, {lod_query_label(db.get('params')) if query == 'lod-query' else _label(query)}, threads={config}: {deviation}")
+        notes.append(f"*{number} ok-deviation, {row_labels.get(query) or _label(query)}, threads={config}: {deviation}")
     for (query, reason), number in sorted(layout["skips"].items(), key=lambda kv: kv[1]):
-        notes.append(f"†{number} skipped, {lod_query_label(db.get('params')) if query == 'lod-query' else _label(query)}: {reason}")
+        notes.append(f"†{number} skipped, {row_labels.get(query) or _label(query)}: {reason}")
 
     n_cols = len(configs)
     width = max(8.5, 1.1 * len(systems) * n_cols + 3.0)
@@ -1066,7 +1074,7 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
                 vmax=bounds[field],
                 scale="diverging",
                 x_rotation=0,
-                row_labels={"lod-query": lod_query_label(db.get("params"))},
+                row_labels=row_labels,
             )
             ax.set_xticks(range(len(systems)), [_db_label(s) for s in systems], fontsize=5.5)
             for text in ax.texts:

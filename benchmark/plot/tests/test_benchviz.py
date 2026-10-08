@@ -461,29 +461,57 @@ def test_a_single_statistic_csv_is_refused_loudly_in_both_loaders(tmp_path: Path
             prep.build(prep.Inputs(bench))
 
 
-def test_the_lod_query_label_follows_the_lod_the_evidence_targeted():
-    """The database harness records the dataset's LoDs (`lods`) in its params
-    from the change that made `lod-query` target LoD 2.2; params without that
-    key come from the earlier harness, whose `lod-query` asked for LoD 1.2."""
-    committed = json.loads((Path(__file__).parents[2] / "runs/databases/results/3dbag_n1000000.params.json").read_text())
-    assert figures.lod_query_label(committed) == "LoD 1.2 rows"
-    assert figures.lod_query_label({**committed, "lods": ["1.2", "1.3", "2.2"]}) == "LoD 2.2 rows"
-    assert figures.lod_query_label(None) == "LoD 1.2 rows"
+def test_the_lod_query_label_follows_the_lods_the_harness_recorded():
+    """`citybench` records the dataset's LoDs (`lods`) in every params
+    sidecar; the `lod-query` label names the highest of them, compared as
+    numbers, and a sidecar without them is refused rather than guessed at."""
+    import pytest
+
+    assert figures.lod_query_label({"lods": ["0", "1.3", "2.2"]}) == "LoD 2.2 rows"
+    assert figures.lod_query_label({"lods": ["1.2", "1.3"]}) == "LoD 1.3 rows"
+    assert figures.lod_query_label({"lods": ["2.2", "10"]}) == "LoD 10 rows"
+    for params in ({}, {"lods": []}, {"total_city_objects": 10}):
+        with pytest.raises(prep.PrepError, match="lods"):
+            figures.lod_query_label(params)
 
 
 def test_the_database_figure_prints_the_targeted_lod(tmp_path: Path):
     import matplotlib.pyplot as plt
+    import pytest
 
-    # The committed summary's data: the one place a database run is at hand.
-    data = json.loads((Path(__file__).parents[2] / "runs/summary/full/bench_data.json").read_text())
-    assert data["databases"]["records"]
-    for lods, label in ((None, "LoD 1.2 rows"), (["2.2"], "LoD 2.2 rows")):
-        params = dict(data["databases"].get("params") or {})
-        params.pop("lods", None)
-        if lods:
-            params["lods"] = lods
-        data["databases"]["params"] = params
+    root = tmp_path / "benchmark"
+    results = root / "databases" / "results"
+    results.mkdir(parents=True)
+    base = {key: "" for key in DB_COLUMNS}
+    timing = {
+        "status": "ok",
+        "time_mean_s": "1.0",
+        "time_std_s": "0.1",
+        "time_median_s": "1.0",
+        "time_min_s": "0.9",
+        "time_max_s": "1.1",
+        "time_q1_s": "0.95",
+        "time_q3_s": "1.05",
+        "size_bytes": "100",
+    }
+    _db_csv(
+        results / "one.csv",
+        [
+            {**base, **timing, "dataset": "one", "format": system, "scenario": scenario}
+            for system in ("3dcitydb", "cjdb")
+            for scenario in ("geometry-scan", "lod-query")
+        ],
+    )
+    params = results / "one.params.json"
+    for lods, label in ((["0", "1.3", "2.2"], "LoD 2.2 rows"), (["1.2"], "LoD 1.2 rows")):
+        params.write_text(json.dumps({"total_city_objects": 10, "lods": lods}))
+        data, _ = prep.build(prep.Inputs(root / "formats"))
+        assert data["databases"]["records"]
         with plt.rc_context({"svg.fonttype": "none"}):
             figures.databases(data, tmp_path / "f")
         text = (tmp_path / "f" / "databases.svg").read_text(encoding="utf-8")
         assert label in text
+    params.write_text(json.dumps({"total_city_objects": 10}))
+    data, _ = prep.build(prep.Inputs(root / "formats"))
+    with pytest.raises(prep.PrepError, match="lods"):
+        figures.databases(data, tmp_path / "f")
