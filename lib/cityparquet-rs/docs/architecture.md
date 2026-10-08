@@ -13,7 +13,7 @@ Three crates, layered so the type system has no I/O dependencies:
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | **`cityparquet-schema`** | The CityParquet spec _as code_: types, CityGML taxonomy, Arrow schema, profiles, manifest, metadata. No buffers, no Parquet.             | **zero** `arrow-array` / `parquet` deps — only `arrow-schema` |
 | **`cityparquet`**        | The Parquet read/write path: scan, encode, write, read, decode, export, compare, validate, WKB, appearance, sidecars, ordering, recipes. | `arrow-*`, `parquet`, `wkb`, `cjseq`                          |
-| **`cityparquet-cli`**    | The `cityparquet` binary (convert/export/compare/validate/bench) and the benchmark harness library.                                      | `clap`, the two crates above                                  |
+| **`cityparquet-cli`**    | The `cityparquet` binary (convert/export/compare/collection/validate/bench) and the benchmark harness library.                           | `clap`, the two crates above                                  |
 
 The **schema/Parquet isolation** is enforced in CI: `just isolation` fails if
 `cityparquet-schema` ever pulls in `arrow-array` or `parquet`. Keeping the
@@ -50,7 +50,7 @@ executable specification.
 CityJSON→package path. It is a **two-pass** design over a unified `Source`:
 
 ```
-Source (CityJSON doc or CityJSONSeq stream)
+Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 document, FlatCityBuf file)
    │
    ├─ pass 1 ── scan ─────────► ScanResult { CityParquetSchema, dataset metadata }
    │            (LoDs, attribute columns, CRS, transform, dataset bbox;
@@ -63,12 +63,14 @@ Source (CityJSON doc or CityJSONSeq stream)
                 │
                 ├─ recipe ─────► per-column WriterProperties (the benchmark variable)
                 │
-                └─ write ──────► one <snake>.parquet per family + sidecars + metadata.json
+                └─ write ──────► one <snake>.parquet per CityGML module + sidecars + metadata.json
 ```
 
-- **`source`** — `Source` unifies whole-document CityJSON and streaming
-  CityJSONSeq behind one feature iterator, so nothing downstream cares which
-  input shape it got.
+- **`source`** — `Source` unifies whole-document CityJSON, streaming
+  CityJSONSeq, CityGML 2.0 (`citygml`, which synthesises a CityJSON header and
+  streams features) and FlatCityBuf (`fcb`, behind the `fcb` feature, bridging
+  `fcb_core`'s CityJSON types to `cjseq` through JSON) behind one feature
+  iterator, so nothing downstream cares which input shape it got.
 - **`scan`** (pass 1) — one read-only pass answering "what columns and
   dataset metadata does this need?" It never retains WKB or vertex data, so
   pass 2 can size its Arrow builders up front.
@@ -179,6 +181,17 @@ face positions all normalise away, and every index is dereferenced to its
 definition, so the comparison is of appearance content rather than of CityJSON
 spelling. `Exclusions::appearance` turns that off for the Core profile's
 deliberate drops.
+
+## STAC Collection
+
+`cityparquet collection` (the CLI crate's `collection` module, behind its
+`collection` feature) reads several packages' `metadata.json` Items and hands
+them to `city3d_stac::stac::StacCollectionBuilder` from the City3D STAC tool's
+generator crate, which computes the `city3d:*` summaries and the union extent;
+the module adds the temporal extent and one relative `item` link per package.
+Only the CLI depends on the generator: it brings the `stac`, `object_store`,
+`reqwest` and `fcb_core` 0.6 stacks, which the library and the schema crate
+must not carry.
 
 ## Validator
 
