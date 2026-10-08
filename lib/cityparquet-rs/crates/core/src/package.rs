@@ -1007,7 +1007,7 @@ fn write_package(
     props: WriterProperties,
     tmp_dir: &Path,
 ) -> Result<WrittenPackage> {
-    let mut writers = TableWriters::new(
+    let writers = TableWriters::new(
         tmp_dir,
         arrow_schema,
         props,
@@ -1063,10 +1063,37 @@ fn write_package(
     batches
         .appearance_mut()
         .set_tolerate_invalid_refs(opts.tolerate_invalid_appearance);
-    for batch in batches.by_ref() {
-        let batch = batch?;
-        writers.write_batch(&batch)?;
-    }
+    // Encoding and writing overlap: the batches go, in order, to a thread
+    // that writes them while the next ones are encoded. The first error on
+    // either side ends both, and is the one returned.
+    let writers = std::thread::scope(|scope| -> Result<TableWriters> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<RecordBatch>(2);
+        let writer = scope.spawn(move || -> Result<TableWriters> {
+            let mut writers = writers;
+            for batch in receiver {
+                writers.write_batch(&batch)?;
+            }
+            Ok(writers)
+        });
+        let mut encoded = Ok(());
+        for batch in batches.by_ref() {
+            match batch {
+                Ok(batch) => {
+                    if sender.send(batch).is_err() {
+                        break; // the writer failed; its error is returned below
+                    }
+                }
+                Err(e) => {
+                    encoded = Err(e);
+                    break;
+                }
+            }
+        }
+        drop(sender);
+        let written = writer.join().expect("the writer thread does not panic");
+        encoded?;
+        written
+    })?;
     // `by_ref()` above means `batches` is still ours to read stats/appearance
     // from — consuming it by value (e.g. plain `.collect()`) would have
     // dropped it (and its running totals) before we could ask.
