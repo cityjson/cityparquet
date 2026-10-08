@@ -26,6 +26,9 @@ from . import units
 from .paths import DEFAULT_BENCH_DIR, DEFAULT_DATA_PATH
 
 SIZES_CSV_NAME = "sizes.csv"
+# The sizes family writes the per-column-group compression table next to the
+# dataset CSVs (`bench_suite.py` COMPRESSION_TABLE); it is not a dataset.
+COMPRESSION_CSV_NAME = "compression.csv"
 
 
 @dataclass(frozen=True)
@@ -346,7 +349,7 @@ def _dataset_csvs(directory: Path) -> list[Path]:
     return sorted(
         p
         for p in directory.glob("*.csv")
-        if p.name != SIZES_CSV_NAME and not p.name.endswith(".samples.csv")
+        if p.name not in (SIZES_CSV_NAME, COMPRESSION_CSV_NAME) and not p.name.endswith(".samples.csv")
     )
 
 

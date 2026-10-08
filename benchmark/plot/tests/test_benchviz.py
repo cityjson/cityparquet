@@ -32,6 +32,20 @@ def test_preparation_and_paper_figure_set(tmp_path: Path):
     assert not any("pareto" in name or "heatmap" in name for name in names)
 
 
+def test_the_compression_table_beside_the_results_is_not_a_dataset(tmp_path: Path):
+    """`bench-run --families sizes` leaves `compression.csv` next to the dataset
+    CSVs; the loader must not read it as a dataset."""
+    bench = fixture_bench(tmp_path)
+    (bench / "results" / "compression.csv").write_text(
+        "dataset,status,level,name,group,encodings,compressed_bytes,uncompressed_bytes,"
+        "compressed_mb_decimal,share_of_column_bytes,share_of_package_bytes,compression_ratio\n"
+        "delft,ok,group,geometry,geometry,,344836,2254857,0.344836,0.506210,0.482903,6.5389\n",
+        encoding="utf-8",
+    )
+    data, _ = prep.build(prep.Inputs(bench))
+    assert "compression" not in {dataset["id"] for dataset in data["datasets"]}
+
+
 def test_every_dataset_gets_its_own_formats_folder(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     data, _ = prep.build(prep.Inputs(bench))
