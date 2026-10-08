@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
+use arrow_schema::extension::Json;
 use arrow_schema::{DataType, Field, Fields, Schema};
 use parquet_geospatial::{WkbMetadata, WkbType};
 
@@ -122,12 +122,12 @@ fn reserved(field: Field) -> Field {
     with_meta(field, &[(ROLE_KEY, ROLE_RESERVED)])
 }
 
-/// A Utf8 field tagged with the canonical `arrow.json` extension type.
-fn json_field(name: &str, nullable: bool) -> Arc<Field> {
-    Arc::new(with_meta(
-        Field::new(name, DataType::Utf8, nullable),
-        &[(EXTENSION_TYPE_NAME_KEY, "arrow.json")],
-    ))
+/// A Utf8 field carrying the canonical `arrow.json` extension type, which the
+/// Parquet writer maps to the `JSON` logical type the spec declares for
+/// `other`, `geometry_properties_lod*.surfaces`, the sidecars' `other` and
+/// structured attributes.
+pub fn json_field(name: &str, nullable: bool) -> Field {
+    Field::new(name, DataType::Utf8, nullable).with_extension_type(Json::default())
 }
 
 /// The `geometry_properties[_lod*]` Arrow type (spec "Geometry properties and
@@ -163,7 +163,7 @@ pub fn geometry_properties_data_type() -> DataType {
 
     DataType::Struct(Fields::from(vec![
         Field::new("type", DataType::Utf8, false),
-        json_field("surfaces", true).as_ref().clone(),
+        json_field("surfaces", true),
         Field::new("face_semantics", face_semantics, true),
         Field::new("shells", shells, true),
     ]))
@@ -444,10 +444,7 @@ impl CityParquetSchema {
             implicit_geometry_data_type(),
             true,
         )));
-        fields.push(with_meta(
-            json_field("other", true).as_ref().clone(),
-            &[(ROLE_KEY, ROLE_RESERVED)],
-        ));
+        fields.push(reserved(json_field("other", true)));
 
         for (name, attr_type) in &self.attributes {
             let role = if self.extension_namespaces.iter().any(|ns| {
@@ -458,14 +455,11 @@ impl CityParquetSchema {
             } else {
                 ROLE_ATTRIBUTE
             };
-            let mut field = with_meta(
-                Field::new(name, attr_type.to_arrow(), true),
-                &[(ROLE_KEY, role)],
-            );
-            if *attr_type == AttributeType::Json {
-                field = with_meta(field, &[(EXTENSION_TYPE_NAME_KEY, "arrow.json")]);
-            }
-            fields.push(field);
+            let field = match attr_type {
+                AttributeType::Json => json_field(name, true),
+                _ => Field::new(name, attr_type.to_arrow(), true),
+            };
+            fields.push(with_meta(field, &[(ROLE_KEY, role)]));
         }
 
         Ok(Schema::new(fields))
@@ -808,6 +802,10 @@ mod tests {
             "{name} should be arrow.json"
         );
         assert_eq!(field.data_type(), &DataType::Utf8);
+        // A tag without its (empty) extension metadata is not a VALID
+        // `arrow.json` field, and the Parquet writer then falls back to the
+        // STRING logical type instead of JSON.
+        assert!(field.try_extension_type::<Json>().is_ok());
     }
 
     /// spec "Appearance & implicit geometries" — "material / texture columns":

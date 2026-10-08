@@ -116,7 +116,11 @@ Geometry columns are tagged with the **geoarrow.wkb** Arrow extension type
 and carry the dataset CRS in their extension metadata, so GeoParquet-aware
 readers pick them up automatically.
 
-JSON columns are `Utf8` tagged with the **arrow.json** extension type.
+JSON columns (`other`, `geometry_properties_lod*.surfaces`, the sidecars'
+`other` and structured attributes) are `Utf8` carrying the **arrow.json**
+extension type, which the Parquet writer stores as the Parquet `JSON` logical
+type. The reader accepts the same columns as plain UTF8 from a writer that does
+not annotate them.
 
 ### Attributes
 

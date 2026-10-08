@@ -155,12 +155,12 @@ pub trait CityParquetReaderBuilder: Sized {
     /// field metadata re-attached) from this file's own KV metadata plus its
     /// actual column types — independent of whether the file happens to
     /// carry an embedded `ARROW:schema` entry, so it works for any
-    /// CityParquet-conformant writer, not just this crate's. One caveat: the
-    /// Json-vs-String disambiguation of Utf8 attribute columns relies on the
-    /// `arrow.json` field tag inside the embedded `ARROW:schema` metadata, so
-    /// files from writers that do not embed it degrade Json attributes to
-    /// String (the reserved JSON columns are unaffected — those are re-tagged
-    /// by name).
+    /// CityParquet-conformant writer, not just this crate's. A Utf8 attribute
+    /// column is `Json` when its field carries the `arrow.json` tag, which the
+    /// Parquet reader attaches to every column of the Parquet `JSON` logical
+    /// type; a writer that stores a structured attribute as plain UTF8 is read
+    /// back as a `String` attribute (the reserved JSON columns are re-tagged by
+    /// name, so they read either way).
     fn cityparquet_arrow_schema(&self) -> Result<Arc<Schema>>;
 
     /// Which geospatial specification this file satisfies — see

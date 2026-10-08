@@ -10,13 +10,10 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema};
 
-use crate::model::{geometry_properties_data_type, material_data_type, texture_data_type};
+use crate::model::{
+    geometry_properties_data_type, json_field, material_data_type, texture_data_type,
+};
 use crate::types::{Lod, geometry_column_name};
-
-fn json_col(name: &str) -> Field {
-    Field::new(name, DataType::Utf8, true)
-        .with_metadata([("ARROW:extension:name".to_string(), "arrow.json".to_string())].into())
-}
 
 /// A nullable `LIST<DOUBLE>` column (spec "materials.parquet" /
 /// "textures.parquet": `diffuseColor`/`specularColor`/`emissiveColor`/
@@ -50,7 +47,7 @@ pub fn materials_schema() -> Schema {
         Field::new("transparency", DataType::Float64, true),
         Field::new("shininess", DataType::Float64, true),
         Field::new("isSmooth", DataType::Boolean, true),
-        json_col("other"),
+        json_field("other", true),
     ])
 }
 
@@ -75,7 +72,7 @@ pub fn textures_schema() -> Schema {
         Field::new("wrapMode", DataType::Utf8, true),
         Field::new("textureType", DataType::Utf8, true),
         double_list_col("borderColor"),
-        json_col("other"),
+        json_field("other", true),
     ])
 }
 
