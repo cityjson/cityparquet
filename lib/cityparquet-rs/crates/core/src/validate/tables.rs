@@ -385,6 +385,11 @@ pub(super) fn check_object_values(
 ) {
     let name = file.name.as_str();
     let f = Some(name);
+    let attributes: BTreeSet<&str> = file
+        .city
+        .as_ref()
+        .map(|c| c.attributes.iter().map(String::as_str).collect())
+        .unwrap_or_default();
     let id = column(batch, "id");
     let feature_id = column(batch, "feature_id");
     let object_type = column(batch, "object_type");
@@ -464,16 +469,35 @@ pub(super) fn check_object_values(
             }
         }
 
-        // spec 02 "The `other` column": a cell MUST hold a JSON object.
-        if let Some(text) = other.and_then(|o| string_at(o, i))
-            && !matches!(serde_json::from_str::<Value>(&text), Ok(Value::Object(_)))
-        {
-            r.error(
-                "value.other-not-object",
-                OBJECT_TABLE,
-                f,
-                format!("row {row}: `other` does not hold a JSON object"),
-            );
+        // spec 02 "The `other` column": a cell MUST hold a JSON object, and
+        // none of its keys may duplicate an attribute the same row carries in
+        // a column.
+        if let Some(text) = other.and_then(|o| string_at(o, i)) {
+            match serde_json::from_str::<Value>(&text) {
+                Ok(Value::Object(entries)) => {
+                    for key in entries.keys() {
+                        if attributes.contains(key.as_str())
+                            && column(batch, key).is_some_and(|c| !c.is_null(i))
+                        {
+                            r.error(
+                                "value.other-collision",
+                                OBJECT_TABLE,
+                                f,
+                                format!(
+                                    "row {row}: `other` holds `{key}`, which the row also \
+                                     carries in its attribute column"
+                                ),
+                            );
+                        }
+                    }
+                }
+                _ => r.error(
+                    "value.other-not-object",
+                    OBJECT_TABLE,
+                    f,
+                    format!("row {row}: `other` does not hold a JSON object"),
+                ),
+            }
         }
 
         // spec 02 / 03: the six `bbox` fields are non-null in a non-null box.

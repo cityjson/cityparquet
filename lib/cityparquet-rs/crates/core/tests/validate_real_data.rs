@@ -586,3 +586,37 @@ fn an_implicit_reference_point_with_trailing_bytes_is_reported() {
     });
     assert_error(&validate(&pkg), "value.implicit-geometry");
 }
+
+/// spec 02 "The `other` column": an `other` entry MUST NOT duplicate an
+/// attribute the same row carries in a column.
+#[test]
+fn an_other_entry_duplicating_an_attribute_column_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        let status: Vec<bool> = c
+            .batches
+            .iter()
+            .flat_map(|b| {
+                let col = b.column_by_name("status").unwrap();
+                (0..col.len()).map(|i| !col.is_null(i)).collect::<Vec<_>>()
+            })
+            .collect();
+        let target = status.iter().position(|&s| s).expect("a row with a status");
+        let mut offset = 0;
+        c.map_column("other", |field, column, _| {
+            let values = column.as_string::<i32>();
+            let replaced: StringArray = (0..values.len())
+                .map(|i| {
+                    if offset + i == target {
+                        Some(r#"{"status":"duplicate"}"#.to_string())
+                    } else {
+                        (!values.is_null(i)).then(|| values.value(i).to_string())
+                    }
+                })
+                .collect();
+            offset += values.len();
+            (field.clone(), Arc::new(replaced) as ArrayRef)
+        });
+    });
+    assert_error(&validate(&pkg), "value.other-collision");
+}
