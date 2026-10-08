@@ -786,7 +786,7 @@ dependencies = [
  "clap",
  "console",
  "env_logger",
- "fcb_core",
+ "fcb_core 0.6.0",
  "flate2",
  "futures",
  "geo-types",
@@ -848,6 +848,7 @@ dependencies = [
  "city3d-stac-types",
  "cityparquet-schema",
  "cjseq",
+ "fcb_core 0.7.6",
  "futures",
  "futures-util",
  "geo",
@@ -1525,6 +1526,37 @@ name = "fcb_core"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9c06d9b15752240aec4d06276d365d0bae45273119c447fd814c77e16a41594"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bson",
+ "byteorder",
+ "bytes",
+ "chrono",
+ "cjseq2",
+ "clap",
+ "fallible-streaming-iterator",
+ "flatbuffers 24.12.23",
+ "http-range-client",
+ "log",
+ "ordered-float 4.6.0",
+ "prettytable",
+ "rand 0.8.6",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_cbor",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "fcb_core"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14c996683327ebfd48d5740238a51e5421beb3c0b14d253e68e65cb293fb990c"
 dependencies = [
  "anyhow",
  "async-trait",

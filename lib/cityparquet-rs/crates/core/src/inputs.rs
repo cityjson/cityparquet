@@ -4,7 +4,7 @@
 //! A pattern is one of:
 //! - a **file** — used directly;
 //! - a **directory** — its immediate children whose extension is one of
-//!   `json`/`jsonl`/`gml` are collected (non-recursive);
+//!   `json`/`jsonl`/`gml`/`fcb` are collected (non-recursive);
 //! - a **glob** (contains `*`, `?`, or `[`) — expanded with [`glob::glob`];
 //!   matches that are files are kept, matches that are not (directories, …)
 //!   are skipped and reported back on [`ResolvedInputs::skipped_non_files`]
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use cityparquet_schema::{CityParquetError, Result};
 
-const RECOGNISED_EXTS: [&str; 3] = ["json", "jsonl", "gml"];
+const RECOGNISED_EXTS: [&str; 4] = ["json", "jsonl", "gml", "fcb"];
 
 fn is_recognised(p: &Path) -> bool {
     p.is_file()

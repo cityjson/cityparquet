@@ -23,11 +23,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Convert CityJSON/CityJSONSeq/CityGML to a CityParquet package
+    /// Convert CityJSON/CityJSONSeq/CityGML 2.0/FlatCityBuf to a CityParquet package
     Convert {
         /// Input files, directories, or glob patterns (CityJSON, CityJSONSeq,
-        /// CityGML). Multiple inputs are merged into one dataset; directories
-        /// contribute their immediate .json/.jsonl/.gml children.
+        /// CityGML 2.0, FlatCityBuf). Multiple inputs are merged into one
+        /// dataset; directories contribute their immediate
+        /// .json/.jsonl/.gml/.fcb children.
         #[arg(value_name = "INPUTS", required = true, num_args = 1..)]
         inputs: Vec<PathBuf>,
 

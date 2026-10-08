@@ -197,6 +197,8 @@ fn to_schema_source_format(format: SourceFormat) -> SchemaSourceFormat {
         SourceFormat::CityJson => SchemaSourceFormat::CityJson,
         SourceFormat::CityJsonSeq => SchemaSourceFormat::CityJsonSeq,
         SourceFormat::CityGml => SchemaSourceFormat::CityGml,
+        // spec 05: an other-source token for a format the spec does not enumerate.
+        SourceFormat::FlatCityBuf => SchemaSourceFormat::Other("FlatCityBuf".to_string()),
     }
 }
 

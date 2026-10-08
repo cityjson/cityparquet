@@ -108,6 +108,10 @@ fixtures:
     # surface, lod4MultiSurface boundaries with Door/Window openings, and an
     # interior Room. Used by `citygml_lod4` for the LoD4 round trip.
     curl {{curl_retry}} -sSfo tests/fixtures/lod4_building_v2.gml https://raw.githubusercontent.com/citygml4j/citygml4j/8f5a21bb956df032da91ed6aa096c145968a2335/citygml4j-samples/input/datasets/lod4_building_v2.gml
+    # The published FlatCityBuf encoding of the Delft dataset above (no
+    # versioned URL exists; 5.2 MB, ETag 50b0867c12954bfccd92fe03ab342985 on
+    # 2026-10-08). Used by `fcb_input` (the `fcb` feature).
+    curl {{curl_retry}} -sSfo tests/fixtures/delft.fcb https://flatcitybuf.open3d.city/data/delft.fcb
     # Zero-object CityJSONSeq fixture (synthetic, no network fetch needed):
     # a single CityJSON header line, empty CityObjects/vertices, no feature
     # lines — the minimal input that scans to zero city-object rows. Used by

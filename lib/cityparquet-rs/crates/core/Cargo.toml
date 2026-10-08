@@ -26,6 +26,7 @@ object_store = { workspace = true, optional = true }
 futures = { version = "0.3", optional = true }
 futures-util = { version = "0.3", optional = true }
 async-trait = { workspace = true, optional = true }
+fcb_core = { workspace = true, optional = true }
 
 [dev-dependencies]
 wkb = { workspace = true }
@@ -40,6 +41,8 @@ tower-http = { workspace = true }
 bytes = { workspace = true }
 
 [features]
+# FlatCityBuf (`.fcb`) input for `convert`.
+fcb = ["dep:fcb_core"]
 object-store = [
     "dep:object_store",
     "dep:futures",

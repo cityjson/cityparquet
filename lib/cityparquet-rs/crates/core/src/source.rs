@@ -1,6 +1,7 @@
-//! Unified feature access over CityJSON documents, CityJSONSeq streams, and
-//! CityGML 2.0 documents (the last via [`crate::citygml`], which synthesises a
-//! CityJSON header and streams `bldg:Building`s as features).
+//! Unified feature access over CityJSON documents, CityJSONSeq streams,
+//! CityGML 2.0 documents (via [`crate::citygml`], which synthesises a
+//! CityJSON header and streams `bldg:Building`s as features) and, with the
+//! `fcb` feature, FlatCityBuf files (via `crate::fcb`).
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
@@ -16,6 +17,7 @@ pub enum SourceFormat {
     CityJson,
     CityJsonSeq,
     CityGml,
+    FlatCityBuf,
 }
 
 pub struct Source {
@@ -60,6 +62,10 @@ impl Source {
         // for an XML file, which is actively misleading. For 2.0 the reader
         // synthesises a CityJSON header (transform + CRS) and streams
         // `bldg:Building`s as features.
+        // FlatCityBuf is binary: recognised by its magic bytes.
+        if crate::fcb::is_flatcitybuf(path) {
+            return Self::open_flatcitybuf(path);
+        }
         match crate::citygml::sniff_citygml(path) {
             Some(crate::citygml::CityGmlVersion::V2_0) => {
                 let header = crate::citygml::parse_header(path)?;
@@ -147,6 +153,26 @@ impl Source {
                 crs_is_operator_supplied: false,
             })
         }
+    }
+
+    #[cfg(feature = "fcb")]
+    fn open_flatcitybuf(path: &Path) -> Result<Self> {
+        Ok(Self {
+            path: path.to_path_buf(),
+            format: SourceFormat::FlatCityBuf,
+            header: crate::fcb::read_header(path)?,
+            doc: None,
+            buffered: None,
+            crs_is_operator_supplied: false,
+        })
+    }
+
+    #[cfg(not(feature = "fcb"))]
+    fn open_flatcitybuf(path: &Path) -> Result<Self> {
+        Err(err(format!(
+            "{} is a FlatCityBuf file; reading one needs the `fcb` feature",
+            path.display()
+        )))
     }
 
     /// Build an in-memory source from already-parsed parts: a `header`
@@ -318,6 +344,16 @@ impl Source {
             SourceFormat::CityGml => Ok(FeatureIter::CityGml(Box::new(
                 crate::citygml::FeatureReader::open(&self.path, &self.header.transform)?,
             ))),
+            #[cfg(feature = "fcb")]
+            SourceFormat::FlatCityBuf => Ok(FeatureIter::FlatCityBuf(Box::new(
+                crate::fcb::FcbFeatures::open(&self.path)?,
+            ))),
+            // `Source::open` refuses a FlatCityBuf file without the feature.
+            #[cfg(not(feature = "fcb"))]
+            SourceFormat::FlatCityBuf => Err(err(format!(
+                "{}: reading FlatCityBuf needs the `fcb` feature",
+                self.path.display()
+            ))),
         }
     }
 }
@@ -428,6 +464,8 @@ pub enum FeatureIter<'a> {
         i: usize,
     },
     CityGml(Box<crate::citygml::FeatureReader>),
+    #[cfg(feature = "fcb")]
+    FlatCityBuf(Box<crate::fcb::FcbFeatures>),
     /// In-memory features (an [`Source::from_parts`] source); each is cloned
     /// on yield so the iterator can hand back owned `CityJSONFeature`s like
     /// every other arm while the buffer stays intact for re-iteration.
@@ -457,6 +495,8 @@ impl Iterator for FeatureIter<'_> {
                 Some(Ok(f))
             }
             FeatureIter::CityGml(reader) => reader.next(),
+            #[cfg(feature = "fcb")]
+            FeatureIter::FlatCityBuf(reader) => reader.next(),
             FeatureIter::Buffered(iter) => iter.next().map(|f| Ok(f.clone())),
         }
     }

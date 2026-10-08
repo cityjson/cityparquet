@@ -11,6 +11,7 @@ pub mod counting_store;
 pub mod decode;
 pub mod encode;
 pub mod export;
+pub mod fcb;
 mod geometry_encoding;
 mod geometry_properties;
 pub mod inputs;

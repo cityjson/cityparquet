@@ -71,6 +71,9 @@ jsonschema = "0.26"
 # (`scan`). Deterministic WyHash default: the selected columns, and so the
 # package layout, are identical run to run.
 cardinality-estimator = "1.0.3"
+# FlatCityBuf input (the `fcb` feature). The exact pin the read benchmark
+# (`benchmark/readbench`) carries, so the two resolve to one version.
+fcb_core = "=0.7.6"
 
 # vendor/cjseq carries a patched 0.4.1: upstream's `add_cjfeature`/
 # `update_texture` mis-base merged texture UV-vertex indices, corrupting
