@@ -68,6 +68,10 @@ pub struct ScanResult {
     /// Union of every analysis geometry's bbox, `None` if none contributed one
     /// (`GeometryInstance`s produce no WKB, so they contribute nothing here).
     pub dataset_bbox: Option<[f64; 6]>,
+    /// Each feature's [`crate::order::feature_centre`], in
+    /// [`Source::features`] order: what the Hilbert row order sorts by,
+    /// kept so it needs no second pass over the features.
+    pub feature_centres: Vec<Option<[f64; 2]>>,
     /// The dataset's reference system as the raw OGC CRS URL string (from
     /// CityJSON header metadata), before PROJJSON resolution.
     pub crs_url: Option<String>,
@@ -302,8 +306,13 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         None => (AxisOrder::default(), false),
     };
 
+    let mut feature_centres = Vec::new();
     for feature in source.features()? {
         let feature = feature?;
+        feature_centres.push(crate::order::feature_centre(
+            &feature.vertices,
+            &header.transform,
+        ));
         let pool = VertexPool::new(&feature.vertices, &header.transform, axis_order);
 
         for (id, co) in &feature.city_objects {
@@ -593,6 +602,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         lods,
         object_count,
         dataset_bbox,
+        feature_centres,
         crs_url,
         axis_order,
         horizontal_is_angular,

@@ -25,12 +25,11 @@ use cityparquet_schema::{
     AttributeType, CityMetadata, CityParquetError, CityParquetSchema, ExtensionNaming,
     ExtensionRegistry, Lod, ModuleKey, ModuleKeyResolver, Result, geometry_column_name,
 };
-use cjseq::CityJSONFeature;
 
 use crate::appearance::AppearanceInterner;
-use crate::encode::{LocalDefs, encode, encode_buffered, rewrite_geometry_appearance};
+use crate::encode::{LocalDefs, encode, encode_in_order, rewrite_geometry_appearance};
 use crate::lod0::Lod0Options;
-use crate::order::feature_hilbert_key;
+use crate::order::hilbert_order;
 use crate::recipe::WriterRecipe;
 use crate::scan::{ScanResult, city_and_geo_for_file, scan};
 use crate::sidecar::{
@@ -73,18 +72,18 @@ const TMP_DIR_NAME: &str = ".cityparquet-tmp";
 /// beyond one feature at a time.
 ///
 /// `Hilbert`, the default, reorders FEATURES (never splitting one
-/// feature's objects across the reorder — see `crate::order`'s module doc
-/// and `hilbert_ordered_features` below) by the Hilbert-curve index of each
-/// feature's own bbox centroid, so spatially nearby features land in the
-/// same or adjacent row groups and bbox row-group pruning
+/// feature's objects across the reorder — see `crate::order`'s module doc)
+/// by the Hilbert-curve index of each feature's own vertex centre, so
+/// spatially nearby features land in the same or adjacent row groups and
+/// bbox row-group pruning
 /// (`crate::reader::CityParquetReaderBuilder::with_bbox_row_groups`) skips
-/// more of the file on a spatially-selective query. This buffers every
-/// parsed feature in memory before encoding a single row — the same
-/// full-load trade-off `crate::compare`'s comparator already makes,
-/// documented rather than hidden; a national-scale external sort is out of
-/// scope for this milestone (M6). Peak memory therefore grows with the
-/// dataset, and `Source` is the streaming, low-memory choice for an input
-/// too large to hold.
+/// more of the file on a spatially-selective query. The scan keeps each
+/// feature's centre, and the encode pass reads the features back in key
+/// order ([`Source::features_in_order`]): a CityJSONSeq line by its byte
+/// span and a CityJSON document feature by index, so memory holds one
+/// feature at a time beyond the source itself; a CityGML or FlatCityBuf
+/// source, readable only front to back, is held parsed in full. `Source`
+/// streams with no reordering at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RowOrder {
     Source,
@@ -480,54 +479,6 @@ struct WrittenPackage {
     invalid_appearance_refs_dropped: usize,
     dropped_colliding_members: usize,
     dropped_colliding_member_diagnostics: Vec<String>,
-}
-
-/// Buffers every feature `source` yields (RowOrder::Hilbert's documented
-/// full-load trade-off — see [`RowOrder`]'s doc comment) and stably sorts
-/// them by [`feature_hilbert_key`] of each feature's own vertex-pool
-/// centroid against `scan_result.dataset_bbox`.
-///
-/// The ORDERING UNIT is the feature (never an individual `CityObject`): a
-/// CityJSONFeature groups a parent and its children, which must stay
-/// contiguous in the output exactly as the Source-order path already keeps
-/// them (`crate::encode::BatchIter::advance` only ever moves to the next
-/// feature once every object of the current one is pushed) — sorting whole
-/// `CityJSONFeature`s, rather than re-deriving per-object bboxes and
-/// somehow trying to interleave objects across features, is what preserves
-/// that invariant for free.
-///
-/// A missing `dataset_bbox` (an empty dataset, or one with no geometry at
-/// all) makes every feature's key `0` — the stable sort is then a no-op,
-/// so `RowOrder::Hilbert` silently degrades to `RowOrder::Source`'s
-/// output order rather than doing anything meaningless with an undefined
-/// normalisation range.
-fn hilbert_ordered_features(
-    source: &Source,
-    scan_result: &ScanResult,
-) -> Result<Vec<CityJSONFeature>> {
-    let dataset_bbox = scan_result.dataset_bbox.unwrap_or([0.0; 6]);
-    let transform = &source.header().transform;
-    let features: Vec<CityJSONFeature> = source.features()?.collect::<Result<Vec<_>>>()?;
-
-    // Decorate-sort-undecorate: pairs each feature with its key up front so
-    // the sort comparator itself never recomputes it, then `Vec::sort_by_key`
-    // (a STABLE sort) reorders — features with equal keys (including the
-    // shared key `0` for every feature with no vertices) keep their
-    // original relative order, per this function's own doc comment.
-    let mut keyed: Vec<(u32, CityJSONFeature)> = features
-        .into_iter()
-        .map(|f| {
-            let key = feature_hilbert_key(
-                &f.vertices,
-                transform,
-                &dataset_bbox,
-                scan_result.axis_order,
-            );
-            (key, f)
-        })
-        .collect();
-    keyed.sort_by_key(|(key, _)| *key);
-    Ok(keyed.into_iter().map(|(_, f)| f).collect())
 }
 
 /// The `<snake>.parquet` file name the by-module writer uses for a
@@ -1080,8 +1031,17 @@ fn write_package(
     let mut batches = match opts.ordering {
         RowOrder::Source => encode(source, scan_result, opts.batch_size)?,
         RowOrder::Hilbert => {
-            let features = hilbert_ordered_features(source, scan_result)?;
-            encode_buffered(features, source.header(), scan_result, opts.batch_size)?
+            // Whole features (never one feature's objects apart) by the
+            // Hilbert index of each feature's vertex centre — kept by the
+            // scan — against the dataset bbox. A missing bbox (no geometry
+            // at all) keys every feature 0, and the stable sort keeps source
+            // order.
+            let order = hilbert_order(
+                &scan_result.feature_centres,
+                &scan_result.dataset_bbox.unwrap_or([0.0; 6]),
+                scan_result.axis_order,
+            );
+            encode_in_order(source, scan_result, order, opts.batch_size)?
         }
     };
     // Set BEFORE either the main encode loop below or `build_implicit_geometry_rows`

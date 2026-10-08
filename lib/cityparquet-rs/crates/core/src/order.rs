@@ -133,27 +133,30 @@ pub(crate) fn vertices_minmax(
     any.then_some((min, max))
 }
 
-/// The Hilbert-ordering key for one CityJSONFeature: the curve index of
-/// `(x, y)` centroid `(min + max) / 2` of the feature's OWN vertex pool
-/// (dequantised via `transform`), normalised against `dataset_bbox`.
+/// The `(x, y)` centre `(min + max) / 2` of a feature's own vertex pool,
+/// dequantised via `transform`, in the dataset's own axis order; `None` for a
+/// feature with no vertices. The Hilbert row order keys on it, and the scan
+/// keeps it so the key can be computed without the feature.
 ///
 /// `vertices` is a CityJSONFeature's own `vertices` array — a cjseq feature
 /// is self-contained (its vertex pool holds exactly the vertices its own
 /// geometries index into), so this is the cheapest correct source for a
-/// per-feature centroid: no need to walk objects/geometries first.
-///
-/// Features with NO vertices at all (a feature whose objects carry no
-/// geometry) get key `0` — [`crate::package::convert`]'s sort is stable, so
-/// they simply retain their original relative order, all grouped at the
-/// front, rather than scattering arbitrarily through the middle of the
-/// dataset (documented at the call site too).
-pub(crate) fn feature_hilbert_key(
-    vertices: &[Vec<i64>],
-    transform: &Transform,
+/// per-feature centre: no need to walk objects/geometries first.
+pub(crate) fn feature_centre(vertices: &[Vec<i64>], transform: &Transform) -> Option<[f64; 2]> {
+    let (min, max) = vertices_minmax(vertices, transform)?;
+    Some([(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0])
+}
+
+/// The Hilbert-ordering key of a feature with this [`feature_centre`]: the
+/// curve index of the centre, normalised against `dataset_bbox`. A feature
+/// with no vertices gets key `0`; the sort is stable, so such features keep
+/// their relative order, grouped at the front.
+pub(crate) fn centre_hilbert_key(
+    centre: Option<[f64; 2]>,
     dataset_bbox: &[f64; 6],
     axis_order: AxisOrder,
 ) -> u32 {
-    let Some((min, max)) = vertices_minmax(vertices, transform) else {
+    let Some([x, y]) = centre else {
         return 0;
     };
     // `dataset_bbox` comes from the scan, which accumulates it through a
@@ -161,8 +164,21 @@ pub(crate) fn feature_hilbert_key(
     // from the feature's own dataset-order vertices. Normalising a centroid
     // against a bbox in the other order clamps every feature to one corner,
     // silently turning a Hilbert ordering back into source order.
-    let centroid = axis_order.apply([(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0, 0.0]);
+    let centroid = axis_order.apply([x, y, 0.0]);
     hilbert_index(centroid[0], centroid[1], dataset_bbox)
+}
+
+/// The order that sorts features by [`centre_hilbert_key`] of their
+/// centres: indices into `centres`, stable, so features with equal keys keep
+/// their source order.
+pub(crate) fn hilbert_order(
+    centres: &[Option<[f64; 2]>],
+    dataset_bbox: &[f64; 6],
+    axis_order: AxisOrder,
+) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..centres.len()).collect();
+    order.sort_by_cached_key(|&i| centre_hilbert_key(centres[i], dataset_bbox, axis_order));
+    order
 }
 
 #[cfg(test)]
@@ -246,7 +262,7 @@ mod tests {
         };
         let bbox: [f64; 6] = [0.0, 0.0, 0.0, 10.0, 10.0, 10.0];
         assert_eq!(
-            feature_hilbert_key(&[], &transform, &bbox, AxisOrder::LonLat),
+            centre_hilbert_key(feature_centre(&[], &transform), &bbox, AxisOrder::LonLat),
             0
         );
     }
@@ -261,7 +277,11 @@ mod tests {
         // after the 0.001 scale; centroid (5, 5).
         let vertices = vec![vec![0, 0, 0], vec![10_000, 10_000, 0]];
         let bbox: [f64; 6] = [0.0, 0.0, 0.0, 10.0, 10.0, 10.0];
-        let key = feature_hilbert_key(&vertices, &transform, &bbox, AxisOrder::LonLat);
+        let key = centre_hilbert_key(
+            feature_centre(&vertices, &transform),
+            &bbox,
+            AxisOrder::LonLat,
+        );
         let expected = hilbert_index(5.0, 5.0, &bbox);
         assert_eq!(key, expected);
     }

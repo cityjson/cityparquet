@@ -1069,7 +1069,7 @@ fn union_row_bbox(acc: &mut Option<[f64; 6]>, row: [f64; 6]) {
 /// centroid.
 ///
 /// The implementation's per-feature sort key is the FEATURE's own
-/// vertex-pool min/max centroid (`crate::order::feature_hilbert_key`,
+/// vertex-pool min/max centroid (`crate::order::centre_hilbert_key`,
 /// `pub(crate)` and so not reachable from this integration-test crate);
 /// this test instead recomputes each feature run's key from the per-OBJECT
 /// `bbox` column's stored values, unioned over every row in the run. On
@@ -1154,7 +1154,7 @@ fn hilbert_ordering_keeps_features_contiguous_and_visits_them_in_non_decreasing_
     assert!(runs.len() > 1, "delft has many features, expected > 1 run");
 
     // Per-run Hilbert index: a feature with NO geometry anywhere (union
-    // stayed `None`) gets key 0, mirroring `feature_hilbert_key`'s own rule
+    // stayed `None`) gets key 0, mirroring `centre_hilbert_key`'s own rule
     // for a feature with no vertices at all.
     let indices: Vec<u32> = runs
         .iter()
