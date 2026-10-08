@@ -1,6 +1,8 @@
 """lod-query on all three systems: ids plus the LoD 2.2 geometry in each
 system's native binary form, and not applicable — never zero — on a dataset
 without LoD 2.2."""
+import json
+
 import pytest
 
 from citybench import params as params_mod
@@ -20,6 +22,12 @@ def test_lods_from_columns_reads_the_geometry_column_names():
     cols = ["id", "geometry_lod0_0", "geometry_lod2_2", "geometry_properties_lod2_2",
             "geometry_lod1_3"]
     assert params_mod.lods_from_columns(cols) == ("0", "1.3", "2.2")
+
+
+def test_the_params_file_records_the_lod_query_target():
+    payload = json.loads(params_mod.to_json(make_params(lods=("0", "1.3", "2.2"))))
+    assert payload["lod_query_target"] == LOD_QUERY_TARGET
+    assert payload["lods"] == ["0", "1.3", "2.2"]
 
 
 def test_lods_round_trip_through_json():

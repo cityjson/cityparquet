@@ -24,6 +24,7 @@ from citybench.config import (
     BBOX_TARGETS, ID_DECILES, ID_MISS_TAG, AppendSpec, AttrFilter, AttrRange,
     BBox, BboxWindow, IdProbe, Params, object_table_files, window_from_halves,
 )
+from citybench.scenarios.registry import LOD_QUERY_TARGET
 
 # --- the `attr-filter` predicate, shared with the format harness ---------
 #
@@ -754,6 +755,9 @@ def to_json(p: Params) -> str:
         "id_probes": [dataclasses.asdict(probe) for probe in p.id_probes],
         "append": dataclasses.asdict(p.append) if p.append else None,
         "lods": list(p.lods),
+        # The LoD `lod-query` asks for, so a reader labels the row from the
+        # run's own record rather than from a constant of its own.
+        "lod_query_target": LOD_QUERY_TARGET,
         "swap_xy": p.swap_xy,
         "total_city_objects": p.total_city_objects,
         "window_rows": p.window_rows,

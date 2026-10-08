@@ -52,7 +52,7 @@ until the full run on the benchmark host; the directory is re-included in
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<dataset>.csv`               | the read scenarios for every system under `threads=single` and `threads=parallel`, then the write tier (see "Metrics and the CSV contract")             |
 | `<dataset>.manifest.json`     | source SHA-256, host, versions, `pg_settings` per configuration, ingest times, sizes, the cjdb patch disclosure, SRIDs, memory scope, the count tolerance |
-| `<dataset>.params.json`       | the query parameters: windows with achieved fractions, the attribute predicates, the four id probes, the append feature, the dataset's LoDs             |
+| `<dataset>.params.json`       | the query parameters: windows with achieved fractions, the attribute predicates, the four id probes, the append feature, the dataset's LoDs, the `lod-query` target |
 | `<dataset>.indexes.sql`       | the DDL this harness added, plus a live `pg_indexes` dump for both PostgreSQL schemas                                                                     |
 | `<dataset>.append.city.jsonl` | the one-feature CityJSONSeq file the `append-object` scenario imports                                                                                     |
 

@@ -115,20 +115,18 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def lod_query_label(params: dict) -> str:
-    """The `lod-query` row label: the highest LoD the database run carried.
+    """The `lod-query` row label: the LoD the database run asked for.
 
-    `citybench` writes the dataset's LoDs (`lods`, read from the package's
-    `geometry_lod<d>_<d>` column names: "0", "1.3", "2.2") into every params
-    sidecar. `lod-query` targets `LOD_QUERY_TARGET` in
-    `citybench/scenarios/registry.py`, which the sidecar does not record; on
-    the database family's dataset that target is the highest LoD it carries.
-    A sidecar without `lods`, or with none, is not one the harness wrote: it
-    is refused.
+    `citybench` records it as `lod_query_target` in every params sidecar
+    (`LOD_QUERY_TARGET` in `citybench/scenarios/registry.py`). A sidecar
+    without it is not one the harness wrote: it is refused.
     """
-    lods = params.get("lods")
-    if not lods:
-        raise prep.PrepError("database params carry no `lods`: cannot label the lod-query row")
-    return f"LoD {max(lods, key=float)} rows"
+    target = params.get("lod_query_target")
+    if not target:
+        raise prep.PrepError(
+            "database params carry no `lod_query_target`: cannot label the lod-query row"
+        )
+    return f"LoD {target} rows"
 
 
 def _label(value: str) -> str:

@@ -51,6 +51,7 @@
    "tag": "id-miss"
   }
  ],
+ "lod_query_target": "2.2",
  "lods": [
   "0",
   "1.3",
