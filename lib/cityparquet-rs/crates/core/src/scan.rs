@@ -695,6 +695,9 @@ impl ScanResult {
         self.geoparquet_columns
             .push((lod0, vec!["MultiPolygon Z".to_string()]));
         self.geoparquet_columns.sort_by_key(|(lod, _)| *lod);
+        // The GEOMETRY annotation follows the same set `geo` declares.
+        self.schema.geoparquet_lods.push(lod0);
+        self.schema.geoparquet_lods.sort();
     }
 
     /// Build the DATASET-WIDE portion of `city` — the fields genuinely

@@ -224,6 +224,36 @@ fn synthesised_railway_has_independent_city_and_geo_primaries() {
     assert!(geo.columns.contains_key("geometry_lod3_0"));
 }
 
+/// spec 05 "The declaration rule": a column carries the Parquet `GEOMETRY`
+/// logical type if and only if `geo.columns` declares it — the synthesised
+/// footprint included.
+#[test]
+fn the_synthesised_footprint_column_carries_the_geometry_annotation_geo_declares() {
+    let pkg = convert_railway(true);
+    let file = std::fs::File::open(pkg.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let (_, geo) = builder.cityparquet_footer().unwrap();
+    let geo = geo.expect("railway's building table has GeoParquet-legal columns");
+    let descr = builder.metadata().file_metadata().schema_descr();
+    for i in 0..descr.num_columns() {
+        let column = descr.column(i);
+        let name = column.path().string();
+        if !name.starts_with("geometry_lod") {
+            continue;
+        }
+        let annotated = matches!(
+            column.logical_type_ref(),
+            Some(parquet::basic::LogicalType::Geometry { .. })
+        );
+        assert_eq!(
+            annotated,
+            geo.columns.contains_key(&name),
+            "`{name}`: annotated iff declared in geo.columns"
+        );
+    }
+    assert!(geo.columns.contains_key("geometry_lod0_0"));
+}
+
 /// Synthesis is idempotent: exporting a synthesised package yields real `lod:"0"`
 /// geometries, and reconverting that export with synthesis on adds nothing new,
 /// so a second round trip reproduces the first exactly.
