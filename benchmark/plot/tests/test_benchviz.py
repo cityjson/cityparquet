@@ -60,7 +60,7 @@ DB_COLUMNS = [
     "result_count",
     *prep.TIMING_BLOCK,
     "peak_heap_bytes",
-    "peak_rss_bytes",
+    "peak_working_mem_bytes",
     "repeat",
     "notes",
     "bytes_read",
@@ -117,7 +117,7 @@ def test_database_loader_selects_largest_and_preserves_bbox_keys(tmp_path: Path)
                 "time_q3_s": "2.5",
                 "server_time_median_s": "1.4",
                 "server_time_mean_s": "1.9",
-                "peak_rss_bytes": "100",
+                "peak_working_mem_bytes": "100",
                 "size_bytes": "20",
             }
         )

@@ -20,10 +20,6 @@ figures are exercised on rows of the right shape:
   indexes (`index_bytes`, plus CityParquet's Bloom-filter, page-index and
   footer bytes).
 
-The old `peak_rss_bytes` shape is not a second fixture: `tests/test_databases.py`
-derives it from this one (`_old_schema`) to check that such evidence is
-labelled process RSS, not working memory.
-
 The sidecar's id probes and windows are copied from a 1,000-object smoke run
 and rescaled; the times and memory figures are invented. Replace nothing here
 with measured rows; the tests assert on these values.

@@ -77,15 +77,12 @@ def test_the_database_csv_carries_the_same_timing_blocks():
 
 
 def test_the_renderer_reads_the_database_memory_column_by_its_current_name():
-    """The loader's preferred memory column is the one citybench writes, in its
-    position after `peak_heap_bytes`; the old `peak_rss_bytes` name survives only
-    as the loader's reading of committed old evidence, never in the header.
-    """
+    """The loader's memory column is the one citybench writes, in its
+    position after `peak_heap_bytes`."""
     columns = _database_columns()
-    current, old = prep.DB_MEMORY_COLUMNS
-    assert current == "peak_working_mem_bytes" and old == "peak_rss_bytes"
-    assert current in columns and old not in columns
-    assert columns[columns.index("peak_heap_bytes") + 1] == current
+    assert prep.DB_MEMORY_COLUMN == "peak_working_mem_bytes"
+    assert "peak_rss_bytes" not in columns
+    assert columns[columns.index("peak_heap_bytes") + 1] == prep.DB_MEMORY_COLUMN
     for column in ("size_bytes", "size_bytes_no_index", "status", "notes", "result_count"):
         assert column in columns, column
 

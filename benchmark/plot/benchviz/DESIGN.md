@@ -71,11 +71,9 @@ Database panels use 3DCityDB as baseline. The loader reads the run's
 `index_bytes`, the storage panel stacks the data without indexes under the
 indexes and annotates the total, the size without indexes and the index bytes,
 quoting the manifest's `size_definitions` in the notes. Without that split, the
-panel shows the total including indexes. The memory panel is titled by the
-metric the run wrote, which the manifest's `memory_measurement.metric` names
-(else the CSV header): `peak_working_mem_bytes` is "Peak working memory", and
-the earlier `peak_rss_bytes` is "Peak process RSS (old evidence)", whose notes
-line says it is not working memory. A header that contradicts the manifest is
+panel shows the total including indexes. The memory panel plots
+`peak_working_mem_bytes`, titled "Peak working memory"; a CSV without that
+column, or whose manifest's `memory_measurement.metric` names another, is
 refused. Every read
 cell is keyed by system, scenario and thread configuration: `threads=single`
 is the primary column, `threads=parallel` a separately labelled second column,

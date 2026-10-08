@@ -899,12 +899,6 @@ def _db_skip_reason(notes: str) -> str:
 DB_THREADS_TAG_RE = re.compile(r"\s*\bthreads=\w+")
 
 
-def _db_memory_title(db: dict) -> str:
-    """The memory panel's title, named by the metric the run actually wrote."""
-    metric = db.get("memory_metric") or "peak_rss_bytes"
-    return prep.DB_MEMORY_LABELS.get(metric, metric)
-
-
 def _db_bytes(count: float | None) -> str:
     """A storage size; kB below a megabyte, so a small index never reads as 0.0 MB."""
     if count is not None and 0 < count < units.MB:
@@ -1023,7 +1017,7 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
     notes += [
         line
         for line in conditions
-        if line.startswith(("Spatial windows", "Memory (old evidence)", "Storage no_index_bytes"))
+        if line.startswith(("Spatial windows", "Storage no_index_bytes"))
     ]
     if layout["write_rows"]:
         notes.append(
@@ -1054,7 +1048,7 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
     _db_storage(storage, sizes, systems, baseline)
 
     separator = rows.index(DB_WRITE_SEPARATOR) if DB_WRITE_SEPARATOR in rows else None
-    statistic, memory_title = _statistic(data).capitalize(), _db_memory_title(db)
+    statistic, memory_title = _statistic(data).capitalize(), prep.DB_MEMORY_LABEL
     for mi, (field, title, _formatter) in enumerate(DB_HEAT_SPECS):
         axes = []
         cmap, norm = _heat_colors("diverging", bounds[field])

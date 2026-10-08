@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import pytest
 
 from benchviz import figures, html, prep
 
@@ -82,29 +83,8 @@ def test_database_conditions_carry_the_windows_and_predicates(tmp_path: Path):
     assert any("feature-rows-added 9" in line for line in lines)
 
 
-def _old_schema(bench: Path) -> Path:
-    """Turn the fixture into committed old evidence: the `peak_rss_bytes` column,
-    and a manifest without the index breakdown that declares that metric.
-    """
-    results = bench.parent / "databases" / "results"
-    csv_path = results / "3dbag_n10000.csv"
-    text = csv_path.read_text(encoding="utf-8")
-    old = text.replace("peak_working_mem_bytes", "peak_rss_bytes", 1)
-    csv_path.write_text(old, encoding="utf-8")
-    manifest_path = results / "3dbag_n10000.manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["memory_measurement"] = {"metric": "peak_rss_bytes", "scope": "execution process only"}
-    manifest.pop("size_definitions")
-    for block in manifest["sizes"].values():
-        for field in ("index_bytes", "bloom_filter_bytes", "page_index_bytes", "footer_bytes"):
-            block.pop(field, None)
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    return bench
-
-
 def test_the_current_schema_reads_working_memory_and_the_index_split(tmp_path: Path):
     db = prep.load_databases(prep.Inputs(_bench(tmp_path, databases=True)))
-    assert db["memory_metric"] == "peak_working_mem_bytes"
     assert all("peak_rss_bytes" not in r for r in db["records"])
     geometry = _records(db, format="cjdb", scenario="geometry-scan", threads="single")[0]
     assert geometry["peak_memory_bytes"] is not None
@@ -115,23 +95,13 @@ def test_the_current_schema_reads_working_memory_and_the_index_split(tmp_path: P
     assert mismatched["status"] == "id-mismatch"
 
 
-def test_old_evidence_is_labelled_process_rss_not_working_memory(tmp_path: Path):
-    bench = _old_schema(_bench(tmp_path, databases=True))
-    data, _ = prep.build(prep.Inputs(bench))
-    db = data["databases"]
-    assert db["memory_metric"] == "peak_rss_bytes"
-    assert any(r["peak_memory_bytes"] is not None for r in db["records"])
-    assert any(
-        line.startswith("Memory (old evidence)") for line in data["meta"]["conditions"]["databases"]
-    )
-    out = tmp_path / "figures"
-    with plt.rc_context({"svg.fonttype": "none"}):
-        figures.databases(data, out)
-    svg = (out / "databases.svg").read_text(encoding="utf-8")
-    assert "Peak process RSS (old evidence)" in svg
-    assert "not working memory" in svg
-    assert "Peak working memory" not in svg
-    assert "Storage including indexes" in svg and "Storage with and without" not in svg
+def test_a_csv_without_the_working_memory_column_is_refused(tmp_path: Path):
+    bench = _bench(tmp_path, databases=True)
+    csv_path = bench.parent / "databases" / "results" / "3dbag_n10000.csv"
+    text = csv_path.read_text(encoding="utf-8")
+    csv_path.write_text(text.replace("peak_working_mem_bytes", "peak_rss_bytes", 1), encoding="utf-8")
+    with pytest.raises(prep.PrepError, match="no `peak_working_mem_bytes` column"):
+        prep.load_databases(prep.Inputs(bench))
 
 
 def test_a_header_the_manifest_contradicts_is_refused(tmp_path: Path):
