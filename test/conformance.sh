@@ -74,7 +74,10 @@ duck_rewrite() { # PACKAGE OUT
         -c "SELECT count(*) FROM cityparquet_write('pkg', '$2');"
 }
 
-for src in "$FIX/delft.city.jsonl" "$FIX/lod3_railway.city.json"; do
+# address_location: a real Helsinki building whose `Integrate_LoD[1]` attribute is a
+# JSON object (and whose `address` is filled in), from cityparquet-rs's test data.
+for src in "$FIX/delft.city.jsonl" "$FIX/lod3_railway.city.json" \
+    lib/cityparquet-rs/crates/core/tests/data/address_location.city.jsonl; do
     src="$ROOT/$src"
     name=$(basename "$src" | cut -d. -f1)
     echo "== $name"
