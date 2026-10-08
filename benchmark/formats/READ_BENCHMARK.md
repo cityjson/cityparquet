@@ -1138,13 +1138,16 @@ stats_pruned` on the `*-miss` rows is how many the reader still
     filters, and results in the 21-column shape that predates `stats_pruned`
     exist only in git history and must not be set beside these: a median
     absolute deviation and an interquartile range are different spreads, and
-    an `id-lookup` without filters is a different operation. The shapes keep
-    them apart mechanically: the coordinator's
+    an `id-lookup` without filters is a different operation. The
+    `time_mad_s` shape is kept apart mechanically: the coordinator's
     `CSV_HEADER` (`benchmark/readbench/src/coordinator.rs`) is the only
     writer of a results header, `benchmark/plot/tests/test_csv_contract.py`
     holds the renderer's `READ_COLUMNS` to a leading prefix of it, and the
     summary loader refuses to render a CSV whose leading columns differ
-    from `READ_COLUMNS` (a `time_mad_s` header among them).
+    from `READ_COLUMNS` (a `time_mad_s` header among them). The 21-column
+    shape shares that prefix and loads, so it and the unfiltered packages
+    are kept apart by provenance (`MACHINE.md`, the run's commit), not by
+    the header.
 
 32. **FlatCityBuf is read through the raw FlatBuffers accessors, not
     `cur_cj_feature`.** Every FCB walk — `full-read`, the `attr-filter`
