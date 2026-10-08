@@ -9,6 +9,7 @@ mod support;
 
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
+use cityparquet::package::{ConvertOptions, convert};
 use parquet::basic::LogicalType;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use std::path::Path;
@@ -98,4 +99,45 @@ fn json_columns_written_as_plain_utf8_by_another_writer_read_back_the_same_model
     )
     .unwrap();
     assert!(report.equal, "{:#?}", report.differences);
+}
+
+/// An attribute holding JSON objects is a `JSON` column too (spec 02,
+/// "Attribute types and promotion"). None of the fixtures has one, so this
+/// derives it from real data: each Delft Building's `identificatie`
+/// becomes the object `{"identificatie": <value>}`.
+#[test]
+fn a_structured_attribute_column_is_written_as_the_parquet_json_logical_type() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("structured.city.jsonl");
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut wrapped = 0;
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| {
+            let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(objects) = v.get_mut("CityObjects").and_then(|o| o.as_object_mut()) {
+                for object in objects.values_mut() {
+                    if let Some(id) = object["attributes"].get_mut("identificatie") {
+                        *id = serde_json::json!({ "identificatie": id.clone() });
+                        wrapped += 1;
+                    }
+                }
+            }
+            v.to_string()
+        })
+        .collect();
+    assert!(wrapped > 0, "Delft Buildings carry `identificatie`");
+    std::fs::write(&source, lines.join("\n") + "\n").unwrap();
+
+    let pkg = dir.path().join("pkg");
+    convert(&ConvertOptions::new(source, pkg.clone())).unwrap();
+    let reader =
+        SerializedFileReader::new(std::fs::File::open(pkg.join("building.parquet")).unwrap())
+            .unwrap();
+    let descr = reader.metadata().file_metadata().schema_descr_ptr();
+    let column = (0..descr.num_columns())
+        .map(|i| descr.column(i))
+        .find(|c| c.path().string() == "identificatie")
+        .expect("an identificatie column");
+    assert_eq!(column.logical_type_ref(), Some(&LogicalType::Json));
 }
