@@ -102,6 +102,11 @@ pub struct RawBuilding {
     /// `gml:MultiSurface`) by `gml:id`, with its polygons: an xlink to the
     /// aggregate stands for all of them.
     aggregates: HashMap<String, Vec<RefTarget>>,
+    /// Surface references aggregate expansion has produced so far, against
+    /// [`RawBuilding::expansion_budget`].
+    expanded: std::cell::Cell<usize>,
+    /// [`RawBuilding::expansion_budget`], computed once.
+    budget: std::cell::OnceCell<usize>,
     /// Semantic surface kinds (`"WallSurface"`, ...), in document order.
     surfaces: Vec<String>,
     /// `gml:id` of a boundary polygon -> its index into `surfaces`.
@@ -162,6 +167,8 @@ pub fn read_generic_object<R: BufRead>(
         solids: Vec::new(),
         polygons: HashMap::new(),
         aggregates: HashMap::new(),
+        expanded: std::cell::Cell::new(0),
+        budget: std::cell::OnceCell::new(),
         surfaces: Vec::new(),
         semantic_of_polygon: HashMap::new(),
         boundary_polys: Vec::new(),
@@ -279,6 +286,8 @@ fn read_abstract_building<R: BufRead>(
         solids: Vec::new(),
         polygons: HashMap::new(),
         aggregates: HashMap::new(),
+        expanded: std::cell::Cell::new(0),
+        budget: std::cell::OnceCell::new(),
         surfaces: Vec::new(),
         semantic_of_polygon: HashMap::new(),
         boundary_polys: Vec::new(),
@@ -851,15 +860,43 @@ impl RawBuilding {
     /// The polygons an xlink target names: one identified polygon, or every
     /// polygon an identified surface aggregate stands for. Empty when the id
     /// resolves to no polygon.
-    fn xlink_polygons(&self, id: &str) -> Vec<Polygon> {
+    fn xlink_polygons(&self, id: &str) -> Result<Vec<Polygon>> {
         let sref = SurfaceRef {
             reverse: false,
             target: RefTarget::Xlink(id.to_string()),
         };
-        self.expand(&sref)
+        Ok(self
+            .expand(&sref)?
             .iter()
             .filter_map(|r| self.resolve(r).ok().cloned())
-            .collect()
+            .collect())
+    }
+
+    /// How many surface references the expansion of aggregate xlinks may
+    /// produce for this object in all: a fixed multiple of the polygons the
+    /// object's subtree defines. Each polygon legitimately appears a few times over (shared
+    /// by two solids of a CompositeSolid, a boundary surface and a solid
+    /// face); more copies than this can only come from aggregates that xlink
+    /// to each other many times over, which would otherwise expand
+    /// exponentially in the document's size.
+    fn expansion_budget(&self) -> usize {
+        *self.budget.get_or_init(|| self.count_budget())
+    }
+
+    fn count_budget(&self) -> usize {
+        const COPIES_PER_POLYGON: usize = 4;
+        let inline_members: usize = self
+            .aggregates
+            .values()
+            .map(|members| {
+                members
+                    .iter()
+                    .filter(|m| matches!(m, RefTarget::Inline(_)))
+                    .count()
+            })
+            .sum();
+        let polygons = self.polygons.len() + self.boundary_polys.len() + inline_members;
+        COPIES_PER_POLYGON * polygons.max(1)
     }
 
     /// `sref`, with an xlink to a surface aggregate expanded into one
@@ -867,24 +904,70 @@ impl RawBuilding {
     /// members into further aggregates. Each keeps `sref`'s orientation, and a
     /// member polygon is referenced by its own id when that is registered, so
     /// its semantics resolve, else inline.
-    fn expand(&self, sref: &SurfaceRef) -> Vec<SurfaceRef> {
+    ///
+    /// An aggregate reached again through its own members is a cycle, and an
+    /// expansion past [`Self::expansion_budget`] a fan-out; both are errors
+    /// naming the aggregate.
+    fn expand(&self, sref: &SurfaceRef) -> Result<Vec<SurfaceRef>> {
+        // Only an xlink to an aggregate expands, and only expansion spends
+        // the budget: a polygon reference, inline or xlinked, is itself.
+        let is_aggregate = matches!(&sref.target, RefTarget::Xlink(id)
+            if !self.polygons.contains_key(id) && self.aggregates.contains_key(id));
+        if !is_aggregate {
+            return Ok(vec![sref.clone()]);
+        }
         let mut out = Vec::new();
-        self.expand_into(sref.reverse, &sref.target, 0, &mut out);
-        out
+        let mut path = Vec::new();
+        self.expand_into(sref.reverse, &sref.target, &mut path, &mut out)?;
+        let spent = self.expanded.get() + out.len();
+        if spent > self.expansion_budget() {
+            return Err(self.expansion_error(
+                &sref.target,
+                "expands to more surfaces than the object defines polygons for (an xlink fan-out)",
+            ));
+        }
+        self.expanded.set(spent);
+        Ok(out)
     }
 
-    fn expand_into(
-        &self,
+    fn expansion_error(&self, target: &RefTarget, what: &str) -> CityParquetError {
+        let which = self.id.as_deref().unwrap_or("<no gml:id>");
+        let id = match target {
+            RefTarget::Xlink(id) => id.as_str(),
+            RefTarget::Inline(_) => "<inline>",
+        };
+        CityParquetError::Schema(format!("{} {which}: xlink #{id} {what}", self.object_type))
+    }
+
+    fn expand_into<'a>(
+        &'a self,
         reverse: bool,
         target: &RefTarget,
-        depth: usize,
+        path: &mut Vec<&'a str>,
         out: &mut Vec<SurfaceRef>,
-    ) {
+    ) -> Result<()> {
         if let RefTarget::Xlink(id) = target
             && !self.polygons.contains_key(id)
-            && depth <= MAX_PART_DEPTH
-            && let Some(members) = self.aggregates.get(id)
+            && let Some((key, members)) = self.aggregates.get_key_value(id)
         {
+            if path.contains(&key.as_str()) {
+                return Err(self.expansion_error(
+                    target,
+                    &format!(
+                        "is reached again through its own members (an xlink cycle: {} -> {key})",
+                        path.join(" -> ")
+                    ),
+                ));
+            }
+            // A fan-out is caught here too, before it is materialised: the
+            // object's whole budget bounds a single expansion.
+            if self.expanded.get() + out.len() > self.expansion_budget() {
+                return Err(self.expansion_error(
+                    &RefTarget::Xlink(path.first().copied().unwrap_or(key).to_string()),
+                    "expands to more surfaces than the object defines polygons for (an xlink fan-out)",
+                ));
+            }
+            path.push(key);
             for member in members {
                 let member = match member {
                     RefTarget::Inline(poly) => match &poly.id {
@@ -895,14 +978,16 @@ impl RawBuilding {
                     },
                     RefTarget::Xlink(_) => member.clone(),
                 };
-                self.expand_into(reverse, &member, depth + 1, out);
+                self.expand_into(reverse, &member, path, out)?;
             }
-            return;
+            path.pop();
+            return Ok(());
         }
         out.push(SurfaceRef {
             reverse,
             target: target.clone(),
         });
+        Ok(())
     }
 
     /// Record a non-building object's standalone surface geometry at `lod`
@@ -1316,7 +1401,7 @@ impl RawBuilding {
             if !emitted.insert(href) {
                 continue; // already emitted (duplicate reference)
             }
-            let polys = self.xlink_polygons(href);
+            let polys = self.xlink_polygons(href)?;
             if polys.is_empty() {
                 // A boundedBy xlink to an id defined in no accessible geometry:
                 // contribute no face, but do not stay silent.
@@ -1391,8 +1476,11 @@ impl RawBuilding {
             let mut faces_id = Vec::with_capacity(shell.len());
             let mut faces_ring = Vec::with_capacity(shell.len());
             let mut faces_rev = Vec::with_capacity(shell.len());
-            for sref in shell.iter().flat_map(|s| self.expand(s)) {
-                let sref = &sref;
+            let mut expanded = Vec::with_capacity(shell.len());
+            for sref in shell {
+                expanded.extend(self.expand(sref)?);
+            }
+            for sref in &expanded {
                 let poly = self.resolve(sref)?;
                 faces_b.push(surface_rings(poly, sref.reverse, vb)?);
                 faces_v.push(self.semantic_value(sref));

@@ -177,3 +177,79 @@ fn a_composite_surface_of_xlinked_members_expands_to_the_polygons_they_name() {
     convert_to(&gml, &pkg);
     assert_eq!(building_lod4(&pkg), ("Solid".to_string(), LOD4_SOLID_FACES));
 }
+
+const WALL_SOUTH: &str = "GML_1d350a50-6acc-4d3c-8c28-326ca4305fd1";
+
+/// The real LoD4 fixture with `members` added as further `surfaceMember`s of
+/// Wall South's `gml:MultiSurface`, right after its CompositeSurface.
+fn with_extra_members(members: &str) -> String {
+    let text = std::fs::read_to_string(fixture("lod4_building_v2.gml")).unwrap();
+    let start = text.find(&format!(r#"gml:id="{WALL_SOUTH}""#)).unwrap();
+    let close = start + text[start..].find("</gml:MultiSurface>").unwrap();
+    format!("{}{members}{}", &text[..close], &text[close..])
+}
+
+fn convert_error(gml: String) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("derived.gml");
+    std::fs::write(&path, gml).unwrap();
+    let out = dir.path().join("pkg");
+    match convert(&ConvertOptions::new(path, out)) {
+        Ok(_) => panic!("the conversion must be refused"),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// A cycle of aggregate xlinks names no polygon and would never end. No real
+/// file carries one — a GML aggregate cannot contain itself — so this is the
+/// real fixture with Wall South's CompositeSurface given a member that is an
+/// xlink to a MultiSurface whose member xlinks back to it.
+#[test]
+fn an_xlink_cycle_between_aggregates_is_refused_by_name() {
+    let gml = with_extra_members(&format!(
+        r##"<gml:surfaceMember><gml:MultiSurface gml:id="LOOP"><gml:surfaceMember xlink:href="#{WALL_SOUTH}"/></gml:MultiSurface></gml:surfaceMember>"##
+    ))
+    .replacen(
+        &format!(r#"<gml:CompositeSurface gml:id="{WALL_SOUTH}">"#),
+        &format!(
+            r##"<gml:CompositeSurface gml:id="{WALL_SOUTH}"><gml:surfaceMember xlink:href="#LOOP"/>"##
+        ),
+        1,
+    );
+    let error = convert_error(gml);
+    assert!(
+        error.contains("cycle") && error.contains(WALL_SOUTH),
+        "{error}"
+    );
+}
+
+/// Aggregates nested `k` deep, each xlinking twice to the next, stand for
+/// 2^k copies of one polygon — an exponential expansion from a few lines of
+/// XML. No real file does this: a solid repeating one face is not a solid.
+/// Derived from the real fixture by adding such a chain (k = 20, about a
+/// million faces) and pointing the lod4Solid's Wall South member at its head;
+/// the reader must refuse it rather than allocate every copy.
+#[test]
+fn an_exponential_xlink_fan_out_is_refused() {
+    const DEPTH: usize = 20;
+    let polygon = "PolyID10204_1916_571790_369478";
+    let mut chain = String::new();
+    for level in 0..DEPTH {
+        let next = if level + 1 == DEPTH {
+            polygon.to_string()
+        } else {
+            format!("FAN{}", level + 1)
+        };
+        chain.push_str(&format!(
+            r##"<gml:surfaceMember><gml:CompositeSurface gml:id="FAN{level}"><gml:surfaceMember xlink:href="#{next}"/><gml:surfaceMember xlink:href="#{next}"/></gml:CompositeSurface></gml:surfaceMember>"##
+        ));
+    }
+    let shell_member = format!(r##"<gml:surfaceMember xlink:href="#{WALL_SOUTH}"/>"##);
+    let gml = with_extra_members(&chain).replacen(
+        &shell_member,
+        r##"<gml:surfaceMember xlink:href="#FAN0"/>"##,
+        1,
+    );
+    let error = convert_error(gml);
+    assert!(error.contains("FAN0"), "{error}");
+}
