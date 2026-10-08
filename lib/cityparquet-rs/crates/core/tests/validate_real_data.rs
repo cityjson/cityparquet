@@ -399,3 +399,72 @@ fn a_material_reference_into_a_missing_sidecar_is_reported() {
     fs::write(&item_path, item.to_string()).unwrap();
     assert_error(&validate(&pkg), "value.material");
 }
+
+/// `data_type` with every `Int32`/`Int64` leaf named `leaf` (or every one,
+/// when `leaf` is `None`) turned into `Utf8` — the shape of a writer that
+/// stored the integers as text.
+fn ints_as_text(data_type: &DataType, leaf: Option<&str>, here: &str) -> DataType {
+    use arrow_schema::Fields;
+    let field = |f: &Field| {
+        let name = f.name().as_str();
+        Field::new(
+            name,
+            ints_as_text(f.data_type(), leaf, name),
+            f.is_nullable(),
+        )
+    };
+    match data_type {
+        DataType::Int32 | DataType::Int64 if leaf.is_none_or(|l| l == here) => DataType::Utf8,
+        DataType::List(item) => {
+            let inner = if leaf == Some(here) { None } else { leaf };
+            DataType::List(Arc::new(Field::new(
+                item.name(),
+                ints_as_text(item.data_type(), inner, item.name()),
+                item.is_nullable(),
+            )))
+        }
+        DataType::Struct(fields) => DataType::Struct(Fields::from(
+            fields.iter().map(|f| field(f)).collect::<Vec<_>>(),
+        )),
+        DataType::Map(entries, sorted) => DataType::Map(Arc::new(field(entries)), *sorted),
+        other => other.clone(),
+    }
+}
+
+/// A package whose nested integer lists hold text instead is non-conformant,
+/// and the validator says so for every column family — it never panics on
+/// the values after the schema check has already rejected their type.
+#[test]
+fn nested_columns_of_the_wrong_type_are_reported_not_a_panic() {
+    for (fixture, column, leaf) in [
+        (
+            "delft.city.jsonl",
+            "geometry_properties_lod2_2",
+            "face_semantics",
+        ),
+        ("delft.city.jsonl", "geometry_properties_lod2_2", "shells"),
+        ("lod3_railway.city.json", "material_lod3_0", "value"),
+        ("lod3_railway.city.json", "texture_lod3_0", "id"),
+    ] {
+        let (_dir, pkg) = convert_fixture(fixture);
+        rewrite(&pkg.join("building.parquet"), |c| {
+            let data_type = c
+                .schema
+                .field_with_name(column)
+                .unwrap()
+                .data_type()
+                .clone();
+            c.retype(column, &ints_as_text(&data_type, Some(leaf), column));
+        });
+        let report = validate(&pkg);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v.code == "column.logical-type"
+                    && v.severity == Severity::Error
+                    && v.message.contains(column)),
+            "{column}.{leaf}: {report}"
+        );
+    }
+}

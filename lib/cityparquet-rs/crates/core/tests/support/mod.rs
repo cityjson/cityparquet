@@ -145,6 +145,19 @@ impl FileContent {
         self.batches = batches;
     }
 
+    /// Re-type column `name` to `data_type` (an Arrow cast of every batch),
+    /// keeping the field's name and nullability but none of its metadata.
+    pub fn retype(&mut self, name: &str, data_type: &DataType) {
+        self.map_column(name, |field, column, _| {
+            let cast = arrow_cast::cast(column, data_type)
+                .unwrap_or_else(|e| panic!("cannot cast `{name}` to {data_type}: {e}"));
+            (
+                Field::new(field.name(), data_type.clone(), field.is_nullable()),
+                cast,
+            )
+        });
+    }
+
     /// Store the JSON columns as plain UTF8, the way a writer that does not
     /// annotate them would: every column when `only` is `None`, else just
     /// the top-level column `only`.

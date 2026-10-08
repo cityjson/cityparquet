@@ -264,9 +264,13 @@ pub(super) fn check_properties(
             format!("row {row}: `{col}.surfaces` and `.face_semantics` are not null together"),
         );
     }
-    if let Some(fs) = face_semantics.filter(|f| !f.is_null(i)) {
-        let values = fs.value(i);
-        let values = values.as_primitive::<Int32Type>();
+    // The value checks read a column only in the type the schema check
+    // accepted; a column of another type has already been reported there.
+    let fs_values = face_semantics.filter(|f| !f.is_null(i)).map(|f| f.value(i));
+    if let Some(values) = fs_values
+        .as_ref()
+        .and_then(|v| v.as_primitive_opt::<Int32Type>())
+    {
         // spec 03 "Invariants": len(face_semantics) MUST equal the WKB face
         // count, and every non-null entry MUST index an existing surface.
         if shape.is_polygonal() && values.len() != shape.faces.len() {
@@ -317,12 +321,16 @@ pub(super) fn check_properties(
         ),
         (Some(shells), true) => {
             let per_solid = shells.value(i);
-            let per_solid = per_solid.as_list::<i32>();
+            let Some(per_solid) = per_solid.as_list_opt::<i32>() else {
+                return;
+            };
             let mut ok = per_solid.len() == shape.solids.len() && per_solid.null_count() == 0;
             if ok {
                 for (s, &faces) in shape.solids.iter().enumerate() {
                     let counts = per_solid.value(s);
-                    let counts = counts.as_primitive::<Int32Type>();
+                    let Some(counts) = counts.as_primitive_opt::<Int32Type>() else {
+                        return;
+                    };
                     let total: i64 = counts.iter().map(|c| c.unwrap_or(-1) as i64).sum();
                     ok &= counts.null_count() == 0 && total == faces as i64;
                 }
@@ -381,7 +389,9 @@ pub(super) fn check_material(
             continue;
         }
         let per_face = values.value(e);
-        let per_face = per_face.as_primitive::<Int64Type>();
+        let Some(per_face) = per_face.as_primitive_opt::<Int64Type>() else {
+            return;
+        };
         if shape.is_polygonal() && per_face.len() != shape.faces.len() {
             r.error(
                 "value.material",
@@ -448,7 +458,9 @@ pub(super) fn check_texture(
             continue;
         }
         let faces = themes.value(e);
-        let faces = faces.as_list::<i32>();
+        let Some(faces) = faces.as_list_opt::<i32>() else {
+            return;
+        };
         if shape.is_polygonal() && faces.len() != shape.faces.len() {
             fail(
                 r,
@@ -466,7 +478,9 @@ pub(super) fn check_texture(
                 continue;
             }
             let rings = faces.value(f);
-            let rings = rings.as_struct();
+            let Some(rings) = rings.as_struct_opt() else {
+                return;
+            };
             if rings.len() != rings_of_face.len() {
                 fail(
                     r,
@@ -511,7 +525,9 @@ pub(super) fn check_texture(
                     );
                 }
                 let pairs = uv.value(k);
-                let pairs = pairs.as_list::<i32>();
+                let Some(pairs) = pairs.as_list_opt::<i32>() else {
+                    return;
+                };
                 let well_formed = pairs.null_count() == 0
                     && (0..pairs.len()).all(|p| {
                         let pair = pairs.value(p);

@@ -30,6 +30,8 @@ fcb_core = { workspace = true, optional = true }
 
 [dev-dependencies]
 wkb = { workspace = true }
+# Re-types a real package's column to build a non-conformant one.
+arrow-cast = { workspace = true }
 # Builds a GEOGRAPHY-annotated fixture; the writer never emits one.
 parquet-geospatial = { workspace = true }
 geo-traits = { workspace = true }

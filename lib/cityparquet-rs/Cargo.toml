@@ -27,6 +27,7 @@ arrow-schema = { version = "58", features = ["canonical_extension_types"] }
 arrow-array = "58"
 arrow-buffer = "58"
 arrow-select = "58"
+arrow-cast = "58"
 parquet = { version = "58", features = [
     "zstd",
     "geospatial",
