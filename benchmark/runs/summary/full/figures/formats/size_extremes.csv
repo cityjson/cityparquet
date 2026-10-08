@@ -1,3 +1,0 @@
-rank,dataset,title,city_objects,cityparquet_factor
-best,nyc_da13_buildings,New York,23777,26.6471
-worst,3dbag_n1000000,3DBAG (Netherlands),1000001,13.7764

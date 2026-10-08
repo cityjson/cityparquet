@@ -1,3 +1,0 @@
-dataset,format,bytes,mb_decimal
-3dbag_n1000000,cityparquet,783700592,783.700592
-3dbag_n1000000,cityparquet+nobloom,779701600,779.701600

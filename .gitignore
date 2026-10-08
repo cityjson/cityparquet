@@ -61,12 +61,11 @@ ai/skills/
 
 .agents/
 
-# Generated benchmark inputs, raw evidence and rendered summaries. Preserved
-# evidence is committed (see benchmark/runs/RESULTS.md); the database results
-# directory is re-included here so new result files show up in git status.
+# Generated benchmark inputs, raw evidence and rendered summaries. The
+# full-profile result directories and the full summary are re-included here so
+# that the evidence of a host run shows up in git status and can be committed;
+# none is committed until that run.
 /benchmark/runs/*
-!/benchmark/runs/RESULTS.md
-!/benchmark/runs/EVIDENCE_SHA256SUMS
 !/benchmark/runs/databases/
 /benchmark/runs/databases/*
 !/benchmark/runs/databases/results/
