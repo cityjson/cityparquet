@@ -102,11 +102,11 @@ enum Commands {
         bloom_fpp: f64,
 
         /// Row-emission order for the main table: "hilbert" (the default:
-        /// buffer every feature and sort by bbox-centroid Hilbert index,
-        /// improving bbox row-group pruning at the cost of holding the whole
-        /// dataset in memory) or "source" (stream features as the input
-        /// yields them, one at a time — the low-memory path for an input too
-        /// large to hold).
+        /// features sorted by the Hilbert index of their centre, improving
+        /// bbox row-group pruning; a CityJSON or CityJSONSeq input is read
+        /// back in that order, a CityGML or FlatCityBuf input is held parsed
+        /// in memory) or "source" (stream features as the input yields them,
+        /// one at a time — the low-memory path for any input).
         #[arg(long, value_enum, default_value = "hilbert")]
         ordering: OrderingArg,
 
