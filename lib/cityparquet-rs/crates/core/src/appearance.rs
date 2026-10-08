@@ -82,6 +82,11 @@ pub struct AppearanceInterner {
     /// the same way [`crate::encode::EncodeStats::degenerate_rings_dropped`]
     /// counts a writer-dropped ring: never silently.
     pub invalid_refs_dropped: usize,
+    /// The global id each entry of the local definitions the current
+    /// `flatten_*_map` call resolves against has been interned as — so a
+    /// definition referenced by every face of a geometry is keyed (its
+    /// canonical JSON built) once, not once per face. Reset by each call.
+    local_ids: Vec<Option<usize>>,
 }
 
 impl AppearanceInterner {
@@ -150,6 +155,8 @@ impl AppearanceInterner {
         let obj = map.as_object().ok_or_else(|| {
             schema_err("material map must be a JSON object of theme -> {value|values}")
         })?;
+        self.local_ids.clear();
+        self.local_ids.resize(local_defs.len(), None);
         let depth = values_nesting_depth(thetype);
         let faces = count_boundary_faces(boundaries, depth);
         let dropped: HashSet<usize> = dropped.iter().copied().collect();
@@ -206,7 +213,14 @@ impl AppearanceInterner {
                     ))
                 })? as usize;
                 match local_defs.get(idx) {
-                    Some(def) => Ok(Some(self.intern_material(def) as i64)),
+                    Some(def) => Ok(Some(match self.local_ids[idx] {
+                        Some(id) => id,
+                        None => {
+                            let id = self.intern_material(def);
+                            self.local_ids[idx] = Some(id);
+                            id
+                        }
+                    } as i64)),
                     None if self.tolerate_invalid_refs => {
                         self.invalid_refs_dropped += 1;
                         Ok(None)
@@ -251,6 +265,8 @@ impl AppearanceInterner {
         let obj = map
             .as_object()
             .ok_or_else(|| schema_err("texture map must be a JSON object of theme -> {values}"))?;
+        self.local_ids.clear();
+        self.local_ids.resize(local_defs.len(), None);
         let depth = values_nesting_depth(thetype);
         let faces = count_boundary_faces(boundaries, depth);
         let rings_per_face = face_ring_vertex_counts(boundaries, depth);
@@ -364,7 +380,14 @@ impl AppearanceInterner {
                     ))
                 })? as usize;
                 match local_defs.get(idx) {
-                    Some(def) => self.intern_texture(def) as i64,
+                    Some(def) => match self.local_ids[idx] {
+                        Some(id) => id as i64,
+                        None => {
+                            let id = self.intern_texture(def);
+                            self.local_ids[idx] = Some(id);
+                            id as i64
+                        }
+                    },
                     None if self.tolerate_invalid_refs => {
                         self.invalid_refs_dropped += 1;
                         // The UV entries are meaningless without a resolved
