@@ -60,31 +60,48 @@ pub(super) fn check_stac(dir: &Path, parquet_files: &[String], r: &mut Reporter)
             );
         }
     }
+    let not_an_item = |r: &mut Reporter, what: &str| {
+        r.error("stac.not-an-item", METADATA, FILE, what.to_string());
+    };
+    if item
+        .get("stac_extensions")
+        .is_some_and(|e| !e.as_array().is_some_and(|a| a.iter().all(Value::is_string)))
+    {
+        not_an_item(r, "`stac_extensions` is not a list of schema URIs");
+    }
+    // The Item is a GeoJSON Feature: `geometry` a GeoJSON geometry or null,
+    // and `bbox` — required with a geometry — 4 or 6 finite numbers.
     match item.get("geometry") {
         Some(Value::Null) => {}
-        Some(Value::Object(_)) => {
-            if !item.get("bbox").is_some_and(Value::is_array) {
-                r.error(
-                    "stac.not-an-item",
-                    METADATA,
-                    FILE,
-                    "a non-null `geometry` requires a `bbox`".to_string(),
-                );
+        Some(g) if is_geojson_geometry(g) => {
+            if item.get("bbox").is_none() {
+                not_an_item(r, "a non-null `geometry` requires a `bbox`");
             }
         }
-        _ => r.error(
-            "stac.not-an-item",
-            METADATA,
-            FILE,
-            "`geometry` must be present, a GeoJSON geometry or null".to_string(),
-        ),
+        _ => not_an_item(r, "`geometry` must be present, a GeoJSON geometry or null"),
     }
-    if !item.get("links").is_some_and(Value::is_array) {
-        r.error(
-            "stac.not-an-item",
-            METADATA,
-            FILE,
-            "`links` is missing or not an array".to_string(),
+    if let Some(bbox) = item.get("bbox") {
+        let ok = bbox.as_array().is_some_and(|a| {
+            matches!(a.len(), 4 | 6) && a.iter().all(|v| v.as_f64().is_some_and(f64::is_finite))
+        });
+        if !ok {
+            not_an_item(r, "`bbox` is not 4 or 6 finite numbers");
+        }
+    }
+    // Each link is an object with a string `href` and `rel`.
+    let links_ok = item
+        .get("links")
+        .and_then(Value::as_array)
+        .is_some_and(|links| {
+            links.iter().all(|l| {
+                l.get("href").is_some_and(Value::is_string)
+                    && l.get("rel").is_some_and(Value::is_string)
+            })
+        });
+    if !links_ok {
+        not_an_item(
+            r,
+            "`links` is not a list of links each with a string `href` and `rel`",
         );
     }
     match item.get("properties").and_then(Value::as_object) {
@@ -95,20 +112,30 @@ pub(super) fn check_stac(dir: &Path, parquet_files: &[String], r: &mut Reporter)
             "`properties` is missing or not an object".to_string(),
         ),
         Some(props) => {
-            let ranged = props.get("start_datetime").is_some_and(Value::is_string)
-                && props.get("end_datetime").is_some_and(Value::is_string);
-            let ok = match props.get("datetime") {
-                Some(Value::String(_)) => true,
-                Some(Value::Null) => ranged,
-                _ => false,
+            // RFC 3339 date-times (STAC "datetime"): `datetime`, or a null one
+            // with a `start_datetime`/`end_datetime` range.
+            let instant = |key: &str| {
+                props
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_some_and(is_rfc3339)
             };
+            let range_ok = ["start_datetime", "end_datetime"]
+                .iter()
+                .all(|k| props.get(*k).is_none() || instant(k));
+            let ok = range_ok
+                && match props.get("datetime") {
+                    Some(Value::String(_)) => instant("datetime"),
+                    Some(Value::Null) => instant("start_datetime") && instant("end_datetime"),
+                    _ => false,
+                };
             if !ok {
                 r.error(
                     "stac.datetime",
                     METADATA,
                     FILE,
-                    "`properties.datetime` must be a string, or null with \
-                     `start_datetime`/`end_datetime`"
+                    "`properties.datetime` must be an RFC 3339 date-time, or null with \
+                     RFC 3339 `start_datetime`/`end_datetime`"
                         .to_string(),
                 );
             }
@@ -177,7 +204,11 @@ pub(super) fn check_stac(dir: &Path, parquet_files: &[String], r: &mut Reporter)
         if !href.ends_with(".parquet") {
             continue;
         }
-        let name = href.trim_start_matches("./");
+        // The file an asset names is the last segment of its `href`, which
+        // may be an absolute URL; only a bare relative name is checked
+        // against the directory.
+        let name = href.rsplit('/').next().unwrap_or(href);
+        let local = !href.contains("://") && !href.trim_start_matches("./").contains('/');
         let roles: Vec<&str> = asset
             .get("roles")
             .and_then(Value::as_array)
@@ -213,16 +244,14 @@ pub(super) fn check_stac(dir: &Path, parquet_files: &[String], r: &mut Reporter)
                 format!("asset `{key}` ({href}) declares the role of the other kind of file"),
             );
         }
-        if !name.contains('/') {
-            listed.insert(name.to_string());
-            if !parquet_files.iter().any(|f| f == name) {
-                r.warn(
-                    "stac.asset-missing-file",
-                    METADATA,
-                    FILE,
-                    format!("asset `{key}` refers to {href}, which is not in the package"),
-                );
-            }
+        listed.insert(name.to_string());
+        if local && !parquet_files.iter().any(|f| f == name) {
+            r.warn(
+                "stac.asset-missing-file",
+                METADATA,
+                FILE,
+                format!("asset `{key}` refers to {href}, which is not in the package"),
+            );
         }
     }
     // spec 05: each `.parquet` file SHOULD be a STAC Asset.
@@ -236,4 +265,42 @@ pub(super) fn check_stac(dir: &Path, parquet_files: &[String], r: &mut Reporter)
             );
         }
     }
+}
+
+/// A GeoJSON geometry object (RFC 7946 §3.1): one of the seven types, with
+/// `coordinates` nested to its type's depth, or a GeometryCollection of
+/// geometries.
+fn is_geojson_geometry(g: &Value) -> bool {
+    let depth = match g.get("type").and_then(Value::as_str) {
+        Some("Point") => 0,
+        Some("LineString" | "MultiPoint") => 1,
+        Some("Polygon" | "MultiLineString") => 2,
+        Some("MultiPolygon") => 3,
+        Some("GeometryCollection") => {
+            return g
+                .get("geometries")
+                .and_then(Value::as_array)
+                .is_some_and(|gs| gs.iter().all(is_geojson_geometry));
+        }
+        _ => return false,
+    };
+    g.get("coordinates")
+        .is_some_and(|c| is_nested_positions(c, depth))
+}
+
+/// `depth` levels of arrays around positions of two or three numbers.
+fn is_nested_positions(v: &Value, depth: usize) -> bool {
+    let Some(items) = v.as_array() else {
+        return false;
+    };
+    if depth == 0 {
+        return matches!(items.len(), 2 | 3) && items.iter().all(Value::is_number);
+    }
+    items
+        .iter()
+        .all(|item| is_nested_positions(item, depth - 1))
+}
+
+fn is_rfc3339(s: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(s).is_ok()
 }

@@ -705,3 +705,93 @@ fn a_bbox_not_containing_its_childrens_boxes_is_reported() {
     });
     assert_error(&validate(&pkg), "value.bbox-subtree");
 }
+
+/// `pkg`'s `metadata.json` after `edit`, validated.
+fn validate_with_item(pkg: &Path, edit: impl FnOnce(&mut Value)) -> ValidationReport {
+    let path = pkg.join("metadata.json");
+    let original = fs::read_to_string(&path).unwrap();
+    let mut item: Value = serde_json::from_str(&original).unwrap();
+    edit(&mut item);
+    fs::write(&path, item.to_string()).unwrap();
+    let report = validate(pkg);
+    fs::write(&path, original).unwrap();
+    report
+}
+
+/// spec 05: `metadata.json` MUST be a valid STAC Item — its members typed as
+/// STAC defines them, not merely present.
+#[test]
+fn a_malformed_stac_item_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    let has = |report: &ValidationReport, code: &str| {
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == code && v.severity == Severity::Error)
+    };
+    let cases: [(&str, &str, Box<dyn FnOnce(&mut Value)>); 5] = [
+        (
+            "bbox of five numbers",
+            "stac.not-an-item",
+            Box::new(|i| {
+                i["bbox"].as_array_mut().unwrap().pop();
+            }),
+        ),
+        (
+            "geometry that is not GeoJSON",
+            "stac.not-an-item",
+            Box::new(|i| {
+                i["geometry"] = json!({"type": "Square", "coordinates": []});
+            }),
+        ),
+        (
+            "link without rel",
+            "stac.not-an-item",
+            Box::new(|i| {
+                i["links"] = json!([{"href": "./x.json"}]);
+            }),
+        ),
+        (
+            "datetime that is not RFC 3339",
+            "stac.datetime",
+            Box::new(|i| {
+                i["properties"]["datetime"] = json!("yesterday");
+            }),
+        ),
+        (
+            "stac_extensions that are not strings",
+            "stac.not-an-item",
+            Box::new(|i| {
+                i["stac_extensions"].as_array_mut().unwrap().push(json!(7));
+            }),
+        ),
+    ];
+    for (what, code, edit) in cases {
+        let report = validate_with_item(&pkg, edit);
+        assert!(has(&report, code), "{what}: expected {code}, got\n{report}");
+    }
+}
+
+/// An asset's file is the last segment of its `href`, so a package published
+/// with absolute asset URLs keeps each file's role.
+#[test]
+fn an_absolute_asset_href_is_classified_by_its_file_name() {
+    let (_dir, pkg) = convert_fixture("lod3_railway.city.json");
+    let report = validate_with_item(&pkg, |item| {
+        for asset in item["assets"].as_object_mut().unwrap().values_mut() {
+            let href = asset["href"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("./")
+                .to_string();
+            asset["href"] = json!(format!("https://example.org/railway/{href}"));
+        }
+    });
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.code == "stac.asset-role-mismatch" || v.code == "stac.asset-role"),
+        "{report}"
+    );
+}
