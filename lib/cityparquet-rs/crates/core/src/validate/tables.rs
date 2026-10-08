@@ -303,15 +303,13 @@ pub(super) fn check_object_table(
     check_column_order(r, name, fields, &reserved, &attributes);
 
     // Values.
-    let batches = read_batches(file, r);
     let mut stats: BTreeMap<String, GeometryStats> = geometry
         .keys()
         .map(|s| (s.clone(), GeometryStats::default()))
         .collect();
     let mut has_coordinates = false;
     let mut type_cache: HashMap<String, Option<(&'static str, String)>> = HashMap::new();
-    let mut offset = 0;
-    for batch in &batches {
+    for_each_batch(file, r, |r, batch, offset| {
         check_object_values(
             r,
             file,
@@ -323,8 +321,7 @@ pub(super) fn check_object_table(
             &mut type_cache,
             hierarchy,
         );
-        offset += batch.num_rows();
-    }
+    });
 
     check_object_footer(r, file, &geometry, &stats, has_coordinates);
 }
@@ -762,15 +759,19 @@ pub(super) fn check_sidecar(file: &PackageFile, ids: &mut SidecarIds, r: &mut Re
         }
     }
 
-    let batches = read_batches(file, r);
     let mut seen = HashSet::new();
-    let mut offset = 0;
     let mut stats: BTreeMap<String, GeometryStats> = lods
         .keys()
         .map(|s| (s.clone(), GeometryStats::default()))
         .collect();
-    for batch in &batches {
+    let refs: &SidecarIds = ids;
+    for_each_batch(file, r, |r, batch, offset| {
         let id = column(batch, "id").and_then(|c| c.as_primitive_opt::<Int64Type>());
+        // The relative geometries' columns (implicit_geometries.parquet).
+        let arrays: Vec<(String, LodArrays)> = stats
+            .keys()
+            .map(|s| (s.clone(), LodArrays::of(batch, s)))
+            .collect();
         for i in 0..batch.num_rows() {
             let row = offset + i;
             // spec 04: `id` is required, and unique across rows.
@@ -792,53 +793,42 @@ pub(super) fn check_sidecar(file: &PackageFile, ids: &mut SidecarIds, r: &mut Re
             match file.kind {
                 FileKind::Materials => check_material_row(r, name, batch, i, row),
                 FileKind::Textures => check_texture_row(r, name, batch, i, row),
-                _ => {}
+                FileKind::ImplicitGeometries => {
+                    // spec 04 "implicit_geometries.parquet": a relative
+                    // geometry is a single geometry at a single LoD.
+                    let populated = arrays
+                        .iter()
+                        .filter(|(_, a)| a.geometry.is_some_and(|g| !g.is_null(i)))
+                        .count();
+                    if populated != 1 {
+                        r.error(
+                            "value.implicit-row",
+                            APPEARANCE,
+                            f,
+                            format!(
+                                "row {row}: {populated} LoDs populated; a relative geometry \
+                                 has exactly one"
+                            ),
+                        );
+                    }
+                    for (suffix, a) in &arrays {
+                        let cx = CellContext {
+                            file: name,
+                            suffix,
+                            row,
+                        };
+                        let stat = stats.get_mut(suffix).expect("one stats entry per LoD");
+                        check_geometry_cell(r, &cx, a, i, refs, stat);
+                    }
+                }
+                FileKind::ObjectTable => {}
             }
         }
-        offset += batch.num_rows();
-    }
+    });
     match file.kind {
         FileKind::Materials => ids.materials = seen,
         FileKind::Textures => ids.textures = seen,
         _ => ids.implicit_geometries = seen,
-    }
-
-    // The relative geometries, once every sidecar id is known.
-    if file.kind == FileKind::ImplicitGeometries {
-        let mut offset = 0;
-        for batch in &batches {
-            let arrays: Vec<(String, LodArrays)> = stats
-                .keys()
-                .map(|s| (s.clone(), LodArrays::of(batch, s)))
-                .collect();
-            for i in 0..batch.num_rows() {
-                let row = offset + i;
-                // spec 04 "implicit_geometries.parquet": a relative geometry
-                // is a single geometry at a single LoD.
-                let populated = arrays
-                    .iter()
-                    .filter(|(_, a)| a.geometry.is_some_and(|g| !g.is_null(i)))
-                    .count();
-                if populated != 1 {
-                    r.error(
-                        "value.implicit-row",
-                        APPEARANCE,
-                        f,
-                        format!("row {row}: {populated} LoDs populated; a relative geometry has exactly one"),
-                    );
-                }
-                for (suffix, a) in &arrays {
-                    let cx = CellContext {
-                        file: name,
-                        suffix,
-                        row,
-                    };
-                    let stat = stats.get_mut(suffix).expect("one stats entry per LoD");
-                    check_geometry_cell(r, &cx, a, i, ids, stat);
-                }
-            }
-            offset += batch.num_rows();
-        }
     }
 }
 

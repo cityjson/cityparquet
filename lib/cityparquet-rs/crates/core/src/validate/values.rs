@@ -7,10 +7,23 @@ use super::*;
 // Decoding values
 // ---------------------------------------------------------------------------
 
-/// Every record batch of `file`, decoded from the Parquet schema alone —
+/// Hand every record batch of `file` to `f`, with the file row offset of its
+/// first row, one batch at a time — decoded from the Parquet schema alone:
 /// the `ARROW:schema` entry, if any, is ignored (spec 02: a reader MUST NOT
 /// require it).
-pub(super) fn read_batches(file: &PackageFile, r: &mut Reporter) -> Vec<RecordBatch> {
+pub(super) fn for_each_batch(
+    file: &PackageFile,
+    r: &mut Reporter,
+    mut f: impl FnMut(&mut Reporter, &RecordBatch, usize),
+) {
+    let unreadable = |r: &mut Reporter, e: String| {
+        r.error(
+            "package.unreadable-parquet",
+            PACKAGE,
+            Some(&file.name),
+            format!("cannot decode the values: {e}"),
+        );
+    };
     let reader = fs::File::open(&file.path)
         .map_err(|e| e.to_string())
         .and_then(|f| {
@@ -21,21 +34,18 @@ pub(super) fn read_batches(file: &PackageFile, r: &mut Reporter) -> Vec<RecordBa
             .map_err(|e| e.to_string())
         })
         .and_then(|b| b.build().map_err(|e| e.to_string()));
-    let batches = reader.and_then(|reader| {
-        reader
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())
-    });
-    match batches {
-        Ok(batches) => batches,
-        Err(e) => {
-            r.error(
-                "package.unreadable-parquet",
-                PACKAGE,
-                Some(&file.name),
-                format!("cannot decode the values: {e}"),
-            );
-            Vec::new()
+    let reader = match reader {
+        Ok(reader) => reader,
+        Err(e) => return unreadable(r, e),
+    };
+    let mut offset = 0;
+    for batch in reader {
+        match batch {
+            Ok(batch) => {
+                f(r, &batch, offset);
+                offset += batch.num_rows();
+            }
+            Err(e) => return unreadable(r, e.to_string()),
         }
     }
 }
