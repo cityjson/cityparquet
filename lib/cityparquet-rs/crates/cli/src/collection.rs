@@ -5,13 +5,14 @@
 //! The aggregation — the `city3d:*` summaries, the spatial extent as the union
 //! of the Items' bboxes — is `city3d_stac::stac::StacCollectionBuilder`'s, from
 //! the City3D STAC tool; this module only reads the Items, adds the temporal
-//! extent and one `item` link per package, and writes the result.
+//! extent and one `item` link per package, describes the Items' assets in
+//! `item_assets`, and writes the result.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use city3d_stac::stac::{StacCollectionBuilder, StacItem};
+use city3d_stac::stac::{ItemAsset, StacCollectionBuilder, StacItem};
 use cityparquet_schema::{CityParquetError, Result};
 
 /// What to aggregate and how to name the result.
@@ -88,18 +89,41 @@ pub fn write_collection(opts: &CollectionOptions) -> Result<usize> {
     for (item, href) in items.iter().zip(&hrefs) {
         builder = builder.item_link(href, Some(item.id.clone()));
     }
-    let collection = builder.build().map_err(|e| {
+    let mut collection = builder.build().map_err(|e| {
         err(format!(
             "cannot build the Collection: {e} (an Item carries a WGS84 bbox only when its \
              package's CRS is known)"
         ))
     })?;
+    collection.item_assets = item_assets(&items).collect();
 
     let json = serde_json::to_string_pretty(&collection)?;
     fs::write(&opts.output, json).map_err(|e| {
         CityParquetError::io_source(format!("cannot write {}", opts.output.display()), e)
     })?;
     Ok(items.len())
+}
+
+/// The assets the Items carry, keyed as in the Items: every object table and
+/// sidecar across the packages, each with its title, description, media type
+/// and roles. An asset's href, size and checksum describe one package's file,
+/// not the asset in general, so they stay on the Items.
+fn item_assets(items: &[StacItem]) -> impl Iterator<Item = (String, ItemAsset)> + '_ {
+    items
+        .iter()
+        .flat_map(|item| &item.assets)
+        .map(|(key, asset)| {
+            (
+                key.clone(),
+                ItemAsset {
+                    title: asset.title.clone(),
+                    description: asset.description.clone(),
+                    r#type: asset.media_type.clone(),
+                    roles: asset.roles.clone(),
+                    additional_fields: Default::default(),
+                },
+            )
+        })
 }
 
 fn absolute(path: &Path) -> Result<PathBuf> {

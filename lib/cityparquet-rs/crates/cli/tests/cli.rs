@@ -1394,6 +1394,69 @@ fn collection_aggregates_the_items_of_several_packages() {
     assert_eq!(targets, expected);
 }
 
+/// `collection`'s `item_assets` describes the assets its Items carry — every
+/// object table and sidecar key across the packages, with each one's media
+/// type and roles — and nothing they do not.
+#[cfg(feature = "collection")]
+#[test]
+fn collection_item_assets_are_the_items_assets() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    // Delft (one module table) and the railway (nine tables and three sidecars).
+    let mut packages = Vec::new();
+    for (name, input) in [
+        ("delft", "delft.city.jsonl"),
+        ("railway", "lod3_railway.city.json"),
+    ] {
+        let pkg = dir.path().join(name);
+        let status = Command::new(binary)
+            .arg("convert")
+            .arg(fixture(input))
+            .arg("-o")
+            .arg(&pkg)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        packages.push(pkg);
+    }
+    let collection_path = dir.path().join("collection.json");
+    let output = Command::new(binary)
+        .arg("collection")
+        .args(&packages)
+        .arg("-o")
+        .arg(&collection_path)
+        .args(["--id", "two"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let read = |p: &std::path::Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    };
+    let mut expected = serde_json::Map::new();
+    for pkg in &packages {
+        let item = read(&pkg.join("metadata.json"));
+        for (key, asset) in item["assets"].as_object().unwrap() {
+            expected.insert(
+                key.clone(),
+                serde_json::json!({ "type": asset["type"], "roles": asset["roles"] }),
+            );
+        }
+    }
+    assert!(expected.values().any(|a| {
+        a["roles"]
+            .as_array()
+            .unwrap()
+            .contains(&"cityparquet-sidecar".into())
+    }));
+    let item_assets = read(&collection_path)["item_assets"].clone();
+    assert_eq!(item_assets, serde_json::Value::Object(expected));
+}
+
 /// `--tolerate-invalid-appearance` drops what it cannot place, and says so on
 /// stderr — the derived Helsinki fixture has two texture rings one UV short
 /// (see `crates/core/tests/texture_uv_count_real_data.rs`).

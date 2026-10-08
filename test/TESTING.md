@@ -616,7 +616,7 @@ extent.spatial.bbox: [[4.36071356020891, 51.99711429598357, -3.7475221157073975,
   city3d:version = ['2.0']
   proj:code = ['EPSG:7415']
 item links: ['./delft/metadata.json', './railway/metadata.json']
-item_assets: ['data']
+item_assets: ['building.parquet', 'vegetation.parquet', 'city_furniture.parquet', 'transportation.parquet', 'generics.parquet', 'bridge.parquet', 'tunnel.parquet', 'water_body.parquet', 'relief.parquet', 'materials.parquet', 'textures.parquet', 'implicit_geometries.parquet']
 ```
 
 Three things to read off it:
@@ -627,8 +627,9 @@ Three things to read off it:
 - `city3d:co_types` uses the **source** vocabulary (`GenericCityObject`), not
   `object_type`'s CityGML class (`GenericOccupiedSpace`), as
   `documents/docs/03-specification/05-metadata.mdx` specifies.
-- `item_assets` lists `data`, which no CityParquet Item carries — it comes from
-  the upstream `city3d-stac-gen` builder (Known issues #18).
+- `item_assets` lists the assets the Items carry — Delft's object table, and the
+  railway's nine object tables and three sidecars — each with its media type
+  and its `cityparquet-objects` or `cityparquet-sidecar` role.
 
 ### 1.12 FlatCityBuf input
 
@@ -1771,7 +1772,6 @@ Issue numbers are stable across passes; a closed issue keeps its number.
 | 15  | **duckdb-cityjson's pre-commit format gate skips.** Local `clang-format` is 21.1.6 and CI pins 11.0.1; a different version reformats conforming code, so the hook skips the format phase by design. `clang-tidy` (22.1.8 here) is on `PATH`, so the tidy phase runs                                                                                                                                                                                                                        | Local tooling, not something a commit can fix: install `clang_format==11.0.1` to format-check locally; CI is the format gate otherwise                                                                                                                                                                                                                                           |
 | 16  | **duckdb-cityjson writes an object-valued attribute as plain `UTF8`, not Parquet `JSON`.** `insert_cityjson[seq]` reads an object attribute (`Integrate_LoD[1]` in the Helsinki building) as `VARCHAR`, and `cityparquet_write` emits it without the `JSON` annotation, so cityparquet-rs restores a string where the source had an object. `02-object-table-schema` maps "object or heterogeneous array" to `JSON`; cityparquet-rs's own package carries `JsonType()` for the same column | Library defect, reported. Repro in 2.7: write `dk_addr`, then `cityparquet export $OUT/dk_addr …` and `compare` with `test/data/address_location.city.jsonl` → exit 2, `"Integrate_LoD[1]":{…}` vs `"Integrate_LoD[1]":"{…}"`; `parquet_schema` shows `UTF8` (duckdb) vs `JsonType()` (rs)                                                                                       |
 | 17  | **An attribute named `ID` next to the reserved `id` diverges between the writers.** duckdb-cityjson treats the case-insensitive collision as a collision and puts `ID` in `other`; cityparquet-rs writes a separate `ID` column. DuckDB identifiers are case-insensitive, so `cityparquet_read` of the rs package renames it `ID_1`, and the six-hop chain on the Helsinki building returns `"ID_1":767157.0` for `"ID":767157.0` (`compare` exit 2)                                       | Specification decision: `02-object-table-schema`'s reserved-name collision rule does not say whether it is case-sensitive. Either rs diverts case-insensitive collisions too, or a reader must restore the name. Repro: `cityparquet convert test/data/address_location.city.jsonl -o rs_addr`, `cityparquet_read` + `cityparquet_write` it, `export`, `compare` with the source |
-| 18  | **`cityparquet collection` declares `item_assets.data`**, an asset no CityParquet Item carries                                                                                                                                                                                                                                                                                                                                                                                             | Upstream: `city3d-stac-gen`'s Collection builder adds it. Seen in 1.11                                                                                                                                                                                                                                                                                                           |
 
 ### Closed
 
@@ -1789,6 +1789,7 @@ Issue numbers are stable across passes; a closed issue keeps its number.
 | 12  | Prepared read-bench artefacts carried the pre-by-type manifest                                          | Artefacts carry a chain-version stamp, and a stale one is refused (5.0)                                                                                                |
 | 13  | A duckdb-cityjson package with a degenerate (<3-vertex) ring failed `cityparquet export`                | duckdb-cityjson drops such rings with a warning; its package exports (`2 2 0 0`, exit 0) and compares equal with cityparquet-rs's own package of the same source (4.5) |
 | 14  | `just check` could not pass: readbench's `attr_consistency` called `fcb -i/-o`, which `fcb` 0.7.8 lacks | readbench is outside the library's gate (1.1) and calls `fcb ser` positionally; its suite passes (Part 6)                                                              |
+| 18  | `cityparquet collection` declared `item_assets.data`, an asset no CityParquet Item carries              | `item_assets` is the Items' own assets, each with its media type and roles (1.11)                                                                                      |
 
 ---
 
@@ -1816,5 +1817,4 @@ Every runnable step of Parts 0–4 runs on real data at the commits above, and
 Open: an object-valued attribute loses its `JSON` annotation in
 duckdb-cityjson (#16), a case-insensitive `ID`/`id` collision the
 specification does not settle (#17), the read-bench multi-table limit (#8),
-an upstream `item_assets` artefact (#18), and the local clang-format version
-(#15).
+and the local clang-format version (#15).
