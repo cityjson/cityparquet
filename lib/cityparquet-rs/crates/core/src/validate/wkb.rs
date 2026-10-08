@@ -105,7 +105,7 @@ pub(super) fn parse_wkb(bytes: &[u8]) -> std::result::Result<WkbShape, String> {
 pub(super) fn wkb_code_for_cm_type(cm: &str) -> Option<u32> {
     Some(match cm {
         "MultiPoint" => MULTIPOINT_Z,
-        "MultiLineString" => 1005,
+        "MultiCurve" => 1005,
         "MultiSurface" | "CompositeSurface" => MULTIPOLYGON_Z,
         "Solid" => POLYHEDRALSURFACE_Z,
         "MultiSolid" | "CompositeSolid" => GEOMETRYCOLLECTION_Z,

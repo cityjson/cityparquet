@@ -506,10 +506,7 @@ pub(crate) fn compute_geometry_properties(
     geom: &Geometry,
     dropped_surfaces: &[usize],
 ) -> Result<GeometryProperties> {
-    let type_name = serde_json::to_value(&geom.thetype)?
-        .as_str()
-        .ok_or_else(|| CityParquetError::Schema("geometry type is not a string".to_string()))?
-        .to_string();
+    let type_name = crate::geometry_properties::cm_geometry_type(&geom.thetype)?;
 
     let mut surfaces = None;
     let mut face_semantics = None;

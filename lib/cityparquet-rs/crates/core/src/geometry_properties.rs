@@ -34,6 +34,31 @@ fn err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Schema(msg.into())
 }
 
+/// The CityGML CM geometry type `geometry_properties_lod*.type` records for
+/// a CityJSON geometry type (spec 03 "Geometry-type mapping"): the names are
+/// the same but for CityJSON's `MultiLineString`, which is the CM's
+/// `MultiCurve`.
+pub(crate) fn cm_geometry_type(t: &cjseq::GeometryType) -> Result<String> {
+    let name = serde_json::to_value(t)?
+        .as_str()
+        .ok_or_else(|| CityParquetError::Schema("geometry type is not a string".to_string()))?
+        .to_string();
+    Ok(match name.as_str() {
+        "MultiLineString" => "MultiCurve".to_string(),
+        _ => name,
+    })
+}
+
+/// The CityJSON geometry type for a `geometry_properties_lod*.type` value —
+/// the inverse of [`cm_geometry_type`].
+pub(crate) fn cityjson_geometry_type(cm: &Value) -> Result<cjseq::GeometryType> {
+    let name = match cm.as_str() {
+        Some("MultiCurve") => Value::from("MultiLineString"),
+        _ => cm.clone(),
+    };
+    Ok(serde_json::from_value(name)?)
+}
+
 /// One geometry's `geometry_properties` value, decoupled from Arrow.
 ///
 /// `shells` is **always nested one inner list per solid** (spec: a `Solid`

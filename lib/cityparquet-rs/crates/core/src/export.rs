@@ -1349,7 +1349,7 @@ fn rebuild_templates(
                     "relative geometry {pos}: geometry_properties missing 'type'"
                 ))
             })
-            .and_then(|v| serde_json::from_value(v.clone()).map_err(CityParquetError::from))?;
+            .and_then(crate::geometry_properties::cityjson_geometry_type)?;
         // An implicit-geometries row's LoD lives in its physical column name, exactly
         // like the main object table's own geometries — `read_implicit_geometries`
         // has already resolved it into `row.lod: Lod` (see `ImplicitGeometryRow`'s
@@ -1669,9 +1669,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                             obj.id
                         ))
                     })
-                    .and_then(|v| {
-                        serde_json::from_value(v.clone()).map_err(CityParquetError::from)
-                    })?;
+                    .and_then(crate::geometry_properties::cityjson_geometry_type)?;
 
                 let vmap = vertex_map(&decoded.coords, scale, translate, axis_order, &mut interner);
                 let boundaries =
