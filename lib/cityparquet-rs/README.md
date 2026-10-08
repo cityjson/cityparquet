@@ -73,11 +73,9 @@ cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite
 Writes `OUTPUT_DIR/` containing one `<snake>.parquet` table per 1st-level
 CityObject family (e.g. `building.parquet`, `bridge.parquet`) + `metadata.json`,
 readable by any Parquet reader (DuckDB, pyarrow, …). `metadata.json` is a STAC
-Item (the `city3d:*` extension) describing that one package; a dataset-level
-`collection.json` aggregating multiple packages/tiles into one STAC
-Collection is **not yet implemented** — it needs a multi-package workflow
-this CLI doesn't have, so it's tracked as a follow-up rather than emitted as
-a meaningless single-Item Collection.
+Item (the `city3d:*` extension) describing that one package; `collection`
+(below) aggregates several packages' Items into a dataset-level STAC
+Collection.
 
 | Flag                            | Default       | Meaning                                                                                                                                                                |
 | ------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -174,6 +172,22 @@ Exit `0` and prints `equal` when semantically equal; exit `2` and prints up to
 skip appearance/`GeometryInstance` comparison, for a package whose sidecars
 were left out of the comparison on purpose. This is how a round-trip is
 proven: `convert` → `export` → `compare` against the source.
+
+### collection — a STAC Collection over several packages
+
+```bash
+cargo run -p cityparquet-cli -- collection PACKAGE_DIR... -o collection.json --id ID
+```
+
+Reads each package's `metadata.json` Item and writes one STAC Collection:
+the `city3d:*` summaries and the spatial extent (the union of the Items'
+bboxes) as the City3D STAC tool's `StacCollectionBuilder` aggregates them, the
+temporal extent spanning the Items' datetimes, and one `item` link per package,
+relative to `collection.json`. `--title`, `--description` and `--license` fill
+the matching fields. An Item carries a WGS84 bbox only when its package's CRS is
+known, so at least one package must be georeferenced. The subcommand is behind
+the CLI crate's `collection` cargo feature (on by default), which links the
+City3D STAC tool's generator crate.
 
 ### validate — conformance against the specification
 

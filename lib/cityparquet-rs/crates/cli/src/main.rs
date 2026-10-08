@@ -177,6 +177,36 @@ enum Commands {
         exclude_instances: bool,
     },
 
+    /// Write a STAC Collection (`collection.json`) over several packages'
+    /// `metadata.json` Items: `city3d:*` summaries, the union of their extents,
+    /// and one `item` link per package
+    #[cfg(feature = "collection")]
+    Collection {
+        /// CityParquet package directories
+        #[arg(value_name = "PACKAGE_DIR", required = true, num_args = 1..)]
+        packages: Vec<PathBuf>,
+
+        /// The collection.json to write
+        #[arg(short = 'o', long = "output", value_name = "OUTPUT")]
+        output: PathBuf,
+
+        /// The Collection's `id`
+        #[arg(long)]
+        id: String,
+
+        /// The Collection's `title`
+        #[arg(long)]
+        title: Option<String>,
+
+        /// The Collection's `description`
+        #[arg(long)]
+        description: Option<String>,
+
+        /// The Collection's `license` (an SPDX identifier, or `other`)
+        #[arg(long)]
+        license: Option<String>,
+    },
+
     /// Check a CityParquet package against the specification. Prints one
     /// line per violation (a MUST is an error, a SHOULD a warning) and exits
     /// with status 2 when there is any error
@@ -762,6 +792,35 @@ fn main() -> std::process::ExitCode {
                         }
                         std::process::ExitCode::from(2)
                     }
+                }
+                Err(e) => {
+                    eprintln!("error: {}", render_error(&e));
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+
+        #[cfg(feature = "collection")]
+        Commands::Collection {
+            packages,
+            output,
+            id,
+            title,
+            description,
+            license,
+        } => {
+            let opts = cityparquet_cli::collection::CollectionOptions {
+                packages,
+                output,
+                id,
+                title,
+                description,
+                license,
+            };
+            match cityparquet_cli::collection::write_collection(&opts) {
+                Ok(n) => {
+                    println!("{n} items aggregated into {}", opts.output.display());
+                    std::process::ExitCode::SUCCESS
                 }
                 Err(e) => {
                     eprintln!("error: {}", render_error(&e));

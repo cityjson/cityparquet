@@ -19,6 +19,14 @@ arrow-array = { workspace = true }
 parquet = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+city3d-stac-gen = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+
+[features]
+default = ["collection"]
+# `cityparquet collection`: a STAC Collection over packages' Items, built by
+# city3d-stac-gen (see the workspace manifest for why it is optional).
+collection = ["dep:city3d-stac-gen", "dep:chrono"]
 
 [dev-dependencies]
 cjseq = { workspace = true }

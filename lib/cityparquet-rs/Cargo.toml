@@ -56,10 +56,16 @@ clap = { version = "4", features = ["derive"] }
 glob = "0.3"
 wkb = "0.9"
 geo-traits = "0.3"
-geo = "0.30"
+geo = "0.31"
 tempfile = "3"
 cityparquet-schema = { path = "crates/schema", version = "0.1.0" }
-city3d-stac-types = { git = "https://github.com/cityjson/city3d-stac-tool", rev = "743199c9b9ff566ec42c4023ce0968e9ac6af485" }
+city3d-stac-types = { git = "https://github.com/cityjson/city3d-stac-tool", rev = "c8ab8d9ae7ebd7b2cf4cc9f35b50b592c9b735df" }
+# The STAC generator — `StacCollectionBuilder` for `cityparquet collection`.
+# Only the CLI depends on it, behind its `collection` feature: it pulls in the
+# `stac`, `object_store`, `reqwest` and `fcb_core` stacks, which neither the
+# library nor the schema crate may carry. Same revision as city3d-stac-types,
+# so the two resolve to one copy of the types crate.
+city3d-stac-gen = { git = "https://github.com/cityjson/city3d-stac-tool", rev = "c8ab8d9ae7ebd7b2cf4cc9f35b50b592c9b735df" }
 jsonschema = "0.26"
 # HyperLogLog++ distinct counts for the bloom-filter high-cardinality rule
 # (`scan`). Deterministic WyHash default: the selected columns, and so the

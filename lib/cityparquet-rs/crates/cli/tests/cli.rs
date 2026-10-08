@@ -1283,3 +1283,110 @@ fn export_of_lod4_geometry_to_cityjson_warns() {
         "{stderr}"
     );
 }
+
+/// `collection` writes a STAC Collection over several packages' Items: its
+/// spatial extent is the union of the Items' bboxes, and each `item` link
+/// resolves, relative to `collection.json`, to a package's `metadata.json`.
+#[cfg(feature = "collection")]
+#[test]
+fn collection_aggregates_the_items_of_several_packages() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    // Two georeferenced packages: delft split into two partitions.
+    let parts = dir.path().join("parts");
+    let status = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(&parts)
+        .args(["--partition", "count", "--number", "2"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut packages: Vec<PathBuf> = std::fs::read_dir(&parts)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.join("metadata.json").exists())
+        .collect();
+    packages.sort();
+    assert_eq!(packages.len(), 2);
+
+    let collection_path = dir.path().join("collection.json");
+    let output = Command::new(binary)
+        .arg("collection")
+        .args(&packages)
+        .arg("-o")
+        .arg(&collection_path)
+        .args(["--id", "delft"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let read = |p: &std::path::Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    };
+    let collection = read(&collection_path);
+    assert_eq!(collection["type"], "Collection");
+    assert_eq!(collection["id"], "delft");
+
+    // The extent is the union of the Items' bboxes.
+    let mut union = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for pkg in &packages {
+        let bbox = read(&pkg.join("metadata.json"))["bbox"].clone();
+        let b: Vec<f64> = bbox
+            .as_array()
+            .expect("a georeferenced Item has a bbox")
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let (lo, hi) = b.split_at(b.len() / 2);
+        union = [
+            union[0].min(lo[0]),
+            union[1].min(lo[1]),
+            union[2].max(hi[0]),
+            union[3].max(hi[1]),
+        ];
+    }
+    let extent: Vec<f64> = collection["extent"]["spatial"]["bbox"][0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let (lo, hi) = extent.split_at(extent.len() / 2);
+    for (got, want) in [lo[0], lo[1], hi[0], hi[1]].iter().zip(union) {
+        assert!(
+            (got - want).abs() < 1e-9,
+            "extent {extent:?}, union {union:?}"
+        );
+    }
+
+    // One item link per package, each resolving to its metadata.json.
+    let mut targets: Vec<PathBuf> = collection["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["rel"] == "item")
+        .map(|l| {
+            dir.path()
+                .join(l["href"].as_str().unwrap())
+                .canonicalize()
+                .unwrap()
+        })
+        .collect();
+    targets.sort();
+    let expected: Vec<PathBuf> = packages
+        .iter()
+        .map(|p| p.join("metadata.json").canonicalize().unwrap())
+        .collect();
+    assert_eq!(targets, expected);
+}
