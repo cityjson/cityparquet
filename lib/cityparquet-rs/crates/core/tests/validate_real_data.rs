@@ -522,3 +522,67 @@ fn a_two_level_list_column_conforms() {
     let report = validate(&pkg);
     assert!(report.violations.is_empty(), "{report}");
 }
+
+/// Rebuild the struct column `name` with its child `child` replaced by
+/// `f(child array)`.
+fn replace_struct_child(
+    c: &mut FileContent,
+    name: &str,
+    child: &str,
+    mut f: impl FnMut(&ArrayRef) -> ArrayRef,
+) {
+    c.map_column(name, |field, column, _| {
+        let s = column.as_struct();
+        let DataType::Struct(fields) = field.data_type() else {
+            panic!("{name} is a struct")
+        };
+        let columns: Vec<ArrayRef> = fields
+            .iter()
+            .zip(s.columns())
+            .map(|(f_, col)| {
+                if f_.name() == child {
+                    f(col)
+                } else {
+                    col.clone()
+                }
+            })
+            .collect();
+        let rebuilt = StructArray::new(fields.clone(), columns, s.nulls().cloned());
+        (field.clone(), Arc::new(rebuilt) as ArrayRef)
+    });
+}
+
+/// An implicit geometry's reference point is one WKB PointZ, with nothing
+/// after it.
+#[test]
+fn an_implicit_reference_point_with_trailing_bytes_is_reported() {
+    let (_dir, pkg) = convert_fixture("lod3_railway.city.json");
+    let table = fs::read_dir(&pkg)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.extension().is_some_and(|e| e == "parquet")
+                && FileContent::read(p).batches.iter().any(|b| {
+                    b.column_by_name("implicit_geometry")
+                        .is_some_and(|c| c.null_count() < c.len())
+                })
+        })
+        .expect("railway has an object with an implicit geometry");
+    rewrite(&table, |c| {
+        replace_struct_child(c, "implicit_geometry", "point", |points| {
+            let points = points.as_binary::<i32>();
+            let padded: BinaryArray = points
+                .iter()
+                .map(|p| {
+                    p.map(|bytes| {
+                        let mut bytes = bytes.to_vec();
+                        bytes.push(0);
+                        bytes
+                    })
+                })
+                .collect();
+            Arc::new(padded) as ArrayRef
+        });
+    });
+    assert_error(&validate(&pkg), "value.implicit-geometry");
+}

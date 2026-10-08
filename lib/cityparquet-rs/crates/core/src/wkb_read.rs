@@ -434,7 +434,14 @@ pub fn read_point(bytes: &[u8]) -> Result<[f64; 3]> {
     let mut cursor = Cursor::new(bytes);
     let tc = cursor.read_header()?;
     cursor.expect_type(tc, POINT_Z, "PointZ")?;
-    cursor.read_raw_coord()
+    let point = cursor.read_raw_coord()?;
+    if cursor.pos != bytes.len() {
+        return Err(geometry_err(format!(
+            "trailing bytes: {} bytes remain after a complete WKB PointZ",
+            bytes.len() - cursor.pos
+        )));
+    }
+    Ok(point)
 }
 
 #[cfg(test)]
