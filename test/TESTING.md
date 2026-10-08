@@ -14,16 +14,16 @@ observed value, not an illustration:
 
 | Repository                                               | Commit    |
 | -------------------------------------------------------- | --------- |
-| monorepo (`lib/cityparquet-rs`, `documents/`, `test/`)   | `e35e9a3` |
-| `lib/duckdb-cityjson` (submodule, `develop`)             | `939e1f1` |
+| monorepo (`lib/cityparquet-rs`, `documents/`, `test/`)   | `971f7cc` |
+| `lib/duckdb-cityjson` (submodule, `develop`)             | `7f6b8c5` |
 | `lib/duckdb-3d` (submodule, `develop`)                   | `94268e7` |
 | `lib/cityparquet-rs/vendor/city3d-stac-tool` (submodule) | `c8ab8d9` |
 
-The two DuckDB submodules are checked out at their `develop` heads, ahead of the
-pointers the monorepo commit records; the run used the checkouts. The
-walkthrough started on monorepo `8d12563`; every `cityparquet` output pasted
-below was re-run on `e35e9a3` (a texture-UV tolerance fix) and is unchanged
-apart from the one extra warning line it adds in 4.5.
+The walkthrough's outputs were taken on monorepo `e35e9a3` with duckdb-cityjson
+`939e1f1`. The later commits up to the pins above change the LoD4 export warning
+(1.13), the Collection's `item_assets` (1.11), JSON attribute columns, closed-ring
+normalisation and JSON depth limits in duckdb-cityjson; the suites in Part 6 and
+`just conformance` were re-run on the pinned commits.
 
 Part 5 (benchmarks) is **procedure only**: the recipes are inspected and the
 corpus state is checked, but the multi-hour runs are not part of this pass.
@@ -715,7 +715,7 @@ export DK=lib/duckdb-cityjson/build/release/duckdb
 (cd lib/duckdb-cityjson && ./build/release/test/unittest "test/sql/*")
 ```
 
-Expected: `All tests passed (5 skipped tests, 2243 assertions in 80 test cases)`.
+Expected: `All tests passed (5 skipped tests, 2314 assertions in 83 test cases)`.
 The five skips are `require-env` gates on network access:
 
 ```
@@ -1733,14 +1733,14 @@ One stage per suite, in dependency order. A stage whose toolchain is absent is
 the script exit non-zero. Result of this pass:
 
 ```
-PASS cityparquet-rs: just check                          836 passed, 6 skipped (nextest); isolation ok
+PASS cityparquet-rs: just check                          837 passed, 6 skipped (nextest); isolation ok
 PASS cityparquet-rs: just interop                        interop bloom cross-writer ok; interop ok
 PASS benchmark: just plot-test                           75 passed
 PASS benchmark: just scripts-test                        67 ok
 PASS benchmark/databases: pytest (unit)                  511 passed, 1 skipped, 43 deselected
 PASS benchmark/readbench: cargo test                     34 targets: 240 passed, 0 failed, 1 ignored
 PASS scripts/catalog2cityparquet: just catalog-test      301 passed, 11 skipped
-PASS duckdb-cityjson: unittest                           2243 assertions in 80 test cases (5 skipped)
+PASS duckdb-cityjson: unittest                           2314 assertions in 83 test cases (5 skipped)
 PASS cross-writer conformance (rs <-> duckdb-cityjson)   conformance ok
 PASS duckdb-3d: make test                                550 assertions in 30 test cases (7 skipped)
 PASS citylake: cargo build
@@ -1802,7 +1802,7 @@ Every runnable step of Parts 0–4 runs on real data at the commits above, and
   railway with its 85/34/3 sidecars, FlatCityBuf Delft and the SIG3D LoD4
   building convert, `validate` with 0 errors and 0 warnings, and round-trip to
   `equal` (`excluded: 20` for Delft, `26` for railway).
-- **duckdb-cityjson**: 2243 assertions in 80 cases; packages built from an
+- **duckdb-cityjson**: 2314 assertions in 83 cases; packages built from an
   empty schema pass rs `validate` with 0 errors (nullability declarations are
   warnings), share rs's Hilbert row order row for row, and carry addresses and
   implicit geometries.
