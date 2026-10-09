@@ -109,7 +109,9 @@ def run_convert(
     No retry happens here — retries belong to the orchestrator, which alone
     knows the budget.
     """
-    cmd = [str(binary), "convert", *[str(p) for p in inputs], "-o", str(out_dir), "--overwrite"]
+    # `--lod0`: the catalogue gives every object with geometry an LoD0 footprint,
+    # synthesised where the source has none, so a GeoParquet reader always finds one.
+    cmd = [str(binary), "convert", *[str(p) for p in inputs], "-o", str(out_dir), "--overwrite", "--lod0"]
     if crs:
         cmd += ["--crs", crs]
     try:

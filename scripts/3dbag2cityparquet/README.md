@@ -166,7 +166,7 @@ through rather than filtered. Excluding those two, z spans a sane
 must expect the sentinel.
 
 **631 BuildingParts have no LoD0 footprint.** `geometry_lod0_0` is null for
-them, so §9 LoD0 synthesis could not derive a footprint from a higher LoD.
+them: LoD0 synthesis (`--lod0`, which the convert stage passes) could not derive a footprint from a higher LoD.
 Every one is a BuildingPart; all 10,771,547 Buildings have one.
 
 **The header's non-spatial metadata comes from one tile.** `merge_sources`

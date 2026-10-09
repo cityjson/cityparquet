@@ -359,7 +359,8 @@ def stage_convert(big: Path, dest: Path, extra: list[str]) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     # Source order is what lets the one big CityJSONSeq stream; the writer's
     # default (Hilbert) would buffer the whole dataset.
-    cmd = [str(CITYPARQUET), "convert", str(big), "-o", str(dest), "--overwrite", "--ordering", "source", *extra]
+    # `--lod0` synthesises a footprint for the BuildingParts 3DBAG ships without one.
+    cmd = [str(CITYPARQUET), "convert", str(big), "-o", str(dest), "--overwrite", "--ordering", "source", "--lod0", *extra]
     log("convert: " + " ".join(cmd))
     t0 = time.time()
     rc = subprocess.run(cmd)
