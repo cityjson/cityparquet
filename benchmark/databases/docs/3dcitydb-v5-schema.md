@@ -314,7 +314,7 @@ PostGIS 3.6), so the predicate does not depend on the engine version.
 
 ### Recommended predicate — use this one
 
-**Every `count` and `full-read` query for 3DCityDB in this harness
+**Every query for 3DCityDB in this harness that counts or scans objects
 must use this predicate:**
 
 ```sql
@@ -522,7 +522,7 @@ row set is a superset of the other two systems'.
 
 Restricting to CityObject-granular features (the "Recommended predicate"
 above) matters here too, independently of the granularity predicate's
-role in `count`: `property.name = 'lod1Solid'` rows (the CityObject's own
+role in counting objects: `property.name = 'lod1Solid'` rows (the CityObject's own
 LoD1 solid geometry, one per `BuildingPart`) and `property.name =
 'lod1MultiSurface'` rows (the same solid's _boundary surfaces_ — i.e. the
 `WallSurface`/`GroundSurface`/`RoofSurface` features' own LoD1 geometry)

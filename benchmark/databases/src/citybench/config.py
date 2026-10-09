@@ -342,8 +342,8 @@ class AttrRange:
 #: the format family's own index rule, and its row is tagged plainly
 #: `ID_HIT_TAG`. The format family (`benchmark/readbench/src/params.rs`)
 #: measures three positions; the two families share only this middle-position
-#: hit, which it tags `FORMAT_HIT_TAG`, and the miss, `ID_MISS_TAG`, derived
-#: from that hit.
+#: hit, which it tags `FORMAT_HIT_TAG`, and its verified-absent miss,
+#: `ID_MISS_TAG`.
 ID_HIT_POSITION = 0.50
 ID_HIT_TAG = "id-lookup"
 FORMAT_HIT_TAG = "id-50pct"
