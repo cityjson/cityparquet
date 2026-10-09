@@ -6,10 +6,10 @@ requires-python = ">=3.12"
 dependencies = [
     "psycopg[binary]>=3.2",
     # Pinned to the DuckDB version the `lib/duckdb-cityjson` submodule
-    # builds against (`lib/duckdb-cityjson/duckdb`, v1.5.4): a C++ DuckDB
+    # builds against (`lib/duckdb-cityjson/duckdb`, v1.5.5): a C++ DuckDB
     # extension loads only into the exact DuckDB version it was built for,
     # and the write tier loads that local build, not an installed one.
-    "duckdb==1.5.4",
+    "duckdb==1.5.5",
     # Row-returning scenarios are fetched to Arrow, not to Python objects:
     # the comparison is of engines, not of the DuckDB Python client's
     # per-value object construction (measured at ~72 us/row).

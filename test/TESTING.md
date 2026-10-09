@@ -8,7 +8,7 @@ automated part of this — every suite in the tree, one line per stage — is
 expected outputs, the cross-module chains and the known issues.
 
 Every command in Parts 0–4 was **executed on 2026-10-08** (macOS arm64, Rust
-1.93.1; both extension shells are DuckDB **v1.5.4**, the `duckdb` on `PATH` is
+1.93.1; both extension shells are DuckDB **v1.5.5**, the `duckdb` on `PATH` is
 v1.5.5) against these commits, and every expected output is the **real**
 observed value, not an illustration:
 
@@ -42,7 +42,7 @@ cd cityparquet          # wherever you cloned github.com/cityjson/cityparquet
 for c in duckdb fcb uv just cargo cmake ninja python3 jq; do
   printf "%-8s " "$c"; command -v $c || echo MISSING
 done
-lib/duckdb-cityjson/build/release/duckdb --version   # v1.5.4, once built (0.4)
+lib/duckdb-cityjson/build/release/duckdb --version   # v1.5.5, once built (0.4)
 ```
 
 All must resolve. `fcb` (the FlatCityBuf CLI, 0.7.8 here) is needed by the read
