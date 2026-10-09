@@ -792,13 +792,10 @@ def index_ddl() -> list[str]:
 
     Net effect: sargability, not "always routes through
     `feature_objectclass_inx` specifically", is what the fix delivers —
-    and that is what eliminates the seq scans. Measured live on Zurich
-    (2,192,890 raw `feature` rows), same warm cache, `EXPLAIN (ANALYZE,
-    BUFFERS)`: `count` 0.408s -> 0.013s (32.2x), `project` 0.363s ->
-    0.014s (25.6x), `attr-filter` 2.74x, `bbox-25pct` 2.07x —
-    independently reproduced counts identical to the pre-fix committed
-    CSVs throughout. See `resolve_cityobject_class_ids`'s and `sql_for`'s
-    own docstrings (above) for the full mechanism.
+    and that is what eliminates the seq scans; `EXPLAIN (ANALYZE, BUFFERS)`
+    on Zurich (2,192,890 raw `feature` rows) shows index-driven plans for
+    every read scenario. See `resolve_cityobject_class_ids`'s and
+    `sql_for`'s own docstrings (above) for the full mechanism.
 
     Because the fix works by routing through `feature_objectclass_inx`,
     which already existed, no new index is required here — `index_ddl()`
