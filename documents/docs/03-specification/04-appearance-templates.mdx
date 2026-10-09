@@ -213,5 +213,17 @@ to sit is meaningless:
 | `point` | `BLOB` | WKB `PointZ` for the reference point, in the file CRS (required when the struct is non-null) |
 | `transformationMatrix` | `LIST<DOUBLE>` | The transformation matrix — a flat, **row-major** 4×4, so exactly **16** values when non-null (the CityJSON `transformationMatrix` layout, unchanged); absent ⇒ identity |
 
+**Placement.** The `transformationMatrix` *M* and the reference `point` *p* place each
+vertex *v* of the relative geometry at the world position
+
+> *M* · (*v*<sub>x</sub>, *v*<sub>y</sub>, *v*<sub>z</sub>, 1)<sup>T</sup> + (*p*<sub>x</sub>, *p*<sub>y</sub>, *p*<sub>z</sub>, 0)<sup>T</sup>
+
+— the matrix acts in the relative geometry's own frame, and the result is moved to the
+reference point, as in CityGML's `ImplicitGeometry`. *M* is a full 4×4 affine matrix,
+so its translation column (*m*<sub>03</sub>, *m*<sub>13</sub>, *m*<sub>23</sub>) is
+applied on top of *p*. Its last row **MUST** be `0, 0, 0, 1`: a projective matrix has
+no meaning for an implicit geometry, and a reader **MUST** treat one as invalid input.
+An absent matrix is the identity, so the vertex is placed at *v* + *p*.
+
 🟡 An object with **several** implicit geometries cannot currently be represented,
 since `implicit_geometry` is a single struct — see the [open questions](/open-questions).
