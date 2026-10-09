@@ -17,6 +17,10 @@ with the reasoning in `04-design-decisions/` and the genuinely unsettled parts i
 `05-open-questions/`. It is the authoritative _what_; the implementations under
 `lib/` are catching up to it.
 
+Architectural decisions about the implementations — and the format decisions taken
+while building them — are recorded in `ai/decision-records/`. Ask the
+decision-records skill for the index before making an architectural change.
+
 ## Layout
 
 | Path                   | What                                                                                                                                               | Authoritative instructions                  |
