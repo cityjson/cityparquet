@@ -11,7 +11,12 @@ use parquet_geospatial::{WkbMetadata, WkbType};
 
 use crate::attributes::AttributeType;
 use crate::error::{CityParquetError, Result};
+use crate::reserved::is_reserved_column_name;
 use crate::types::{Lod, geometry_column_name};
+
+/// The un-suffixed columns [`CityParquetSchema::to_arrow_schema`] renders
+/// for a schema without LoDs.
+const BARE_GEOMETRY_SCAFFOLD: &[&str] = &["geometry", "geometry_properties", "material", "texture"];
 
 pub const ROLE_KEY: &str = "cityparquet:role";
 pub const LOD_KEY: &str = "cityparquet:lod";
@@ -256,54 +261,18 @@ fn string_list(name: &str) -> Field {
     )
 }
 
-/// Fixed reserved column names, independent of `lods`/`attributes`.
-const RESERVED_COLUMN_NAMES: &[&str] = &[
-    "id",
-    "feature_id",
-    "object_type",
-    "parents",
-    "children",
-    "children_roles",
-    "address",
-    "bbox",
-    "implicit_geometry",
-    "other",
-];
-
-/// Every column name an attribute column must not collide with, for a schema
-/// with these `lods`: the fixed reserved names plus the geometry/appearance
-/// column names the LoDs realise. **Schema-relative** — every LoD reserves its
-/// suffixed forms (`geometry_lod2_2`, …), and the zero-analysis-geometry case
-/// (empty `lods`) reserves the bare names instead, there being no LoD to
-/// suffix by. This is the single source of truth shared by
-/// [`CityParquetSchema::validate`] (which errors on a collision) and the
-/// scan-time diversion of colliding attributes into `other` (§5.2, G12), so
-/// the two can never diverge on what "reserved" means.
-pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
-    let mut names: HashSet<String> = RESERVED_COLUMN_NAMES
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    if lods.is_empty() {
-        names.insert("geometry".to_string());
-        names.insert("geometry_properties".to_string());
-        names.insert("material".to_string());
-        names.insert("texture".to_string());
-    } else {
-        for lod in lods {
-            names.insert(geometry_column_name("geometry", lod));
-            names.insert(geometry_column_name("geometry_properties", lod));
-            names.insert(geometry_column_name("material", lod));
-            names.insert(geometry_column_name("texture", lod));
-        }
-    }
-    names
-}
-
 impl CityParquetSchema {
     /// Reject schemas that can't be rendered unambiguously: duplicate LoDs, or
-    /// an attribute name colliding with a reserved or geometry column name
-    /// (see [`reserved_and_geometry_column_names`]).
+    /// an attribute column whose own name collides with a reserved column
+    /// name (see [`crate::reserved::is_reserved_column_name`]) — a writer
+    /// stores a colliding source attribute escaped, so such a name never
+    /// reaches here from a conforming writer.
+    ///
+    /// The empty-`lods` scaffold renders the bare `geometry`,
+    /// `geometry_properties`, `material` and `texture` columns (see
+    /// [`Self::to_arrow_schema`]), which the specification does not reserve
+    /// but which an attribute of the same name would duplicate, so those
+    /// names are refused in that case only.
     fn validate(&self) -> Result<()> {
         let mut seen_lods = HashSet::new();
         for lod in &self.lods {
@@ -314,11 +283,16 @@ impl CityParquetSchema {
             }
         }
 
-        let reserved = reserved_and_geometry_column_names(&self.lods);
         for (name, _) in &self.attributes {
-            if reserved.contains(name) {
+            if is_reserved_column_name(name) {
                 return Err(CityParquetError::Schema(format!(
-                    "attribute column '{name}' collides with a reserved or geometry column name"
+                    "attribute column '{name}' collides with a reserved column name"
+                )));
+            }
+            if self.lods.is_empty() && BARE_GEOMETRY_SCAFFOLD.contains(&name.as_str()) {
+                return Err(CityParquetError::Schema(format!(
+                    "attribute column '{name}' cannot be written next to the un-suffixed \
+                     '{name}' column of a schema without LoDs"
                 )));
             }
         }
@@ -580,29 +554,27 @@ mod tests {
                     "no bare `{bare}` column may exist"
                 );
             }
-            // The reserved-name set reserves every LoD's suffixed forms too.
-            let reserved = reserved_and_geometry_column_names(&lods);
+            // Every LoD's suffixed forms are reserved names too.
             for suffix in &suffixes {
                 for prefix in ["geometry", "geometry_properties", "material", "texture"] {
                     assert!(
-                        reserved.contains(&format!("{prefix}_{suffix}")),
-                        "the reserved set must contain {prefix}_{suffix}"
+                        is_reserved_column_name(&format!("{prefix}_{suffix}")),
+                        "{prefix}_{suffix} must be a reserved name"
                     );
                 }
             }
-            assert!(!reserved.contains("geometry"));
+            assert!(!is_reserved_column_name("geometry"));
         }
     }
 
-    /// Only the names CityParquet actually renders are reserved. A
-    /// `geometry`-prefixed attribute name that names no real column stays an
-    /// ordinary typed attribute rather than being diverted on the strength of
+    /// Only the names the LoD suffix grammar generates are reserved. A
+    /// `geometry`-prefixed attribute name that is no per-LoD form stays an
+    /// ordinary typed attribute rather than being escaped on the strength of
     /// its prefix alone.
     #[test]
     fn a_geometry_prefixed_name_that_names_no_column_is_not_reserved() {
         let lod = Lod::parse("2.2").unwrap();
-        let names = reserved_and_geometry_column_names(&[lod]);
-        assert!(!names.contains("geometry_vertices_lod2_2"));
+        assert!(!is_reserved_column_name("geometry_vertices_lod2_2"));
 
         let schema = CityParquetSchema {
             lods: vec![lod],

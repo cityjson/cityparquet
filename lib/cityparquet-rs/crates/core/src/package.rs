@@ -1285,13 +1285,6 @@ pub struct CanonicalSchema {
     /// dataset-wide `lods`/`schema` canonicalisation already exists to avoid
     /// for the whole-table case.
     pub module_lods: std::collections::BTreeMap<ModuleKey, Vec<Lod>>,
-    /// The attribute names the whole-dataset scan diverts into `other` (§5.2,
-    /// G12). Divertedness is schema-relative (it depends on the canonical
-    /// `lods` — e.g. an attribute named `geometry` is reserved once the dataset
-    /// has an LoD0), so a partition MUST divert exactly this set, not its own
-    /// local set: a partition lacking LoD0 would otherwise treat `geometry` as
-    /// a legal attribute the canonical schema has no column for, and drop it.
-    pub diverted_attribute_names: std::collections::BTreeSet<String>,
     /// The whole-dataset GeoParquet-legal geometry columns (§13.3), including a
     /// synthesised LoD0. Each partition must declare THIS set in its `geo`
     /// metadata, not its own local set: a partition lacking a legal LoD locally
@@ -1386,11 +1379,6 @@ pub(crate) fn convert_source_impl(
         // Per-module LoDs, canonicalised exactly like `lods` above — see
         // `CanonicalSchema::module_lods`'s doc comment.
         scan_result.module_lods = canon.module_lods.clone();
-        // Divert the canonical set, not this partition's local one — otherwise a
-        // partition whose local LoDs differ (e.g. no LoD0) would keep an
-        // attribute the canonical schema diverted, and the encoder would neither
-        // column it nor route it to `other`, losing the value (§5.2, G12).
-        scan_result.diverted_attribute_names = canon.diverted_attribute_names.clone();
         // Likewise the GeoParquet-legal column set (§13.3): every partition must
         // declare the whole-dataset set (incl. a synthesised LoD0) so their `geo`
         // metadata agrees on `primary_column`/`columns` and matches

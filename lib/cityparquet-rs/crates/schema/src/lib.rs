@@ -7,6 +7,7 @@ pub mod error;
 pub mod extensions;
 pub mod metadata;
 pub mod model;
+pub mod reserved;
 pub mod sidecar_schemas;
 pub mod types;
 

@@ -36,6 +36,7 @@ use cityparquet_schema::metadata::CITYPARQUET_VERSION;
 use cityparquet_schema::model::{
     geometry_properties_data_type, material_data_type, texture_data_type,
 };
+use cityparquet_schema::reserved::{is_reserved_column_name, restore_attribute_name};
 use cityparquet_schema::sidecar_schemas::{materials_schema, textures_schema};
 use cityparquet_schema::types::{Lod, ModuleKey, TAXONOMY, module_file};
 use cityparquet_schema::{CityParquetError, CityParquetSchema, Result};

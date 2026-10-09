@@ -352,6 +352,9 @@ fn json_number(v: f64) -> Value {
 /// `decode_batch` already follow this hoisted pattern.
 struct AttributeColumn<'a> {
     name: &'a str,
+    /// The source attribute name the column restores to (spec "Column naming
+    /// and reservation rules": one leading `_` removed from an escaped name).
+    restored: &'a str,
     array: &'a arrow_array::ArrayRef,
     data_type: &'a DataType,
     is_json: bool,
@@ -378,8 +381,10 @@ fn resolve_attribute_columns<'a>(
                 .get(EXTENSION_TYPE_NAME_KEY)
                 .map(String::as_str)
                 == Some(ARROW_JSON_EXTENSION);
+            let restored = cityparquet_schema::reserved::restore_attribute_name(name)?;
             Ok(AttributeColumn {
                 name: name.as_str(),
+                restored,
                 array,
                 data_type: field.data_type(),
                 is_json,
@@ -566,7 +571,7 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         let mut attrs = Map::new();
         for col in &attribute_cols {
             if let Some(value) = attribute_value(col, row)? {
-                attrs.insert(col.name.to_string(), value);
+                attrs.insert(col.restored.to_string(), value);
             }
         }
 
@@ -768,16 +773,15 @@ mod tests {
 
     #[test]
     fn merge_other_members_restores_into_attributes() {
-        // G12/gap 14: a diverted attribute (collected alongside unmapped
-        // members in the same `other` cell) merges into `attributes`
+        // An entry keyed like a reserved column merges into `attributes`
         // (creating it if the row had no column attributes), never the top
-        // level.
+        // level: a reader infers nothing from an entry's key.
         let mut json = Map::new();
         merge_other_members(&mut json, Some(r#"{"bbox":"x","id":42}"#), "o").unwrap();
         assert_eq!(json["attributes"], json!({"bbox": "x", "id": 42}));
         assert!(
             !json.contains_key("bbox"),
-            "diverted attrs must not land at the top level"
+            "`other` entries must not land at the top level"
         );
     }
 
@@ -817,7 +821,10 @@ mod tests {
     }
 
     #[test]
-    fn merge_other_members_rejects_a_diverted_name_duplicating_a_column_attribute() {
+    fn merge_other_members_rejects_an_entry_duplicating_a_column_attribute() {
+        // `attributes` holds the RESTORED names (an escaped `_bbox` column
+        // decodes as `bbox`), so the check compares `other` keys against
+        // source names.
         let mut json = Map::new();
         json.insert("attributes".to_string(), json!({"bbox": "from-column"}));
         assert!(

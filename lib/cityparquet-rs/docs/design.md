@@ -138,7 +138,12 @@ import:
 | object / heterogeneous array      | JSON                                 |
 | inconsistent sampled types        | promoted if safe, else `Utf8` / JSON |
 
-Reserved columns win any name clash. The inferred
+Reserved columns win any name clash. Names compare case-insensitively
+against every reserved name, the per-LoD forms the LoD suffix grammar
+generates included, and a source attribute whose name — leading `_` removed —
+collides is stored with one more leading `_`: `ID` → `_ID`, `children` →
+`_children`, `_ID` → `__ID`, `other` → `_other`. A reader removes one `_`
+from such a column, so export restores the source name. The inferred
 attribute-column list is recorded in metadata so a reader can tell source
 attributes from structural columns. Where a source object carries both an
 unmapped top-level member and an attribute of the same name, the attribute

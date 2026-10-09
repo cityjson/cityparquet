@@ -4,46 +4,11 @@
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 
-/// A source attribute whose name collides with a reserved column survives a
-/// full round trip, back inside `attributes`.
-#[test]
-fn colliding_attribute_round_trips_through_other() {
-    let dir = tempfile::tempdir().unwrap();
-    let src = dir.path().join("collide.city.jsonl");
-    // Real Delft objects with one reserved-named attribute injected.
-    let text = std::fs::read_to_string("../../tests/fixtures/delft.city.jsonl").unwrap();
-    let mut lines = text.lines();
-    let header = lines.next().unwrap().to_string();
-    let mut feature: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    for (_id, obj) in feature["CityObjects"].as_object_mut().unwrap() {
-        obj["attributes"]["bbox"] = serde_json::json!("collides-with-reserved");
-    }
-    std::fs::write(&src, format!("{header}\n{feature}\n")).unwrap();
-
-    let pkg = dir.path().join("pkg");
-    let out = dir.path().join("out.city.jsonl");
-    convert(&ConvertOptions::new(src.clone(), pkg.clone())).unwrap();
-    export(&ExportOptions {
-        package_dir: pkg.clone(),
-        output: out.clone(),
-    })
-    .unwrap();
-
-    let exported = std::fs::read_to_string(&out).unwrap();
-    let line = exported.lines().nth(1).expect("one feature line");
-    let feature: serde_json::Value = serde_json::from_str(line).unwrap();
-    for (id, obj) in feature["CityObjects"].as_object().unwrap() {
-        assert_eq!(
-            obj["attributes"]["bbox"], "collides-with-reserved",
-            "object {id} must recover its diverted attribute"
-        );
-    }
-}
-
 /// A top-level unmapped member and a RESERVED-named attribute (itself
-/// diverted into `other`) share a key: the attribute wins, `other` carries
-/// exactly one entry for it, and the drop is counted and diagnosed
-/// (decided behaviour — "warn and prefer attribute").
+/// stored escaped, as `_bbox`) share a key: the attribute wins, `other` does
+/// not carry the member (the reader restores `_bbox` to `bbox`, which an
+/// `other` entry `bbox` would duplicate), and the drop is counted and
+/// diagnosed (decided behaviour — "warn and prefer attribute").
 #[test]
 fn colliding_unmapped_member_and_reserved_attribute_keeps_the_attribute() {
     let dir = tempfile::tempdir().unwrap();
@@ -60,9 +25,10 @@ fn colliding_unmapped_member_and_reserved_attribute_keeps_the_attribute() {
         .expect("fixture has at least one object");
     let target_id = target_id.clone();
     // `attributes.bbox` collides with the RESERVED `bbox` column, so it is
-    // diverted into `other`; a genuinely unmapped top-level member also
-    // named `bbox` (not a real CityObject member — cjseq's `#[serde(flatten)]`
-    // catch-all carries it through as unmapped) collides with it there.
+    // stored as `_bbox` and restored as `bbox`; a genuinely unmapped
+    // top-level member also named `bbox` (not a real CityObject member —
+    // cjseq's `#[serde(flatten)]` catch-all carries it through as unmapped)
+    // would land in `other` under the same restored name.
     target["attributes"]["bbox"] = serde_json::json!("attribute-wins");
     target["bbox"] = serde_json::json!("unmapped-loses");
     std::fs::write(&src, format!("{header}\n{feature}\n")).unwrap();

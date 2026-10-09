@@ -259,20 +259,22 @@ pub(super) fn check_object_table(
     }
     let geometry = check_lod_columns(r, name, fields, &attributes);
 
-    // spec 02 "Column naming and reservation rules": attribute names MUST
-    // NOT collide with a reserved name; a column `city.attributes` does not
-    // list is a reserved column whose name the spec fixes.
+    // spec 02 "Column naming and reservation rules": an attribute column's
+    // own name MUST NOT collide with a reserved name, compared
+    // case-insensitively — a conforming writer stores a colliding source
+    // attribute escaped (`_ID`). A column `city.attributes` does not list is
+    // a reserved column whose name the spec fixes.
     let reserved_names: BTreeSet<&str> = reserved.iter().map(|f| f.name().as_str()).collect();
     for attribute in &attributes {
-        if reserved_names.contains(attribute)
-            || LOD_PREFIXES.contains(attribute)
-            || split_lod_column(attribute).is_some_and(|(_, s)| geometry.contains_key(s))
-        {
+        if is_reserved_column_name(attribute) {
             r.error(
-                "footer.attributes",
+                "attribute.reserved-name",
                 OBJECT_TABLE,
                 Some(name),
-                format!("attribute `{attribute}` collides with a reserved column name"),
+                format!(
+                    "attribute column `{attribute}` collides with a reserved column name; a \
+                     conforming writer stores it as `_{attribute}`"
+                ),
             );
         }
         match field_named(attribute) {
@@ -385,10 +387,22 @@ pub(super) fn check_object_values(
 ) {
     let name = file.name.as_str();
     let f = Some(name);
-    let attributes: BTreeSet<&str> = file
+    // Each attribute column under the source name it restores to (spec 02
+    // "Column naming and reservation rules"), the name an `other` key is
+    // compared against.
+    let attributes: HashMap<&str, &str> = file
         .city
         .as_ref()
-        .map(|c| c.attributes.iter().map(String::as_str).collect())
+        .map(|c| {
+            c.attributes
+                .iter()
+                .filter_map(|column| {
+                    restore_attribute_name(column)
+                        .ok()
+                        .map(|restored| (restored, column.as_str()))
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let id = column(batch, "id");
     let feature_id = column(batch, "feature_id");
@@ -459,8 +473,8 @@ pub(super) fn check_object_values(
             match serde_json::from_str::<Value>(&text) {
                 Ok(Value::Object(entries)) => {
                     for key in entries.keys() {
-                        if attributes.contains(key.as_str())
-                            && column(batch, key).is_some_and(|c| !c.is_null(i))
+                        if let Some(attribute) = attributes.get(key.as_str())
+                            && column(batch, attribute).is_some_and(|c| !c.is_null(i))
                         {
                             r.error(
                                 "value.other-collision",

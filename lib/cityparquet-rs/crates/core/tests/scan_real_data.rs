@@ -447,23 +447,30 @@ fn delft_without_lod0_and_identificatie_renamed(to: &str) -> (tempfile::TempDir,
     (dir, path)
 }
 
-/// Stripped of its LoD0, delft has no `0.*` LoD, so an attribute named
-/// `geometry_lod0_0` is a legal column after `scan` — and a qualifying one — until LoD0 synthesis
-/// reserves the name and diverts it into `other`. It must leave the bloom set
-/// with its column.
+/// Stripped of its LoD0, delft has no `0.*` LoD, yet an attribute named
+/// `geometry_lod0_0` still collides: reservation follows the LoD suffix
+/// grammar, not the dataset's LoDs (spec "Column naming and reservation
+/// rules"). `scan` stores it escaped as `_geometry_lod0_0` — a qualifying
+/// bloom column — and LoD0 synthesis, which then adds the real
+/// `geometry_lod0_0`, leaves it untouched.
 #[test]
-fn an_attribute_diverted_by_lod0_synthesis_leaves_the_bloom_set() {
+fn an_attribute_named_like_a_per_lod_column_is_escaped_at_scan() {
     let (_dir, path) = delft_without_lod0_and_identificatie_renamed("geometry_lod0_0");
     let mut result = scan(&Source::open(&path).unwrap()).unwrap();
+    let names = |r: &cityparquet::scan::ScanResult| -> Vec<String> {
+        r.schema.attributes.iter().map(|(n, _)| n.clone()).collect()
+    };
+    assert!(names(&result).contains(&"_geometry_lod0_0".to_string()));
+    assert!(!names(&result).contains(&"geometry_lod0_0".to_string()));
     assert!(
-        result.bloom_attributes.contains("geometry_lod0_0"),
+        result.bloom_attributes.contains("_geometry_lod0_0"),
         "before synthesis: {:?}",
         result.bloom_attributes
     );
     result.add_synthesized_lod0_column();
-    assert!(result.diverted_attribute_names.contains("geometry_lod0_0"));
+    assert!(names(&result).contains(&"_geometry_lod0_0".to_string()));
     assert!(
-        !result.bloom_attributes.contains("geometry_lod0_0"),
+        result.bloom_attributes.contains("_geometry_lod0_0"),
         "after synthesis: {:?}",
         result.bloom_attributes
     );

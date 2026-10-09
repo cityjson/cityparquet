@@ -113,12 +113,6 @@ pub struct ScanResult {
     /// the header's `appearance` default-theme members, `None` if neither is
     /// set.
     pub appearance_defaults: Option<serde_json::Value>,
-    /// Source attribute names whose (normalised) name collides with a realised
-    /// reserved/geometry column name (§5.2, G12). These get **no** attribute
-    /// column; the writer diverts each object's value into the `other` column
-    /// under `cityparquet:diverted_attributes` instead of aborting the whole
-    /// conversion. Sorted for a deterministic diverted map.
-    pub diverted_attribute_names: std::collections::BTreeSet<String>,
     /// The GeoParquet-legal geometry columns and their geometry types (§13.3,
     /// G1): one entry per LoD whose every geometry encodes to a WKB type in
     /// GeoParquet's `[1001,1007]` subset, ascending by LoD. A LoD with any
@@ -157,9 +151,8 @@ pub struct ScanResult {
     /// The `String` attribute columns that get a bloom filter under an
     /// enabled [`crate::recipe::BloomPolicy`]: those whose estimated distinct
     /// count is at least [`BLOOM_DISTINCT_RATIO`] of their non-null count.
-    /// Always a subset of `schema.attributes` of type `String`: a diverted
-    /// name leaves it, both here and in
-    /// [`Self::add_synthesized_lod0_column`]. Decided dataset-wide — a
+    /// Always a subset of `schema.attributes` of type `String`, keyed by
+    /// stored column name. Decided dataset-wide — a
     /// partitioned conversion stamps the whole-dataset set into every
     /// partition (`crate::package::CanonicalSchema::bloom_attributes`).
     pub bloom_attributes: BTreeSet<String>,
@@ -345,7 +338,7 @@ pub(crate) fn scan_keeping(
 
             if let Some(attrs) = co.attributes.as_ref().and_then(|v| v.as_object()) {
                 for (name, value) in attrs {
-                    let name = naming.encode_name(name, "attribute")?;
+                    let name = crate::encode::stored_attribute_name(&naming, name)?;
                     // Only JSON strings: a column that ends up `String`
                     // holds nothing else (numbers, booleans and arrays
                     // promote it to another type).
@@ -549,39 +542,13 @@ pub(crate) fn scan_keeping(
     // other), so keep them from ever disagreeing.
     debug_assert_eq!(crs.is_unknown(), crs_diagnostic.is_some());
 
-    // Divert an attribute whose (normalised) name collides with a realised
-    // reserved/geometry column name into `other` rather than aborting the
-    // whole conversion (§5.2, G12). Divertedness is schema-relative — it
-    // depends on the final `lods` — so this runs only after the LoDs are
-    // settled. `CityParquetSchema::validate` stays strict; scan simply never
-    // hands it a colliding attribute (the two share one reserved-name
-    // definition).
-    //
-    // `other` is ITSELF the divert target, so an attribute literally named
-    // `other` has nowhere further to divert to (diverting it into the very
-    // column named after it would be circular) and is rejected outright —
-    // the same self-collision rule `other_attributes` used to get when IT
-    // was the divert target, inherited unchanged. Every OTHER reserved-name
-    // collision still diverts into `other` as usual.
-    let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&lods);
-    let mut attributes = Vec::new();
-    let mut diverted_attribute_names = BTreeSet::new();
-    for (name, ty) in inferer.finish() {
-        if name == "other" {
-            return Err(CityParquetError::Schema(format!(
-                "attribute column '{name}' collides with a reserved or geometry column name"
-            )));
-        }
-        if reserved.contains(&name) {
-            diverted_attribute_names.insert(name);
-        } else {
-            attributes.push((name, ty));
-        }
-    }
+    // Every attribute is keyed by its stored column name (a colliding source
+    // name already escaped), so none collides with a reserved column.
+    let attributes = inferer.finish();
 
     // The high-cardinality rule, decided on the FINAL attribute set: a
-    // diverted name has no column, and a column that inferred any type but
-    // `String` (a Date or Timestamp, a Json mix) is never a candidate.
+    // column that inferred any type but `String` (a Date or Timestamp, a Json
+    // mix) is never a candidate.
     let bloom_attributes: BTreeSet<String> = attributes
         .iter()
         .filter(|(name, ty)| {
@@ -632,7 +599,6 @@ pub(crate) fn scan_keeping(
         extensions,
         source_metadata,
         appearance_defaults,
-        diverted_attribute_names,
         geoparquet_columns,
         synthesize_lod0: None,
         module_lods,
@@ -664,10 +630,10 @@ impl ScanResult {
     /// add LoD0 to `lods`/`schema` so the `geometry_lod0_0` column exists,
     /// and declare it GeoParquet-legal (`MultiPolygon Z`). No-op
     /// when the dataset has no analysis geometry (nothing to synthesise from) or
-    /// already carries some `0.*` LoD. Because `geometry_lod0_0`/`material_lod0_0`/…
-    /// become reserved once LoD0 is present (§5.2, G12), any attribute that
-    /// now collides is diverted into `other` here, mirroring `scan`'s own
-    /// diversion.
+    /// already carries some `0.*` LoD. No attribute can collide with the new
+    /// columns: `geometry_lod0_0` and its siblings are reserved names whatever
+    /// the dataset's LoDs, so `scan` has already escaped any attribute of that
+    /// name.
     ///
     /// Also extends `module_lods`: a writer synthesises a footprint from an
     /// object's own highest available LoD (§9), so any module that already
@@ -704,22 +670,6 @@ impl ScanResult {
                     .or_insert_with(|| ["MultiPolygon Z".to_string()].into());
             }
         }
-
-        // Divert attributes that collide with the now-reserved suffixed names.
-        let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&self.lods);
-        let mut kept = Vec::with_capacity(self.schema.attributes.len());
-        for (name, ty) in std::mem::take(&mut self.schema.attributes) {
-            if reserved.contains(&name) {
-                self.diverted_attribute_names.insert(name);
-            } else {
-                kept.push((name, ty));
-            }
-        }
-        self.schema.attributes = kept;
-        // A diverted attribute has no column any more, so no filter either.
-        let attributes = &self.schema.attributes;
-        self.bloom_attributes
-            .retain(|name| attributes.iter().any(|(kept, _)| kept == name));
 
         // The synthesised footprint is a `MultiPolygon Z`, which is inside
         // GeoParquet's legal subset, so it is declared like any other legal

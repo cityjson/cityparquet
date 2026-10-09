@@ -85,35 +85,14 @@ pub(crate) fn unmapped_object_members(co: &CityObject) -> Result<serde_json::Map
     Ok(unmapped_from_json(object_json(co)?))
 }
 
-/// Collect an object's diverted attributes (those whose name is in
-/// `diverted`) into a plain JSON map keyed by source attribute name — merged
-/// into the `other` column's cell value alongside the object's unmapped
-/// members (spec "Column naming and reservation rules"; gap 14 — this used
-/// to ride inside `other` under a `cityparquet:diverted_attributes`
-/// transport key, then briefly its own dedicated reserved column, now
-/// folded back into `other` itself since a reader restores every `other`
-/// entry into `attributes` regardless of why it is there). `None` when there
-/// is nothing to divert for this row. Null attribute values are skipped —
-/// the column path drops them and the comparator treats null as absent, so
-/// keeping them would make the diverted path spuriously non-null and
-/// inconsistent.
-fn collect_diverted_attributes(
-    co: &CityObject,
-    diverted: &[String],
-) -> Option<serde_json::Map<String, Value>> {
-    if diverted.is_empty() {
-        return None;
-    }
-    let attrs = co.attributes.as_ref().and_then(Value::as_object)?;
-    let mut map = serde_json::Map::new();
-    for name in diverted {
-        if let Some(v) = attrs.get(name)
-            && !v.is_null()
-        {
-            map.insert(name.clone(), v.clone());
-        }
-    }
-    (!map.is_empty()).then_some(map)
+/// The column a source attribute is stored under: its extension name with the
+/// namespace prefix (spec "Extensions"), escaped with a leading `_` when it
+/// collides with a reserved column name (spec "Column naming and reservation
+/// rules"). `scan` and the row writer both key attributes by this name.
+pub(crate) fn stored_attribute_name(naming: &ExtensionNaming, source: &str) -> Result<String> {
+    Ok(cityparquet_schema::reserved::escape_attribute_name(
+        &naming.encode_name(source, "attribute")?,
+    ))
 }
 
 /// Counters for the row-population edge cases the binding rules ask us to
@@ -133,17 +112,11 @@ pub struct EncodeStats {
     /// Surfaces the writer dropped because their exterior ring was one of
     /// the above, counted over STORED geometries.
     pub degenerate_surfaces_dropped: usize,
-    /// Attribute values diverted into the `other` column because their name
-    /// collides with a reserved/geometry column name (§5.2, G12). Counted
-    /// over all objects: a diverted attribute is preserved but is not
-    /// a queryable column, so the conversion report surfaces it (see
-    /// [`ScanResult::diverted_attribute_names`] for the names).
-    pub diverted_attribute_values: usize,
     /// LoD0 footprints synthesised into the `geometry_lod0_0` column for
     /// objects lacking a source LoD0 (spec "LoD0 synthesis").
     pub synthesized_lod0_footprints: usize,
     /// Unmapped top-level members dropped because an attribute of the same
-    /// name exists on the object (diverted or column-backed): the attribute
+    /// name exists on the object: the attribute
     /// wins ("warn and prefer attribute"), so `other` never carries an entry
     /// duplicating one of the object's own attributes — a reader
     /// MUST-errors on that (`merge_other_members` in `src/decode.rs`), so
@@ -1223,10 +1196,6 @@ struct RowWriter {
     implicit_geometry_nulls: NullBufferBuilder,
     other: StringBuilder,
     attributes: Vec<(String, AttrBuilder)>,
-    /// Attribute names diverted into `other` because they collide with a
-    /// reserved/geometry column name (§5.2, G12). Sorted, so the diverted
-    /// map each row emits is deterministic.
-    diverted_attributes: Vec<String>,
     /// When `Some`, synthesise an LoD0 footprint into the `geometry_lod0_0`
     /// slot for any object lacking a source LoD0 (spec "LoD0 synthesis").
     /// Carries the thresholds.
@@ -1291,7 +1260,6 @@ impl RowWriter {
             implicit_geometry_nulls: NullBufferBuilder::new(0),
             other: StringBuilder::new(),
             attributes,
-            diverted_attributes: scan.diverted_attribute_names.iter().cloned().collect(),
             synthesize_lod0: scan.synthesize_lod0,
             axis_order: scan.axis_order,
             naming: scan.naming(),
@@ -1530,25 +1498,16 @@ impl RowWriter {
         // `other` below (they are pushed further down, with the column).
         let address_rows = build_address_rows(&co_json, &pool)?;
 
-        // `other`: the single escape hatch (§5.1). Two kinds of entry share
-        // it — a source member with no dedicated column, and an attribute
-        // whose name collides with a reserved column — and they are
-        // deliberately not distinguished: the column's whole contract is
-        // that a reader restores every entry into `attributes`. Null when
-        // the object has neither.
+        // `other`: the single escape hatch (§5.1) for source members with no
+        // dedicated column. Null when the object has none.
         //
-        // Where an unmapped top-level member and an attribute (diverted or
-        // column-backed) share a key, the attribute wins ("warn and prefer
-        // attribute"): keeping the member would either silently lose the
-        // attribute's value (diverted case) or make this writer emit an
-        // `other` entry duplicating the attribute's own column, which a
-        // reader MUST-errors on (`merge_other_members` in `src/decode.rs`).
-        // The member is dropped instead, counted and diagnosed rather than
-        // failing the conversion.
+        // Where an unmapped top-level member and an attribute share a key, the
+        // attribute wins ("warn and prefer attribute"): keeping the member
+        // would make this writer emit an `other` entry duplicating the
+        // attribute's own (restored) name, which a reader MUST-errors on
+        // (`merge_other_members` in `src/decode.rs`). The member is dropped
+        // instead, counted and diagnosed rather than failing the conversion.
         let unmapped = unmapped_from_json(co_json);
-        let diverted = collect_diverted_attributes(co, &self.diverted_attributes);
-        stats.diverted_attribute_values += diverted.as_ref().map_or(0, serde_json::Map::len);
-
         let attrs = co.attributes.as_ref().and_then(Value::as_object);
         let mut merged = serde_json::Map::new();
         for (key, value) in unmapped {
@@ -1562,12 +1521,6 @@ impl RowWriter {
                 continue;
             }
             merged.insert(key, value);
-        }
-        // Every key `diverted` carries came from `co.attributes` itself, so
-        // the loop above has already dropped any unmapped member that would
-        // collide with it — `extend` can never overwrite an entry here.
-        if let Some(diverted) = diverted {
-            merged.extend(diverted);
         }
         if merged.is_empty() {
             self.other.append_null();
@@ -1630,7 +1583,7 @@ impl RowWriter {
             .and_then(|v| v.as_object())
             .map(|obj| {
                 obj.iter()
-                    .map(|(k, v)| Ok((self.naming.encode_name(k, "attribute")?, v)))
+                    .map(|(k, v)| Ok((stored_attribute_name(&self.naming, k)?, v)))
                     .collect::<Result<_>>()
             })
             .transpose()?
@@ -1927,38 +1880,6 @@ mod tests {
     use super::*;
 
     use crate::appearance_columns::TextureRing;
-
-    // G12/gap 14: a colliding attribute is collected for merging into
-    // `other`, skipping nulls.
-    #[test]
-    fn collect_diverted_attributes_diverts_present_non_null_values() {
-        let co: CityObject = serde_json::from_value(serde_json::json!({
-            "type": "Building",
-            "attributes": {"bbox": "sentinel", "id": null, "keep": 1}
-        }))
-        .unwrap();
-        let map = collect_diverted_attributes(&co, &["bbox".to_string(), "id".to_string()])
-            .expect("bbox is diverted");
-        assert_eq!(
-            map,
-            serde_json::json!({"bbox": "sentinel"})
-                .as_object()
-                .unwrap()
-                .clone(),
-            "only the non-null `bbox` is diverted; null `id` skipped"
-        );
-    }
-
-    #[test]
-    fn collect_diverted_attributes_is_none_when_nothing_diverts() {
-        let co: CityObject = serde_json::from_value(serde_json::json!({
-            "type": "Building",
-            "attributes": {"keep": 1}
-        }))
-        .unwrap();
-        assert!(collect_diverted_attributes(&co, &["bbox".to_string()]).is_none());
-        assert!(collect_diverted_attributes(&co, &[]).is_none());
-    }
 
     // spec "Addresses" (gap 10): only the recognised postal member names map
     // onto the reserved struct; anything else is dropped without disturbing

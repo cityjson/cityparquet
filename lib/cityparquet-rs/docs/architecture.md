@@ -28,6 +28,9 @@ executable specification.
   per-LoD geometry + inferred attribute columns, each with `cityparquet:role`
   / `cityparquet:lod` / geoarrow / arrow.json field metadata, in spec order.
   Validates duplicate LoDs and attribute/reserved name collisions.
+- `reserved` — the reserved column names (case-insensitive, per-LoD forms by
+  the suffix grammar) and the leading-`_` escape that stores a colliding
+  source attribute and restores it on read.
 - `attributes` — `AttributeInferer` / `AttributeType`: the primitive-mapping
   table that turns sampled source values into a column type.
 - `profile` — `Profile` (Core/Compatibility), the three sidecar table schemas

@@ -796,3 +796,91 @@ fn an_absolute_asset_href_is_classified_by_its_file_name() {
         "{report}"
     );
 }
+
+/// Convert the committed real fixture `tests/data/<name>` into
+/// `<tempdir>/pkg`.
+fn convert_data_fixture(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("pkg");
+    let input = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(name);
+    cityparquet::package::convert(&cityparquet::package::ConvertOptions::new(
+        input,
+        out.clone(),
+    ))
+    .unwrap();
+    (dir, out)
+}
+
+/// Rename the attribute column `from` to `to`, in the schema and in
+/// `city.attributes`.
+fn rename_attribute_column(c: &mut FileContent, from: &str, to: &str) {
+    c.map_column(from, |field, column, _| {
+        (field.clone().with_name(to), column.clone())
+    });
+    let mut city = c.key_json("city");
+    for name in city["attributes"].as_array_mut().unwrap() {
+        if name == from {
+            *name = json!(to);
+        }
+    }
+    c.set_key_value("city", city.to_string());
+}
+
+/// spec 02 "Column naming and reservation rules": an attribute column whose
+/// own name collides with a reserved name, compared case-insensitively,
+/// cannot come from a conforming writer. The real Helsinki building's `ID`
+/// attribute is written as `_ID`; renaming the column back to `ID` (and, on
+/// delft, an ordinary attribute to `Bbox`) is what a non-escaping writer
+/// would produce. The decoder refuses such a column too.
+#[test]
+fn an_attribute_column_named_like_a_reserved_column_is_reported() {
+    let (_dir, pkg) = convert_data_fixture("address_location.city.jsonl");
+    assert!(validate(&pkg).violations.is_empty(), "{}", validate(&pkg));
+    rewrite(&pkg.join("building.parquet"), |c| {
+        rename_attribute_column(c, "_ID", "ID")
+    });
+    let report = validate(&pkg);
+    assert_error(&report, "attribute.reserved-name");
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == "attribute.reserved-name" && v.message.contains("`ID`")),
+        "{report}"
+    );
+    let out = _dir.path().join("export.city.jsonl");
+    assert!(
+        cityparquet::export::export(&cityparquet::export::ExportOptions {
+            package_dir: pkg.clone(),
+            output: out,
+        })
+        .is_err(),
+        "the decoder must refuse an attribute column named like a reserved one"
+    );
+
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        rename_attribute_column(c, "status", "Bbox")
+    });
+    assert_error(&validate(&pkg), "attribute.reserved-name");
+}
+
+/// spec 02 "The `other` column": the duplicate check compares an `other` key
+/// against the attributes' RESTORED names, so an `other` entry `ID` next to
+/// the escaped `_ID` column duplicates it. Mutated from the real Helsinki
+/// building in `address_location.city.jsonl`.
+#[test]
+fn an_other_entry_duplicating_an_escaped_attribute_column_is_reported() {
+    let (_dir, pkg) = convert_data_fixture("address_location.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        c.map_column("other", |field, column, _| {
+            let replaced: StringArray = (0..column.len())
+                .map(|_| Some(r#"{"ID":1}"#.to_string()))
+                .collect();
+            (field.clone(), Arc::new(replaced) as ArrayRef)
+        });
+    });
+    assert_error(&validate(&pkg), "value.other-collision");
+}

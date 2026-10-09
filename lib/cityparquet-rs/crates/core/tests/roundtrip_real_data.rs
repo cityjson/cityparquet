@@ -83,47 +83,172 @@ fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-/// spec "Column naming and reservation rules": `other` is itself the divert
-/// target for a colliding attribute name, so a source attribute literally
-/// called `other` has nowhere further to divert to and is rejected outright
-/// — the same error path as any other undiverted reserved-name collision
-/// ([`cityparquet_schema::model::CityParquetSchema::validate`]'s "collides
-/// with a reserved or geometry column name" text). Derived from the real
-/// `delft` fixture with one injected attribute named `other`.
-#[test]
-fn attribute_literally_named_other_is_rejected() {
-    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
-    let mut injected = false;
-    let mut out_lines = Vec::new();
-    for line in text.lines() {
-        let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
-        if !injected && let Some(cos) = doc.get_mut("CityObjects").and_then(|v| v.as_object_mut()) {
-            for co in cos.values_mut() {
-                if let Some(attrs) = co.get_mut("attributes").and_then(|v| v.as_object_mut()) {
-                    attrs.insert("other".to_string(), serde_json::json!("should-be-rejected"));
-                    injected = true;
-                    break;
+/// Every object table's physical column names, across the package.
+fn package_columns(package_dir: &Path) -> Vec<String> {
+    let tables = PackageTables::open(package_dir).unwrap().tables;
+    let mut names = Vec::new();
+    for table in tables {
+        let file = std::fs::File::open(&table).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        names.extend(builder.schema().fields().iter().map(|f| f.name().clone()));
+    }
+    names
+}
+
+/// Every non-null `other` cell across the package's object tables.
+fn package_other_cells(package_dir: &Path) -> Vec<serde_json::Value> {
+    let tables = PackageTables::open(package_dir).unwrap().tables;
+    let mut cells = Vec::new();
+    for table in tables {
+        let file = std::fs::File::open(&table).unwrap();
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap();
+        for batch in reader {
+            let batch = batch.unwrap();
+            let other = batch
+                .column_by_name("other")
+                .expect("other must be a real physical column")
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                if !other.is_null(row) {
+                    cells.push(serde_json::from_str(other.value(row)).unwrap());
                 }
             }
         }
-        out_lines.push(serde_json::to_string(&doc).unwrap());
     }
+    cells
+}
+
+/// Writes `doc_lines` (one JSON document per line) to a fresh tempdir file.
+fn write_jsonl(name: &str, doc_lines: &[serde_json::Value]) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(name);
+    let text: Vec<String> = doc_lines
+        .iter()
+        .map(|d| serde_json::to_string(d).unwrap())
+        .collect();
+    std::fs::write(&path, text.join("\n") + "\n").unwrap();
+    (dir, path)
+}
+
+/// Converts `input`, exports the package and asserts the export compares
+/// equal with `input`. Returns the package dir (kept alive) for inspection.
+fn assert_round_trips(input: &Path) -> tempfile::TempDir {
+    let (exported, package_dir, _export_dir) = convert_and_export_path(input);
+    let report = compare_datasets(input, &exported, &CompareOptions::default()).unwrap();
+    assert!(
+        report.equal,
+        "the export must compare equal with the source; differences: {:#?}",
+        report.differences
+    );
+    package_dir
+}
+
+/// spec "Column naming and reservation rules": names compare
+/// case-insensitively, so the real Helsinki building's `ID` attribute (next
+/// to the reserved `id`) collides and is stored escaped as `_ID`; the reader
+/// removes the `_` again, so the export carries `ID` and compares equal with
+/// the source.
+#[test]
+fn a_case_insensitive_collision_is_escaped_and_round_trips() {
+    let input = data_fixture("address_location.city.jsonl");
+    let package_dir = assert_round_trips(&input);
+    let columns = package_columns(package_dir.path());
+    assert!(
+        columns.iter().any(|c| c == "_ID"),
+        "`ID` must be stored as `_ID`: {columns:?}"
+    );
+    assert!(
+        !columns.iter().any(|c| c == "ID"),
+        "no column may be named `ID`: {columns:?}"
+    );
+    assert!(
+        package_other_cells(package_dir.path()).is_empty(),
+        "a colliding attribute keeps a column of its own; nothing goes to `other`"
+    );
+}
+
+/// spec "Column naming and reservation rules": a source attribute already
+/// starting with `_` gains one more, so `_ID` → `__ID` and no two source
+/// names meet. Derived from the real `address_location` Helsinki building by
+/// renaming its genuine `ID` attribute to `_ID`.
+#[test]
+fn an_attribute_already_escaped_in_the_source_gains_one_more_underscore() {
+    let text = std::fs::read_to_string(data_fixture("address_location.city.jsonl")).unwrap();
+    let mut renamed = 0;
+    let docs: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(cos) = doc["CityObjects"].as_object_mut() {
+                for co in cos.values_mut() {
+                    if let Some(attrs) = co["attributes"].as_object_mut()
+                        && let Some(v) = attrs.remove("ID")
+                    {
+                        attrs.insert("_ID".to_string(), v);
+                        renamed += 1;
+                    }
+                }
+            }
+            doc
+        })
+        .collect();
+    assert_eq!(
+        renamed, 1,
+        "the fixture's building carries one `ID` attribute"
+    );
+    let (_dir, input) = write_jsonl("address_location_underscore_id.city.jsonl", &docs);
+
+    let package_dir = assert_round_trips(&input);
+    let columns = package_columns(package_dir.path());
+    assert!(
+        columns.iter().any(|c| c == "__ID"),
+        "`_ID` must be stored as `__ID`: {columns:?}"
+    );
+    assert!(!columns.iter().any(|c| c == "_ID"), "{columns:?}");
+}
+
+/// spec "Column naming and reservation rules": `other` is a reserved name like
+/// any other, so a source attribute named `other` is valid input and is
+/// stored as `_other`. Derived from the real `delft` fixture with one
+/// injected attribute named `other`.
+#[test]
+fn an_attribute_named_other_is_escaped_and_round_trips() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut injected = false;
+    let docs: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
+            if !injected && let Some(cos) = doc["CityObjects"].as_object_mut() {
+                for co in cos.values_mut() {
+                    if let Some(attrs) = co["attributes"].as_object_mut() {
+                        attrs.insert("other".to_string(), serde_json::json!("escaped-sentinel"));
+                        injected = true;
+                        break;
+                    }
+                }
+            }
+            doc
+        })
+        .collect();
     assert!(
         injected,
         "delft fixture must carry at least one object with attributes to inject into"
     );
+    let (_dir, input) = write_jsonl("delft_other_attribute.city.jsonl", &docs);
 
-    let dir = tempfile::tempdir().unwrap();
-    let input = dir.path().join("delft_other_collision.city.jsonl");
-    std::fs::write(&input, out_lines.join("\n") + "\n").unwrap();
-
-    let out = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(input, out.path().to_path_buf());
-    let err = convert(&opts).expect_err("an attribute literally named other must be rejected");
-    let msg = format!("{err}");
+    let package_dir = assert_round_trips(&input);
+    let columns = package_columns(package_dir.path());
     assert!(
-        msg.contains("other") && msg.contains("collides"),
-        "error must name the offending attribute and the reserved-name collision, got: {msg}"
+        columns.iter().any(|c| c == "_other"),
+        "`other` must be stored as `_other`: {columns:?}"
     );
 }
 
@@ -992,36 +1117,30 @@ fn address_location_round_trips() {
     );
 }
 
-/// G12/gap 14 (§5.2): a source attribute whose name collides with a reserved
-/// column name (here `bbox`) is diverted into `other` — the format's single
-/// escape hatch, shared with unmapped source members rather than riding a
-/// dedicated column or a magic `cityparquet:diverted_attributes` key (both
-/// earlier mechanisms) — and restored on export, rather than aborting the
-/// whole conversion. Fixture is real Helsinki objects with one injected
-/// `bbox` attribute alongside 27 genuine (non-colliding) attributes.
-///
-/// Hand-derived from the City of Helsinki open 3D city model (an injected
-/// colliding attribute on real objects); no public URL, so committed in-tree
-/// under `tests/data/` (via [`data_fixture`]) rather than fetched.
+/// spec "Column naming and reservation rules": an exact-case collision is
+/// escaped like a case-insensitive one. `collision_attr.city.jsonl` is two
+/// real Helsinki buildings (City of Helsinki open 3D city model) with an
+/// injected `bbox` attribute next to their 27 genuine ones (`ID` among them);
+/// no public URL, so committed in-tree under `tests/data/` (via
+/// [`data_fixture`]). `bbox` is stored as `_bbox` and `ID` as `_ID`, nothing
+/// goes to `other`, and the export restores both under their source names.
 #[test]
-fn colliding_attribute_is_diverted_and_round_trips() {
-    let (exported, package_dir, _export_dir) =
-        convert_and_export_path(&data_fixture("collision_attr.city.jsonl"));
-    let report = compare_datasets(
-        &data_fixture("collision_attr.city.jsonl"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
+fn an_exact_case_collision_is_escaped_and_round_trips() {
+    let input = data_fixture("collision_attr.city.jsonl");
+    let package_dir = assert_round_trips(&input);
+    let columns = package_columns(package_dir.path());
+    for column in ["_bbox", "_ID"] {
+        assert!(
+            columns.iter().any(|c| c == column),
+            "missing escaped column `{column}`: {columns:?}"
+        );
+    }
     assert!(
-        report.equal,
-        "a colliding attribute must round-trip via `other`; differences: {:#?}",
-        report.differences
+        package_other_cells(package_dir.path()).is_empty(),
+        "a colliding attribute keeps a column of its own; nothing goes to `other`"
     );
 
-    // The diverted attribute is restored into `attributes` on export (not left
-    // as a top-level member), with its value intact; the non-colliding
-    // attributes are unaffected.
+    let (exported, _package_dir, _export_dir) = convert_and_export_path(&input);
     let text = std::fs::read_to_string(&exported).unwrap();
     let mut checked = 0;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -1034,54 +1153,17 @@ fn colliding_attribute_is_diverted_and_round_trips() {
             assert_eq!(
                 attrs.get("bbox"),
                 Some(&serde_json::json!("diverted-sentinel")),
-                "the diverted `bbox` attribute must be restored with its value"
+                "the escaped `bbox` attribute must be restored under its source name"
             );
             assert!(
-                attrs.contains_key("measuredHeight"),
-                "genuine attributes must still round-trip alongside the diverted one"
-            );
-            assert!(
-                co.get("bbox").is_none(),
-                "`bbox` must be an attribute, not promoted to a top-level member"
+                !attrs.contains_key("_bbox"),
+                "the escape must not leak into the export"
             );
             checked += 1;
         }
     }
     assert_eq!(checked, 2, "fixture has two objects, both must be checked");
-
-    // Physical proof (not just decoded values): the PACKAGE's own `other`
-    // Parquet column actually carries the diverted value — `other` is the
-    // format's single escape hatch, so the diverted attribute has nowhere
-    // else to ride.
-    let tables = PackageTables::open(package_dir.path()).unwrap().tables;
-    assert_eq!(tables.len(), 1, "both fixture objects are Buildings");
-    let file = std::fs::File::open(&tables[0]).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .unwrap()
-        .build()
-        .unwrap();
-    let mut other_seen = 0;
-    for batch in reader {
-        let batch = batch.unwrap();
-        let other = batch
-            .column_by_name("other")
-            .expect("other must be a real physical column")
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        for row in 0..batch.num_rows() {
-            assert!(
-                !other.is_null(row),
-                "the diverted attribute must land in the physical other cell"
-            );
-            let cell: serde_json::Value = serde_json::from_str(other.value(row)).unwrap();
-            assert_eq!(cell, serde_json::json!({"bbox": "diverted-sentinel"}));
-            other_seen += 1;
-        }
-    }
-    assert_eq!(other_seen, 2);
 }
-
 /// Spec §metadata "CRS rules", as amended: the whole unknown-CRS path, on a
 /// real fixture that genuinely carries no `referenceSystem` — convert ->
 /// footer `city.crs: null` -> export -> **no** `referenceSystem` -> compare

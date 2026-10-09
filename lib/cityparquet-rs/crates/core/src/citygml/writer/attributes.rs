@@ -28,8 +28,10 @@ use crate::Result;
 
 const ARROW_JSON_EXTENSION: &str = "arrow.json";
 
-/// Build the `column name -> stored AttributeType` map from the package's Arrow
-/// schema. A `Utf8` field tagged with the `arrow.json` extension is a `Json`
+/// Build the `source attribute name -> stored AttributeType` map from the
+/// package's Arrow schema, keyed by the name a decoded object carries (an
+/// escaped column restored, spec "Column naming and reservation rules"). A
+/// `Utf8` field tagged with the `arrow.json` extension is a `Json`
 /// column (which `AttributeType::from_arrow` cannot tell from `String` on its
 /// own); every other attribute column resolves through `from_arrow`. Names that
 /// do not resolve are omitted (routed to skip-with-counter downstream).
@@ -54,7 +56,10 @@ pub fn attribute_types(
         } else {
             continue;
         };
-        map.insert(name.clone(), ty);
+        let Ok(restored) = cityparquet_schema::reserved::restore_attribute_name(name) else {
+            continue;
+        };
+        map.insert(restored.to_string(), ty);
     }
     map
 }
