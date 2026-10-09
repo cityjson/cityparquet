@@ -38,19 +38,19 @@ def system():
     s.teardown()
 
 
-def test_count_is_city_object_granular(system):
+def test_geometry_scan_is_city_object_granular(system):
     """The spec's blocking item, asserted rather than assumed."""
     params = _params()
-    m = system.run("count", params, repeat=1)
+    m = system.run("geometry-scan", params, repeat=1)
     assert m.result_count == params.total_city_objects, (
-        "3DCityDB count is not CityObject-granular; the restricting predicate "
-        "in docs/3dcitydb-v5-schema.md is wrong or missing"
+        "3DCityDB geometry-scan is not CityObject-granular; the restricting "
+        "predicate in docs/3dcitydb-v5-schema.md is wrong or missing"
     )
 
 
 def test_every_non_windowed_read_scenario_runs_and_reports_server_time(system):
     params = _params()
-    for scenario in ("geometry-scan", "count", "attr-filter", "attr-range",
+    for scenario in ("geometry-scan", "attr-filter", "attr-range",
                      "attr-stats"):
         m = system.run(scenario, params, repeat=1)
         assert m.times_s[0] > 0
@@ -119,7 +119,7 @@ def _feature_count(system) -> int:
 def test_bbox_query_at_full_window_matches_the_city_object_count(system):
     # The whole dataset's bbox covers every feature's envelope, so a
     # correctly CityObject-granular bbox-query at selectivity 1.0 must
-    # equal the same 2231 `count` reports — not 10045 (every feature,
+    # equal the source's 2231 CityObjects — not 10045 (every feature,
     # verified without the predicate: see docs/3dcitydb-v5-schema.md's
     # "Index coverage" section and the Task 9 report's EXPLAIN evidence).
     from citybench.config import BboxWindow
@@ -253,7 +253,7 @@ def test_count_and_attr_range_route_the_predicate_through_an_index(system):
     from citybench.scenarios import sql_citydb
 
     params = _params()
-    for scenario in ("count", "attr-range", "attr-filter"):
+    for scenario in ("attr-range", "attr-filter"):
         sql, args = sql_citydb.sql_for(
             scenario, params, cityobject_class_ids=system._cityobject_class_ids,
         )

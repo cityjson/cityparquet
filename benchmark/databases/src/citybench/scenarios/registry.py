@@ -4,7 +4,7 @@ from __future__ import annotations
 
 #: Read scenarios, in the order they are measured and reported. The set is
 #: the read half of the author's query catalogue
-#: (`notes/benchmark-queries.md`); five of the ten rows map onto a query of
+#: (`notes/benchmark-queries.md`); four of the nine rows map onto a query of
 #: the CJDB paper's own Q1-Q8 (see `README.md`, "Mapping to the CJDB
 #: paper"), the rest are this harness's own and are captioned as such.
 #:
@@ -12,10 +12,10 @@ from __future__ import annotations
 #: here: the catalogue drops containment fetches and point queries ("a
 #: point query is a window query" — they measure how the query is composed,
 #: not the format), single-attribute projection, and semantic-surface
-#: presence.
+#: presence. Nor is `count`: every system answers it from metadata, so it
+#: measures nothing about the store.
 TIER1: tuple[str, ...] = (
     "geometry-scan",
-    "count",
     "bbox-query",
     "attr-filter",
     "attr-range",
@@ -72,7 +72,7 @@ ID_PROBE_SCENARIOS: frozenset[str] = frozenset({"id-lookup"})
 # (`benchmark/readbench/src/scenario.rs`), and the read harness is not this
 # family's to extend, so the native-reader systems simply do not run them.
 READBENCH_SCENARIOS: frozenset[str] = frozenset({
-    "count", "bbox-query", "attr-filter", "attr-stats", "id-lookup",
+    "bbox-query", "attr-filter", "attr-stats", "id-lookup",
 })
 
 
@@ -107,12 +107,9 @@ def systems_for(scenario: str) -> tuple[str, ...]:
 # count — two engines compute different sums and every row would be falsely
 # flagged.
 #
-# Convention, enforced by every sql_* module: a scenario in
-# COUNT_FROM_FIRST_COLUMN returns a single row whose FIRST column is the
-# object count; `attr-stats` (COUNT_FROM_LAST_COLUMN) returns min, max,
-# sum, count, so its count is the LAST column. Everything else reports the
-# number of rows materialised.
-COUNT_FROM_FIRST_COLUMN: frozenset[str] = frozenset({"count"})
+# Convention, enforced by every sql_* module: `attr-stats`
+# (COUNT_FROM_LAST_COLUMN) returns min, max, sum, count, so its count is the
+# LAST column. Every other read reports the number of rows materialised.
 COUNT_FROM_LAST_COLUMN: frozenset[str] = frozenset({"attr-stats"})
 
 # Scenarios that RETURN ROWS — ids, or whole objects — the way the CJDB
@@ -150,10 +147,7 @@ class ScenarioUnavailable(Exception):
 
 
 def count_mode(scenario: str) -> str:
-    """'first-column', 'last-column', 'rowcount' or 'write-rowcount'.
-    KeyError if unknown."""
-    if scenario in COUNT_FROM_FIRST_COLUMN:
-        return "first-column"
+    """'last-column', 'rowcount' or 'write-rowcount'. KeyError if unknown."""
     if scenario in COUNT_FROM_LAST_COLUMN:
         return "last-column"
     if scenario in COUNT_FROM_ROWCOUNT:

@@ -36,9 +36,6 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
     p = params
     t = f"{SCHEMA}.city_object"
 
-    if scenario == "count":
-        return f"SELECT count(*) FROM {t}", ()
-
     if scenario == "geometry-scan":
         # Every object's id and its whole geometry JSONB, fetched in
         # PostgreSQL's binary wire format (no text cast, no byte sum).

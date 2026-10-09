@@ -5,7 +5,6 @@ from citybench.scenarios.registry import (
     ALL,
     ID_PROBE_SCENARIOS,
     ScenarioUnavailable,
-    COUNT_FROM_FIRST_COLUMN,
     COUNT_FROM_LAST_COLUMN,
     COUNT_FROM_ROWCOUNT,
     COUNT_FROM_WRITE_ROWCOUNT,
@@ -24,12 +23,12 @@ from conftest import make_params, make_probes
 def test_the_scenario_set_is_the_read_tiers_plus_the_write_tier():
     assert ALL == TIER1 + TIER2 + TIER3
     assert READ_SCENARIOS == TIER1 + TIER2
-    assert len(ALL) == 14
+    assert len(ALL) == 13
 
 
 def test_tier1_carries_the_cjdb_mapped_read_scenarios():
     assert TIER1 == (
-        "geometry-scan", "count", "bbox-query",
+        "geometry-scan", "bbox-query",
         "attr-filter", "attr-range", "attr-stats", "id-lookup",
     )
     # Dropped by the author's review of the query catalogue
@@ -37,9 +36,10 @@ def test_tier1_carries_the_cjdb_mapped_read_scenarios():
     # queries ("a point query is a window query" — they measure how the
     # query is composed, not the format), single-attribute projection, and
     # semantic-surface presence. `full-read` went earlier, for being three
-    # different operations under one name (review §4.2).
+    # different operations under one name (review §4.2). `count` is
+    # answered from metadata on every system and so measures nothing.
     for retired in ("bbox-fetch", "point-query", "semantic-surface",
-                    "project", "full-read", "hierarchy"):
+                    "project", "full-read", "hierarchy", "count"):
         assert retired not in ALL
 
 
@@ -78,9 +78,9 @@ def test_native_readers_only_run_what_the_rust_child_implements():
     # `parts-per-building` forms have no counterpart in the child's own
     # Scenario enum, and the read harness is not this family's to extend.
     assert READBENCH_SCENARIOS == frozenset(
-        {"count", "bbox-query", "attr-filter", "attr-stats", "id-lookup"}
+        {"bbox-query", "attr-filter", "attr-stats", "id-lookup"}
     )
-    assert systems_for("count")[0] == "cityparquet"
+    assert systems_for("bbox-query")[0] == "cityparquet"
     assert "cityparquet" not in systems_for("geometry-scan")
     assert "cityparquet" not in systems_for("lod-query")
 
@@ -110,11 +110,6 @@ def test_unknown_scenario_raises():
         systems_for("nonsense")
 
 
-@pytest.mark.parametrize("scenario", sorted(COUNT_FROM_FIRST_COLUMN))
-def test_count_mode_is_first_column_for_first_column_scenarios(scenario):
-    assert count_mode(scenario) == "first-column"
-
-
 @pytest.mark.parametrize("scenario", sorted(COUNT_FROM_ROWCOUNT))
 def test_count_mode_is_rowcount_for_rowcount_scenarios(scenario):
     assert count_mode(scenario) == "rowcount"
@@ -131,12 +126,12 @@ def test_count_mode_is_write_rowcount_for_the_write_tier(scenario):
 
 
 def test_count_mode_sets_partition_all_scenarios_exactly():
-    # Every scenario in ALL must be in exactly one of the four sets: none
+    # Every scenario in ALL must be in exactly one of the three sets: none
     # missing (count_mode would raise for a real scenario), none in two
     # (extract_count would be told contradictory things about the same
     # scenario). This is the invariant a newly added scenario could break
     # silently if only added to ALL and forgotten here.
-    sets = (COUNT_FROM_FIRST_COLUMN, COUNT_FROM_LAST_COLUMN, COUNT_FROM_ROWCOUNT,
+    sets = (COUNT_FROM_LAST_COLUMN, COUNT_FROM_ROWCOUNT,
             set(COUNT_FROM_WRITE_ROWCOUNT))
     assert set().union(*sets) == set(ALL)
     assert sum(len(s) for s in sets) == len(ALL)
@@ -256,13 +251,12 @@ def test_an_attribute_less_dataset_skips_rather_than_errors_on_every_system():
                 _build(scenario, system, params, None)
 
 
-def test_scenarios_returning_rows_use_rowcount_not_a_first_column():
+def test_scenarios_returning_rows_use_rowcount():
     """Every scenario that returns rows — as CJDB's own queries do — is
     counted by the rows it materialised, so no engine can win by returning
     a lazy cursor or by answering a count from metadata."""
     for scenario in ("geometry-scan", "bbox-query", "attr-filter", "attr-range",
                      "id-lookup", "lod-query", "parts-per-building", "parts-per-building-join"):
         assert count_mode(scenario) == "rowcount", scenario
-    assert count_mode("count") == "first-column"
     # min, max, sum, count: the count is the LAST column.
     assert count_mode("attr-stats") == "last-column"

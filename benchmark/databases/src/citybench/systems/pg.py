@@ -140,7 +140,7 @@ def parse_explain_execution_time(plan: list | str) -> float:
 
 
 def time_query(conn: psycopg.Connection, sql: str, args: tuple = (),
-               *, count_mode: str = "first-column") -> tuple[int, float, float, int | None]:
+               *, count_mode: str) -> tuple[int, float, float, int | None]:
     """Run ``sql`` once, fully materialising results.
 
     Returns ``(result_count, wall_seconds, server_seconds, peak_backend_rss_bytes)``.
@@ -355,13 +355,11 @@ def fetch_rows(conn: psycopg.Connection, sql: str, args: tuple = ()
 def extract_count(rows: list, mode: str) -> int:
     """A scenario's result count, per the registry's declared mode.
 
-    'first-column' takes the first column of the single returned row —
-    every such scenario's SQL is written to put the object count there —
-    and 'last-column' its last (attr-stats: min, max, sum, count).
-    'rowcount' counts materialised rows.
+    'last-column' takes the last column of the single returned row
+    (attr-stats: min, max, sum, count); 'rowcount' counts materialised rows.
 
     Inferring this from the result shape instead would silently compare
-    two engines' checksums on full-read and flag every row as a mismatch.
+    two engines' aggregates on attr-stats and flag every row as a mismatch.
     """
     if mode == "rowcount":
         return len(rows)
@@ -370,11 +368,11 @@ def extract_count(rows: list, mode: str) -> int:
             "write scenarios report the cursor's rowcount, not a result "
             "set; use time_write(), not extract_count()"
         )
-    if mode not in ("first-column", "last-column"):
+    if mode != "last-column":
         raise ValueError(f"unknown count mode: {mode!r}")
     if not rows:
         return 0
-    return int(rows[0][0] if mode == "first-column" else rows[0][-1])
+    return int(rows[0][-1])
 
 
 def dump_indexes(conn: psycopg.Connection, schema: str) -> list[str]:

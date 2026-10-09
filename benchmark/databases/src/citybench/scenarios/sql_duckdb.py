@@ -99,9 +99,6 @@ def sql_for(scenario: str, params: Params, table: str,
     """
     p = params
 
-    if scenario == "count":
-        return f"SELECT count(*) FROM {table}", ()
-
     if scenario == "geometry-scan":
         # Every object's id and geometry, every LoD, fetched as WKB (the
         # connection keeps `enable_geoparquet_conversion = false`).

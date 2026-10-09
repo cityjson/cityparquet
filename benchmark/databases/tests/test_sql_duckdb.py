@@ -110,11 +110,10 @@ def test_bbox_query_returns_ids_and_the_highest_lod_geometry():
     assert "bbox.xmax >= ?" in sql
 
 
-def test_count_counts_every_row_unconditionally():
-    sql, args = sql_for("count", _params(), TABLE)
-    assert "count(*)" in sql
-    assert "WHERE" not in sql.upper()  # unfiltered: no predicate to parameterise
-    assert args == ()
+def test_count_is_not_a_scenario():
+    # Answered from metadata on every system, so it measures nothing.
+    with pytest.raises(KeyError):
+        sql_for("count", _params(), TABLE)
 
 
 def test_attr_filter_uses_the_derived_attribute_and_returns_ids():

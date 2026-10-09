@@ -223,7 +223,7 @@ def test_run_discards_the_warmup_and_reports_repeat_samples(monkeypatch):
         lambda conn, sql, args, count_mode: next(responses),
     )
 
-    measurement = system.run("count", PARAMS, repeat=3)
+    measurement = system.run("geometry-scan", PARAMS, repeat=3)
 
     assert measurement.result_count == 5
     assert measurement.times_s == [0.1, 0.2, 0.05]

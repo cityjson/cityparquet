@@ -29,13 +29,13 @@ from citybench.scenarios.registry import (
 
 # Scenarios for which the `selectivity` column is left blank. Per the
 # inherited contract (benchmark/formats/READ_BENCHMARK.md's CSV section):
-# "selectivity = result_count / total_object_count, empty where N/A". These
-# scenarios answer over the whole dataset, so a result_count/total ratio
+# "selectivity = result_count / total_object_count, empty where N/A".
+# `geometry-scan` answers over the whole dataset, so a result_count/total ratio
 # would not describe a selection at all; the write tier's `result_count` is
 # rows TOUCHED by a mutation, which is not a selection either. Every other
 # scenario DOES report it. Named here, once, so the rule is greppable
 # rather than re-derived at each call site.
-NO_SELECTIVITY_SCENARIOS = frozenset({"count", "geometry-scan"}) | set(TIER3)
+NO_SELECTIVITY_SCENARIOS = frozenset({"geometry-scan"}) | set(TIER3)
 
 #: Default relative spread below which a count disagreement is published as
 #: an explained DEVIATION rather than a `mismatch` that fails the run.
@@ -223,7 +223,7 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
 
     ``selectivity`` is populated as ``result_count / total_city_objects``
     for every scenario except those in ``NO_SELECTIVITY_SCENARIOS`` (
-    ``count``, ``geometry-scan`` and the write tier), per the inherited CSV
+    ``geometry-scan`` and the write tier), per the inherited CSV
     contract — see that constant's docstring for the exact wording.
 
     ``gate`` is the run's load gate (``isolation.LoadGate``): consulted

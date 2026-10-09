@@ -90,22 +90,28 @@ def test_sql_for_requires_cityobject_class_ids_keyword():
     # quietly reintroducing the exact fairness defect the C1 fix corrects.
     # Every caller must resolve the id set once and pass it explicitly.
     with pytest.raises(TypeError):
-        sql_for("count", PARAMS)  # type: ignore[call-arg]
+        sql_for("geometry-scan", PARAMS)  # type: ignore[call-arg]
 
 
 def test_sql_for_rejects_an_empty_cityobject_class_ids():
     with pytest.raises(ValueError, match="cityobject_class_ids is empty"):
-        sql_for("count", PARAMS, cityobject_class_ids=())
+        sql_for("geometry-scan", PARAMS, cityobject_class_ids=())
 
 
 # --- The brief's own floor -------------------------------------------------
 
 
-def test_count_targets_feature_and_uses_a_static_resolved_id_list():
-    sql, args = sql_for("count", PARAMS, cityobject_class_ids=IDS)
+def test_geometry_scan_targets_feature_and_uses_a_static_resolved_id_list():
+    sql, args = sql_for("geometry-scan", PARAMS, cityobject_class_ids=IDS)
     assert "citydb.feature" in sql
     assert "objectclass_id IN (100, 901, 902)" in sql  # sorted, not input order
     assert args == ()
+
+
+def test_count_is_not_a_scenario():
+    # Answered from metadata on every system, so it measures nothing.
+    with pytest.raises(KeyError):
+        sql_for("count", PARAMS, cityobject_class_ids=IDS)
 
 
 def test_bbox_query_uses_postgis_operator_for_index_use():
@@ -236,7 +242,6 @@ def test_static_predicate_never_emits_a_correlated_subquery():
 
 
 @pytest.mark.parametrize("scenario, args", [
-    ("count", ()),
     ("geometry-scan", ()),
     ("bbox-query", (PARAMS.window("bbox-25pct"),)),
     ("attr-filter", ()),

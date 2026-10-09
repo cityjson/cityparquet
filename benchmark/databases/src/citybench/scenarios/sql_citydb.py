@@ -41,7 +41,7 @@ CAPTURED_PROPERTY_FK = "feature_id"       # property -> feature foreign key
 # (its own `WITH RECURSIVE`, a `JOIN` to `objectclass` aliased `oc`). This
 # module instead needs a single, self-contained boolean EXPRESSION that can
 # be dropped into any scenario's `WHERE` clause via plain string
-# interpolation — including queries where `feature` is unaliased (`count`),
+# interpolation — including queries where `feature` is
 # aliased `f` (`attr-stats`, `lod-query`), or not the only
 # table in the FROM list (`attr-stats` and `lod-query` both join
 # `property`, which has no `objectclass_id` column of its own, so the bare
@@ -400,9 +400,6 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
     """
     p = params
 
-    if scenario == "count":
-        return f"SELECT count(*) FROM {_F} WHERE {_static_predicate(cityobject_class_ids)}", ()
-
     if scenario == "geometry-scan":
         # Every object's id and all its geometries (`_object_geometries`,
         # one per LoD), one row per object, in PostgreSQL's binary wire
@@ -724,7 +721,7 @@ def index_ddl() -> list[str]:
         reported it permanently unreachable for `attr-stats`/`lod-query`/
         hierarchy's child side; that was true only of the old correlated
         predicate shape, not of this column in general). Directly the
-        driving `Index Cond` for `count`/`attr-filter`/
+        driving `Index Cond` for `attr-filter`/
         `attr-stats`; for `lod-query`/parts-per-building's
         child side the planner instead drives from an even more selective
         index first and applies this one as a cheap `Filter` over the
@@ -775,7 +772,7 @@ def index_ddl() -> list[str]:
     settings, no scenario seq-scans `feature` for it any more, verified
     live by `EXPLAIN` for every scenario that uses it:
 
-    - `count`, `attr-filter`, `attr-stats`
+    - `attr-filter`, `attr-stats`
       (its `owner` side): the planner chooses `Index Cond:
       (objectclass_id = ANY (...))` against `feature_objectclass_inx`
       directly — the three of these (`attr-stats`, and, in the JOIN cases

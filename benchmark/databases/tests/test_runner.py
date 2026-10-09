@@ -102,7 +102,7 @@ def test_cross_check_does_not_divide_by_a_zero_maximum():
 
 def test_run_matrix_tags_every_row_when_counts_disagree():
     systems = [FakeSystem("cjdb", 10), FakeSystem("3dcitydb", 9)]
-    rows = run_matrix(systems, PARAMS, "delft", repeat=3, scenarios=("count",))
+    rows = run_matrix(systems, PARAMS, "delft", repeat=3, scenarios=("geometry-scan",))
     assert len(rows) == 2
     assert all(r["notes"].startswith("count-mismatch") for r in rows)
     assert all(r["status"] == "mismatch" for r in rows)
@@ -110,7 +110,7 @@ def test_run_matrix_tags_every_row_when_counts_disagree():
 
 def test_run_matrix_marks_a_within_tolerance_deviation_without_failing_it():
     systems = [FakeSystem("cjdb", 220949), FakeSystem("3dcitydb", 221005)]
-    rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("count",))
+    rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("geometry-scan",))
     assert all(r["status"] == "ok-deviation" for r in rows)
     # The detail is NOT dropped: it is the whole value of the row.
     assert all("count-mismatch" in r["notes"] for r in rows)
@@ -119,16 +119,16 @@ def test_run_matrix_marks_a_within_tolerance_deviation_without_failing_it():
 def test_run_matrix_tolerance_is_threaded_through_from_the_caller():
     systems = [FakeSystem("cjdb", 99), FakeSystem("3dcitydb", 100)]
     loose = run_matrix(systems, PARAMS, "delft", repeat=1,
-                       scenarios=("count",), tolerance=0.02)
+                       scenarios=("geometry-scan",), tolerance=0.02)
     assert all(r["status"] == "ok-deviation" for r in loose)
     strict = run_matrix(systems, PARAMS, "delft", repeat=1,
-                        scenarios=("count",), tolerance=0.0003)
+                        scenarios=("geometry-scan",), tolerance=0.0003)
     assert all(r["status"] == "mismatch" for r in strict)
 
 
 def test_run_matrix_stamps_the_thread_configuration_onto_every_row():
     systems = [FakeSystem("cjdb", 10)]
-    rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("count",),
+    rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("geometry-scan",),
                       run_note="threads=single")
     assert rows[0]["notes"].startswith("threads=single")
 
@@ -151,7 +151,7 @@ def test_run_matrix_only_asks_the_systems_the_registry_names_for_a_scenario():
 
 def test_run_matrix_leaves_notes_clean_when_counts_agree():
     systems = [FakeSystem("cjdb", 10), FakeSystem("3dcitydb", 10)]
-    rows = run_matrix(systems, PARAMS, "delft", repeat=3, scenarios=("count",))
+    rows = run_matrix(systems, PARAMS, "delft", repeat=3, scenarios=("geometry-scan",))
     assert all(r["notes"] == "" for r in rows)
 
 
@@ -183,16 +183,6 @@ def test_scenarios_without_a_window_have_blank_selectivity():
     assert rows[0]["selectivity"] == ""
 
 
-def test_count_scenario_also_has_blank_selectivity():
-    # `full-read` alone cannot discriminate "blank because it has no
-    # window" from "blank because it is in NO_SELECTIVITY_SCENARIOS" — both
-    # rules agree on `full-read`. `count` is the second, independent member
-    # of the inherited exclusion pair and must be blank too.
-    systems = [FakeSystem("cjdb", 10)]
-    rows = run_matrix(systems, PARAMS, "delft", repeat=2, scenarios=("count",))
-    assert rows[0]["selectivity"] == ""
-
-
 def test_non_windowed_non_excluded_scenario_still_reports_selectivity():
     # The discriminating case: `attr-filter` has no window target (target
     # is None throughout), yet per the inherited CSV contract
@@ -217,25 +207,25 @@ def test_other_non_windowed_scenarios_also_report_selectivity():
 def test_no_selectivity_scenarios_is_the_whole_dataset_reads_plus_the_writes():
     # Locks the exclusion set itself: a scenario silently added to or
     # dropped from this constant would otherwise only be caught by chance.
-    # `count`/`geometry-scan` answer over the whole dataset; the write
+    # `geometry-scan` answers over the whole dataset; the write
     # tier's result_count is rows TOUCHED by a mutation, which is not a
     # selection either.
     assert NO_SELECTIVITY_SCENARIOS == frozenset({
-        "count", "geometry-scan", "attr-add", "attr-update", "attr-delete",
+        "geometry-scan", "attr-add", "attr-update", "attr-delete",
         "append-object",
     })
 
 
 def test_run_matrix_records_repeat_count():
     systems = [FakeSystem("cjdb", 10)]
-    rows = run_matrix(systems, PARAMS, "delft", repeat=7, scenarios=("count",))
+    rows = run_matrix(systems, PARAMS, "delft", repeat=7, scenarios=("geometry-scan",))
     assert rows[0]["repeat"] == "7"
 
 
 def test_run_matrix_stamps_sizes_onto_every_row_of_that_system():
     systems = [FakeSystem("cjdb", 10), FakeSystem("duckdb-cityparquet", 10)]
     rows = run_matrix(
-        systems, PARAMS, "delft", repeat=2, scenarios=("count", "geometry-scan"),
+        systems, PARAMS, "delft", repeat=2, scenarios=("geometry-scan", "attr-stats"),
         sizes={"cjdb": (900, 700), "duckdb-cityparquet": (400, 400)},
     )
     cjdb_rows = [r for r in rows if r["format"] == "cjdb"]
@@ -248,7 +238,7 @@ def test_run_matrix_stamps_sizes_onto_every_row_of_that_system():
 
 def test_run_matrix_leaves_sizes_blank_when_not_supplied():
     systems = [FakeSystem("cjdb", 10)]
-    rows = run_matrix(systems, PARAMS, "delft", repeat=2, scenarios=("count",))
+    rows = run_matrix(systems, PARAMS, "delft", repeat=2, scenarios=("geometry-scan",))
     assert rows[0]["size_bytes"] == ""
 
 
@@ -404,7 +394,7 @@ def test_each_id_probe_is_cross_checked_against_itself_not_against_the_others():
 
 def test_run_matrix_dataset_name_is_stamped_onto_every_row():
     systems = [FakeSystem("cjdb", 10)]
-    rows = run_matrix(systems, PARAMS, "rotterdam", repeat=1, scenarios=("count",))
+    rows = run_matrix(systems, PARAMS, "rotterdam", repeat=1, scenarios=("geometry-scan",))
     assert rows[0]["dataset"] == "rotterdam"
 
 
@@ -425,16 +415,17 @@ class FakeGate:
 def test_run_matrix_consults_the_load_gate_around_every_cell():
     gate = FakeGate(busy=False)
     systems = [FakeSystem("cjdb", 10), FakeSystem("3dcitydb", 10)]
-    rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("count",),
+    rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("geometry-scan",),
                       run_note="threads=single", gate=gate)
-    assert gate.labels == ["threads=single count cjdb", "threads=single count 3dcitydb"]
+    assert gate.labels == ["threads=single geometry-scan cjdb",
+                           "threads=single geometry-scan 3dcitydb"]
     assert gate.after == 2
     assert all("busy" not in row["notes"].split() for row in rows)
 
 
 def test_run_matrix_tags_a_cell_busy_when_the_gate_gave_up_waiting():
     systems = [FakeSystem("cjdb", 10)]
-    rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("count",),
+    rows = run_matrix(systems, PARAMS, "delft", repeat=1, scenarios=("geometry-scan",),
                       run_note="threads=single", gate=FakeGate(busy=True))
     assert "busy" in rows[0]["notes"].split()
 
@@ -479,7 +470,7 @@ def test_agreeing_ids_keep_the_count_status_and_verify_once_per_system():
 def test_non_object_scenarios_are_not_verified():
     systems = [VerifyingSystem("duckdb-cityparquet", ["a"]),
                VerifyingSystem("cjdb", ["a"])]
-    run_matrix(systems, make_params(), "d", repeat=1, scenarios=["count"])
+    run_matrix(systems, make_params(), "d", repeat=1, scenarios=["geometry-scan"])
     assert [s.verified for s in systems] == [0, 0]
 
 

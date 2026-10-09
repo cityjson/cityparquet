@@ -19,16 +19,10 @@ def test_empty_plan_raises():
         parse_explain_execution_time([])
 
 
-def test_first_column_mode_returns_first_column_of_multi_column_row():
-    # (count, checksum) — the real shape for full-read and attr-stats: a
-    # single-column row would pass even under the buggy shape-inference
-    # this function exists to replace.
-    rows = [(42, "deadbeef")]
-    assert extract_count(rows, "first-column") == 42
-
-
-def test_first_column_mode_on_empty_result_is_zero():
-    assert extract_count([], "first-column") == 0
+def test_first_column_is_not_a_count_mode():
+    # No scenario reports its count in a first column.
+    with pytest.raises(ValueError):
+        extract_count([(42, "deadbeef")], "first-column")
 
 
 def test_rowcount_mode_returns_number_of_rows():
@@ -169,7 +163,7 @@ def test_time_query_fetches_in_binary_wire_format(monkeypatch):
     monkeypatch.setattr(pg, "backend_pid", lambda conn: 1)
     monkeypatch.setattr(pg, "host_pid_of", lambda conn, pid: None)
     try:
-        pg.time_query(Conn(), "SELECT 1")
+        pg.time_query(Conn(), "SELECT 1", count_mode="rowcount")
     except Exception:
         pass
     assert True in seen["binary"]

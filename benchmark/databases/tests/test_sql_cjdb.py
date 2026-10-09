@@ -21,10 +21,10 @@ PARAMS = make_params(
 )
 
 
-def test_count_targets_city_object():
-    sql, args = sql_for("count", PARAMS)
-    assert "city_object" in sql
-    assert args == ()
+def test_count_is_not_a_scenario():
+    # Answered from metadata on every system, so it measures nothing.
+    with pytest.raises(KeyError):
+        sql_for("count", PARAMS)
 
 
 def test_bbox_query_uses_postgis_operator_for_index_use():

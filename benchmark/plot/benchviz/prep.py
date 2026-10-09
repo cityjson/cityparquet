@@ -910,7 +910,6 @@ def build_datasets(read_records: list[dict], raw_mb: dict[str, float]) -> list[d
 DB_BASELINE = "3dcitydb"
 DB_READ_SCENARIOS = (
     "geometry-scan",
-    "count",
     "bbox-1pct",
     "bbox-5pct",
     "bbox-25pct",

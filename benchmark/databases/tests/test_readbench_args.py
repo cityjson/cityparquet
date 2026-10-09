@@ -10,12 +10,19 @@ from conftest import ge_attr_filter, make_params
 PARAMS = make_params()
 
 
-def test_count_args_are_minimal():
-    args = build_child_args("count", PARAMS, "/pkg")
+def test_attr_stats_args_are_minimal():
+    args = build_child_args("attr-stats", PARAMS, "/pkg")
     assert "--child" in args
     assert "--format" in args and "cityparquet" in args
-    assert "--scenario" in args and "count" in args
+    assert "--scenario" in args and "attr-stats" in args
     assert "--input" in args and "/pkg" in args
+
+
+def test_count_is_not_run_by_the_native_reader():
+    # The database family has no `count` row; `format_params` alone runs
+    # the format harness's own `count` to obtain the parameter sidecar.
+    with pytest.raises(ValueError):
+        build_child_args("count", PARAMS, "/pkg")
 
 
 def test_bbox_args_pass_six_comma_separated_ordinates():
@@ -220,7 +227,7 @@ def test_ingest_routes_the_system_to_the_cityparquet_package_and_run_reports_it(
     ingest_result = system.ingest(dataset)
     assert ingest_result.wall_clock_s == 0.0
 
-    system.run("count", PARAMS, repeat=1)
+    system.run("attr-stats", PARAMS, repeat=1)
 
     # ingest() must have pointed --input at the package...
     argv = captured["argv"]
@@ -251,7 +258,7 @@ def test_run_discards_the_warmup_and_reports_the_repeats_own_peak(tmp_path, monk
 
     system = ReadbenchSystem(binary=tmp_path / "bin")
     system.ingest(_dataset(tmp_path))
-    measurement = system.run("count", PARAMS, repeat=3)
+    measurement = system.run("attr-stats", PARAMS, repeat=3)
 
     assert measurement.result_count == 5
     assert measurement.times_s == [0.1, 0.2, 0.05]

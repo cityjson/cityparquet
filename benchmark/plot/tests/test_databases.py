@@ -33,6 +33,11 @@ def test_every_row_is_keyed_by_system_scenario_and_thread_configuration(tmp_path
     assert len(keys) == len(set(keys))
     reads = _records(db, tier="read")
     assert {r["threads"] for r in reads} == {"single", "parallel"}
+    # The database family has no `count` row: every system answers it from
+    # metadata. The format family keeps its own.
+    assert "count" not in prep.DB_READ_SCENARIOS
+    assert "count" in prep.QUERY_ORDER
+    assert "count" not in {r["scenario"] for r in reads}
     # Four id probes per system and configuration, as the format family has.
     for config in ("single", "parallel"):
         probes = {r["scenario"] for r in _records(db, format="cjdb", threads=config)}

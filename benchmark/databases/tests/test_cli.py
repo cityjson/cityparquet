@@ -190,7 +190,7 @@ def test_run_all_scenarios_runs_the_readbench_subset_against_every_system():
     systems = [TierAwareFakeSystem("cityparquet"), TierAwareFakeSystem("cjdb")]
     rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={},
                               tolerance=DEFAULT_COUNT_TOLERANCE)
-    formats = {r["format"] for r in rows if r["scenario"] == "count"}
+    formats = {r["format"] for r in rows if r["scenario"] == "attr-stats"}
     assert formats == {"cityparquet", "cjdb"}
     # …and only the SQL system answers a scenario the child cannot.
     formats = {r["format"] for r in rows if r["scenario"] == "geometry-scan"}

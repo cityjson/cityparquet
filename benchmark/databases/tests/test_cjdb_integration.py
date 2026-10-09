@@ -38,15 +38,15 @@ def system():
     s.teardown()
 
 
-def test_count_matches_source_city_object_total(system):
+def test_geometry_scan_matches_source_city_object_total(system):
     params = _params()
-    m = system.run("count", params, repeat=1)
+    m = system.run("geometry-scan", params, repeat=1)
     assert m.result_count == params.total_city_objects
 
 
 def test_every_non_windowed_read_scenario_runs(system):
     params = _params()
-    for scenario in ("geometry-scan", "count", "attr-filter", "attr-range",
+    for scenario in ("geometry-scan", "attr-filter", "attr-range",
                      "attr-stats"):
         m = system.run(scenario, params, repeat=1)
         assert m.times_s and m.times_s[0] > 0

@@ -20,7 +20,7 @@ def test_columns_match_the_inherited_contract_exactly():
 def test_size_columns_are_stamped_onto_the_row():
     m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_working_mem_bytes=None)
     row = row_from_measurement(
-        dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
+        dataset="d", fmt="cjdb", scenario="geometry-scan", measurement=m, selectivity=None,
         size_bytes=5000, size_bytes_no_index=4000,
     )
     assert row["size_bytes"] == "5000"
@@ -30,7 +30,7 @@ def test_size_columns_are_stamped_onto_the_row():
 def test_size_columns_blank_when_unknown():
     m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_working_mem_bytes=None)
     row = row_from_measurement(
-        dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
+        dataset="d", fmt="cjdb", scenario="geometry-scan", measurement=m, selectivity=None,
     )
     assert row["size_bytes"] == ""
     assert row["size_bytes_no_index"] == ""
@@ -46,7 +46,7 @@ def test_row_reports_the_mean_and_population_std_dev_at_six_decimals():
         peak_working_mem_bytes=None,
     )
     row = row_from_measurement(
-        dataset="delft", fmt="cjdb", scenario="count",
+        dataset="delft", fmt="cjdb", scenario="geometry-scan",
         measurement=m, selectivity=None,
     )
     assert row["time_mean_s"] == "0.200000"
@@ -65,7 +65,7 @@ def test_row_reports_median_quartiles_and_range_by_linear_interpolation():
         peak_working_mem_bytes=None,
     )
     row = row_from_measurement(
-        dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
+        dataset="d", fmt="cjdb", scenario="geometry-scan", measurement=m, selectivity=None,
     )
     assert row["time_median_s"] == "0.250000"
     assert row["time_q1_s"] == "0.175000"
@@ -80,7 +80,7 @@ def test_row_reports_median_quartiles_and_range_by_linear_interpolation():
 def test_local_transport_columns_are_always_empty():
     m = Measurement(result_count=1, times_s=[1.0], server_times_s=[], peak_working_mem_bytes=None)
     row = row_from_measurement(
-        dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
+        dataset="d", fmt="cjdb", scenario="geometry-scan", measurement=m, selectivity=None,
     )
     assert row["bytes_read"] == ""
     assert row["http_requests"] == ""
@@ -91,7 +91,7 @@ def test_server_time_reported_when_present():
         result_count=1, times_s=[1.0], server_times_s=[0.4, 0.6], peak_working_mem_bytes=None,
     )
     row = row_from_measurement(
-        dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
+        dataset="d", fmt="cjdb", scenario="geometry-scan", measurement=m, selectivity=None,
     )
     assert row["server_time_mean_s"] == "0.500000"
 
@@ -103,7 +103,7 @@ def test_selectivity_formatted_or_blank():
     )
     assert with_sel["selectivity"] == "0.250000"
     without = row_from_measurement(
-        dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
+        dataset="d", fmt="cjdb", scenario="geometry-scan", measurement=m, selectivity=None,
     )
     assert without["selectivity"] == ""
 
@@ -111,7 +111,7 @@ def test_selectivity_formatted_or_blank():
 def test_write_csv_roundtrips(tmp_path):
     m = Measurement(result_count=7, times_s=[0.5], server_times_s=[], peak_working_mem_bytes=None)
     row = row_from_measurement(
-        dataset="d", fmt="cjdb", scenario="count", measurement=m, selectivity=None,
+        dataset="d", fmt="cjdb", scenario="geometry-scan", measurement=m, selectivity=None,
     )
     out = tmp_path / "r.csv"
     write_csv(out, [row])
