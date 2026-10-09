@@ -309,7 +309,7 @@ def test_attr_filter_parameterises_rather_than_interpolating_the_value():
 
 
 def test_id_lookup_asks_for_the_probe_it_was_handed_on_objectid():
-    """One call per probe — 10/50/90 % of the canonical stream order plus a
+    """One call per probe — the middle of the canonical stream order and a
     verified-absent id — against `objectid`, the CityObject identifier,
     never the internal integer `id`."""
     params = _params()

@@ -21,8 +21,9 @@ from typing import Any
 import duckdb
 
 from citybench.config import (
-    BBOX_TARGETS, ID_DECILES, ID_MISS_TAG, AppendSpec, AttrFilter, AttrRange,
-    BBox, BboxWindow, IdProbe, Params, object_table_files, window_from_halves,
+    BBOX_TARGETS, FORMAT_HIT_TAG, ID_HIT_POSITION, ID_HIT_TAG, ID_MISS_TAG,
+    AppendSpec, AttrFilter, AttrRange, BBox, BboxWindow, IdProbe, Params,
+    object_table_files, window_from_halves,
 )
 from citybench.scenarios.registry import LOD_QUERY_TARGET
 
@@ -88,7 +89,7 @@ NOTES_HOSTILE = (";", ",", '"', "\n", "\r")
 #: `-2`, `-3`, ... exactly as `params.rs::miss_id` does for its own probe.
 APPEND_SUFFIX = "-appended"
 
-#: `id-miss`'s id is the `id-50pct` id with this suffix — the format
+#: `id-miss`'s id is the hit's id with this suffix — the format
 #: family's own construction (`params.rs::miss_id`), verified absent from
 #: EVERY CityObject id of the source rather than only from the feature ids,
 #: because a BuildingPart could carry the colliding name.
@@ -253,31 +254,24 @@ def derived_id(seed: str, suffix: str, taken: set[str]) -> str:
 
 
 def id_probes(scan: SourceScan) -> tuple[IdProbe, ...]:
-    """`id-lookup`'s four probes: three positioned hits plus a verified miss.
+    """`id-lookup`'s two probes: the middle-position hit and a verified miss.
 
-    The positioned ids are those at 10 %, 50 % and 90 % of the canonical
-    stream order, by the format harness's own index rule
-    (`params.rs::id_probes`: `(position * len) as usize`, clamped to the
-    last index). The miss is the 50 % id with `MISS_SUFFIX`, verified absent
-    from every CityObject id in the source — the probe that actually
-    separates a store with an id index from one without, and the only one
-    whose cost is position-free.
+    The hit is the id at `ID_HIT_POSITION` of the canonical stream order,
+    by the format harness's own index rule (`params.rs::id_probes`:
+    `(position * len) as usize`, clamped to the last index). The miss is the
+    hit's id with `MISS_SUFFIX`, verified absent from every CityObject id in
+    the source — where Parquet's Bloom filter answers against a B-tree.
     """
     if not scan.feature_ids:
         raise ValueError("id_probes needs at least one feature")
     ids = scan.feature_ids
-    probes = [
-        IdProbe(tag=tag, id=ids[min(int(position * len(ids)), len(ids) - 1)],
-                present=True)
-        for position, tag in ID_DECILES
-    ]
-    seed = next(p.id for p in probes if p.tag == "id-50pct")
-    probes.append(
-        IdProbe(tag=ID_MISS_TAG,
-                id=derived_id(seed, MISS_SUFFIX, scan.all_ids),
-                present=False)
-    )
-    return tuple(probes)
+    hit = IdProbe(tag=ID_HIT_TAG,
+                  id=ids[min(int(ID_HIT_POSITION * len(ids)), len(ids) - 1)],
+                  present=True, position=ID_HIT_POSITION)
+    miss = IdProbe(tag=ID_MISS_TAG,
+                   id=derived_id(hit.id, MISS_SUFFIX, scan.all_ids),
+                   present=False)
+    return (hit, miss)
 
 
 def rewrite_feature_ids(feature: dict[str, Any], suffix: str
@@ -673,7 +667,9 @@ def adopt_format_params(p: Params, sidecar: dict[str, Any]) -> Params:
     """``p`` with every parameter the format family resolved replaced by the
     format family's own value, read from the `<csv>.params.json` sidecar the
     `cityparquet-readbench` coordinator writes (`readbench/src/params.rs`):
-    the bbox windows (package order), the id probes, the `attr-filter`
+    the bbox windows (package order), the id probes (its middle-position
+    hit, retagged `ID_HIT_TAG`, and its miss; its other positions are not
+    measured here), the `attr-filter`
     predicate, the `attr-stats` column, the CityObject total and `swap_xy`.
     A fact the sidecar reports as absent stays absent, so the scenario is
     skipped, never fabricated. What the sidecar does not carry —
@@ -684,8 +680,14 @@ def adopt_format_params(p: Params, sidecar: dict[str, Any]) -> Params:
                    window=BBox(*w["window"]), approx=w["approx"])
         for w in sidecar["windows"]
     )
-    probes = tuple(IdProbe(tag=i["tag"], id=i["id"], present=i["present"])
-                   for i in sidecar.get("id_probes", []))
+    probes = tuple(
+        IdProbe(tag=ID_HIT_TAG, id=i["id"], present=True,
+                position=None if i.get("substituted") else ID_HIT_POSITION)
+        if i["tag"] == FORMAT_HIT_TAG
+        else IdProbe(tag=ID_MISS_TAG, id=i["id"], present=False)
+        for i in sidecar.get("id_probes", [])
+        if i["tag"] in (FORMAT_HIT_TAG, ID_MISS_TAG)
+    )
     spec = sidecar.get("attr_filter")
     attr_filter = None
     if spec:

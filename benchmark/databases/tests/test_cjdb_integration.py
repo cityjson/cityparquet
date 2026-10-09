@@ -54,9 +54,9 @@ def test_every_non_windowed_read_scenario_runs(system):
 
 
 def test_every_id_probe_runs_and_the_miss_finds_nothing(system):
-    """Three positioned hits and one verified-absent id. The miss is the
-    probe that actually separates a store with an id index from one
-    without, so it must genuinely miss."""
+    """The middle-position hit and one verified-absent id. The miss is
+    where Parquet's Bloom filter answers against a B-tree, so it must
+    genuinely miss."""
     params = _params()
     for probe in params.id_probes:
         m = system.run("id-lookup", params, repeat=1, probe=probe)

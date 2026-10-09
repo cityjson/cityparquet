@@ -99,8 +99,8 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         )
 
     if scenario == "id-lookup":
-        # One of the runner's four probes — 10/50/90 % of the canonical
-        # stream order plus a verified-absent id. The row `SELECT *`
+        # One of the runner's two probes — the middle of the canonical
+        # stream order, or a verified-absent id. The row `SELECT *`
         # materialises includes the geometry JSONB.
         return f"SELECT * FROM {t} WHERE object_id = %s", (_probe(probe).id,)
 

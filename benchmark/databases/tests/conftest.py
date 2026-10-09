@@ -32,15 +32,13 @@ _BOXES = [
 _EXTENT = BBox(minx=0.0, miny=0.0, minz=0.0, maxx=100.0, maxy=100.0, maxz=10.0)
 
 
-def make_probes(first: str = "obj-1") -> tuple[IdProbe, ...]:
-    """The four `id-lookup` probes a real derivation produces: three
-    positioned hits plus one verified-absent id. Tests that only need "an
-    id" use `first`, which is the 10 % probe."""
+def make_probes(hit: str = "obj-1") -> tuple[IdProbe, ...]:
+    """The two `id-lookup` probes a real derivation produces: the hit at
+    the middle of the canonical stream order plus one verified-absent id.
+    Tests that only need "an id" use `hit`, the first probe."""
     return (
-        IdProbe(tag="id-10pct", id=first, present=True),
-        IdProbe(tag="id-50pct", id="obj-50", present=True),
-        IdProbe(tag="id-90pct", id="obj-90", present=True),
-        IdProbe(tag="id-miss", id="obj-50-absent", present=False),
+        IdProbe(tag="id-lookup", id=hit, present=True, position=0.5),
+        IdProbe(tag="id-miss", id=f"{hit}-absent", present=False),
     )
 
 

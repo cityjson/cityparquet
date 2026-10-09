@@ -31,22 +31,14 @@
  },
  "id_probes": [
   {
-   "id": "NL.IMBAG.Pand.1945100000202664",
-   "present": true,
-   "tag": "id-10pct"
-  },
-  {
    "id": "NL.IMBAG.Pand.0282100000007365",
+   "position": 0.5,
    "present": true,
-   "tag": "id-50pct"
-  },
-  {
-   "id": "NL.IMBAG.Pand.0282100000005762",
-   "present": true,
-   "tag": "id-90pct"
+   "tag": "id-lookup"
   },
   {
    "id": "NL.IMBAG.Pand.0282100000007365-absent",
+   "position": null,
    "present": false,
    "tag": "id-miss"
   }

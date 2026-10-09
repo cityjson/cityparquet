@@ -165,9 +165,9 @@ def sql_for(scenario: str, params: Params, table: str,
         )
 
     if scenario == "id-lookup":
-        # One of the four probes the runner expands this scenario into: the
-        # ids at 10 %, 50 % and 90 % of the canonical stream order, plus one
-        # verified absent. `SELECT *` is the whole object row, geometry
+        # One of the two probes the runner expands this scenario into: the
+        # id at the middle of the canonical stream order, or one verified
+        # absent. `SELECT *` is the whole object row, geometry
         # included, materialised inside the timed window.
         return f"SELECT * FROM {table} WHERE id = ?", (_probe(probe).id,)
 

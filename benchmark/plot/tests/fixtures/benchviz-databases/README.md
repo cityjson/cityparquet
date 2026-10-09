@@ -9,8 +9,9 @@ notes, tags and sidecar layout of a real smoke run, so the loader and the
 figures are exercised on rows of the right shape:
 
 - every read scenario under both `threads=single` and `threads=parallel`;
-- `bbox-query` windows carrying `achieved=<fraction>`, the four `id-lookup`
-  probes, and the DuckDB-only `parts-per-building-join`;
+- `bbox-query` windows carrying `achieved=<fraction>`, the two `id-lookup`
+  probes (the middle-position hit and the miss), and the DuckDB-only
+  `parts-per-building-join`;
 - one `ok-deviation` window (a `count-mismatch: … spread=…` decomposition below
   the tolerance), one `mismatch`, one `id-mismatch`, one `skipped`, and the upstream
   `error: BinderException` on DuckDB's `append-object`;

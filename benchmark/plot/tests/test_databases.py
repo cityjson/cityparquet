@@ -38,10 +38,13 @@ def test_every_row_is_keyed_by_system_scenario_and_thread_configuration(tmp_path
     assert "count" not in prep.DB_READ_SCENARIOS
     assert "count" in prep.QUERY_ORDER
     assert "count" not in {r["scenario"] for r in reads}
-    # Four id probes per system and configuration, as the format family has.
+    # One hit plus the miss per system and configuration; the format
+    # family's positional hits are not database rows.
     for config in ("single", "parallel"):
         probes = {r["scenario"] for r in _records(db, format="cjdb", threads=config)}
-        assert {"id-10pct", "id-50pct", "id-90pct", "id-miss"} <= probes
+        assert {"id-lookup", "id-miss"} <= probes
+        assert not probes & {"id-10pct", "id-50pct", "id-90pct"}
+    assert [q for q in prep.DB_READ_SCENARIOS if q.startswith("id-")] == ["id-lookup", "id-miss"]
     # The join control is DuckDB's.
     assert {r["format"] for r in _records(db, scenario="parts-per-building-join")} == {
         "duckdb-cityparquet"
@@ -96,7 +99,7 @@ def test_the_current_schema_reads_working_memory_and_the_index_split(tmp_path: P
     sizes = {s["format"]: s for s in db["sizes"]}
     assert sizes["cjdb"]["index_bytes"] == 16744448
     assert sizes["duckdb-cityparquet"]["bloom_filter_bytes"] == 20000
-    mismatched = _records(db, format="cjdb", scenario="id-50pct", threads="single")[0]
+    mismatched = _records(db, format="cjdb", scenario="id-lookup", threads="single")[0]
     assert mismatched["status"] == "id-mismatch"
 
 

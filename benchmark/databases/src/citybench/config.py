@@ -333,17 +333,20 @@ class AttrRange:
     matched: int
 
 
-#: `(position in the canonical stream order, notes tag)` for the three
-#: `id-lookup` hit probes, and the tag of the fourth. A port of
-#: `benchmark/readbench/src/params.rs`'s `ID_DECILES` / `ID_MISS_TAG`, so an
-#: `id-50pct` row in either benchmark family names the same construction: a
-#: single target would make the published time a function of where that one
-#: id happened to sit in the stream.
-ID_DECILES: tuple[tuple[float, str], ...] = (
-    (0.10, "id-10pct"),
-    (0.50, "id-50pct"),
-    (0.90, "id-90pct"),
-)
+#: `id-lookup` is measured at one hit plus one verified-absent id. Every
+#: database here indexes the identifier with a B-tree, so where the hit sits
+#: in the stream does not change its cost; the miss stays because it is
+#: where Parquet's Bloom filter answers against a B-tree.
+#:
+#: The hit is the id at `ID_HIT_POSITION` of the canonical stream order, by
+#: the format family's own index rule, and its row is tagged plainly
+#: `ID_HIT_TAG`. The format family (`benchmark/readbench/src/params.rs`)
+#: measures three positions; the two families share only this middle-position
+#: hit, which it tags `FORMAT_HIT_TAG`, and the miss, `ID_MISS_TAG`, derived
+#: from that hit.
+ID_HIT_POSITION = 0.50
+ID_HIT_TAG = "id-lookup"
+FORMAT_HIT_TAG = "id-50pct"
 ID_MISS_TAG = "id-miss"
 
 
@@ -363,9 +366,20 @@ class IdProbe:
     id: str
     #: Whether this id is expected to be found. False only for `id-miss`.
     present: bool
+    #: Where the hit sits in the canonical stream order, as a fraction
+    #: (`ID_HIT_POSITION`). None for the miss, and for a hit the format
+    #: family substituted by its nearest verifiable neighbour.
+    position: float | None = None
 
     def notes_tag(self) -> str:
-        return self.tag
+        """The hit's notes name the id asked for and where it sits, as a
+        fact; the miss keeps its tag alone."""
+        if not self.present:
+            return self.tag
+        note = f"{self.tag} id={self.id}"
+        if self.position is not None:
+            note += f" position={self.position:.2f}"
+        return note
 
 
 @dataclass(frozen=True)
@@ -411,7 +425,7 @@ class Params:
     attr_filter: AttrFilter | None   # None when no attribute supports a predicate
     attr_range: AttrRange | None     # None if the dataset has no numeric attribute
     numeric_column: str | None  # numeric attribute for attr-stats; None if the dataset has none
-    #: `id-lookup`'s four probes, in `ID_DECILES` + miss order.
+    #: `id-lookup`'s two probes: the middle-position hit, then the miss.
     id_probes: tuple[IdProbe, ...]
     total_city_objects: int  # selectivity denominator
     #: Rows carrying a non-NULL `bbox` in the CityParquet package — the

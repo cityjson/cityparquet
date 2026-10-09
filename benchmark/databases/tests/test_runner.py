@@ -350,7 +350,7 @@ def test_run_matrix_all_systems_skipped_leaves_no_stray_mismatch():
 def test_run_matrix_default_scenarios_cover_the_full_registry():
     # No `scenarios=` kwarg: every scenario cjdb answers runs, with
     # `bbox-query` expanding into three window rows and `id-lookup` into
-    # four id-probe rows.
+    # two id-probe rows.
     systems = [FakeSystem("cjdb", 10)]
     rows = run_matrix(systems, PARAMS, "delft", repeat=1)
     answered = [s for s in ALL if "cjdb" in systems_for(s)]
@@ -358,26 +358,24 @@ def test_run_matrix_default_scenarios_cover_the_full_registry():
     probed = [s for s in answered if s in ID_PROBE_SCENARIOS]
     assert len(rows) == (
         len(answered) - len(windowed) - len(probed)
-        + 3 * len(windowed) + 4 * len(probed)
+        + 3 * len(windowed) + 2 * len(probed)
     )
 
 
 def test_id_lookup_expands_into_one_row_per_probe_tagged_in_notes():
-    """Four probes, four rows, each naming which probe it asked for — a
-    single `id-lookup` time would be a function of where that one id
-    happened to sit in the stream."""
+    """Two probes, two rows: the hit names the id it asked for and its
+    position in the canonical stream order, the miss keeps its tag."""
     systems = [FakeSystem("cjdb", 1)]
     rows = run_matrix(systems, PARAMS, "delft", repeat=1,
                       scenarios=("id-lookup",))
-    assert len(rows) == 4
     assert [r["notes"] for r in rows] == [
-        "id-10pct", "id-50pct", "id-90pct", "id-miss",
+        "id-lookup id=obj-1 position=0.50", "id-miss",
     ]
 
 
 def test_each_id_probe_is_cross_checked_against_itself_not_against_the_others():
     """The miss probe legitimately returns 0 where the hits return 1. If
-    the four probes shared one row, that difference would read as a
+    the two probes shared one row, that difference would read as a
     cross-system count mismatch."""
 
     class ProbeAwareSystem(FakeSystem):

@@ -142,22 +142,29 @@ def test_a_plain_cityjson_source_has_no_stream_to_cut_a_feature_from(tmp_path):
     assert write_append_feature(scan, tmp_path, "plain") is None
 
 
-def test_the_four_id_probes_sit_at_the_decile_positions_plus_a_miss(tmp_path):
-    """Three positioned hits and one verified-absent id, exactly as
-    `benchmark/readbench/src/params.rs` derives them: a single target would
-    make the published time a function of where that one id happened to
-    sit in the stream."""
+def test_the_two_id_probes_are_the_middle_hit_and_a_verified_miss(tmp_path):
+    """One hit at the middle of the canonical stream order and one
+    verified-absent id. Every database indexes the identifier with a
+    B-tree, so where the hit sits in the stream does not change its cost;
+    the miss is where Parquet's Bloom filter answers against a B-tree."""
     fixture = _write_stream(tmp_path, "probes", count=10)
     probes = id_probes(scan_source(fixture))
-    assert [probe.tag for probe in probes] == [
-        "id-10pct", "id-50pct", "id-90pct", "id-miss",
-    ]
-    # int(0.1 * 10) == 1, int(0.5 * 10) == 5, int(0.9 * 10) == 9.
-    assert [probe.id for probe in probes[:3]] == ["f1", "f5", "f9"]
-    assert all(probe.present for probe in probes[:3])
-    miss = probes[3]
-    assert miss.present is False
+    assert [probe.tag for probe in probes] == ["id-lookup", "id-miss"]
+    hit, miss = probes
+    # int(0.5 * 10) == 5: the format family's own index rule.
+    assert (hit.id, hit.present, hit.position) == ("f5", True, 0.5)
+    assert miss.present is False and miss.position is None
     assert miss.id.startswith("f5") and miss.id != "f5"
+
+
+def test_the_hit_probe_records_its_id_and_position_as_a_fact():
+    """The row is tagged plainly `id-lookup`; its notes say which id was
+    asked for and where it sits, not a decile family."""
+    from citybench.config import IdProbe
+    hit = IdProbe(tag="id-lookup", id="f5", present=True, position=0.5)
+    assert hit.notes_tag() == "id-lookup id=f5 position=0.50"
+    assert IdProbe(tag="id-lookup", id="f5", present=True).notes_tag() == "id-lookup id=f5"
+    assert IdProbe(tag="id-miss", id="f5-absent", present=False).notes_tag() == "id-miss"
 
 
 def test_the_miss_id_is_verified_absent_from_every_object_not_just_features(tmp_path):
@@ -506,7 +513,7 @@ def test_a_childless_dataset_still_derives(tmp_path):
     p = derive(_write_no_parent_fixture(tmp_path), package)
     assert p.total_city_objects == 1
     assert p.windows
-    assert [probe.id for probe in p.id_probes[:3]] == ["b1", "b1", "b1"]
+    assert [probe.id for probe in p.id_probes[:1]] == ["b1"]
 
 
 def _write_no_numeric_attribute_fixture(tmp_path) -> Path:
@@ -598,9 +605,8 @@ def test_the_sidecar_records_the_probes_and_the_append_file(tmp_path):
     out = tmp_path / "out"
     p = derive(FIXTURE, package, append_dir=out, dataset="tiny")
     payload = json.loads(to_json(p))
-    assert [probe["tag"] for probe in payload["id_probes"]] == [
-        "id-10pct", "id-50pct", "id-90pct", "id-miss",
-    ]
+    assert [probe["tag"] for probe in payload["id_probes"]] == ["id-lookup", "id-miss"]
+    assert [probe["position"] for probe in payload["id_probes"]] == [0.5, None]
     assert payload["append"]["suffix"] == APPEND_SUFFIX
     assert payload["append"]["object_count"] == 1
     assert Path(payload["append"]["path"]).is_file()
@@ -619,7 +625,9 @@ def _sidecar():
         "dataset": "tokyo.city.json", "swap_xy": True, "cp_object_total": 49915,
         "windows": [{"tag": "bbox-1pct", "target": 0.01, "achieved": 0.0102,
                      "window": [139.75, 35.68, 0.0, 139.76, 35.69, 99.0], "approx": False}],
-        "id_probes": [{"tag": "id-50pct", "id": "bldg_x", "present": True, "substituted": False},
+        "id_probes": [{"tag": "id-10pct", "id": "bldg_a", "present": True, "substituted": False},
+                      {"tag": "id-50pct", "id": "bldg_x", "present": True, "substituted": False},
+                      {"tag": "id-90pct", "id": "bldg_z", "present": True, "substituted": False},
                       {"tag": "id-miss", "id": "bldg_x-absent", "present": False, "substituted": False}],
         "attr_filter": {"column": "measuredHeight", "pred": {"ge": 12.5}, "matched": 10,
                         "share": 0.25, "hand_picked": False},
@@ -633,11 +641,25 @@ def test_the_format_familys_sidecar_replaces_every_shared_parameter():
     p = params.adopt_format_params(make_params(), _sidecar())
     assert [w.tag for w in p.windows] == ["bbox-1pct"]
     assert p.windows[0].window.minx == 139.75 and p.windows[0].window.maxy == 35.69
-    assert [(i.tag, i.id, i.present) for i in p.id_probes] == [
-        ("id-50pct", "bldg_x", True), ("id-miss", "bldg_x-absent", False)]
+    # Only the format family's middle-position hit and its miss: the
+    # database family measures one hit plus the miss.
+    assert [(i.tag, i.id, i.present, i.position) for i in p.id_probes] == [
+        ("id-lookup", "bldg_x", True, 0.5), ("id-miss", "bldg_x-absent", False, None)]
     assert (p.attr_filter.column, p.attr_filter.op, p.attr_filter.ge_bound) == ("measuredHeight", "ge", 12.5)
     assert p.numeric_column == "measuredHeight"
     assert p.total_city_objects == 49915 and p.swap_xy is True
+
+
+def test_a_substituted_format_hit_does_not_claim_the_middle_position():
+    """The format family replaces a hit its CityGML artefact lacks by the
+    nearest verifiable id; that id no longer sits at the middle, so the
+    notes record the id alone."""
+    from conftest import make_params
+    from citybench import params
+    side = _sidecar()
+    side["id_probes"][1] = {**side["id_probes"][1], "substituted": True}
+    hit = params.adopt_format_params(make_params(), side).id_probes[0]
+    assert (hit.tag, hit.id, hit.position) == ("id-lookup", "bldg_x", None)
 
 
 def test_absent_sidecar_facts_become_none_so_the_scenario_is_skipped():

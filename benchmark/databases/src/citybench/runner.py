@@ -106,11 +106,10 @@ def variants(scenario: str, params: Params
 
     Most scenarios are measured once and yield `[(None, None)]`.
     `bbox-query` is measured at each of the three row-fraction windows, and
-    `id-lookup` at each of the four id probes — three positions in the
-    canonical stream order plus a verified-absent id. Each pair becomes its
-    own CSV row on every system, and therefore its own cross-system count
-    check: the 10 % probe's count is compared against the 10 % probe's, not
-    against a blend of all four.
+    `id-lookup` at its two id probes — the middle-position hit and a
+    verified-absent id. Each pair becomes its own CSV row on every system,
+    and therefore its own cross-system count check: the hit's count is
+    compared against the hit's, never against a blend with the miss.
     """
     if scenario in SELECTIVITY_SCENARIOS:
         return [(window, None) for window in params.windows]
@@ -244,9 +243,9 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
             # The variant's own tag: for a window, suffixed `-approx` when
             # the row-fraction target was not reachable on this data, plus
             # the fraction it actually achieved — so a reader never has to
-            # assume "1 %" meant 1 %. For an id probe, where in the
-            # canonical stream order the id sits, or that it is the
-            # verified-absent one.
+            # assume "1 %" meant 1 %. For the hit probe, the id asked for
+            # and where in the canonical stream order it sits; for the miss,
+            # its tag.
             variant_note = _variant_note(window, probe)
             measurements: dict[str, Measurement] = {}
             busy: set[str] = set()

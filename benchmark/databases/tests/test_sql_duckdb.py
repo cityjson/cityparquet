@@ -142,8 +142,8 @@ def test_attr_range_is_a_strict_inequality_on_the_derived_threshold():
 
 def test_id_lookup_asks_for_the_probe_it_was_handed_and_binds_it():
     """One call per probe, and the id travels as a bound parameter rather
-    than as literal text — the four probes differ only in that value, so
-    interpolating it would also mean four different query plans."""
+    than as literal text — the hit and the miss differ only in that value,
+    so interpolating it would also mean two different query plans."""
     params = _params()
     for probe in params.id_probes:
         sql, args = sql_for("id-lookup", params, TABLE, probe=probe)
@@ -159,8 +159,8 @@ def test_id_lookup_returns_the_whole_object_row():
 
 
 def test_id_lookup_without_a_probe_is_a_loud_failure():
-    """The runner always supplies one. A silent default would publish four
-    identical rows under four different probe tags."""
+    """The runner always supplies one. A silent default would publish two
+    identical rows under two different probe tags."""
     with pytest.raises(ValueError):
         sql_for("id-lookup", _params(), TABLE)
 

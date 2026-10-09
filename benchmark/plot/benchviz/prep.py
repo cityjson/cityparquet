@@ -916,9 +916,7 @@ DB_READ_SCENARIOS = (
     "attr-filter",
     "attr-range",
     "attr-stats",
-    "id-10pct",
-    "id-50pct",
-    "id-90pct",
+    "id-lookup",
     "id-miss",
     "lod-query",
     "parts-per-building",
@@ -947,7 +945,8 @@ DB_SIZE_FIELDS = (
 
 DB_THREADS_RE = re.compile(r"\bthreads=(\w+)")
 DB_BBOX_RE = re.compile(r"\b(bbox-\d+pct)(-approx)?\b")
-DB_ID_RE = re.compile(r"\b(id-(?:\d+pct|miss))\b")
+# `id-lookup` is measured at one hit, keyed by its scenario name, plus the miss.
+DB_ID_RE = re.compile(r"\b(id-miss)\b")
 DB_ACHIEVED_RE = re.compile(r"\bachieved=([0-9.eE+-]+)")
 # `count-mismatch: <system=count ...> spread=<fraction>` — the decomposition an
 # `ok-deviation` or `mismatch` row carries.

@@ -59,12 +59,11 @@ SQL_SYSTEMS: tuple[str, ...] = ("duckdb-cityparquet", "cjdb", "3dcitydb")
 # Scenarios measured at three window sizes rather than once.
 SELECTIVITY_SCENARIOS: frozenset[str] = frozenset({"bbox-query"})
 
-# Scenarios measured at four id probes rather than once — the format
-# family's own construction (`benchmark/readbench/src/params.rs`,
-# `ID_DECILES`/`ID_MISS_TAG`): the ids at 10 %, 50 % and 90 % of the
-# canonical CityJSONSeq stream order, plus one verified-absent id. A single
-# target would make the published time a function of where that one id
-# happened to sit in the stream.
+# Scenarios measured at two id probes rather than once: the id at the middle
+# of the canonical CityJSONSeq stream order, plus one verified-absent id
+# (`citybench.config.ID_HIT_POSITION`/`ID_MISS_TAG`). Every database indexes
+# the identifier with a B-tree, so the hit's position does not change its
+# cost; the miss is where Parquet's Bloom filter answers against a B-tree.
 ID_PROBE_SCENARIOS: frozenset[str] = frozenset({"id-lookup"})
 
 # What `cityparquet-readbench --child` implements. `geometry-scan` and

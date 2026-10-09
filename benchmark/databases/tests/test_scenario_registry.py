@@ -64,11 +64,9 @@ def test_only_the_window_query_expands_into_selectivity_rows():
     assert SELECTIVITY_SCENARIOS == frozenset({"bbox-query"})
 
 
-def test_id_lookup_expands_into_its_four_probes():
-    """The format family's own construction: three positions in the
-    canonical stream order plus a verified-absent id. A single target
-    would make the published time a function of where that one id happened
-    to sit."""
+def test_id_lookup_expands_into_its_probes():
+    """One hit at the middle of the canonical stream order plus a
+    verified-absent id (`params.id_probes`)."""
     assert ID_PROBE_SCENARIOS == frozenset({"id-lookup"})
     assert ID_PROBE_SCENARIOS.isdisjoint(SELECTIVITY_SCENARIOS)
 
