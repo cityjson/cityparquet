@@ -91,21 +91,21 @@ appearance/implicit-geometry references, then the inferred attribute columns.
 
 ### Reserved columns
 
-| Column                                                  | Arrow type                                                              | Notes                                                                                                                                                             |
-| ------------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                                                    | `Utf8` (non-null)                                                       | CityObject id, preserved verbatim end-to-end                                                                                                                      |
-| `feature_id`                                            | `Utf8`                                                                  | CityJSONSeq feature grouping id                                                                                                                                   |
-| `object_type`                                           | `Dictionary<Int32, Utf8>` (non-null)                                    | dictionary-encoded — few distinct values over many rows                                                                                                           |
-| `parents`                                               | `List<Utf8>`                                                            | parent ids                                                                                                                                                        |
-| `children`                                              | `List<Utf8>`                                                            | child ids                                                                                                                                                         |
-| `children_roles`                                        | `List<Utf8>`                                                            | one role per child, from CityJSON `children_roles`                                                                                                                |
-| `bbox`                                                  | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>`                        | see below                                                                                                                                                         |
-| `geometry` _or_ `geometry_lod<k>`                       | `Binary` (WKB)                                                          | one column per LoD                                                                                                                                                |
-| `geometry_properties` _or_ `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>`                        | semantics WKB can't carry                                                                                                                                         |
-| `material` _or_ `material_lod<k>`                       | `Map<Utf8, List<Int64>>`                                                | theme → one sidecar id (or null) per WKB face, into `materials.parquet`                                                                                           |
-| `texture` _or_ `texture_lod<k>`                         | `Map<Utf8, List<List<Struct<id: Int64, uv: List<List<Float64>>>>>>`     | theme → per WKB face → per ring → `{id, uv}`, into `textures.parquet`                                                                                             |
-| `implicit_geometry`                                     | `Struct<id: Int64, point: Binary, transformationMatrix: List<Float64>>` | the object's implicit geometry: reference point and transformation matrix; `id` matches `implicit_geometries.parquet`'s `id`; the matrix is a flat, row-major 4x4 |
-| `other`                                                 | JSON                                                                    | source fields not otherwise mapped                                                                                                                                |
+| Column                       | Arrow type                                                              | Notes                                                                                                                                                             |
+| ---------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                         | `Utf8` (non-null)                                                       | CityObject id, preserved verbatim end-to-end                                                                                                                      |
+| `feature_id`                 | `Utf8`                                                                  | CityJSONSeq feature grouping id                                                                                                                                   |
+| `object_type`                | `Dictionary<Int32, Utf8>` (non-null)                                    | dictionary-encoded — few distinct values over many rows                                                                                                           |
+| `parents`                    | `List<Utf8>`                                                            | parent ids                                                                                                                                                        |
+| `children`                   | `List<Utf8>`                                                            | child ids                                                                                                                                                         |
+| `children_roles`             | `List<Utf8>`                                                            | one role per child, from CityJSON `children_roles`                                                                                                                |
+| `bbox`                       | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>`                        | see below                                                                                                                                                         |
+| `geometry_lod<k>`            | `Binary` (WKB)                                                          | one column per LoD                                                                                                                                                |
+| `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>`                        | semantics WKB can't carry                                                                                                                                         |
+| `material_lod<k>`            | `Map<Utf8, List<Int64>>`                                                | theme → one sidecar id (or null) per WKB face, into `materials.parquet`                                                                                           |
+| `texture_lod<k>`             | `Map<Utf8, List<List<Struct<id: Int64, uv: List<List<Float64>>>>>>`     | theme → per WKB face → per ring → `{id, uv}`, into `textures.parquet`                                                                                             |
+| `implicit_geometry`          | `Struct<id: Int64, point: Binary, transformationMatrix: List<Float64>>` | the object's implicit geometry: reference point and transformation matrix; `id` matches `implicit_geometries.parquet`'s `id`; the matrix is a flat, row-major 4x4 |
+| `other`                      | JSON                                                                    | source fields not otherwise mapped                                                                                                                                |
 
 Every field carries self-describing metadata: a `cityparquet:role` key
 (`reserved` / `attribute` / `extension`) and, on geometry columns, a
@@ -206,9 +206,9 @@ always carries a minor" and "there is no un-suffixed `geometry`... column").
 The LoD lives only in the column name, never re-stored as a value: a source
 `"1"` and a source `"1.0"` both map to `geometry_lod1_0` and export in the
 canonical `"1.0"` spelling. A dataset with no LoD labels at all (no analysis
-geometry — only `GeometryInstance`s, or none) uses a single un-suffixed
-`geometry` / `geometry_properties` pair (all-null), a separate fallback that
-does not apply once any LoD is present. A second geometry for the same
+geometry — only `GeometryInstance`s, or none) carries no geometry column, so
+`geometry`, `geometry_properties`, `material` and `texture` remain ordinary
+attribute names. A second geometry for the same
 `(object, LoD)` is skipped and counted.
 
 **LoD0 synthesis** (`src/lod0.rs`): when an object has no source LoD0, the

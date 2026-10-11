@@ -1308,3 +1308,45 @@ fn a_crs_less_source_round_trips_through_an_explicit_null_crs() {
         compared.differences
     );
 }
+
+/// spec "Column naming and reservation rules": the bare `geometry`,
+/// `geometry_properties`, `material` and `texture` are not reserved names —
+/// every geometry column carries an LoD suffix — so they are ordinary
+/// attributes, also in a dataset with no analysis geometry at all, whose
+/// tables carry no geometry column. Derived from the real `lod3_railway`
+/// fixture: every non-instance geometry removed (keeping its
+/// `GeometryInstance`s), a CRS injected, and the four names added as
+/// attributes on every object that has attributes.
+#[test]
+fn attributes_named_like_bare_geometry_columns_round_trip_without_lods() {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let mut injected = 0;
+    for co in doc["CityObjects"].as_object_mut().unwrap().values_mut() {
+        if let Some(geoms) = co.get_mut("geometry").and_then(|g| g.as_array_mut()) {
+            geoms.retain(|g| g["type"] == "GeometryInstance");
+        }
+        if let Some(attrs) = co.get_mut("attributes").and_then(|a| a.as_object_mut()) {
+            for name in ["geometry", "geometry_properties", "material", "texture"] {
+                attrs.insert(name.to_string(), serde_json::json!(format!("{name}-value")));
+            }
+            injected += 1;
+        }
+    }
+    assert!(injected > 0, "railway must carry objects with attributes");
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("railway_instances_bare_names.city.json");
+    std::fs::write(&input, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let package_dir = assert_round_trips(&input);
+    let columns = package_columns(package_dir.path());
+    for name in ["geometry", "geometry_properties", "material", "texture"] {
+        assert!(
+            columns.iter().any(|c| c == name),
+            "`{name}` must be an attribute column of its own: {columns:?}"
+        );
+    }
+}

@@ -81,10 +81,9 @@ const BBOX_LEAVES: [&str; 6] = ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"];
 /// (`city.columns[].encoding`) and then checked against the physical column —
 /// see [`crate::geometry_encoding`] for why the encoding is never inferred
 /// from the column's `DataType` shape alone. Samples the first LoD's
-/// `geometry_<suffix>` column when the table has LoDs, else the legacy bare
-/// `geometry` column when present; a table with neither carries no geometry
-/// at all, so the encoding is moot and `Wkb` is returned as an arbitrary,
-/// harmless default. Sampling ONE column is sound because this crate's writer
+/// `geometry_<suffix>` column when the table has LoDs; a table without
+/// carries no geometry at all, so the encoding is moot and `Wkb` is returned
+/// as an arbitrary, harmless default. Sampling ONE column is sound because this crate's writer
 /// renders every geometry column of a file under a single, dataset-wide
 /// encoding (`ConvertOptions::geometry_encoding`); the per-column resolution
 /// [`crate::decode`] performs is the finer-grained check.
@@ -92,13 +91,11 @@ fn detect_geometry_encoding(
     meta: &CityMetadata,
     actual: &Schema,
     lods: &[Lod],
-    has_bare_geometry: bool,
 ) -> Result<GeometryEncoding> {
-    let sample_name = match lods.first() {
-        Some(lod) => geometry_column_name("geometry", lod),
-        None if has_bare_geometry => "geometry".to_string(),
-        None => return Ok(GeometryEncoding::Wkb),
+    let Some(lod) = lods.first() else {
+        return Ok(GeometryEncoding::Wkb);
     };
+    let sample_name = geometry_column_name("geometry", lod);
     crate::geometry_encoding::resolve_geometry_encoding(meta, actual, &sample_name)
 }
 
@@ -299,73 +296,10 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             attributes.push((name.clone(), attr_type));
         }
 
-        // Whether THIS table's own physical schema carries the bare
-        // un-suffixed `geometry` column. The current writer never emits it: a
-        // geometry-less table carries NO geometry column at all — whether the
-        // whole dataset has no analysis geometry or just this per-module table
-        // does (both are pruned identically now; spec "Levels of detail" /
-        // "object-table-schema" — "a table whose objects have no analysis
-        // geometry carries none of them"). So `lods.is_empty() &&
-        // !has_bare_geometry` is the normal geometry-less shape. A bare
-        // `geometry` column therefore signals a LEGACY/FOREIGN file (an old
-        // zero-analysis-geometry package that still wrote the un-suffixed
-        // quartet, or a single-LoD un-suffixed layout); it is rendered
-        // faithfully by the main path below (empty-`lods` `to_arrow_schema`
-        // still includes that quartet) so such files keep reading.
-        let has_bare_geometry = actual.field_with_name("geometry").is_ok();
-
-        if lods.is_empty() && !has_bare_geometry {
-            // This table needs no geometry section at all. Rendering the
-            // real `attributes` through `CityParquetSchema::to_arrow_schema`
-            // here would be UNSAFE: with `lods` empty, its `validate` reserves
-            // the BARE `geometry`/`geometry_properties`/`material`/`texture`
-            // names (the zero-analysis-geometry fallback's own vocabulary),
-            // and an attribute legitimately named e.g. `material` — legal
-            // dataset-wide, since the dataset's REAL LoDs only reserve
-            // `material_lod<suffix>`, never the bare name — would spuriously
-            // collide and error out (proven by the real-fixture regression
-            // `attributes_named_like_appearance_columns_do_not_corrupt_export`).
-            // So: render the reserved/implicit_geometry/other shape with NO attributes
-            // (nothing to collide with), strip the synthesised bare quartet
-            // `to_arrow_schema` always adds for empty `lods` (the ONLY shape
-            // it knows for that case — never teach `CityParquetSchema` a
-            // third "no geometry at all" `lods` state just for this
-            // reader-side reconstruction), then splice in each attribute's
-            // own ALREADY-RESOLVED physical field from `actual` (its type,
-            // including the Json-vs-String disambiguation, was already
-            // settled above) rather than re-deriving it through the
-            // collision-prone path.
-            let reserved_only = CityParquetSchema {
-                lods: Vec::new(),
-                geoparquet_lods: Vec::new(),
-                attributes: Vec::new(),
-                crs: None,
-                extension_namespaces: Vec::new(),
-            }
-            .to_arrow_schema()?;
-            const BARE_GEOMETRY_NAMES: [&str; 4] =
-                ["geometry", "geometry_properties", "material", "texture"];
-            let mut fields: Vec<arrow_schema::Field> = reserved_only
-                .fields()
-                .iter()
-                .filter(|f| !BARE_GEOMETRY_NAMES.contains(&f.name().as_str()))
-                .map(|f| f.as_ref().clone())
-                .collect();
-            for (name, _) in &attributes {
-                let field = actual.field_with_name(name).map_err(|_| {
-                    CityParquetError::Metadata(format!(
-                        "attribute column '{name}' listed in metadata but absent from the \
-                         file's schema"
-                    ))
-                })?;
-                fields.push(field.as_ref().clone());
-            }
-            return Ok(Arc::new(project_metadata_onto(
-                actual,
-                &Schema::new(fields),
-            )));
-        }
-
+        // A table without LoDs carries no geometry column at all (spec
+        // "Levels of detail"), and renders as the reserved columns and its
+        // attributes — an attribute may be named `geometry`, which no
+        // geometry column is.
         let schema = CityParquetSchema {
             geoparquet_lods: geoparquet_lods_from_geo(geo.as_ref(), &lods),
             lods,
@@ -391,7 +325,7 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         // reading values see no difference).
         // Validates the footer token and the physical column shape; the
         // resolved encoding itself is not needed, only that it resolves.
-        detect_geometry_encoding(&meta, actual, &schema.lods, has_bare_geometry)?;
+        detect_geometry_encoding(&meta, actual, &schema.lods)?;
         let canonical = schema.to_arrow_schema()?;
         Ok(Arc::new(project_metadata_onto(actual, &canonical)))
     }

@@ -195,11 +195,8 @@ struct GeometryColumnSpec {
 /// `geometry_properties_lod*` also starts with `geometry_` but is excluded
 /// because `"properties_lod1"` does not parse as one. A geometry-less table carries no geometry column at
 /// all (the current writer prunes them; spec "Levels of detail"), so it
-/// yields no entries here. A LEGACY/FOREIGN file may still carry the single
-/// unsuffixed `geometry`/`geometry_properties` pair, read defensively as a
-/// `None`-LoD entry; the two shapes are mutually exclusive by construction,
-/// but both are checked unconditionally so a file carrying both would still
-/// decode every geometry column.
+/// yields no entries here. There is no un-suffixed geometry column, so a
+/// column named `geometry` is an attribute.
 fn geometry_columns(schema: &Schema, meta: &CityMetadata) -> Result<Vec<GeometryColumnSpec>> {
     let mut cols: Vec<(Option<Lod>, String, String)> = schema
         .fields()
@@ -216,13 +213,6 @@ fn geometry_columns(schema: &Schema, meta: &CityMetadata) -> Result<Vec<Geometry
         })
         .collect();
     cols.sort_by_key(|(lod, ..)| *lod);
-    if schema.field_with_name("geometry").is_ok() {
-        cols.push((
-            None,
-            "geometry".to_string(),
-            "geometry_properties".to_string(),
-        ));
-    }
     cols.into_iter()
         .map(|(lod, geometry_name, properties_name)| {
             crate::geometry_encoding::resolve_geometry_encoding(meta, schema, &geometry_name)?;

@@ -1235,14 +1235,13 @@ impl RowWriter {
             material: MaterialCellBuilder::new(),
             texture: TextureCellBuilder::new(),
         };
-        let geometry_slots = if per_lod {
-            scan.lods
-                .iter()
-                .map(|lod| new_slot(lod.column_suffix()))
-                .collect()
-        } else {
-            vec![new_slot(String::new())]
-        };
+        // A dataset without LoDs carries no geometry column (spec "Levels of
+        // detail"), so it has no slot either.
+        let geometry_slots = scan
+            .lods
+            .iter()
+            .map(|lod| new_slot(lod.column_suffix()))
+            .collect();
         let attributes = scan
             .schema
             .attributes
