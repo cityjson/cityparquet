@@ -96,9 +96,11 @@ owning repo; parent bumps submodule pointers.
 - `06-resources/02-software.mdx` also: `--no-lod0` → `--lod0`, `collection` exists, FCB input.
 - (07) CityJSON mapping for `geometry_lod4_*` (CityJSON has no LoD4; impl writes "4.0" + warns).
 - (05) add `"FlatCityBuf"` to the `source_format` tokens?
-- (02/06) Reserved-name collision case-sensitive? Source attr `ID` vs reserved `id`: rs writes an
+- SETTLED 2026-10-09 (spec 3bc6184, ADR 0003): reserved-name collision case-sensitive? Source attr `ID` vs reserved `id`: rs writes an
   `ID` column, duckdb diverts to `other`; DuckDB is case-insensitive → rs→duckdb→rs fails (#17).
 - (03) `[a,b,a,a]` meets "closed, ≥4 points" yet has <3 distinct positions — well-formed or not?
 - Should a writer repair a texture ring one UV short (e.g. duplicate the repeated index's UV)?
+- (02) Two NON-reserved attributes differing only in case (`Foo`/`foo`) still clash in DuckDB
+  (case-insensitive columns); the escape rule covers only reserved names.
 - Hilbert key not normative; rs keys on the whole vertex pool. STAC `datetime` fallback to
   write time is a writer convention. Address `location` MultiPoint `lod` member not emitted.
