@@ -884,3 +884,62 @@ fn an_other_entry_duplicating_an_escaped_attribute_column_is_reported() {
     });
     assert_error(&validate(&pkg), "value.other-collision");
 }
+
+/// The object table of `pkg` that carries a non-null `implicit_geometry`.
+fn table_with_implicit_geometry(pkg: &Path) -> std::path::PathBuf {
+    fs::read_dir(pkg)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.extension().is_some_and(|e| e == "parquet")
+                && FileContent::read(p).batches.iter().any(|b| {
+                    b.column_by_name("implicit_geometry")
+                        .is_some_and(|c| c.null_count() < c.len())
+                })
+        })
+        .expect("railway has an object with an implicit geometry")
+}
+
+/// spec 04 "Placement": the transformation matrix is affine — its last row
+/// MUST be `0, 0, 0, 1`. The real railway implicit geometries' matrices are
+/// given a projective last row (`m30 = 0.5`).
+#[test]
+fn a_projective_implicit_transformation_matrix_is_reported() {
+    let (_dir, pkg) = convert_fixture("lod3_railway.city.json");
+    assert!(validate(&pkg).violations.is_empty(), "{}", validate(&pkg));
+    let table = table_with_implicit_geometry(&pkg);
+    rewrite(&table, |c| {
+        replace_struct_child(c, "implicit_geometry", "transformationMatrix", |matrices| {
+            let list = matrices.as_list::<i32>();
+            let mut values: Vec<f64> = list
+                .values()
+                .as_primitive::<arrow_array::types::Float64Type>()
+                .values()
+                .to_vec();
+            for (row, window) in list.offsets().windows(2).enumerate() {
+                if list.is_valid(row) && window[1] - window[0] == 16 {
+                    values[window[0] as usize + 12] = 0.5;
+                }
+            }
+            let DataType::List(item) = list.data_type() else {
+                panic!("transformationMatrix is a list")
+            };
+            Arc::new(ListArray::new(
+                item.clone(),
+                list.offsets().clone(),
+                Arc::new(arrow_array::Float64Array::from(values)),
+                list.nulls().cloned(),
+            )) as ArrayRef
+        });
+    });
+    let report = validate(&pkg);
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == "value.implicit-geometry"
+                && v.severity == Severity::Error
+                && v.message.contains("0, 0, 0, 1")),
+        "expected the affine-matrix error, got:\n{report}"
+    );
+}

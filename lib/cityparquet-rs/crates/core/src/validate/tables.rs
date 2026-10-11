@@ -724,6 +724,21 @@ pub(super) fn check_implicit_reference(
                     values.len()
                 ),
             );
+        } else if let Some(values) = values.as_primitive_opt::<Float64Type>()
+            && values.values()[12..] != [0.0, 0.0, 0.0, 1.0]
+        {
+            // spec 04 "Placement": the matrix is affine, its last row
+            // exactly `0, 0, 0, 1`.
+            r.error(
+                "value.implicit-geometry",
+                APPEARANCE,
+                f,
+                format!(
+                    "row {row}: `implicit_geometry.transformationMatrix` has the last row {:?}, \
+                     not 0, 0, 0, 1 (a projective matrix has no meaning for an implicit geometry)",
+                    &values.values()[12..]
+                ),
+            );
         }
     }
 }

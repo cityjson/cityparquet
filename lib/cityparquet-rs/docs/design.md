@@ -320,6 +320,11 @@ sources, whose `geometry-templates.templates` is a bare array with no
 identifiers. Readers must resolve `implicit_geometry.id` by matching the `id` value,
 never by row position: a merged package's ids do not start at zero.
 
+The main-table `implicit_geometry.transformationMatrix` is an affine 4x4: its
+last row is exactly `0, 0, 0, 1`. A source `GeometryInstance` whose matrix is
+projective is invalid input, and `convert` refuses it with an error naming the
+object.
+
 An object with an implicit geometry stores the reference point (WKB
 `PointZ`) and `transformationMatrix` in its `implicit_geometry` column; the
 `id` field names the shared relative geometry.

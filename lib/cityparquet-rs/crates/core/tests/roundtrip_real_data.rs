@@ -302,6 +302,61 @@ fn implicit_geometry_transformation_matrix_wrong_length_is_rejected() {
     );
 }
 
+/// spec "Appearance & implicit geometries" ("Placement"): the matrix is a 4x4
+/// affine transformation, its last row exactly `0, 0, 0, 1`. A source
+/// `GeometryInstance` with a projective matrix is invalid input, and convert
+/// refuses it with an error naming the object. Derived from the real
+/// `lod3_railway` fixture (with an injected CRS, like
+/// [`railway_fixture_with_crs`]): the first `GeometryInstance`'s real matrix
+/// gets `m30 = 0.5`.
+#[test]
+fn implicit_geometry_projective_transformation_matrix_is_rejected() {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+
+    let mut mutated = None;
+    if let Some(cos) = doc["CityObjects"].as_object_mut() {
+        'outer: for (id, co) in cos.iter_mut() {
+            if let Some(geoms) = co["geometry"].as_array_mut() {
+                for geom in geoms.iter_mut() {
+                    if geom.get("type").and_then(|t| t.as_str()) == Some("GeometryInstance")
+                        && let Some(matrix) = geom
+                            .get_mut("transformationMatrix")
+                            .and_then(|m| m.as_array_mut())
+                    {
+                        assert_eq!(
+                            matrix[12..],
+                            [0.0, 0.0, 0.0, 1.0].map(|v| serde_json::json!(v)),
+                            "fixture fact: the real matrices are affine"
+                        );
+                        matrix[12] = serde_json::json!(0.5);
+                        mutated = Some(id.clone());
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+    let mutated = mutated
+        .expect("fixture must carry at least one GeometryInstance with a transformationMatrix");
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("railway_projective_matrix.city.json");
+    std::fs::write(&input, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let err = convert(&ConvertOptions::new(input, out.path().to_path_buf()))
+        .expect_err("a projective transformationMatrix must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains(&mutated) && msg.contains("0, 0, 0, 1"),
+        "error must name the object and the affine requirement, got: {msg}"
+    );
+}
+
 /// M5 task 3 (the milestone claim): presets change bytes, never semantics.
 /// Every named [`RecipePreset`] must still round-trip delft losslessly — the
 /// per-column tuning a preset picks is purely a `WriterProperties` concern and

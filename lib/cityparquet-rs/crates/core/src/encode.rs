@@ -528,7 +528,8 @@ type ImplicitGeometryFields = (i64, Vec<u8>, Option<Vec<f64>>);
 /// Parses a CityJSON `transformationMatrix` value into the flat 16-value
 /// list the reserved column stores, erroring — not silently truncating or
 /// padding — when it is not an array of exactly 16 numbers (spec "Appearance
-/// & implicit geometries": "exactly 16 values when non-null").
+/// & implicit geometries": "exactly 16 values when non-null"), and when it is
+/// not affine: its last row MUST be exactly `0, 0, 0, 1` (spec "Placement").
 fn parse_transformation_matrix(v: &Value) -> Result<Vec<f64>> {
     let values: Vec<f64> = serde_json::from_value(v.clone()).map_err(|e| {
         CityParquetError::Schema(format!(
@@ -540,6 +541,13 @@ fn parse_transformation_matrix(v: &Value) -> Result<Vec<f64>> {
             "implicit_geometry.transformationMatrix must have exactly 16 values (a flat row-major \
              4x4), got {}",
             values.len()
+        )));
+    }
+    if values[12..] != [0.0, 0.0, 0.0, 1.0] {
+        return Err(CityParquetError::Schema(format!(
+            "implicit_geometry.transformationMatrix must be affine, its last row 0, 0, 0, 1; \
+             got {:?} (a projective matrix has no meaning for an implicit geometry)",
+            &values[12..]
         )));
     }
     Ok(values)
@@ -863,7 +871,14 @@ fn accumulate_geometry(
     for geom in geoms {
         if geom.thetype == GeometryType::GeometryInstance {
             if acc.implicit_geometry.is_none() {
-                acc.implicit_geometry = build_implicit_geometry(geom, pool)?;
+                // Name the object in a malformed-matrix error.
+                acc.implicit_geometry =
+                    build_implicit_geometry(geom, pool).map_err(|e| match e {
+                        CityParquetError::Schema(msg) => {
+                            CityParquetError::Schema(format!("object '{id}': {msg}"))
+                        }
+                        other => other,
+                    })?;
             }
             continue;
         }
@@ -1928,9 +1943,17 @@ mod tests {
 
     #[test]
     fn parse_transformation_matrix_accepts_exactly_16_values() {
-        let values: Vec<f64> = (0..16).map(f64::from).collect();
+        let values: Vec<f64> = (0..12).map(f64::from).chain([0.0, 0.0, 0.0, 1.0]).collect();
         let parsed = parse_transformation_matrix(&serde_json::to_value(&values).unwrap()).unwrap();
         assert_eq!(parsed, values);
+    }
+
+    /// spec "Placement": the last row MUST be exactly `0, 0, 0, 1`.
+    #[test]
+    fn parse_transformation_matrix_rejects_a_projective_matrix() {
+        let values: Vec<f64> = (0..16).map(f64::from).collect();
+        let err = parse_transformation_matrix(&serde_json::to_value(&values).unwrap()).unwrap_err();
+        assert!(format!("{err}").contains("0, 0, 0, 1"), "{err}");
     }
 
     /// No fixture carries MultiSolid/CompositeSolid, so the nested `shells`
