@@ -902,7 +902,8 @@ fn table_with_implicit_geometry(pkg: &Path) -> std::path::PathBuf {
 
 /// spec 04 "Placement": the transformation matrix is affine — its last row
 /// MUST be `0, 0, 0, 1`. The real railway implicit geometries' matrices are
-/// given a projective last row (`m30 = 0.5`).
+/// given a projective last row (`m30 = 0.5`); the validator reports it and
+/// the decoder refuses it.
 #[test]
 fn a_projective_implicit_transformation_matrix_is_reported() {
     let (_dir, pkg) = convert_fixture("lod3_railway.city.json");
@@ -942,4 +943,13 @@ fn a_projective_implicit_transformation_matrix_is_reported() {
                 && v.message.contains("0, 0, 0, 1")),
         "expected the affine-matrix error, got:\n{report}"
     );
+
+    // spec 04 "Placement": a reader MUST treat a projective matrix as
+    // invalid input, so export refuses the package.
+    let err = cityparquet::export::export(&cityparquet::export::ExportOptions {
+        package_dir: pkg.clone(),
+        output: _dir.path().join("export.city.jsonl"),
+    })
+    .expect_err("the decoder must refuse a projective transformation matrix");
+    assert!(format!("{err}").contains("0, 0, 0, 1"), "{err}");
 }

@@ -658,6 +658,16 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
                         floats.len()
                     )));
                 }
+                // spec "Placement": the matrix is affine; a reader MUST treat a
+                // projective one as invalid input.
+                let last_row: Vec<f64> = (12..16).map(|i| floats.value(i)).collect();
+                if last_row != [0.0, 0.0, 0.0, 1.0] {
+                    return Err(err(format!(
+                        "object '{id}': implicit_geometry.transformationMatrix has the last row \
+                         {last_row:?}, not 0, 0, 0, 1 (a projective matrix has no meaning for an \
+                         implicit geometry)"
+                    )));
+                }
                 Some(serde_json::to_value(
                     (0..floats.len())
                         .map(|i| floats.value(i))
