@@ -108,14 +108,13 @@ yanking hides a release, it never frees the number.
 workspace entirely, in `benchmark/readbench`: it is evidence, and only means
 anything next to the corpora under `benchmark/`.
 
-**Only `cityparquet-schema` can be published today.** `cityparquet` depends on
-`city3d-stac-types` by git revision and that crate is not on crates.io, which
-`cargo publish` refuses outright; `cityparquet-cli` inherits the block. And the
+**Only `cityparquet-schema` should be published today.** `cityparquet` depends
+on `city3d-stac-types` by crates.io version, so the registry accepts it, but the
 `[patch.crates-io]` entry for `cjseq` applies to this workspace only, so a
 registry consumer would get upstream 0.4.x with the texture UV-index bug
-`vendor/cjseq/PATCHES.md` documents patching. Both have to clear before
-`cityparquet` belongs on the registry; `publish.yml` explains what clearing
-them means.
+`vendor/cjseq/PATCHES.md` documents patching; `cityparquet-cli` inherits the
+block. That has to clear before `cityparquet` belongs on the registry;
+`publish.yml` explains what clearing it means.
 
 ## Measurements
 

@@ -54,8 +54,9 @@ Generated benchmark inputs, evidence and summaries belong in the ignored `benchm
   carry its own Rust CityJSON/CityGML reader/writer — that rule is scoped to
   CityLake.)
 - **`lib/duckdb-3d`** operates on the WKB 3D geometry CityParquet carries.
-- The **City3D STAC extension** (separate `city3d-stac-tool` repo, vendored under
-  `lib/cityparquet-rs/vendor/`) is the discovery layer in front of the stack.
+- The **City3D STAC extension** (separate `city3d-stac-tool` repo, consumed as
+  the `city3d-stac-types` and `city3d-stac-gen` crates from crates.io) is the
+  discovery layer in front of the stack.
 - Recurring design principle: **separation of geometry from appearance**
   (material/texture), following OBJ/COLLADA/glTF precedent.
 
@@ -149,8 +150,7 @@ the spec rather than through each other's internals.
 tree and are edited here.
 
 `lib/cityparquet-rs/vendor/cjseq` is a **patched vendored copy**, not a
-submodule; `lib/cityparquet-rs/vendor/city3d-stac-tool` is a submodule and is
-gated by `just vendor-check`.
+submodule, and the only thing vendored under `vendor/`.
 
 ## Conventions
 

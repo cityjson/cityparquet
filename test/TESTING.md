@@ -12,12 +12,11 @@ Every command in Parts 0–4 was **executed on 2026-10-08** (macOS arm64, Rust
 v1.5.5) against these commits, and every expected output is the **real**
 observed value, not an illustration:
 
-| Repository                                               | Commit    |
-| -------------------------------------------------------- | --------- |
-| monorepo (`lib/cityparquet-rs`, `documents/`, `test/`)   | `971f7cc` |
-| `lib/duckdb-cityjson` (submodule, `develop`)             | `7f6b8c5` |
-| `lib/duckdb-3d` (submodule, `develop`)                   | `94268e7` |
-| `lib/cityparquet-rs/vendor/city3d-stac-tool` (submodule) | `c8ab8d9` |
+| Repository                                             | Commit    |
+| ------------------------------------------------------ | --------- |
+| monorepo (`lib/cityparquet-rs`, `documents/`, `test/`) | `971f7cc` |
+| `lib/duckdb-cityjson` (submodule, `develop`)           | `7f6b8c5` |
+| `lib/duckdb-3d` (submodule, `develop`)                 | `94268e7` |
 
 The walkthrough's outputs were taken on monorepo `e35e9a3` with duckdb-cityjson
 `939e1f1`. The later commits up to the pins above change the LoD4 export warning
@@ -51,14 +50,13 @@ driver's suite, `jq` by the benchmark shell suites. The `duckdb` on `PATH`
 serves the plain-Parquet checks; the extensions load only into the DuckDB they
 were built against, which is each submodule's own `build/release/duckdb`.
 
-### 0.1 Check out cityparquet-rs's vendored submodule
+### 0.1 cityparquet-rs needs no submodule
 
-`lib/cityparquet-rs` vendors `city3d-stac-tool` under `vendor/`, and `just check`
-gates on it (`vendor-check`):
-
-```sh
-(cd lib/cityparquet-rs && git submodule update --init)
-```
+`lib/cityparquet-rs` takes the City3D STAC crates (`city3d-stac-types`,
+`city3d-stac-gen`) from crates.io, and its only vendored code, `vendor/cjseq`, is
+an in-tree copy. Its `just check` therefore needs no `git submodule update`; the
+two DuckDB extensions are the only submodules (`just setup` from the repository
+root checks them out).
 
 ### 0.2 Fetch the real-data fixtures
 
@@ -166,12 +164,10 @@ export OUT=/tmp/cp_test && mkdir -p $OUT
 (cd lib/cityparquet-rs && just check)
 ```
 
-`check: lint test isolation vendor-check`, then `cargo fmt --all --check` and a
+`check: lint test isolation`, then `cargo fmt --all --check` and a
 Prettier pass over the Markdown. `test` is `cargo nextest run --workspace
 --all-features`; the read-benchmark harness is its own workspace
-(`benchmark/readbench`) and is not part of this gate. `vendor-check` runs
-`fmt`/`clippy`/`test` over `vendor/city3d-stac-tool` as well, because that
-submodule is deliberately outside the Cargo workspace.
+(`benchmark/readbench`) and is not part of this gate.
 
 Expected `test` summary (debug profile; the `test` recipe alone takes ~93 s on
 a warm build):
@@ -184,7 +180,7 @@ a warm build):
 whether the later gates would pass. They run on their own too:
 
 ```sh
-(cd lib/cityparquet-rs && just lint && just isolation && just vendor-check && cargo fmt --all --check)
+(cd lib/cityparquet-rs && just lint && just isolation && cargo fmt --all --check)
 ```
 
 ### 1.2 Convert a single-module dataset (Delft, 2231 objects)

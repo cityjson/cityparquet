@@ -16,18 +16,18 @@ owning repo; parent bumps submodule pointers.
 
 ## Milestones
 
-| # | Milestone | Done when |
-|---|-----------|-----------|
-| M1 | **Conformance backbone** — `cityparquet validate` (logical types, `city`/`geo` footers, sidecars) in rs; regenerate stale `cityparquet_rs_minimal` fixture; cross-writer test both ways | duckdb-written package passes rs validate + rs read; rs package passes `cityparquet_read`/`cityparquet_validate` |
-| M2 | **JSON logical type** in rs + duckdb-cityjson writers; readers + duckdb-3d accept it | M1 validator checks JSON type and both writers pass |
-| M3 | **duckdb-cityjson read/write gaps** — `address`, `implicit_geometry` + `geometry-templates` both directions; no degenerate rings on write; stale FUNCTIONS.md | CityJSON → package → CityJSON keeps address + templates (real fixture) |
-| M4 | **duckdb-cityjson Hilbert order** — same key as rs (`order.rs`) | same input → same row order from both writers |
-| M5 | **Append** — appearance-bearing data into an rs-written package | test on real fixture passes |
-| M6 | **rs**: LoD0 opt-in; LoD4 fixture + export; README CityGML scope; `collection` subcommand; FlatCityBuf input | tests per item; `just check` green |
-| M7 | **duckdb-3d**: STRUCT overload for GEOMETRY, flat `shells` on STRUCT path, ear-clipping silent stop → error/fix, implicit geometry | `make test_full` green, no skips |
-| M8 | **E2E on real data** — `test/TESTING.md` + each module's TESTING.md (Delft, Railway, Helsinki, 3DBAG tile); fix stale pins/paths/counts | walkthrough re-run, results recorded |
-| M9 | **Optimise (measured)** — rs convert (CityGML 3× parse, buffering, per-row JSON), duckdb-3d import/triangulation | before/after timings on a real dataset |
-| M10 | **Release** — community extension rebuild, tag 0.1.0, crates.io (`city3d-stac-types` first) | each step confirmed with author |
+| #   | Milestone                                                                                                                                                                               | Done when                                                                                                        |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| M1  | **Conformance backbone** — `cityparquet validate` (logical types, `city`/`geo` footers, sidecars) in rs; regenerate stale `cityparquet_rs_minimal` fixture; cross-writer test both ways | duckdb-written package passes rs validate + rs read; rs package passes `cityparquet_read`/`cityparquet_validate` |
+| M2  | **JSON logical type** in rs + duckdb-cityjson writers; readers + duckdb-3d accept it                                                                                                    | M1 validator checks JSON type and both writers pass                                                              |
+| M3  | **duckdb-cityjson read/write gaps** — `address`, `implicit_geometry` + `geometry-templates` both directions; no degenerate rings on write; stale FUNCTIONS.md                           | CityJSON → package → CityJSON keeps address + templates (real fixture)                                           |
+| M4  | **duckdb-cityjson Hilbert order** — same key as rs (`order.rs`)                                                                                                                         | same input → same row order from both writers                                                                    |
+| M5  | **Append** — appearance-bearing data into an rs-written package                                                                                                                         | test on real fixture passes                                                                                      |
+| M6  | **rs**: LoD0 opt-in; LoD4 fixture + export; README CityGML scope; `collection` subcommand; FlatCityBuf input                                                                            | tests per item; `just check` green                                                                               |
+| M7  | **duckdb-3d**: STRUCT overload for GEOMETRY, flat `shells` on STRUCT path, ear-clipping silent stop → error/fix, implicit geometry                                                      | `make test_full` green, no skips                                                                                 |
+| M8  | **E2E on real data** — `test/TESTING.md` + each module's TESTING.md (Delft, Railway, Helsinki, 3DBAG tile); fix stale pins/paths/counts                                                 | walkthrough re-run, results recorded                                                                             |
+| M9  | **Optimise (measured)** — rs convert (CityGML 3× parse, buffering, per-row JSON), duckdb-3d import/triangulation                                                                        | before/after timings on a real dataset                                                                           |
+| M10 | **Release** — community extension rebuild, tag 0.1.0, crates.io (`city3d-stac-types` first)                                                                                             | each step confirmed with author                                                                                  |
 
 ## Status
 
@@ -63,9 +63,10 @@ owning repo; parent bumps submodule pointers.
   `StacCollectionBuilder::aggregate_from_items` is public, `handle_update_collection_command`
   is private. gen is heavy (stac 0.16, object_store 0.11 + cloud, fcb_core 0.6, reqwest) →
   feature-gate in the CLI, or lift a pub fn upstream.
-- Release blockers: vendored `vendor/city3d-stac-tool` pinned to pre-split `c5a0eb3` while the
-  cargo dep is `743199c` (split); crates.io ignores `[patch.crates-io] cjseq` (patched 0.4.1)
-  → upstream the cjseq fix or publish a fork before `cargo publish`.
+- Release blockers: ~~vendored `vendor/city3d-stac-tool` pinned to pre-split `c5a0eb3` while the
+  cargo dep is `743199c` (split)~~ — resolved 2026-10-12: the city3d-stac crates come from the
+  crates.io releases and the submodule is gone; crates.io ignores `[patch.crates-io] cjseq`
+  (patched 0.4.1) → upstream the cjseq fix or publish a fork before `cargo publish`.
 
 - M6 rs a0ba0fc..d529c7b: --lod0 opt-in, LoD4 (SIG3D fixture, xlink CompositeSurface fix),
   `collection` via city3d-stac-gen (feature; vendored stac-tool → c8ab8d9; geo 0.31), FCB input

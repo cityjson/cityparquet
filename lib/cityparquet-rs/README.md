@@ -252,7 +252,6 @@ export+compare check. See
 | `just fixtures`                        | download the CityJSON test fixtures into `tests/fixtures/`       |
 | `just check`                           | clippy, tests, schema/Parquet isolation, `fmt --check`, prettier |
 | `just test` / `just lint` / `just fmt` | the individual gates                                             |
-| `just vendor-check`                    | fmt + clippy + test the vendored `city3d-stac-tool`              |
 | `just interop`                         | convert both fixtures and have DuckDB read the Parquet natively  |
 
 **From the repository root** — everything that reaches both this crate and the

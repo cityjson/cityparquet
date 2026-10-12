@@ -43,3 +43,7 @@ The CLI build includes two versions of some crates. The builder's own
 `item_assets` template is overwritten with the Items' real assets. Gen is a git
 dependency, which blocks publishing the CLI to crates.io until gen is published or
 the feature is left out of the published crate.
+
+**Status 2026-10-12:** city3d-stac-types and city3d-stac-gen are now consumed from
+crates.io (0.1.1 and 0.3.1) rather than by git revision, and the vendored
+city3d-stac-tool submodule has been removed.
