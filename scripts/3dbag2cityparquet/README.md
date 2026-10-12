@@ -10,14 +10,22 @@ materialises every input's features at once. Measured on 24 real tiles, peak
 resident memory is **~20× the input JSON**, which over 3DBAG's ~53 GB is
 **~1.1 TB**. No machine here has that.
 
-The way through is that **CityJSONSeq sources stream**. `Source::features()`
-reopens the file and yields line by line, and the writer makes two such passes
-(scan for the schema, then encode) — as long as it is told `--ordering source`.
-Its default, Hilbert ordering, buffers every feature to sort them. So the whole
-dataset can be handed to the reference writer as **one CityJSONSeq file**,
-converted with `--ordering source`, and the writer computes the footer itself. Nothing here grafts metadata onto a
-Parquet file after the fact; `cityparquet` remains the only thing that decides
-what a CityParquet package contains.
+The way through is that **a single CityJSONSeq file never needs every feature
+parsed at once**. The writer reads it line by line: a scan for the schema, then
+the encode. Both row orderings work on it:
+
+- **Hilbert** (`--ordering hilbert`, the writer's default) sorts the features
+  by the Hilbert index of each feature's centre. The scan keeps only that
+  centre; before encoding, the writer indexes the byte span of every line in
+  one sequential pass that parses nothing, and the encode pass reads the lines
+  back by seek, in curve order.
+- **Source** (`--ordering source`) encodes the features as the file holds them,
+  streaming it front to back — here, in tile quadtree order.
+
+So the whole dataset can be handed to the reference writer as **one CityJSONSeq
+file**, and the writer computes the footer itself. Nothing here grafts metadata
+onto a Parquet file after the fact; `cityparquet` remains the only thing that
+decides what a CityParquet package contains.
 
 ## The one piece of arithmetic
 
@@ -46,7 +54,8 @@ case is the only per-vertex branch, and it is what keeps the output identical to
 
 ## The run, measured
 
-3DBAG **v20250903**, 8,941 tiles, on a 128-core / 503 GB host:
+3DBAG **v20250903**, 8,941 tiles, on a 128-core / 503 GB host, converted with
+`--ordering source`:
 
 | Stage     | Wall clock   | Output                                      |
 | --------- | ------------ | ------------------------------------------- |
@@ -62,6 +71,12 @@ justification for this pipeline, and it is a measured figure, not a code read.
 Note it is not constant-memory: 56 GB is ~0.86× the input file, so the writer
 still accumulates (schema scan, dictionaries, row-group buffers). It is
 sub-linear enough to fit, which is what was needed.
+
+The Hilbert conversion of the whole dataset — the script's default — has not
+been measured yet, in time or in memory. It should cost what the source run
+costs, plus one optional centre and one byte span held per feature, plus one
+sequential pass over the merged file to index the line spans, with the encode
+pass reading the file by seek rather than front to back.
 
 The result:
 
@@ -110,8 +125,12 @@ python3 3dbag2cityparquet.py all \
   --jobs    64
 ```
 
-The `convert` stage passes `--ordering source` itself: `cityparquet convert`
-sorts in Hilbert order by default, which buffers the whole dataset. Further
+`--ordering hilbert|source` chooses the row order the `convert` stage passes to
+`cityparquet convert`. It defaults to `hilbert`, the writer's own default and
+the layout the benchmark measures; `source` keeps the tile quadtree order and
+streams the merged file, for a host where the span-indexing pass and the
+random-access reads over it are not wanted. `--ordering` is the script's own
+flag, not a `--convert-arg`: the writer rejects a repeated `--ordering`. Further
 writer flags go through `--convert-arg`, one word each; the `=` spelling
 (`--convert-arg=--row-group-size`) is what lets a value that starts with `--`
 through.
@@ -126,7 +145,7 @@ Needs `duckdb` (the `verify` stage only) and both binaries built:
 | `plan`    | read each tile's transform + CRS; derive the merged transform |
 | `seq`     | `gunzip \| cjseq cat \| shift` → one `.jsonl` per tile        |
 | `merge`   | synthetic header + every tile's feature lines → one file      |
-| `convert` | `cityparquet convert <that one file> -o <dest>`               |
+| `convert` | `cityparquet convert <that one file> -o <dest> --ordering …`  |
 | `verify`  | row count, id uniqueness, extent, footer keys                 |
 | `all`     | every stage in order                                          |
 
@@ -134,10 +153,10 @@ Needs `duckdb` (the `verify` stage only) and both binaries built:
 partial output is written to `.part` and renamed, so a crash never leaves a
 half-file that looks finished.
 
-Tiles are fed in quadtree order `(z, x, y)`, which gives the writer spatially
-coherent row groups for free. Hilbert ordering, the writer's default, would do
-better but buffers every feature — the 1.1 TB this whole approach exists to
-avoid, which is why the convert stage needs `--ordering source`.
+Tiles are fed into the merged file in quadtree order `(z, x, y)`. Under
+`--ordering source` that is the row order, and it already gives spatially
+coherent row groups; under `--ordering hilbert` the writer reorders the rows
+along the curve, so the row groups follow it instead.
 
 ## Caveats, which are part of the artefact
 

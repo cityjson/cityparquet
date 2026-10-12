@@ -62,8 +62,11 @@ artefact is a package whose rows `readbench_prepare.sh` writes in Hilbert-curve
 order. Hilbert order is the `cityparquet convert` default, and the prepare
 script and the coordinator pin it explicitly (`--ordering hilbert`,
 `RowOrder::Hilbert`) so the benchmark states its configuration rather than
-inheriting it. It costs memory: the writer holds every feature before it
-writes the first row, where `--ordering source` streams. Row order changes how
+inheriting it. It costs extra reads of the input. Both convert from a
+CityJSONSeq: the scan keeps each feature's centre, one more sequential pass
+indexes the byte span of every line, and the encode pass reads the lines back
+by seek in curve order, where `--ordering source` streams the file front to
+back. Row order changes how
 tightly each row group's bbox statistics enclose its rows, and so how much a
 `bbox-query` can prune; it changes neither the package's schema nor what a
 reader must understand to read it.
