@@ -44,6 +44,10 @@ impl<'g> Faces<'g> {
             Geometry::MultiSolid { boundaries, .. }
             | Geometry::CompositeSolid { boundaries, .. } => Faces::Solids(boundaries),
             Geometry::GeometryInstance { .. } => Faces::Instance,
+            // The scan's `geometry_bbox` refuses a type this crate does not
+            // know (`crate::wkb_write::unsupported_geometry`) before any
+            // geometry reaches here.
+            other => unreachable!("unsupported geometry type {:?}", other.geometry_type()),
         }
     }
 
@@ -217,6 +221,8 @@ pub(crate) fn semantics(
             (&s.surfaces, s.values.as_ref().map(Values::Solids))
         }
         Geometry::GeometryInstance { .. } => return None,
+        // Refused by the scan, as in `Faces::of`.
+        other => unreachable!("unsupported geometry type {:?}", other.geometry_type()),
     };
     let flat = match values {
         Some(v) => faces.flatten(v),

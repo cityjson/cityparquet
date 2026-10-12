@@ -194,6 +194,7 @@ fn assert_kind_matches_source(
                 assert_polygon_list_matches(decoded_faces, &expected, coords, pool);
             }
         }
+        other => panic!("the fixtures hold no {other:?} geometry"),
     }
 }
 

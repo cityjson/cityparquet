@@ -74,6 +74,10 @@ impl Vertices<'_> {
                 Ok(rings)
             }
             Geometry::GeometryInstance { boundaries, .. } => self.ring(boundaries, extent),
+            other => Err(anyhow!(
+                "geometry type {:?} is not supported",
+                other.geometry_type()
+            )),
         }
     }
 
@@ -183,6 +187,8 @@ fn semantic_faces(geometry: &Geometry) -> u64 {
                 .map_or(0, multi_solid)
         }
         Geometry::GeometryInstance { .. } => 0,
+        // `Vertices::walk` refuses it before this is reached.
+        other => unreachable!("unsupported geometry type {:?}", other.geometry_type()),
     }
 }
 

@@ -3,7 +3,7 @@
 
 use cityparquet_schema::crs::AxisOrder;
 use cityparquet_schema::{CityParquetError, Result};
-use cjseq::{Geometry, Shell, Surface, Transform, VertexIndex};
+use cjseq::{Geometry, GeometryType, Shell, Surface, Transform, VertexIndex};
 
 const POINT_Z: u32 = 1001;
 const LINESTRING_Z: u32 = 1002;
@@ -389,6 +389,14 @@ pub struct WkbOutcome {
     pub dropped_surfaces: Vec<usize>,
 }
 
+/// The error for a geometry type cjseq defines but this crate does not
+/// encode. cjseq's geometry enums are `#[non_exhaustive]`, so a type it adds
+/// reaches the scan's [`geometry_bbox`] as this error, before anything else
+/// sees the geometry.
+pub(crate) fn unsupported_geometry(gtype: GeometryType) -> CityParquetError {
+    CityParquetError::Geometry(format!("geometry type {gtype:?} is not supported"))
+}
+
 pub fn geometry_to_wkb(geom: &Geometry, pool: &VertexPool) -> Result<Option<WkbOutcome>> {
     let mut buf = Vec::new();
     let mut bbox = Bbox::new();
@@ -441,6 +449,7 @@ pub fn geometry_to_wkb(geom: &Geometry, pool: &VertexPool) -> Result<Option<WkbO
                 write_polyhedral(&mut buf, &kept, pool, &mut bbox)?;
             }
         }
+        other => return Err(unsupported_geometry(other.geometry_type())),
     }
     if bbox.count == 0 {
         // No coordinates were actually written (empty boundaries, or every
@@ -519,6 +528,7 @@ pub fn geometry_bbox(geom: &Geometry, pool: &VertexPool) -> Result<Option<[f64; 
                 }
             }
         }
+        other => return Err(unsupported_geometry(other.geometry_type())),
     }
     if bbox.count == 0 {
         // Mirrors geometry_to_wkb: no coordinates kept means no bbox — an

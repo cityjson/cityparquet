@@ -178,6 +178,9 @@ fn city_geometry_type(thetype: &GeometryType) -> Option<&'static str> {
         GeometryType::MultiSolid | GeometryType::CompositeSolid => Some("GeometryCollection Z"),
         // A GeometryInstance produces no geometry column at all.
         GeometryType::GeometryInstance => None,
+        // `geometry_bbox` has already refused the geometry
+        // (`crate::wkb_write::unsupported_geometry`).
+        other => unreachable!("unsupported geometry type {other:?}"),
     }
 }
 

@@ -196,22 +196,19 @@ struct AddressCompare {
 /// reusing [`points_node`] exactly as [`normalise_geometry`]'s `MultiPoint`
 /// arm does — this IS structurally a `MultiPoint` geometry, just reached via
 /// `address[].location` rather than the object's own `geometry` array.
-fn address_location_node(location: &Value, pool: &VertexPool) -> Option<Node> {
-    let obj = location.as_object()?;
-    if obj.get("type").and_then(Value::as_str) != Some("MultiPoint") {
-        return None;
+fn address_location_node(location: &Geometry, pool: &VertexPool) -> Option<Node> {
+    match location {
+        Geometry::MultiPoint { boundaries, .. } if !boundaries.is_empty() => {
+            points_node(pool, boundaries).ok()
+        }
+        _ => None,
     }
-    let idxs: Vec<VertexIndex> = serde_json::from_value(obj.get("boundaries")?.clone()).ok()?;
-    if idxs.is_empty() {
-        return None;
-    }
-    points_node(pool, &idxs).ok()
 }
 
 /// One object's `address[]` list as compared (spec "Addresses"): the SAME
 /// recognised-member mapping the encoder uses
-/// ([`crate::address::map_postal_fields`]) applied to the raw source
-/// `address` array, via [`crate::encode::raw_address_members`] — both sides
+/// ([`crate::address::map_postal_fields`]) applied to the source's
+/// `address` entries — both sides
 /// of a comparison go through this identical extraction (the source's own
 /// address, and the exported CityJSON's re-emitted one, which uses the same
 /// canonical member names), so the two can never diverge on what "the
@@ -219,15 +216,16 @@ fn address_location_node(location: &Value, pool: &VertexPool) -> Option<Node> {
 /// an empty `Vec` — indistinguishable, for comparison, from an explicit
 /// empty array, since both round-trip to the same thing.
 fn address_comparables(co: &cjseq::CityObject, pool: &VertexPool) -> Result<Vec<AddressCompare>> {
-    let Some(entries) = crate::encode::raw_address_members(co)? else {
+    let Some(entries) = &co.address else {
         return Ok(Vec::new());
     };
     Ok(entries
         .iter()
         .map(|entry| AddressCompare {
-            postal: crate::address::map_postal_fields(entry),
+            postal: crate::address::map_postal_fields(&entry.other),
             location: entry
-                .get("location")
+                .location
+                .as_ref()
                 .and_then(|loc| address_location_node(loc, pool)),
         })
         .collect())
@@ -768,6 +766,11 @@ fn normalise_geometry(
                     })
                     .collect::<Result<Vec<_>>>()?,
             )
+        }
+        other => {
+            return Err(crate::wkb_write::unsupported_geometry(
+                other.geometry_type(),
+            ));
         }
     };
     Ok(NormalisedGeometry {

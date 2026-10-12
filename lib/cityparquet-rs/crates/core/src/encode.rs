@@ -401,48 +401,16 @@ struct AddressRow {
 /// geometry, so a malformed one is silently dropped rather than aborting the
 /// whole conversion (mirrors [`build_implicit_geometry`]'s graceful-degradation
 /// style).
-fn build_location_wkb(location: &Value, pool: &VertexPool) -> Option<Vec<u8>> {
-    let obj = location.as_object()?;
-    if obj.get("type").and_then(Value::as_str) != Some("MultiPoint") {
-        return None;
+fn build_location_wkb(location: &Geometry, pool: &VertexPool) -> Option<Vec<u8>> {
+    match location {
+        Geometry::MultiPoint { boundaries, .. } if !boundaries.is_empty() => {}
+        _ => return None,
     }
-    let boundaries: Vec<cjseq::VertexIndex> =
-        serde_json::from_value(obj.get("boundaries")?.clone()).ok()?;
-    if boundaries.is_empty() {
-        return None;
-    }
-    // The location's `lod`, if any, plays no part in its WKB.
-    let geom = Geometry::MultiPoint {
-        lod: cjseq::Lod::new(0, None).ok()?,
-        boundaries,
-        semantics: None,
-    };
-    geometry_to_wkb(&geom, pool).ok().flatten().map(|o| o.bytes)
-}
-
-/// The source object's raw `address` array (spec "Addresses"), if any — read
-/// directly since cjseq has no typed field for it (CityJSON does not
-/// prescribe address member names; it rides the struct's `other`
-/// member). `None` when the
-/// object carries no `address` member, or a malformed (non-array) one —
-/// treated as absent rather than an error, since a corrupt `address` member
-/// should not abort an otherwise-valid conversion. `Some(vec![])` is kept
-/// distinct from `None`: an explicit empty array is a genuine (if unusual)
-/// value, not "no address at all".
-pub(crate) fn raw_address_members(co: &CityObject) -> Result<Option<Vec<Value>>> {
-    Ok(address_members_from_json(&object_json(co)?))
-}
-
-/// [`raw_address_members`]'s core over an already-serialised member map — the
-/// form [`RowWriter::push_object`] uses, so the row loop serialises the object
-/// only once (review P5b).
-pub(crate) fn address_members_from_json(
-    co_json: &serde_json::Map<String, Value>,
-) -> Option<Vec<Value>> {
-    match co_json.get("address") {
-        Some(Value::Array(arr)) => Some(arr.clone()),
-        _ => None,
-    }
+    // The location's `lod` plays no part in its WKB.
+    geometry_to_wkb(location, pool)
+        .ok()
+        .flatten()
+        .map(|o| o.bytes)
 }
 
 /// Build the reserved `address` column's row value: one [`AddressRow`] per
@@ -450,23 +418,19 @@ pub(crate) fn address_members_from_json(
 /// to nothing recognised (an all-`None` struct still occupies its list
 /// position), since "how many addresses" is itself meaningful. `None` when
 /// the object carries no `address` member at all (column cell null).
-fn build_address_rows(
-    co_json: &serde_json::Map<String, Value>,
-    pool: &VertexPool,
-) -> Result<Option<Vec<AddressRow>>> {
-    let Some(entries) = address_members_from_json(co_json) else {
-        return Ok(None);
-    };
+fn build_address_rows(co: &CityObject, pool: &VertexPool) -> Option<Vec<AddressRow>> {
+    let entries = co.address.as_ref()?;
     let rows = entries
         .iter()
         .map(|entry| AddressRow {
-            postal: crate::address::map_postal_fields(entry),
+            postal: crate::address::map_postal_fields(&entry.other),
             location: entry
-                .get("location")
+                .location
+                .as_ref()
                 .and_then(|loc| build_location_wkb(loc, pool)),
         })
         .collect();
-    Ok(Some(rows))
+    Some(rows)
 }
 
 /// Per-object accumulator filled by [`accumulate_geometry`], consumed by
@@ -1221,7 +1185,7 @@ impl RowWriter {
             .expect("id came from this feature's own city_objects keys");
         let pool = VertexPool::new(&feature.vertices, transform, self.axis_order);
         // The ONE whole-object serialisation this row performs (review P5b);
-        // children_roles / address / other all read from this map.
+        // children_roles / other read from this map.
         let co_json = object_json(co)?;
 
         self.id.append_value(id);
@@ -1285,9 +1249,7 @@ impl RowWriter {
             }
         }
 
-        // Address rows must be derived BEFORE `co_json` is consumed for
-        // `other` below (they are pushed further down, with the column).
-        let address_rows = build_address_rows(&co_json, &pool)?;
+        let address_rows = build_address_rows(co, &pool);
 
         // `other`: the single escape hatch (§5.1) for source members with no
         // dedicated column. Null when the object has none.
@@ -1684,9 +1646,7 @@ mod tests {
         }))
         .unwrap();
         let pool = VertexPool::raw(&[], AxisOrder::LonLat);
-        let rows = build_address_rows(&object_json(&co).unwrap(), &pool)
-            .unwrap()
-            .unwrap();
+        let rows = build_address_rows(&co, &pool).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].postal.city.as_deref(), Some("Helsinki"));
         assert_eq!(
@@ -1701,11 +1661,7 @@ mod tests {
         let co: CityObject =
             serde_json::from_value(serde_json::json!({"type": "Building"})).unwrap();
         let pool = VertexPool::raw(&[], AxisOrder::LonLat);
-        assert!(
-            build_address_rows(&object_json(&co).unwrap(), &pool)
-                .unwrap()
-                .is_none()
-        );
+        assert!(build_address_rows(&co, &pool).is_none());
     }
 
     #[test]

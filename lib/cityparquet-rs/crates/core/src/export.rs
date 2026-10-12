@@ -58,8 +58,8 @@ use cityparquet_schema::extensions::cityjson_extensions_member;
 use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
 use cityparquet_schema::{CityMetadata, CityParquetError, ExtensionNaming, Result};
 use cjseq::{
-    Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType,
-    Metadata as CjMetadata, ReferenceSystem, TemplateIndex, Transform, VertexIndex,
+    Appearance, CityJSON, CityJSONFeature, CityObjectAddress, Geometry, GeometryTemplates,
+    GeometryType, Metadata as CjMetadata, ReferenceSystem, TemplateIndex, Transform, VertexIndex,
 };
 
 use crate::appearance_columns::{read_material_cell, read_texture_cell};
@@ -394,6 +394,7 @@ fn reconstruct_boundaries(
         // one against a real WKB cell is a corrupt/hand-rolled file — an
         // error, not a crash.
         GeometryType::GeometryInstance => Err(geom_shape_err(gtype, kind)),
+        other => Err(crate::wkb_write::unsupported_geometry(*other)),
     }
 }
 
@@ -412,14 +413,14 @@ fn reconstruct_boundaries(
 /// reference point use), and [`reconstruct_boundaries`] turns the result into
 /// CityJSON `boundaries` — no separate "WKB multipoint -> boundaries" logic
 /// needed.
-fn build_address_value(
+fn build_addresses(
     entries: &[crate::decode::AddressEntry],
     interner: &mut VertexInterner,
     scale: [f64; 3],
     translate: [f64; 3],
     axis_order: AxisOrder,
-) -> Result<Value> {
-    let mut arr = Vec::with_capacity(entries.len());
+) -> Result<Vec<CityObjectAddress>> {
+    let mut addresses = Vec::with_capacity(entries.len());
     for entry in entries {
         let postal = crate::address::AddressPostal {
             street: entry.street.clone(),
@@ -431,20 +432,26 @@ fn build_address_value(
             country: entry.country.clone(),
             free_text: entry.free_text.clone(),
         };
-        let mut map = crate::address::postal_to_members(&postal);
-        if let Some(wkb) = &entry.location {
-            let decoded = wkb_to_geometry(wkb)?;
-            let vmap = vertex_map(&decoded.coords, scale, translate, axis_order, interner);
-            let boundaries =
-                reconstruct_boundaries(&decoded.kind, &GeometryType::MultiPoint, None, &vmap)?;
-            map.insert(
-                crate::address::LOCATION_KEY.to_string(),
-                serde_json::json!({"type": "MultiPoint", "boundaries": boundaries}),
-            );
-        }
-        arr.push(Value::Object(map));
+        let location = match &entry.location {
+            Some(wkb) => {
+                let decoded = wkb_to_geometry(wkb)?;
+                let vmap = vertex_map(&decoded.coords, scale, translate, axis_order, interner);
+                let boundaries =
+                    reconstruct_boundaries(&decoded.kind, &GeometryType::MultiPoint, None, &vmap)?;
+                Some(Geometry::MultiPoint {
+                    lod: crate::address::location_lod(),
+                    boundaries: serde_json::from_value(boundaries)?,
+                    semantics: None,
+                })
+            }
+            None => None,
+        };
+        addresses.push(CityObjectAddress {
+            location,
+            other: crate::address::postal_to_members(&postal),
+        });
     }
-    Ok(Value::Array(arr))
+    Ok(addresses)
 }
 
 /// Split a flat per-face list into consecutive groups of `counts` lengths —
@@ -569,6 +576,7 @@ fn nest_faces(flat: Vec<Value>, props: Option<&Value>, gtype: &GeometryType) -> 
         GeometryType::GeometryInstance => Err(err(
             "a GeometryInstance geometry has no per-face list to nest".to_string(),
         )),
+        other => Err(crate::wkb_write::unsupported_geometry(*other)),
     }
 }
 
@@ -1801,15 +1809,16 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 }
             }
             co.geometry = if geoms.is_empty() { None } else { Some(geoms) };
-            // `address` has no typed cjseq field (CityJSON prescribes no
-            // member set for it), so it goes in `other` (spec "Addresses",
-            // gap 10). Absent entirely when the row's `address` cell was
-            // null; a present (even empty) list always gets a real
-            // `"address"` key.
+            // Absent when the row's `address` cell was null; a present
+            // (even empty) list is written as one (spec "Addresses").
             if let Some(entries) = &obj.address {
-                let address_value =
-                    build_address_value(entries, &mut interner, scale, translate, axis_order)?;
-                co.other.insert("address".to_string(), address_value);
+                co.address = Some(build_addresses(
+                    entries,
+                    &mut interner,
+                    scale,
+                    translate,
+                    axis_order,
+                )?);
             }
             feature.add_co(obj.id, co);
         }
