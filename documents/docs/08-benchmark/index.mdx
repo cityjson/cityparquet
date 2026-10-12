@@ -5,6 +5,13 @@ sidebar:
   icon: gauge
 ---
 
+{/* Blume rewrites links between pages for deployment.base, but not links to
+    files under public/, so a root-absolute path to an image or data file 404s
+    on the GitHub Pages project subpath. Prefix BASE_URL ourselves; the collapse
+    keeps it right whether BASE_URL is "/" (dev) or "/cityparquet" (deployed). */}
+export const asset = (path) =>
+  `${import.meta.env.BASE_URL}/${path}`.replace(/\/{2,}/g, "/");
+
 The benchmark measures how much space a 3D city model takes in each format and
 what it costs to read it back with each format's own reader. This page shows
 the results that exist today and names the parts that have not been measured
@@ -53,7 +60,7 @@ Sizes are on-disk bytes, in decimal units (1 MB = 10⁶ bytes).
 
 ## File size
 
-![File size on disk for six city datasets in five formats, with the factor against CityGML above each bar.](/benchmarks/sizes.png)
+<img src={asset("benchmarks/sizes.png")} alt="File size on disk for six city datasets in five formats, with the factor against CityGML above each bar." />
 
 A file's size is its length; a CityParquet package's size is the sum of every
 file in its directory. The factor is CityGML bytes divided by CityParquet bytes.
@@ -77,24 +84,24 @@ every format or compression configuration.
 One figure per dataset: read time per query and format, each cell giving the
 median and its factor against CityGML.
 
-![Zurich: read time per query and format.](/benchmarks/formats/zurich_building_lod2/time.png)
+<img src={asset("benchmarks/formats/zurich_building_lod2/time.png")} alt="Zurich: read time per query and format." />
 
-![Tokyo (Chiyoda): read time per query and format.](/benchmarks/formats/tokyo/time.png)
+<img src={asset("benchmarks/formats/tokyo/time.png")} alt="Tokyo (Chiyoda): read time per query and format." />
 
-![Montréal: read time per query and format.](/benchmarks/formats/montreal/time.png)
+<img src={asset("benchmarks/formats/montreal/time.png")} alt="Montréal: read time per query and format." />
 
-![New York: read time per query and format.](/benchmarks/formats/nyc_da13_buildings/time.png)
+<img src={asset("benchmarks/formats/nyc_da13_buildings/time.png")} alt="New York: read time per query and format." />
 
-![Vienna: read time per query and format.](/benchmarks/formats/vienna_102081/time.png)
+<img src={asset("benchmarks/formats/vienna_102081/time.png")} alt="Vienna: read time per query and format." />
 
-![Rotterdam: read time per query and format.](/benchmarks/formats/rotterdam_delfshaven/time.png)
+<img src={asset("benchmarks/formats/rotterdam_delfshaven/time.png")} alt="Rotterdam: read time per query and format." />
 
-Peak memory, in the same layout: [Zurich](/benchmarks/formats/zurich_building_lod2/rss.png),
-[Tokyo](/benchmarks/formats/tokyo/rss.png),
-[Montréal](/benchmarks/formats/montreal/rss.png),
-[New York](/benchmarks/formats/nyc_da13_buildings/rss.png),
-[Vienna](/benchmarks/formats/vienna_102081/rss.png),
-[Rotterdam](/benchmarks/formats/rotterdam_delfshaven/rss.png).
+Peak memory, in the same layout: <a href={asset("benchmarks/formats/zurich_building_lod2/rss.png")}>Zurich</a>,
+<a href={asset("benchmarks/formats/tokyo/rss.png")}>Tokyo</a>,
+<a href={asset("benchmarks/formats/montreal/rss.png")}>Montréal</a>,
+<a href={asset("benchmarks/formats/nyc_da13_buildings/rss.png")}>New York</a>,
+<a href={asset("benchmarks/formats/vienna_102081/rss.png")}>Vienna</a>,
+<a href={asset("benchmarks/formats/rotterdam_delfshaven/rss.png")}>Rotterdam</a>.
 
 :::caution[A laptop run]
 These timings are preliminary. The run had no host isolation and will be
@@ -202,13 +209,13 @@ just bench-summary
 
 The figures on this page are copied unmodified from the rendered summary into
 `documents/public/benchmarks/`, together with the
-[underlying data](/benchmarks/bench_data.json), the
-[completeness record](/benchmarks/completeness.json), the three factor tables
-([sizes](/benchmarks/size_factors.csv),
-[size extremes](/benchmarks/size_extremes.csv),
-[queries](/benchmarks/query_factors.csv)) and a
-[provenance record](/benchmarks/provenance.json) naming the source run and every
+<a href={asset("benchmarks/bench_data.json")}>underlying data</a>, the
+<a href={asset("benchmarks/completeness.json")}>completeness record</a>, the three factor tables
+(<a href={asset("benchmarks/size_factors.csv")}>sizes</a>,
+<a href={asset("benchmarks/size_extremes.csv")}>size extremes</a>,
+<a href={asset("benchmarks/query_factors.csv")}>queries</a>) and a
+<a href={asset("benchmarks/provenance.json")}>provenance record</a> naming the source run and every
 file's sha256. An update exports all of them together, keeps incomplete or
 failed results visible, and rewrites the provenance record.
-[Open the complete benchmark summary](/benchmarks/summary.html) for every figure
+<a href={asset("benchmarks/summary.html")}>Open the complete benchmark summary</a> for every figure
 and the measurement caveats.

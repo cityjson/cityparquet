@@ -60,7 +60,7 @@ WHERE object_type = 'Building'
     answer: "3DBAG in the Netherlands, PLATEAU in Japan, and LoD3 buildings in French economic activity zones.",
     context: "Explore a whole country with 3DBAG, Tokyo and Yokohama with PLATEAU, or economic activity zones in Auvergne-Rhône-Alpes.",
     source: "Examples from the published dataset documentation; availability may change.",
-    link: "resources/datasets",
+    link: "dataset",
     linkLabel: "Explore the datasets",
   },
   {
@@ -599,7 +599,7 @@ const queryTokens = tokeniseSql(query);
           <p>
             Install DuckDB, load two extensions, point a query at a package —
             or skip all three and query 3DBAG in the browser playground. The
-            draft spec and its open questions are in the docs.
+            draft specification is in the docs.
           </p>
         </div>
         <div class="cp-cta-actions">
@@ -607,8 +607,8 @@ const queryTokens = tokeniseSql(query);
           <a class="cp-button cp-button-quiet" href={url("playground")}>
             Playground
           </a>
-          <a class="cp-button cp-button-quiet" href={url("open-questions")}>
-            Open questions
+          <a class="cp-button cp-button-quiet" href={url("specification")}>
+            Specification
           </a>
         </div>
       </div>
@@ -621,7 +621,7 @@ const queryTokens = tokeniseSql(query);
       <nav aria-label="Footer">
         <a href={url("specification")}>Specification</a>
         <a href={url("design-decisions")}>Design decisions</a>
-        <a href={url("resources")}>Resources</a>
+        <a href={url("dataset")}>Dataset</a>
         <a href={repo} rel="noopener">GitHub</a>
       </nav>
     </div>

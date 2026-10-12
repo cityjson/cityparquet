@@ -1,105 +1,60 @@
 ---
 title: Specification & file format
-description: The normative CityParquet data model — columns, geometry encoding, metadata, and mapping rules.
+description: What CityParquet is, the parts its specification consists of, and where each is defined.
 sidebar:
   label: Overview
 ---
 
-:::note[Draft specification]
-CityParquet is at version **0.1.0-draft**. Some normative column shapes are still
-affected by unresolved design questions (see [Open questions](/open-questions)), so
-parts of this specification MAY change.
-:::
-
 CityParquet is a columnar encoding of the **CityGML conceptual model** in Apache
-Parquet. It stores 3D city model data in a cloud-native layout that can be queried
-efficiently from object storage — filtering by feature type, attribute, level of
-detail (LoD), bounding box, and 3D geometry — while preserving the semantics needed
-to reconstruct or exchange the source model.
+Parquet. A city model becomes a directory of Parquet files, one row per city object,
+that can be queried in place on object storage — by feature type, attribute, level of
+detail, bounding box and 3D geometry — while keeping what is needed to reconstruct the
+source model. Every file is a standard Parquet file, and where the geometry allows it
+is also **GeoParquet**, so footprints open in ordinary GIS tools.
 
-Every table is a standard Parquet file, readable by any Parquet reader. Where the
-geometry allows, CityParquet also conforms to **GeoParquet**, so a city model's
-footprints open in ordinary GIS tooling; the [metadata](/specification/metadata) page
-defines exactly where that reach ends.
+This is version **0.1.0-draft** of the specification. Points still undecided are
+marked 🟡 and link to the
+[open questions](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md).
+The reasoning behind each rule is in the [design decisions](/design-decisions).
 
-CityParquet is **not** a rendering or streaming format, and does not itself define a
-tiling scheme.
+## What the specification consists of
 
-This specification is the *what*. The *why* behind each choice — the alternatives
-considered and the trade-offs accepted — lives in the companion
-[design decisions](/design-decisions), linked inline throughout. Open items are
-collected in the [open questions](/open-questions), and each unresolved point in the
-body links there with a 🟡 marker.
-
-## Requirement levels
-
-The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are to
-be interpreted as described in RFC 2119 / RFC 8174 when, and only when, they appear in
-capitals.
-
-Sections are marked *(normative)* or *(informative)*; unmarked sections default to
-normative.
-
-## Type notation
-
-Column types are written in DuckDB/Arrow logical-type notation: `VARCHAR`, `INT`,
-`BIGINT`, `DOUBLE`, `BOOLEAN`, `BLOB`, `JSON`, `LIST<T>`, `STRUCT<…>`, `MAP<K, V>`.
-Their physical Parquet encoding is:
-
-| Logical type | Physical Parquet encoding |
-|---|---|
-| `VARCHAR` | `BYTE_ARRAY` (UTF8) |
-| `BIGINT` | `INT64` |
-| `INT` | `INT32` |
-| `DOUBLE` | `DOUBLE` |
-| `BOOLEAN` | `BOOLEAN` |
-| `DATE` | `INT32` with the `DATE` logical type |
-| `TIME` | `INT64` with the `TIME` logical type (microseconds, UTC-normalised) |
-| `TIMESTAMP` | `INT64` with the `TIMESTAMP` logical type (microseconds, UTC-normalised) |
-| `BLOB` | `BYTE_ARRAY` (no logical type) |
-| `JSON` | `BYTE_ARRAY` (UTF8), tagged with the Arrow field-metadata extension `ARROW:extension:name = arrow.json`. A reader without Arrow extension support sees a UTF8 string. |
-| `LIST<T>` | Parquet `LIST` of nullable items |
-| `MAP<K, V>` | Parquet `MAP` logical type: a required key of type `K`, unique within the map, a nullable value of type `V`, entries in no defined order |
-| `STRUCT<…>` | Parquet group (see the individual column for field types and nullability) |
-
-A column **MAY** additionally be dictionary-encoded. That is a writer's choice and
-changes nothing about the logical type; where it is particularly worthwhile —
-`object_type`, the appearance enumerations — this specification says so, but never
-requires it.
-
-## The pages
+A **package** is a directory: one **object table** per CityGML module, optional
+**sidecar** files for shared resources, and a **STAC Item** describing the whole.
+Each object table stores the geometry of every level of detail in its own WKB
+column, beside a struct carrying the semantics WKB cannot hold. The pages below
+define each part, in the order a reader meets them.
 
 <CardGroup cols={2}>
   <Card title="The dataset package" href="/specification/dataset-package" icon="package">
-    Files, roles, versioning, and the by-module object-table layout.
+    The files of a package, their roles, the split by CityGML module, versioning,
+    and what a round trip preserves.
   </Card>
   <Card title="Object table schema" href="/specification/object-table-schema" icon="table">
-    Reserved columns, typed attribute columns, and addresses.
+    The reserved columns, typed attribute columns and addresses of an object
+    table.
   </Card>
   <Card
     title="Geometry, LoD & spatial metadata"
     href="/specification/geometry-semantics"
     icon="box"
   >
-    WKB encoding, surface semantics, the per-LoD columns, and `bbox`.
+    WKB geometry, surface semantics, the per-LoD columns, the CRS and `bbox`.
   </Card>
   <Card title="Appearance & implicit geometries" href="/specification/appearance-templates" icon="palette">
-    Materials, textures, and implicit geometries.
+    Materials, textures and implicit geometries, and their sidecar files.
   </Card>
   <Card title="Metadata" href="/specification/metadata" icon="tags">
-    Parquet key-value metadata, the STAC Item, and GeoParquet `geo` / CRS.
+    The `city` and `geo` footer metadata, and the `metadata.json` STAC Item.
   </Card>
   <Card title="Extensions" href="/specification/extensions" icon="puzzle">
-    CityGML ADEs, CityJSON Extensions, and their namespaces.
+    CityGML ADEs and CityJSON Extensions, and their namespaces.
   </Card>
   <Card
     title="Mapping from CityGML / CityJSON"
     href="/specification/mapping-cityjson"
     icon="arrow-right-left"
   >
-    The converter reference.
-  </Card>
-  <Card title="Worked example" href="/specification/worked-example" icon="file-code">
-    A record, end to end.
+    Where each source field lands, with one feature traced end to end.
   </Card>
 </CardGroup>

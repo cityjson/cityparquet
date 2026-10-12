@@ -152,6 +152,39 @@ from the 3.0 conceptual model so that such sources round-trip: a solid's inner l
 with one cavity is `[[6, 6]]`.
 :::
 
+**Example (constructed).** A cube-shaped house with a cubic cavity, as CityGML 2.0 and
+CityJSON permit it. Faces 0–5 form the exterior shell and face outwards; faces 6–11
+form the interior shell around the cavity and face into it. The WKB is shown as WKT.
+
+```text
+-- geometry_lod2_2: stored as WKB, shown here as WKT
+POLYHEDRALSURFACE Z (
+  ((0 0 0, 0 3 0, 3 3 0, 3 0 0, 0 0 0)),   -- face 0: ground
+  ((0 0 0, 3 0 0, 3 0 3, 0 0 3, 0 0 0)),   -- face 1: wall
+  ...                                      -- faces 2-4: walls
+  ((0 0 3, 3 0 3, 3 3 3, 0 3 3, 0 0 3)),   -- face 5: roof
+  ((1 1 1, 2 1 1, 2 2 1, 1 2 1, 1 1 1)),   -- face 6: cavity
+  ...                                      -- faces 7-11: cavity
+)
+
+-- geometry_properties_lod2_2
+{
+  "type": "Solid",
+  "surfaces": [
+    { "type": "GroundSurface" },
+    { "type": "WallSurface" },
+    { "type": "RoofSurface" }
+  ],
+  "face_semantics": [0, 1, 1, 1, 1, 2,
+                     null, null, null, null, null, null],
+  "shells": [[6, 6]]
+}
+```
+
+`face_semantics` maps each WKB face to an entry of `surfaces`, or to `null` for the
+cavity faces, which carry no semantics; `shells` records one solid with two shells of
+six faces each.
+
 The key property: **`face_semantics[i]` is the semantic surface of WKB face `i`**. So
 "the roof faces of this solid" is a positional filter over `face_semantics` (now a
 native `LIST<INT>` a columnar engine can `UNNEST`), and each face's attributes are one
