@@ -355,8 +355,9 @@ fn ensure_parent_ready(dir: &Path, overwrite: bool) -> Result<Vec<std::path::Pat
 /// `read_parquet('OUT/*/…')` glob sees a uniform column layout; each partition
 /// still scans its own features for its own bbox/count/stats.
 ///
-/// Memory: like Hilbert ordering, the default, this buffers every feature (and clones
-/// each partition's subset before encoding) — the documented full-load cost.
+/// Memory: this buffers every feature (and clones each partition's subset
+/// before encoding) — the documented full-load cost, which the unpartitioned
+/// paths, Hilbert order included, do not pay for a CityJSONSeq input.
 pub fn convert_partitioned(
     sources: &[Source],
     spec: &PartitionSpec,
