@@ -28,9 +28,9 @@ on:
   workflow_dispatch:
   # release.yml re-runs this gate against the tagged commit. Calling the real
   # workflow rather than copying its steps: this job has accumulated a runner
-  # -specific dance — freeing disk, the git-CLI fetch for the city3d-stac-types
-  # git dependency, the SSH-to-HTTPS submodule rewrite — and a copy of it in
-  # the release pipeline would drift out of step with this one.
+  # -specific dance — freeing disk before the link step, dropping debug info —
+  # and a copy of it in the release pipeline would drift out of step with this
+  # one.
   workflow_call:
 
 concurrency:
@@ -39,12 +39,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # `cityparquet` depends on `city3d-stac-types` by git rev. libgit2 does not
-  # honour the HTTPS credentials `actions/checkout` installs, falls through to
-  # ssh-agent, and fails with "no authentication methods succeeded"; shelling
-  # out to the git CLI does honour them. Cargo's own error message recommends
-  # exactly this.
-  CARGO_NET_GIT_FETCH_WITH_CLI: true
   # This workspace links ~20 test binaries against arrow + parquet + reqwest +
   # geo. With full debug info that is enough to make `ld` die on a hosted runner
   # with SIGBUS mid-link (a 14 GB disk and 16 GB of RAM, most of both already
@@ -73,22 +67,11 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          # vendor/city3d-stac-tool only: `just vendor-check` gates on it, and
-          # it is small. The two DuckDB extensions are not needed by this job
-          # and carry ~1.2 GB between them.
+          # The library's gate needs no submodule: the city3d-stac crates come
+          # from crates.io and vendor/cjseq is an in-tree copy. The two DuckDB
+          # extensions are not needed by this job and carry ~1.2 GB between
+          # them.
           submodules: false
-
-      # --recursive: city3d-stac-tool carries stac-spec and
-      # stac-cityjson-extension of its own, and `just vendor-check` runs its
-      # test suite, which reads them.
-      #
-      # Its .gitmodules declares both over SSH, which a runner has no key for.
-      # Rewriting to HTTPS here keeps the fix local to CI — that file belongs to
-      # an upstream project this repository only vendors.
-      - name: Check out the vendored STAC tool
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --recursive lib/cityparquet-rs/vendor/city3d-stac-tool
 
       # rust-toolchain.toml pins the version; rustup honours it on first use.
       - name: Cache cargo
@@ -98,7 +81,6 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             lib/cityparquet-rs/target
-            lib/cityparquet-rs/vendor/city3d-stac-tool/target
           key: cargo-${{ runner.os }}-${{ hashFiles('lib/cityparquet-rs/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
@@ -171,13 +153,6 @@ jobs:
           restore-keys: readbench-${{ runner.os }}-
 
       - uses: extractions/setup-just@v4
-
-      # This workspace path-depends on `cityparquet`, which depends on
-      # `city3d-stac-types` by git rev — and THAT repository declares its own
-      # submodules over SSH, which cargo follows and a runner has no key for.
-      # Same rewrite the `check` job needs, for the same reason.
-      - name: Prefer HTTPS for github remotes
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
       - name: Install rustfmt and clippy
         working-directory: benchmark/readbench
