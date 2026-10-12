@@ -14,9 +14,9 @@ resumed run therefore rebuilds the collection from everything ever converted,
 which is what makes resumption correct.
 
 The mirror's layout — one directory per package, each holding a `metadata.json`
-— needs a `city3dstac` that derives item hrefs relative to the collection
-(`vendor/city3d-stac-tool`, `feat/items-dir`). An older binary links every item
-as `./metadata.json`.
+— needs a `city3dstac` that derives item hrefs relative to the collection, as
+the city3d-stac-gen 0.3.1 release `just catalog-tools` installs does. An older
+binary links every item as `./metadata.json`.
 """
 
 from __future__ import annotations

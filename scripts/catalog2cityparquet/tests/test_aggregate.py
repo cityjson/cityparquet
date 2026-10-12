@@ -1,7 +1,7 @@
 """The published collection.json is the metadata seed for the mirror.
 
 Most tests here are pure unit tests over dicts or shell out to a *fake*
-`city3dstac` written into `tmp_path`. The last four drive the real vendored
+`city3dstac` written into `tmp_path`. The last four drive the real released
 binary — they are what established how it treats an unlocated Item — and skip
 when it has not been built. Nothing here touches the network.
 """
@@ -15,12 +15,13 @@ import yaml
 
 from catalog2cityparquet import aggregate
 
-#: The vendored tool, built by `just catalog-tools` from the repository root.
+#: The released tool (city3d-stac-gen 0.3.1), installed by `just catalog-tools`
+#: from the repository root.
 #: This file is scripts/catalog2cityparquet/tests/, so parents[3] is that root.
 #: The tests that use it are skipped when it is absent; none touch the network.
 CITY3DSTAC = (
     Path(__file__).resolve().parents[3]
-    / "lib/cityparquet-rs/vendor/city3d-stac-tool/target/release/city3dstac"
+    / "lib/cityparquet-rs/target/bin/city3dstac"
 )
 
 

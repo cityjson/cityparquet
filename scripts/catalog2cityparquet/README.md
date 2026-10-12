@@ -41,8 +41,8 @@ just catalog-histogram out/e2e                        # the measurement, rolled 
 just catalog-test                                     # the driver's own tests
 ```
 
-You need [`uv`](https://docs.astral.sh/uv/) on `PATH`, a Rust toolchain, and the
-`vendor/city3d-stac-tool` submodule checked out (`git submodule update --init`). The
+You need [`uv`](https://docs.astral.sh/uv/) on `PATH` and a Rust toolchain; `just
+catalog-tools` builds `cityparquet` and installs `city3dstac` from crates.io. The
 `catalog-*` recipes are all network-dependent and are deliberately kept out of
 `just check`; `just catalog-test` is the exception — it fakes every origin and every
 subprocess, and touches no network.
@@ -150,7 +150,7 @@ data from a host that ran out of room. A host failure is routed to the environme
 
 ### 5. Aggregate — `aggregate.py`
 
-Run the vendored `city3dstac` over the packages on disk to write `collection.json` and,
+Run the released `city3dstac` over the packages on disk to write `collection.json` and,
 optionally, a stac-geoparquet `items.parquet`; then link every collection into the
 mirror's root `catalog.json`.
 
@@ -448,7 +448,7 @@ staging bucket, or a locally built binary:
 | Flag           | Default                                                     |
 | -------------- | ----------------------------------------------------------- |
 | `--binary`     | `target/release/cityparquet`                                |
-| `--tool`       | `vendor/city3d-stac-tool/target/release/city3dstac`         |
+| `--tool`       | `target/bin/city3dstac`                                     |
 | `--base-url`   | `https://storage.googleapis.com/city3d-stac`                |
 | `--bucket-api` | `https://storage.googleapis.com/storage/v1/b/city3d-stac/o` |
 
