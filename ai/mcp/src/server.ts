@@ -5,6 +5,8 @@
 // a later merge with a sibling CityJSON MCP server may adopt one neutral
 // prefix shared by both, so do not lean on this prefix elsewhere.
 
+import { readFileSync } from "node:fs";
+
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 
@@ -41,6 +43,13 @@ function optionalInt(min: number, max: number) {
   );
 }
 
+// The version npm published, so a client can tell which release it talks to.
+// package.json sits one level above both src/ and dist/, in the repository, in
+// the npm tarball and in the container image alike.
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+  version: string;
+};
+
 const corpusEnum = z.enum(CORPUS_IDS as unknown as [CorpusId, ...CorpusId[]]);
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
@@ -51,7 +60,7 @@ const failure = (error: unknown) => ({
 });
 
 export function createServer({ corpus, engine, ceilings }: ServerDeps): McpServer {
-  const server = new McpServer({ name: "cityparquet", version: "0.1.0" });
+  const server = new McpServer({ name: "cityparquet", version });
 
   server.registerTool(
     "cityparquet_docs_outline",
