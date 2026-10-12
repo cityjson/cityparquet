@@ -97,7 +97,7 @@ The file of a row is therefore its class's module: the declaration does not reco
 second time.
 
 🟡 Carrying full ADE object-class metadata (beyond the class name, its module file and
-the extension declaration below) remains an [open question](/open-questions).
+the extension declaration below) remains an [open question](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md).
 
 ## Extended semantic surfaces
 
@@ -186,8 +186,48 @@ The document's `extensions` member is rebuilt from `city.extensions`: each entry
 prefix is written unchanged. On export to CityGML, `xmlns` gives the XML namespace the
 ADE's names are written in.
 
+## Example
+
+**Constructed.** A CityJSONSeq source declares one extension, `Energy`, and a
+`Building` carries a core attribute and an Energy ADE attribute. (The Energy ADE
+attaches `heatCapacity` to a `ThermalZone`; it sits on the building here so that one
+object shows every rule.)
+
+```jsonc
+{ "type": "CityJSON", "version": "2.0", "transform": { /* … */ },
+  "extensions": { "Energy": { "url": "https://…/energy.ext.json", "version": "3.0" } },
+  "CityObjects": {}, "vertices": [] }
+
+{ "type": "CityJSONFeature", "id": "b-42",
+  "CityObjects": {
+    "b-42": { "type": "Building",
+              "attributes": { "yearOfConstruction": 1998, "+heatCapacity": 120000.0 } } },
+  "vertices": [] }
+```
+
+The source declares exactly one extension, so `+heatCapacity` belongs to it, and the
+namespace is the member key lower-cased, `energy`. The attribute becomes the column
+`energy_heatCapacity`, inferred `DOUBLE`, beside the core `yearOfConstruction`:
+
+| id | object_type | yearOfConstruction `BIGINT` | energy_heatCapacity `DOUBLE` |
+|---|---|---|---|
+| `b-42` | `Building` | `1998` | `120000.0` |
+
+The footer of `building.parquet` declares the namespace, with the member key as its
+`name`, and lists both columns in `attributes`:
+
+```json
+"attributes": ["yearOfConstruction", "energy_heatCapacity"],
+"extensions": {
+  "energy": { "name": "Energy", "url": "https://…/energy.ext.json", "version": "3.0" }
+}
+```
+
+On export the `energy_` prefix becomes `+` again, and the `extensions` member is
+rebuilt from `city.extensions` under the key `Energy`.
+
 :::note[Open item]
 Attributing names across several extensions of one CityJSON source from their schema
 documents, and representing full ADE object-class metadata, are unresolved — see
-[Open questions](/open-questions).
+[Open questions](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md).
 :::

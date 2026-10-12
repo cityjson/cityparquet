@@ -10,6 +10,13 @@ defines the directory layout, the role of each file, the rule for splitting the
 object table by feature type, the format's versioning, and what a round trip
 preserves.
 
+:::note[Requirement levels]
+The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** in this
+specification are to be interpreted as described in RFC 2119 / RFC 8174 when, and only
+when, they appear in capitals. Sections are marked *(normative)* or *(informative)*;
+unmarked sections are normative.
+:::
+
 ## Directory layout
 
 A CityParquet dataset is always a **directory** of Parquet files, never a single
@@ -147,11 +154,11 @@ yet fully preserved at all. This table is the contract:
 | Per-surface semantics | **Exact up to null-expansion** (see below). |
 | Appearance — materials, textures | **Exact up to broadcast-expansion** (see below), via sidecars + inline-UV re-interning. |
 | Implicit geometry, a **single** one per object | **Exact.** |
-| **Additional** implicit geometries on one object | 🟡 **Lossy** — only the first is kept ([open](/open-questions)). |
-| **Duplicate** geometry at one (object, LoD) | 🟡 **Lossy** — extras dropped ([open](/open-questions)). |
+| **Additional** implicit geometries on one object | 🟡 **Lossy** — only the first is kept ([open](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md)). |
+| **Duplicate** geometry at one (object, LoD) | 🟡 **Lossy** — extras dropped ([open](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md)). |
 | Addresses | **Exact for the kept fields** (street/number/postcode/city/state/country/free-text + `location`); source members outside that set are dropped. |
 | Unmapped source members | **Exact in value;** held in `other`, returned as `attributes` members on export. |
-| ADE namespace / object-class metadata | 🟡 **Partial** — attributes, types and the extension declaration survive; full ADE object-class metadata is [open](/open-questions). |
+| ADE namespace / object-class metadata | 🟡 **Partial** — attributes, types and the extension declaration survive; full ADE object-class metadata is [open](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md). |
 
 Two deliberate **canonicalisations** — where the result is equal to the source as a
 model but not byte-for-byte as a document:
@@ -164,6 +171,6 @@ model but not byte-for-byte as a document:
   The two are semantically equal, and reconstruction yields the per-face `values`
   form.
 
-The 🟡 rows are the genuine losses, each tracked in the [open questions](/open-questions);
+The 🟡 rows are the genuine losses, each tracked in the [open questions](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md);
 they arise from source models richer than the current single-slot object-table shape,
 not from the encoding of what does fit.

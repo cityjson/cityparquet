@@ -24,7 +24,7 @@ How CityParquet handles resources shared across many objects: materials and text
 
 **Trade-off.** Resolving appearance needs a sidecar lookup; because indices are global, the exporter must re-intern feature-local pools (and re-derive UV indices into a `vertices-texture` pool) on the way back to CityJSON.
 
-**Status.** Decided. The global-id + inline-UV normalisation and the typed per-face column shape are normative; the [conformance matrix](/resources/software) records which implementation has caught up.
+**Status.** Decided. The global-id + inline-UV normalisation and the typed per-face column shape are normative; the [support table](https://github.com/cityjson/cityparquet/blob/main/lib/cityparquet-rs/README.md#specification-support) records how far the reference implementation has caught up.
 
 ## Implicit geometries: relative geometries in a sidecar, the rest in an `implicit_geometry` struct
 
@@ -38,4 +38,4 @@ How CityParquet handles resources shared across many objects: materials and text
 
 **Trade-off.** Resolving an implicit geometry needs a sidecar lookup plus applying its `transformationMatrix` and reference `point`. A relative geometry is one geometry at one LoD, so the per-LoD columns leave each row sparse — accepted as the price of the uniform naming rule.
 
-**Status.** Decided and implemented; 🟡 an object with *several* implicit geometries remains an [open question](/open-questions), since `implicit_geometry` is a single struct.
+**Status.** Decided and implemented; 🟡 an object with *several* implicit geometries remains an [open question](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md), since `implicit_geometry` is a single struct.

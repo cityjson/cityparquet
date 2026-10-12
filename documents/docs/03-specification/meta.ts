@@ -11,6 +11,5 @@ export default defineMeta({
     "metadata",
     "extensions",
     "mapping-cityjson",
-    "worked-example",
   ],
 });

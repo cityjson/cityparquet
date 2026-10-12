@@ -91,6 +91,35 @@ The key property is the same one `face_semantics` has: **`material[theme][i]` is
 material of WKB face `i`**, with no geometry-type-specific nesting to walk. A `Solid`'s
 per-shell partition is already recorded once, in `geometry_properties_lod*.shells`.
 
+**Example (constructed).** A `MultiSurface` at LoD 2.2 with two faces, a roof and a
+wall, each a single ring of four distinct vertices. The roof has material `3` in the
+unnamed theme; the wall has texture `0`, with one `[u, v]` pair per vertex of its ring,
+in a theme named `photo`:
+
+```jsonc
+// geometry_properties_lod2_2
+{ "type": "MultiSurface",
+  "surfaces": [ { "type": "RoofSurface" }, { "type": "WallSurface" } ],
+  "face_semantics": [0, 1], "shells": null }
+
+// material_lod2_2 — one entry per WKB face, aligned like face_semantics
+{ "": [3, null] }
+
+// texture_lod2_2 — per WKB face, then per ring of that face
+{ "photo": [ [ { "id": null, "uv": null } ],
+             [ { "id": 0, "uv": [[0, 0], [1, 0], [1, 1], [0, 1]] } ] ] }
+```
+
+The `3` and the `0` are the `id`s of rows in the sidecars, not row positions:
+
+| `materials.parquet` id | name | diffuseColor |
+|---|---|---|
+| `3` | `roofmat` | `[0.9, 0.1, 0.1]` |
+
+| `textures.parquet` id | image_uri | image_type | textureType |
+|---|---|---|---|
+| `0` | `appearance/facade.jpg` | `JPG` | `specific` |
+
 Two normalisations apply relative to a CityJSON source:
 
 - **Material and texture references are sidecar `id` values** — dataset-global and
@@ -226,4 +255,4 @@ no meaning for an implicit geometry, and a reader **MUST** treat one as invalid 
 An absent matrix is the identity, so the vertex is placed at *v* + *p*.
 
 🟡 An object with **several** implicit geometries cannot currently be represented,
-since `implicit_geometry` is a single struct — see the [open questions](/open-questions).
+since `implicit_geometry` is a single struct — see the [open questions](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md).
