@@ -211,6 +211,19 @@ def test_run_convert_passes_the_operator_supplied_crs(tmp_path):
     assert args[-2:] == ["--crs", "EPSG:25832"]
 
 
+def test_run_convert_synthesises_lod0_footprints(tmp_path):
+    # The catalogue's packages carry an LoD0 footprint for every object that has
+    # geometry, so GeoParquet readers see a footprint column even where the
+    # source has no LoD0; the converter only synthesises one when asked.
+    fake = tmp_path / "fake-cityparquet"
+    fake.write_text('#!/bin/sh\necho "$@" > "$0.args"\necho 1\n')
+    fake.chmod(0o755)
+
+    convert.run_convert(fake, [tmp_path / "in.json"], tmp_path / "out", None, timeout=30)
+    args = (tmp_path / "fake-cityparquet.args").read_text().split()
+    assert "--lod0" in args
+
+
 def test_run_convert_raises_on_timeout(tmp_path):
     # A hung converter is a failure like any other: it must be classified and
     # ledgered, not left to block the pool for ever.

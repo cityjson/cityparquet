@@ -1,6 +1,6 @@
 //! The typed `geometry_properties[_lod*]` `STRUCT` (spec "Geometry
 //! properties and semantics"): shared builder/reader machinery for the main
-//! object table (`crate::encode`/`crate::decode`) and the geometry-template
+//! object table (`crate::encode`/`crate::decode`) and the implicit-geometries
 //! sidecar (`crate::sidecar`), so both write and read the SAME physical
 //! shape rather than two divergent implementations.
 //!
@@ -16,7 +16,7 @@
 //! ```
 //!
 //! There is no `lod` field anywhere in this struct — the column name (main
-//! table) or a sibling `lod` column (the template sidecar, which has no
+//! table) or a sibling `lod` column (the implicit-geometries sidecar, which has no
 //! per-LoD column name of its own) carries it instead.
 
 use std::sync::Arc;
@@ -32,6 +32,31 @@ use cityparquet_schema::{CityParquetError, Result};
 
 fn err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Schema(msg.into())
+}
+
+/// The CityGML CM geometry type `geometry_properties_lod*.type` records for
+/// a CityJSON geometry type (spec 03 "Geometry-type mapping"): the names are
+/// the same but for CityJSON's `MultiLineString`, which is the CM's
+/// `MultiCurve`.
+pub(crate) fn cm_geometry_type(t: &cjseq::GeometryType) -> Result<String> {
+    let name = serde_json::to_value(t)?
+        .as_str()
+        .ok_or_else(|| CityParquetError::Schema("geometry type is not a string".to_string()))?
+        .to_string();
+    Ok(match name.as_str() {
+        "MultiLineString" => "MultiCurve".to_string(),
+        _ => name,
+    })
+}
+
+/// The CityJSON geometry type for a `geometry_properties_lod*.type` value —
+/// the inverse of [`cm_geometry_type`].
+pub(crate) fn cityjson_geometry_type(cm: &Value) -> Result<cjseq::GeometryType> {
+    let name = match cm.as_str() {
+        Some("MultiCurve") => Value::from("MultiLineString"),
+        _ => cm.clone(),
+    };
+    Ok(serde_json::from_value(name)?)
 }
 
 /// One geometry's `geometry_properties` value, decoupled from Arrow.
@@ -82,8 +107,8 @@ impl GeometryProperties {
     /// "face_semantics"?, "shells"?}` JSON shape back into a typed
     /// [`GeometryProperties`]. Used only where a `geometry_properties` value
     /// legitimately travels as JSON between this typed form and the shared
-    /// [`GeometryPropertiesBuilder`] — the geometry-template sidecar's
-    /// `TemplateRow`, whose public field stays `Option<Value>` for
+    /// [`GeometryPropertiesBuilder`] — the implicit-geometries sidecar's
+    /// `ImplicitGeometryRow`, whose public field stays `Option<Value>` for
     /// call-site stability.
     pub(crate) fn try_from_value(v: &Value) -> Result<Self> {
         let obj = v
@@ -147,7 +172,7 @@ impl GeometryProperties {
 }
 
 /// Builder for one `geometry_properties[_lod*]` `STRUCT` column — the SAME
-/// machinery the main table's per-LoD slots and the template sidecar's
+/// machinery the main table's per-LoD slots and the implicit-geometries sidecar's
 /// single column both drive, so the two can never diverge in shape.
 pub(crate) struct GeometryPropertiesBuilder {
     type_b: StringBuilder,

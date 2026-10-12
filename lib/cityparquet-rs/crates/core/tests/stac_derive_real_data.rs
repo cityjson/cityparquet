@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use city3d_stac_types::metadata::AttributeType;
 use city3d_stac_types::stac::CityObjectsCount;
 use cityparquet::merge::merge_sources;
-use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::source::{Source, SourceFormat};
 use cityparquet::stac::properties::{PackageTables, derive_co_types, derive_from_footer};
 use cityparquet::stac::{ItemOptions, item_for_package, package_bbox};
@@ -172,8 +172,13 @@ fn city3d_lods_is_the_union_across_every_table_not_just_the_first() {
     let src_path = src_dir.path().join("railway_and_delft.city.jsonl");
     write_railway_and_delft_merged(&src_path);
 
+    // Source order: a table is listed where its module's first row lands, so
+    // only source order keeps the merged file's railway-first table order.
     let dir = tempfile::tempdir().unwrap();
-    let pkg = convert_fixture_path(&src_path, &dir);
+    let pkg = dir.path().join("pkg");
+    let mut opts = ConvertOptions::new(src_path.clone(), pkg.clone());
+    opts.ordering = RowOrder::Source;
+    convert(&opts).expect("convert fixture");
 
     let tables = PackageTables::open(&pkg).expect("resolve tables");
 
@@ -716,4 +721,70 @@ fn json_attributes_are_reported_as_object_not_string() {
             .any(|a| a.attr_type != AttributeType::Object),
         "not every attribute is JSON-typed; a blanket Object would be wrong"
     );
+}
+
+/// An explicit `ConvertOptions::datetime` is the STAC `datetime` the writer
+/// records, so two conversions of the same source write the same
+/// `metadata.json` byte for byte — without it a source with no
+/// `referenceDate` gets the conversion time, which differs on every run.
+#[test]
+fn explicit_datetime_makes_metadata_reproducible() {
+    let write = |dir: &tempfile::TempDir| {
+        let out = dir.path().join("delft.parquet");
+        let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.clone());
+        opts.datetime = Some("2026-10-05T00:00:00Z".to_string());
+        convert(&opts).expect("convert delft");
+        fs::read_to_string(out.join("metadata.json")).expect("read metadata.json")
+    };
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let first = write(&a);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let second = write(&b);
+    let item: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(item["properties"]["datetime"], "2026-10-05T00:00:00Z");
+    assert_eq!(
+        first, second,
+        "metadata.json differs between two conversions"
+    );
+}
+
+/// spec 05 "Asset roles carry the package's file inventory": every `.parquet`
+/// asset of the Item declares `cityparquet-objects` or `cityparquet-sidecar`
+/// alongside `data` — so no table appears a second time without its role.
+#[test]
+fn every_parquet_asset_declares_its_package_role() {
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = convert_fixture("lod3_railway.city.json", &dir);
+    let item: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
+    let assets = item["assets"].as_object().unwrap();
+    let mut hrefs = Vec::new();
+    for (key, asset) in assets {
+        let href = asset["href"].as_str().unwrap();
+        if !href.ends_with(".parquet") {
+            continue;
+        }
+        let roles: Vec<&str> = asset["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r.as_str())
+            .collect();
+        assert!(roles.contains(&"data"), "asset `{key}`: {roles:?}");
+        assert!(
+            roles.contains(&"cityparquet-objects") || roles.contains(&"cityparquet-sidecar"),
+            "asset `{key}` ({href}) declares no package role: {roles:?}"
+        );
+        hrefs.push(href.to_string());
+    }
+    let listed = hrefs.len();
+    hrefs.sort();
+    hrefs.dedup();
+    assert_eq!(listed, hrefs.len(), "each file is one asset");
+    // The File extension stays declared.
+    assert!(item["stac_extensions"].as_array().unwrap().iter().any(|e| {
+        e.as_str()
+            .unwrap()
+            .contains("stac-extensions.github.io/file/")
+    }));
 }

@@ -259,11 +259,11 @@ fn convert_with_overwrite_succeeds() {
 }
 
 /// M4 task 11 (Step 3): the `convert` report line gains 3 fields
-/// (`materials_written textures_written templates_written`), appended after
+/// (`materials_written textures_written implicit_geometries_written`), appended after
 /// the 6 fields it already printed; `--tolerate-invalid-appearance`'s own
 /// counter (`invalid_appearance_refs_dropped`) appends a 10th. Exercised
 /// against a convert of railway, which carries real materials/textures/
-/// templates so they are written unconditionally (spec-alignment gap 19
+/// implicit geometries so they are written unconditionally (spec-alignment gap 19
 /// dropped the `--profile` flag this test used to pass), whose sidecar
 /// counts are pinned elsewhere (85/34/3 —
 /// `railway_compatibility_convert_writes_materials_and_textures_sidecars` in
@@ -300,7 +300,7 @@ fn convert_compatibility_reports_sidecar_counts() {
         &parts[6..10],
         &["85", "34", "3", "0"],
         "the 4 new trailing fields must be materials_written textures_written \
-         templates_written invalid_appearance_refs_dropped in that order, got: {}",
+         implicit_geometries_written invalid_appearance_refs_dropped in that order, got: {}",
         stdout
     );
 }
@@ -358,12 +358,9 @@ fn export_and_compare_source_vs_exported_is_equal() {
     let package_dir = tempfile::tempdir().unwrap();
     let binary = env!("CARGO_BIN_EXE_cityparquet");
 
-    // Convert delft to package. `--no-lod0`: the CLI synthesises an LoD0
-    // footprint by default (§9), but this test asserts a source-faithful round
-    // trip, and synthesis is an additive enrichment.
+    // Convert delft to package.
     let status = Command::new(binary)
         .arg("convert")
-        .arg("--no-lod0")
         .arg(fixture("delft.city.jsonl"))
         .arg("-o")
         .arg(package_dir.path())
@@ -440,11 +437,9 @@ fn export_and_compare_railway_with_exclusions() {
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
     let binary = env!("CARGO_BIN_EXE_cityparquet");
 
-    // Convert railway to package (`--no-lod0` for a source-faithful round trip;
-    // railway has no source LoD0, so synthesis would otherwise add one).
+    // Convert railway to package.
     let status = Command::new(binary)
         .arg("convert")
-        .arg("--no-lod0")
         .arg(&railway_path)
         .arg("-o")
         .arg(package_dir.path())
@@ -536,7 +531,6 @@ fn convert_with_compression_override_changes_output_size_and_round_trips() {
         let out = tempfile::tempdir().unwrap();
         let status = Command::new(binary)
             .arg("convert")
-            .arg("--no-lod0") // source-faithful round trip (see the compare below)
             .arg(fixture("delft.city.jsonl"))
             .arg("-o")
             .arg(out.path())
@@ -610,6 +604,75 @@ fn convert_with_an_invalid_compression_fails() {
     );
 }
 
+/// Dotted paths of every column that declares a bloom filter in `table`.
+fn bloom_filtered_columns(table: &std::path::Path) -> std::collections::BTreeSet<String> {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    let reader = SerializedFileReader::new(std::fs::File::open(table).unwrap()).unwrap();
+    reader
+        .metadata()
+        .row_groups()
+        .iter()
+        .flat_map(|rg| rg.columns())
+        .filter(|c| c.bloom_filter_offset().is_some())
+        .map(|c| c.column_path().string())
+        .collect()
+}
+
+/// The default convert writes bloom filters on the identifiers; `--no-bloom`
+/// writes none at all.
+#[test]
+fn convert_writes_bloom_filters_by_default_and_no_bloom_suppresses_them() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let filtered = |extra: &[&str]| {
+        let out = tempfile::tempdir().unwrap();
+        let status = Command::new(binary)
+            .arg("convert")
+            .arg(fixture("delft.city.jsonl"))
+            .arg("-o")
+            .arg(out.path())
+            .args(extra)
+            .status()
+            .expect("failed to run convert");
+        assert!(status.success(), "convert {extra:?} failed");
+        bloom_filtered_columns(&out.path().join("building.parquet"))
+    };
+    let default = filtered(&[]);
+    assert!(
+        default.contains("id") && default.contains("feature_id"),
+        "default filters: {default:?}"
+    );
+    let off = filtered(&["--no-bloom"]);
+    assert!(off.is_empty(), "--no-bloom filters: {off:?}");
+}
+
+/// `--bloom-fpp` outside (0, 1) is refused with a clear error before any
+/// conversion, not a parquet-rs panic.
+#[test]
+fn convert_rejects_a_bloom_fpp_outside_the_open_unit_interval() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    for bad in ["0", "1", "1.5", "-0.1", "NaN"] {
+        let out = tempfile::tempdir().unwrap();
+        let output = Command::new(binary)
+            .arg("convert")
+            .arg(fixture("delft.city.jsonl"))
+            .arg("-o")
+            .arg(out.path())
+            .arg(format!("--bloom-fpp={bad}"))
+            .output()
+            .expect("failed to run convert");
+        assert!(!output.status.success(), "--bloom-fpp={bad} was accepted");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--bloom-fpp") && stderr.contains("strictly between 0 and 1"),
+            "--bloom-fpp={bad}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("panicked"),
+            "--bloom-fpp={bad} panicked: {stderr}"
+        );
+    }
+}
+
 #[test]
 fn export_package_to_gml_writes_citygml() {
     let tmp = tempfile::tempdir().unwrap();
@@ -662,20 +725,21 @@ fn export_package_to_gml_writes_citygml() {
     );
 }
 
-/// The CLI synthesises an LoD0 footprint by default (§9): converting railway
-/// (LoD3 solids, no source LoD0) and exporting yields a real `lod:"0.0"`
-/// geometry (canonical spelling), and `--no-lod0` suppresses it.
+/// The CLI encodes only what the source carries unless asked: converting
+/// railway (LoD3, no source LoD0) and exporting yields no LoD0 geometry by
+/// default, and `--lod0` synthesises one, exported with the canonical
+/// `"0.0"` spelling.
 #[test]
-fn convert_synthesises_lod0_by_default_and_no_lod0_suppresses_it() {
+fn convert_synthesises_lod0_only_with_the_lod0_flag() {
     let binary = env!("CARGO_BIN_EXE_cityparquet");
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
 
-    let export_lod0_present = |no_lod0: bool| -> bool {
+    let export_lod0_present = |lod0: bool| -> bool {
         let pkg = tempfile::tempdir().unwrap();
         let mut cmd = Command::new(binary);
         cmd.arg("convert");
-        if no_lod0 {
-            cmd.arg("--no-lod0");
+        if lod0 {
+            cmd.arg("--lod0");
         }
         let status = cmd
             .arg(&railway_path)
@@ -700,13 +764,10 @@ fn convert_synthesises_lod0_by_default_and_no_lod0_suppresses_it() {
     };
 
     assert!(
-        export_lod0_present(false),
-        "default convert must synthesise LoD0"
+        !export_lod0_present(false),
+        "the default convert must not synthesise LoD0"
     );
-    assert!(
-        !export_lod0_present(true),
-        "--no-lod0 must suppress synthesis"
-    );
+    assert!(export_lod0_present(true), "--lod0 must synthesise LoD0");
 }
 
 /// A real CityJSON fixture copied with its `referenceSystem` removed — the
@@ -1091,4 +1152,332 @@ fn an_unusable_crs_is_reported_even_when_the_source_declares_its_own() {
         );
         assert!(stderr.contains(needle), "--crs {spec:?}: stderr: {stderr}");
     }
+}
+
+/// The `id` column of a package's `building.parquet`, in row order.
+fn building_ids_in(package: &std::path::Path) -> Vec<String> {
+    use arrow_array::{Array, StringArray};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let file = std::fs::File::open(package.join("building.parquet")).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut ids = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        let column = batch.column_by_name("id").expect("an id column");
+        let column = column
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("a Utf8 id");
+        ids.extend((0..column.len()).map(|i| column.value(i).to_string()));
+    }
+    ids
+}
+
+/// `convert` with no `--ordering` writes rows in Hilbert order: its row order
+/// is `--ordering hilbert`'s, and not `--ordering source`'s. `--ordering
+/// source` stays available as the streaming opt-out.
+#[test]
+fn convert_writes_hilbert_order_by_default_and_ordering_source_opts_out() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let convert_with = |ordering: Option<&str>| -> Vec<String> {
+        let pkg = tempfile::tempdir().unwrap();
+        let mut cmd = Command::new(binary);
+        cmd.arg("convert").arg(fixture("delft.city.jsonl"));
+        if let Some(ordering) = ordering {
+            cmd.arg("--ordering").arg(ordering);
+        }
+        let status = cmd
+            .arg("-o")
+            .arg(pkg.path())
+            .status()
+            .expect("failed to run convert");
+        assert!(status.success());
+        building_ids_in(pkg.path())
+    };
+
+    let default = convert_with(None);
+    let hilbert = convert_with(Some("hilbert"));
+    let source = convert_with(Some("source"));
+    // `assert!`, not `assert_eq!`: a failure would print 2,231 ids twice.
+    assert!(
+        hilbert != source,
+        "delft's Hilbert order must differ from its source order, or this test proves nothing"
+    );
+    assert!(
+        default == hilbert,
+        "convert without --ordering must write Hilbert order"
+    );
+}
+
+/// `validate` reports a conformant package with exit status 0, and a package
+/// violating a MUST with a non-zero status naming the rule.
+#[test]
+fn validate_exits_zero_on_a_conformant_package_and_non_zero_on_a_violation() {
+    let out = tempfile::tempdir().unwrap();
+    let pkg = out.path().join("pkg");
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let convert = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(&pkg)
+        .output()
+        .unwrap();
+    assert!(convert.status.success());
+
+    let valid = Command::new(binary)
+        .arg("validate")
+        .arg(&pkg)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&valid.stdout);
+    assert!(valid.status.success(), "{stdout}");
+    assert!(stdout.contains("0 error(s), 0 warning(s)"), "{stdout}");
+
+    // A package with its object table removed violates spec 01's "at least
+    // one object table is required".
+    std::fs::remove_file(pkg.join("building.parquet")).unwrap();
+    let invalid = Command::new(binary)
+        .arg("validate")
+        .arg(&pkg)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&invalid.stdout);
+    assert!(!invalid.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("error[package.no-object-table]"),
+        "{stdout}"
+    );
+}
+
+/// Exporting LoD 4 geometry to CityJSON writes it as `"4.0"` and warns, since
+/// CityJSON 2.0 defines LoDs 0 to 3 only.
+#[test]
+fn export_of_lod4_geometry_to_cityjson_warns() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = dir.path().join("pkg");
+    let convert = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("lod4_building_v2.gml"))
+        .arg("-o")
+        .arg(&pkg)
+        .output()
+        .unwrap();
+    assert!(convert.status.success());
+
+    let out = dir.path().join("lod4.city.json");
+    let export = Command::new(binary)
+        .arg("export")
+        .arg(&pkg)
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(export.status.success());
+    let stderr = String::from_utf8_lossy(&export.stderr);
+    let written = std::fs::read_to_string(&out).unwrap();
+    assert!(written.contains(r#""lod":"4.0""#), "exported as LoD 4.0");
+    // The warning names the label the document actually carries.
+    assert!(
+        stderr.contains("warning:") && stderr.contains(r#"LoD 4, written as "4.0""#),
+        "{stderr}"
+    );
+}
+
+/// `collection` writes a STAC Collection over several packages' Items: its
+/// spatial extent is the union of the Items' bboxes, and each `item` link
+/// resolves, relative to `collection.json`, to a package's `metadata.json`.
+#[cfg(feature = "collection")]
+#[test]
+fn collection_aggregates_the_items_of_several_packages() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    // Two georeferenced packages: delft split into two partitions.
+    let parts = dir.path().join("parts");
+    let status = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(&parts)
+        .args(["--partition", "count", "--number", "2"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut packages: Vec<PathBuf> = std::fs::read_dir(&parts)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.join("metadata.json").exists())
+        .collect();
+    packages.sort();
+    assert_eq!(packages.len(), 2);
+
+    let collection_path = dir.path().join("collection.json");
+    let output = Command::new(binary)
+        .arg("collection")
+        .args(&packages)
+        .arg("-o")
+        .arg(&collection_path)
+        .args(["--id", "delft"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let read = |p: &std::path::Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    };
+    let collection = read(&collection_path);
+    assert_eq!(collection["type"], "Collection");
+    assert_eq!(collection["id"], "delft");
+
+    // The extent is the union of the Items' bboxes.
+    let mut union = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for pkg in &packages {
+        let bbox = read(&pkg.join("metadata.json"))["bbox"].clone();
+        let b: Vec<f64> = bbox
+            .as_array()
+            .expect("a georeferenced Item has a bbox")
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let (lo, hi) = b.split_at(b.len() / 2);
+        union = [
+            union[0].min(lo[0]),
+            union[1].min(lo[1]),
+            union[2].max(hi[0]),
+            union[3].max(hi[1]),
+        ];
+    }
+    let extent: Vec<f64> = collection["extent"]["spatial"]["bbox"][0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let (lo, hi) = extent.split_at(extent.len() / 2);
+    for (got, want) in [lo[0], lo[1], hi[0], hi[1]].iter().zip(union) {
+        assert!(
+            (got - want).abs() < 1e-9,
+            "extent {extent:?}, union {union:?}"
+        );
+    }
+
+    // One item link per package, each resolving to its metadata.json.
+    let mut targets: Vec<PathBuf> = collection["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["rel"] == "item")
+        .map(|l| {
+            dir.path()
+                .join(l["href"].as_str().unwrap())
+                .canonicalize()
+                .unwrap()
+        })
+        .collect();
+    targets.sort();
+    let expected: Vec<PathBuf> = packages
+        .iter()
+        .map(|p| p.join("metadata.json").canonicalize().unwrap())
+        .collect();
+    assert_eq!(targets, expected);
+}
+
+/// `collection`'s `item_assets` describes the assets its Items carry — every
+/// object table and sidecar key across the packages, with each one's media
+/// type and roles — and nothing they do not.
+#[cfg(feature = "collection")]
+#[test]
+fn collection_item_assets_are_the_items_assets() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    // Delft (one module table) and the railway (nine tables and three sidecars).
+    let mut packages = Vec::new();
+    for (name, input) in [
+        ("delft", "delft.city.jsonl"),
+        ("railway", "lod3_railway.city.json"),
+    ] {
+        let pkg = dir.path().join(name);
+        let status = Command::new(binary)
+            .arg("convert")
+            .arg(fixture(input))
+            .arg("-o")
+            .arg(&pkg)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        packages.push(pkg);
+    }
+    let collection_path = dir.path().join("collection.json");
+    let output = Command::new(binary)
+        .arg("collection")
+        .args(&packages)
+        .arg("-o")
+        .arg(&collection_path)
+        .args(["--id", "two"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let read = |p: &std::path::Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    };
+    let mut expected = serde_json::Map::new();
+    for pkg in &packages {
+        let item = read(&pkg.join("metadata.json"));
+        for (key, asset) in item["assets"].as_object().unwrap() {
+            expected.insert(
+                key.clone(),
+                serde_json::json!({ "type": asset["type"], "roles": asset["roles"] }),
+            );
+        }
+    }
+    assert!(expected.values().any(|a| {
+        a["roles"]
+            .as_array()
+            .unwrap()
+            .contains(&"cityparquet-sidecar".into())
+    }));
+    let item_assets = read(&collection_path)["item_assets"].clone();
+    assert_eq!(item_assets, serde_json::Value::Object(expected));
+}
+
+/// `--tolerate-invalid-appearance` drops what it cannot place, and says so on
+/// stderr — the derived Helsinki fixture has two texture rings one UV short
+/// (see `crates/core/tests/texture_uv_count_real_data.rs`).
+#[test]
+fn tolerated_appearance_drops_are_warned_about() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../core/tests/data/helsinki_tex_uv_count.city.jsonl");
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(&input)
+        .arg("-o")
+        .arg(dir.path().join("pkg"))
+        .arg("--tolerate-invalid-appearance")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning: 2 invalid material/texture reference(s) dropped"),
+        "{stderr}"
+    );
 }

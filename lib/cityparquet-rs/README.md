@@ -1,14 +1,15 @@
 # cityparquet-rs
 
 Rust reference implementation of **CityParquet** — a cloud-native, columnar
-Parquet encoding for 3D city models (CityJSON / CityJSONSeq), with an Arrow
-in-memory representation. Part of the CityParquet + CityLake research stack
+Parquet encoding for 3D city models, with an Arrow in-memory representation. It
+reads CityJSON, CityJSONSeq, CityGML 2.0 and FlatCityBuf, and writes CityJSON,
+CityJSONSeq and (for buildings) CityGML 2.0. Part of the CityParquet + CityLake research stack
 (TU Delft 3D Geoinformation).
 
 CityParquet stores a city model as a **directory of Parquet files** — one row
 per city object, WKB geometry per LoD, typed attribute columns, and optional
-sidecar tables for materials, textures, and geometry templates — so national-
-to-global 3D city models can be filtered, pruned, and queried directly from
+sidecar tables for materials, textures, and implicit geometries — so
+national-to-global 3D city models can be filtered, pruned, and queried directly from
 cloud object storage. It round-trips back to CityJSON/CityJSONSeq with
 semantic losslessness.
 
@@ -38,11 +39,12 @@ they measure.
 | `cityparquet-cli`    | The `cityparquet` binary and the benchmark harness                                                                 |
 
 Status: milestones **M1–M5 complete** — schema, native writer, reader
-& round-trip, content-gated appearance/template sidecars, and the benchmark
+& round-trip, content-gated appearance/implicit-geometry sidecars, and the benchmark
 suite. Every LoD,
 **including LoD0, is a suffixed geometry column** (`geometry_lod0_0`, `geometry_lod2_2`, …);
 the writer can **synthesise** an LoD0 footprint from higher-LoD geometry when
-the source lacks it (CLI default; `--no-lod0` to disable) — see `src/lod0.rs`.
+the source lacks it (opt-in, `--lod0`; by default a package holds only what the
+source carries) — see `src/lod0.rs`.
 Async / object-store I/O, native (non-WKB) geometry, and Python bindings are
 post-1.0 future work.
 
@@ -61,34 +63,48 @@ baseline additionally use `duckdb` if it's on `PATH`.
 ## CLI usage
 
 Run via `cargo run -p cityparquet-cli -- <command>` (add `--release` for
-realistic timing). Four subcommands:
+realistic timing). Six subcommands: `convert`, `export`, `compare`,
+`collection`, `validate` and `bench`.
 
-### convert — CityJSON/Seq → CityParquet package
+### convert — CityJSON/Seq, CityGML or FlatCityBuf → CityParquet package
 
 ```bash
 cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite
 ```
 
-Writes `OUTPUT_DIR/` containing one `<snake>.parquet` table per 1st-level
-CityObject family (e.g. `building.parquet`, `bridge.parquet`) + `metadata.json`,
-readable by any Parquet reader (DuckDB, pyarrow, …). `metadata.json` is a STAC
-Item (the `city3d:*` extension) describing that one package; a dataset-level
-`collection.json` aggregating multiple packages/tiles into one STAC
-Collection is **not yet implemented** — it needs a multi-package workflow
-this CLI doesn't have, so it's tracked as a follow-up rather than emitted as
-a meaningless single-Item Collection.
+`INPUT` is a CityJSON (`.city.json`), CityJSONSeq (`.city.jsonl`), CityGML
+(`.gml`) or FlatCityBuf (`.fcb`) file, a directory of them, or a glob; several
+inputs merge into one dataset. The format is sniffed from the content.
 
-| Flag                            | Default       | Meaning                                                                                                                                                                |
-| ------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--overwrite`                   | off           | purge an existing package in the target dir first                                                                                                                      |
-| `--recipe`                      | `cityparquet` | writer preset: `cityparquet`, `parquet-defaults`, `no-dictionary`, `no-bss`, `no-delta`, `snappy`                                                                      |
-| `--ordering`                    | `source`      | `source` or `hilbert` (spatial row ordering for better bbox pruning)                                                                                                   |
-| `--row-group-size`              | `65536`       | Parquet row-group size                                                                                                                                                 |
-| `--zstd-level`                  | `3`           | zstd level (ignored by `--recipe snappy`)                                                                                                                              |
-| `--batch-size`                  | `4096`        | encode batch size                                                                                                                                                      |
-| `--crs`                         | unset         | operator-supplied CRS (`EPSG:25832` or bare `25832`) for a source that declares none; ignored for a source that declares its own                                       |
-| `--tolerate-invalid-appearance` | off           | drop a material/texture index that falls outside its local definitions array instead of aborting; counted in the report's trailing field, never silent                 |
-| `--partition`                   | unset         | split the output into one package per partition: `count` (+`--number N`), `features` (+`--feature-num M`), or `box` (+`--cell-size METRES`). Omit to write one package |
+- **CityGML input is version 2.0 only**; another version is refused by name.
+  The reader covers buildings (solids, semantic surfaces and openings, parts,
+  installations, appearance, every LoD up to 4) and the geometry and attributes
+  of the other thematic modules but relief; what it does not read is listed in
+  [docs/citygml-reader-writer-limitations.md](docs/citygml-reader-writer-limitations.md).
+- **FlatCityBuf input** is behind the `fcb` cargo feature (on for the CLI): the
+  file is read front to back, its header standing in for the CityJSON one.
+
+Writes `OUTPUT_DIR/` containing one object table per CityGML module (e.g.
+`building.parquet`, `transportation.parquet`) + `metadata.json`,
+readable by any Parquet reader (DuckDB, pyarrow, …). `metadata.json` is a STAC
+Item (the `city3d:*` extension) describing that one package; `collection`
+(below) aggregates several packages' Items into a dataset-level STAC
+Collection.
+
+| Flag                            | Default       | Meaning                                                                                                                                                                                                                                |
+| ------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--overwrite`                   | off           | purge an existing package in the target dir first                                                                                                                                                                                      |
+| `--recipe`                      | `cityparquet` | writer preset: `cityparquet`, `parquet-defaults`, `no-dictionary`, `no-bss`, `no-delta`, `snappy`                                                                                                                                      |
+| `--ordering`                    | `hilbert`     | `hilbert` (spatial row ordering for better bbox pruning; a CityGML or FlatCityBuf input is held parsed in memory) or `source` (streams one feature at a time: the low-memory path)                                                     |
+| `--row-group-size`              | `65536`       | Parquet row-group size                                                                                                                                                                                                                 |
+| `--zstd-level`                  | `3`           | zstd level (ignored by `--recipe snappy`)                                                                                                                                                                                              |
+| `--no-bloom`                    | off           | write no Parquet bloom filter (by default `id`, `feature_id` and high-cardinality string attributes carry one)                                                                                                                         |
+| `--bloom-fpp`                   | `0.01`        | target false-positive probability of every bloom filter, strictly between 0 and 1                                                                                                                                                      |
+| `--batch-size`                  | `4096`        | encode batch size                                                                                                                                                                                                                      |
+| `--lod0`                        | off           | synthesise an LoD0 footprint into `geometry_lod0_0` for every object without a source LoD0 (ground surfaces first, else downward-facing faces)                                                                                         |
+| `--crs`                         | unset         | operator-supplied CRS (`EPSG:25832` or bare `25832`) for a source that declares none; ignored for a source that declares its own                                                                                                       |
+| `--tolerate-invalid-appearance` | off           | drop a material/texture index that falls outside its local definitions array, and leave untextured a texture ring with fewer UVs than vertices, instead of aborting; counted in the report's trailing field and warned about on stderr |
+| `--partition`                   | unset         | split the output into one package per partition: `count` (+`--number N`), `features` (+`--feature-num M`), or `box` (+`--cell-size METRES`). Omit to write one package                                                                 |
 
 `city.crs` is **tri-state**, exactly as in GeoParquet (spec "CRS rules"): a
 PROJJSON object when the CRS is known, an explicit **`null`** when the file
@@ -131,7 +147,7 @@ module, so a `CityObjectGroup` in `generics.parquet` may have its members in
 `vegetation.parquet`. That is the by-module layout, not a partition boundary:
 the guarantee is that the references resolve inside the package.
 
-Sidecars (`materials.parquet`/`textures.parquet`/`geometry_templates.parquet`)
+Sidecars (`materials.parquet`/`textures.parquet`/`implicit_geometries.parquet`)
 are written automatically whenever the source has that kind of content —
 there is no profile flag to opt into them:
 
@@ -143,21 +159,30 @@ cargo run -p cityparquet-cli -- convert tests/fixtures/lod3_railway.city.json \
 `convert` prints a space-separated report: `object_count files_count
 skipped_same_lod_geometries attribute_coercion_nulls degenerate_rings_dropped
 degenerate_surfaces_dropped materials_written textures_written
-templates_written invalid_appearance_refs_dropped` (`materials_written`
-through `templates_written` are `0` when the source has no appearance/
-templates for that sidecar to write; `invalid_appearance_refs_dropped` is `0`
+implicit_geometries_written invalid_appearance_refs_dropped`
+(`materials_written` through `implicit_geometries_written` are `0` when the
+source has no appearance/implicit geometries for that sidecar to write; `invalid_appearance_refs_dropped` is `0`
 unless `--tolerate-invalid-appearance` actually dropped a dangling
 material/texture reference).
 
-### export — package → CityJSON/Seq
+### export — package → CityJSON/Seq or CityGML
 
 ```bash
 cargo run -p cityparquet-cli -- export PACKAGE_DIR OUTPUT.city.jsonl
 ```
 
-Format is auto-detected from the extension (`.city.jsonl` → Seq, `.city.json`
-→ document). Prints `feature_count object_count instance_geometries_dropped
-appearance_refs_dropped appearance_lod_misses`.
+The format follows the extension: `.city.jsonl` → CityJSONSeq, `.city.json` →
+a CityJSON document, `.gml` → CityGML 2.0. CityJSON export prints
+`feature_count object_count instance_geometries_dropped
+appearance_refs_dropped`, and warns when it writes LoD 4 geometry (as `"4.0"`;
+CityJSON 2.0 defines LoDs 0 to 3 only).
+
+**CityGML export is limited to `Building` and `BuildingPart`**: their solids
+(`lod1Solid` to `lod4Solid`, CompositeSolid included), semantic surfaces,
+attributes and appearance. Every other object is skipped and counted in the
+printed report (`non_building_skipped`, …), and a MultiSolid has no CityGML 2.0
+building slot. See
+[docs/citygml-reader-writer-limitations.md](docs/citygml-reader-writer-limitations.md).
 
 ### compare — semantic equality of two datasets
 
@@ -171,6 +196,38 @@ skip appearance/`GeometryInstance` comparison, for a package whose sidecars
 were left out of the comparison on purpose. This is how a round-trip is
 proven: `convert` → `export` → `compare` against the source.
 
+### collection — a STAC Collection over several packages
+
+```bash
+cargo run -p cityparquet-cli -- collection PACKAGE_DIR... -o collection.json --id ID
+```
+
+Reads each package's `metadata.json` Item and writes one STAC Collection:
+the `city3d:*` summaries and the spatial extent (the union of the Items'
+bboxes) as the City3D STAC tool's `StacCollectionBuilder` aggregates them, the
+temporal extent spanning the Items' datetimes, and one `item` link per package,
+relative to `collection.json`. `--title`, `--description` and `--license` fill
+the matching fields. An Item carries a WGS84 bbox only when its package's CRS is
+known, so at least one package must be georeferenced. The subcommand is behind
+the CLI crate's `collection` cargo feature (on by default), which links the
+City3D STAC tool's generator crate.
+
+### validate — conformance against the specification
+
+```bash
+cargo run -p cityparquet-cli -- validate PACKAGE_DIR
+```
+
+Checks a package from any writer against the specification at the level of
+Parquet logical types: the package layout and `metadata.json` STAC Item, each
+file's `city`/`geo` footer objects, the reserved, per-LoD and attribute
+columns' logical types, the sidecar schemas, and the value-level invariants
+(required columns non-null, the `feature_id` rule, WKB encoding, `face_semantics`
+/ `shells` / appearance lengths, sidecar references). Prints one line per
+violation — `error[code] file: message (spec page)` for a MUST, `warning[…]`
+for a SHOULD — then `N error(s), M warning(s)`. Exit `0` when there is no
+error, `2` otherwise.
+
 ### bench — variant-matrix benchmark
 
 ```bash
@@ -178,8 +235,9 @@ cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 ```
 
 Appends one CSV row per variant. `--variants` takes a comma-separated list in
-the grammar `<preset>[+hilbert][+rg<N>]` (omit for the default
-9-variant set); `--repeat` (default 5) reports the median; `--window-frac`
+the grammar `<preset>[+source][+rg<N>][+<codec>[<level>]][+nobloom]`, where
+every variant is Hilbert-ordered unless it carries `+source` (omit for the
+default 9-variant set); `--repeat` (default 5) reports the median; `--window-frac`
 (default 0.05) sizes the spatial window query; `--skip-roundtrip` skips the
 export+compare check. See
 [benchmark/formats/README.md](../../benchmark/formats/README.md).
@@ -194,24 +252,19 @@ export+compare check. See
 | `just fixtures`                        | download the CityJSON test fixtures into `tests/fixtures/`       |
 | `just check`                           | clippy, tests, schema/Parquet isolation, `fmt --check`, prettier |
 | `just test` / `just lint` / `just fmt` | the individual gates                                             |
-| `just vendor-check`                    | fmt + clippy + test the vendored `city3d-stac-tool`              |
 | `just interop`                         | convert both fixtures and have DuckDB read the Parquet natively  |
 
 **From the repository root** — everything that reaches both this crate and the
 `benchmark/` tree:
 
-| Recipe                                        | What it does                                                                                                                                                                                                                        |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just convert-all FOLDER [OUT]`               | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`)                                                                                                                                |
-| `just fetch-data [DEST] [ONLY]`               | fetch the read benchmark's corpus (six real CityJSON datasets, 423 MB) into `DEST` (default `benchmark/formats/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, `all` |
-| `just fetch-tools`                            | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq)                                                                                                                             |
-| `just bench FOLDER [OUT] [FORMATS]`           | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `benchmark/formats/read_results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set      |
-| `just ordering-bench FOLDER [OUT]`            | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `benchmark/formats/ordering_results`)                                                                                       |
-| `just write-bench FOLDER [OUT]`               | encoding-variant WRITE benchmark + the DuckDB `COPY` baseline, one CSV per input                                                                                                                                                    |
-| `just codec-bench FOLDER [OUT] [PREPARED]`    | codec axis over every input under `FOLDER` on the read harness: a timed write per variant (peak RSS), then a full read and the bbox windows; `OUT` default `benchmark/formats/scaling_codec_results`                                |
-| `just rowgroup-bench FOLDER [OUT] [PREPARED]` | the same for the row-group axis, `OUT` default `benchmark/formats/scaling_rowgroup_results`                                                                                                                                         |
-| `just plot` / `just plot-pretty`              | render charts and the cross-dataset summary page from CSVs already measured                                                                                                                                                         |
-| `just plot-test` / `just scripts-test`        | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, `benchmark/scripts/`'s bash suite) — outside `just check`, which is the Rust gate                                                                                |
+| Recipe                                 | What it does                                                                                                                                                                                                                        |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just convert-all FOLDER [OUT]`        | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`)                                                                                                                                |
+| `just fetch-data [DEST] [ONLY]`        | fetch the read benchmark's corpus (seven CityJSON datasets, about 1.2 GB) into `DEST` (default `benchmark/runs/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, `all` |
+| `just fetch-tools`                     | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq)                                                                                                                             |
+| `just bench FOLDER [OUT] [FORMATS]`    | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `benchmark/runs/formats/results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set      |
+| `just bench-summary`                   | render the figures, ratio tables and summary page from results already measured                                                                                                                                                     |
+| `just plot-test` / `just scripts-test` | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, `benchmark/scripts/`'s bash suite) — outside `just check`, which is the Rust gate                                                                                |
 
 Every recipe that walks a `FOLDER` discovers and names its inputs through the
 one input-extension convention at the top of the **root** `justfile`
@@ -219,14 +272,12 @@ one input-extension convention at the top of the **root** `justfile`
 of; `benchmark/readbench/tests/strip_extension.rs` holds it in
 lockstep with the Rust and shell implementations of the same rule.
 
-Downloaded benchmark data (`benchmark/formats/data/`) and generated packages
-(`out/`) are gitignored. The committed measurement artefacts are the
-configuration-axis CSVs (`benchmark/formats/scaling_*_results/`) and the two
-methodology documents beside them
-(`benchmark/formats/READ_BENCHMARK.md`, `benchmark/formats/README.md`); the
-read-side CSVs are not currently committed — see
-[benchmark/README.md](../../benchmark/README.md) for which evidence is in git
-and which is re-measured.
+Downloaded benchmark data (`benchmark/runs/data/`) and generated packages
+(`out/`) are gitignored. Measurement artefacts land under `benchmark/runs/`
+(none is committed until the full run on the benchmark host), and their
+methodology is in `benchmark/formats/READ_BENCHMARK.md` and
+`benchmark/formats/README.md` — see
+[benchmark/README.md](../../benchmark/README.md).
 
 ## Development
 

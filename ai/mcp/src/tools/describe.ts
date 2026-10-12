@@ -14,7 +14,7 @@ export const MODULE_TABLES = [
   "vegetation", "relief", "water_body", "land_use", "city_furniture", "generics",
 ] as const;
 
-export const SIDECAR_TABLES = ["materials", "textures", "geometry_templates"] as const;
+export const SIDECAR_TABLES = ["materials", "textures", "implicit_geometries"] as const;
 
 export interface TableSummary {
   readonly name: string;

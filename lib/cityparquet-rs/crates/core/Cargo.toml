@@ -21,13 +21,21 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 geo = { workspace = true }
 city3d-stac-types = { workspace = true }
+cardinality-estimator = { workspace = true }
+rayon = { workspace = true }
+memchr = { workspace = true }
 object_store = { workspace = true, optional = true }
 futures = { version = "0.3", optional = true }
 futures-util = { version = "0.3", optional = true }
 async-trait = { workspace = true, optional = true }
+fcb_core = { workspace = true, optional = true }
 
 [dev-dependencies]
 wkb = { workspace = true }
+# Re-types a real package's column to build a non-conformant one.
+arrow-cast = { workspace = true }
+# Lays out a real .fcb file's sections to derive edge-case files from it.
+fcb_core = { workspace = true }
 # Builds a GEOGRAPHY-annotated fixture; the writer never emits one.
 parquet-geospatial = { workspace = true }
 geo-traits = { workspace = true }
@@ -36,8 +44,11 @@ jsonschema = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
+bytes = { workspace = true }
 
 [features]
+# FlatCityBuf (`.fcb`) input for `convert`.
+fcb = ["dep:fcb_core"]
 object-store = [
     "dep:object_store",
     "dep:futures",

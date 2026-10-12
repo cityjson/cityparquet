@@ -8,7 +8,22 @@
 //! input-extension convention every artefact path is derived through, and
 //! [`params`], the query parameters every measurement is driven with.
 
+pub mod bloom_columns;
 pub mod format;
+pub mod http_client;
+pub mod isolation;
+pub mod lod;
 pub mod naming;
+pub mod netsim;
 pub mod params;
-pub mod scaling;
+pub mod sampling;
+pub mod seq_order;
+pub mod slice;
+pub mod stats;
+pub mod variant_package;
+
+/// The STAC `datetime` of every benchmark package: the day the benchmark
+/// corpus was fixed. The prepare script passes the same value to
+/// `cityparquet convert --datetime` (`CORPUS_DATETIME` there), so a package
+/// is the same bytes whichever of the two builds it.
+pub const CORPUS_DATETIME: &str = "2026-10-05T00:00:00Z";

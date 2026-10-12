@@ -1,6 +1,6 @@
 //! The typed `material_lod*` / `texture_lod*` MAP columns (spec "material /
 //! texture columns"): the Arrow-decoupled cell values, the builders the main
-//! object table and the geometry-template sidecar both write with, and the
+//! object table and the implicit-geometries sidecar both write with, and the
 //! readers every consumer reads with — one physical shape, one
 //! implementation.
 //!
@@ -104,7 +104,7 @@ fn ring_fields(ring: &DataType) -> Fields {
 }
 
 /// Builder for one `material_lod*` column — the SAME machinery the object
-/// table's per-LoD slots and the template sidecar drive.
+/// table's per-LoD slots and the implicit-geometries sidecar drive.
 pub(crate) struct MaterialCellBuilder {
     map: MapBuilder<StringBuilder, ListBuilder<Int64Builder>>,
 }

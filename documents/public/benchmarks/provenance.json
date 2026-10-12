@@ -1,13 +1,26 @@
 {
-  "source": "benchmark/runs/summary/full",
-  "exported": "2026-09-21",
-  "note": "Existing bench-summary output exported without rerunning measurements or the renderer. PNGs are unmodified.",
+  "source": "benchmark/runs/summary/short",
+  "exported": "2026-10-08",
+  "note": "Rendered by `just bench-summary` from a run on the author's laptop (Apple silicon, macOS): the formats and sizes families only, short profile, 25 warm single-threaded samples per cell, medians. Host isolation (NUMA pinning, memory ceiling, load gate) was not applied. The timings are preliminary and will be replaced by the run on the benchmark host. The sizes are exact byte counts of the preparation-chain version 8 artefacts and do not depend on the machine. The Bloom-filter axis, the database comparison, the network family and the 3DBAG slice were not measured. Files are copied unmodified; summary.html is the summary's index.html.",
   "sha256": {
-    "sizes.png": "6e8b203f34dbbdb4eba242c68b2641419be88eaf13f95e8f4ec2a3986f80526c",
-    "heatmap.png": "c3fb075e199e1d4cc05638e65d81cfaf196008e2d266e1ae3182990c46fc1f56",
-    "databases.png": "449807d9dc32b1f88bb448517f59f2c77bd360eaafa544e03db2b79b7b503ec5",
-    "bench_data.json": "8584328b6ff84a06dc71227f793ab9b038c5f25c287dd136d870820d952e301b",
-    "completeness.json": "fa9ca844b2bdd2811d7f06cc090179ec8dcd72adc4b08ca5a52897ad0f0ab2b1",
-    "summary.html": "d887031292ef87909750f455c21aeabb091a1e3030e1e86e75486aaaf13d5d7d"
+    "sizes.png": "22396e318d435628d89ae84c38e1e2a3cca0f6d7c931ff41cff0c3ce47ef7f7b",
+    "formats/montreal/rss.png": "15ca37d265bcc363340b341a2e892c6294ba3d5b71ec9c19f0d947b317c9674f",
+    "formats/montreal/time.png": "dbd291714dd25e2105db323121b09cd90a216840c0a31cdace9ca5fa25d9b877",
+    "formats/nyc_da13_buildings/rss.png": "7e45655bafffb10be0be2716eb347c89ad10bb8ad266e7467507a5a77266dfd0",
+    "formats/nyc_da13_buildings/time.png": "18a6ed80334cbaf850104d6c9affa19674828a1b3f1d440527250c3cd357e30c",
+    "formats/rotterdam_delfshaven/rss.png": "62df312bc11e3463cec699194e5e4adcf52e706683b1d66f1bf3631d96eb5191",
+    "formats/rotterdam_delfshaven/time.png": "fd297b85f6090d6b84b3bd31b0154850cebc566428a5273fca8cdc71c61e095f",
+    "formats/tokyo/rss.png": "ea1e8fef59238236c16e2ee34984350d206410e4b89c81c458041c3905c38687",
+    "formats/tokyo/time.png": "d36c65e73d21246d88bd5cac8d171655f09431a382e9f7326f750612ee617e8b",
+    "formats/vienna_102081/rss.png": "253231d9fcacb00691ea64e5c3d939f1e10fbc62376716f66dca4e55002d5b35",
+    "formats/vienna_102081/time.png": "8dc188d92c3407a95dd7350bdd709c05c23ef2467e959b130845740e5eec2734",
+    "formats/zurich_building_lod2/rss.png": "f31fae6481d75380dbdafdfb59cdda0c991e24786f7f0d7ec4823899f4d64940",
+    "formats/zurich_building_lod2/time.png": "475ccbd4983f26f10ca462449c3499316231944cffee233e0d4395f88d5ed671",
+    "bench_data.json": "3d76472216d37d3f6d24013681993b96b26ae6ae3685d0f32d62b6b1812d0ae5",
+    "completeness.json": "cfd2c5a0ea9d5d876bd21ae29a3439ae1e4eb0abd62bfa78ed598bf1e8f9368a",
+    "summary.html": "753eef1b3f89d0333e0e37746b15116fca8b3720b39978e2889039507b73db45",
+    "size_factors.csv": "f45ae9dfbe030e5238b64afb9a3b3e4916b673b0c941c82dafc628fa38e8c670",
+    "size_extremes.csv": "1f8abdb0d43b4585aff88e94295ea7080b692cf6f01914662c80bfed6b68588f",
+    "query_factors.csv": "76510c4c39f127d5e5ac7d057ea0f5d6fa0b8eadc3992bce6449742396fbd0ae"
   }
 }

@@ -47,9 +47,14 @@ def test_required_keys_is_exactly_the_eight_documented_fields():
     # schema creation and cannot be changed afterwards, and getting it
     # wrong does not error, so the SRID each PostgreSQL-backed system
     # actually landed on is recorded, not just requested.
+    # `execution` and `count_check` were added with the two thread
+    # configurations and the count-deviation tolerance: the primary figure
+    # is now a choice the manifest has to state, and `ok-deviation` in the
+    # CSV means nothing without the tolerance it was judged against.
     assert required_keys() == (
         "dataset", "source", "baseline", "host", "versions", "pg_settings", "ingest", "sizes",
         "patches", "srid", "memory_measurement", "temporary_storage",
+        "execution", "count_check", "isolation",
     )
 
 
@@ -111,7 +116,8 @@ def test_sizes_are_relabelled_to_total_and_no_index_bytes_not_left_as_a_tuple():
     m = collect(
         dataset_name="d", ingest={}, sizes={"cjdb": (900, 700)}, versions={}, pg_settings={},
     )
-    assert m["sizes"]["cjdb"] == {"total_bytes": 900, "no_index_bytes": 700}
+    assert m["sizes"]["cjdb"] == {"total_bytes": 900, "no_index_bytes": 700,
+                                  "index_bytes": 200}
 
 
 def test_sizes_handles_multiple_systems_independently():
@@ -152,3 +158,60 @@ def test_srid_carries_through_the_landed_value_per_system():
     )
     assert m["srid"] == srid
     assert m["srid"] is srid
+
+
+def test_isolation_is_recorded_verbatim_and_defaults_to_empty():
+    record = {"node": 1, "client": {"cpu": "applied"}}
+    assert collect(dataset_name="d", ingest={}, sizes={}, versions={},
+                   pg_settings={}, isolation=record)["isolation"] == record
+    assert collect(dataset_name="d", ingest={}, sizes={}, versions={},
+                   pg_settings={})["isolation"] == {}
+
+
+def test_index_build_and_size_definitions_are_recorded():
+    m = collect(
+        dataset_name="rotterdam",
+        ingest={"cjdb": 1.0, "cityparquet": 0.0},
+        sizes={"cjdb": (100, 80), "cityparquet": (50, 45)},
+        versions={}, pg_settings={},
+        index_build={"cjdb": 0.25, "cityparquet": None},
+        size_detail={"cityparquet": {"bloom_filter_bytes": 3, "page_index_bytes": 2,
+                                     "footer_bytes": 7}},
+    )
+    assert m["ingest"]["index_build_s"] == {"cjdb": 0.25, "cityparquet": None}
+    assert m["sizes"]["cityparquet"]["bloom_filter_bytes"] == 3
+    assert m["sizes"]["cjdb"]["index_bytes"] == 20
+    assert "bloom" in m["size_definitions"]["no_index_bytes"]["cityparquet"].lower()
+    assert "index" in m["size_definitions"]["policy"].lower()
+
+
+def test_memory_measurement_names_working_memory_and_provisioned_limits():
+    m = collect(
+        dataset_name="rotterdam", ingest={}, sizes={}, versions={},
+        pg_settings={"shared_buffers": "8GB", "work_mem": "4MB"},
+        memory_read={"postgresql": "container exec"},
+    )
+    mm = m["memory_measurement"]
+    assert mm["metric"] == "peak_working_mem_bytes"
+    assert "RssAnon" in mm["postgresql"] and "worker" in mm["postgresql"]
+    assert mm["read_path"] == {"postgresql": "container exec"}
+    prov = mm["provisioned"]
+    assert prov["shared_buffers"] == "8GB" and prov["work_mem"] == "4MB"
+    assert prov["container_memory_limit"] == "32g"
+    assert prov["duckdb_memory_limit"] == "32GB"
+
+
+def test_memory_read_path_defaults_to_not_applied_never_blank():
+    m = collect(dataset_name="d", ingest={}, sizes={}, versions={}, pg_settings={})
+    assert m["memory_measurement"]["read_path"]["postgresql"].startswith("not applied")
+
+
+def test_servers_carry_live_versions_and_image_digests_verbatim():
+    from citybench import manifest
+    servers = {"cjdb": {"postgresql": "16.4", "postgis": "3.4.3"},
+               "images": {"docker.io/postgis/postgis:16-3.4": "sha256:aaa"}}
+    m = manifest.collect(dataset_name="d", ingest={}, sizes={}, versions={},
+                         pg_settings={}, servers=servers)
+    assert m["servers"] == servers
+    assert manifest.collect(dataset_name="d", ingest={}, sizes={}, versions={},
+                            pg_settings={})["servers"] == {}

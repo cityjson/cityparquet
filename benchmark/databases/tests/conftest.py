@@ -1,0 +1,109 @@
+"""Shared construction of the `Params` every test needs.
+
+`Params` carries the resolved query windows, the per-dataset `attr-filter`
+predicate and `attr-range`'s threshold, all of which a real run derives from
+a CityParquet package (`citybench.params.derive`). A unit test of one SQL
+builder does not want a package on disk, so this builds the same value
+directly, with the same shape, in one place: eight test modules previously
+repeated the literal and every field change touched all eight.
+
+`window_for_target` is used rather than a hand-written rectangle so the
+fixture's windows carry a real `achieved` fraction and `approx` flag.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from citybench.config import (
+    BBOX_TARGETS, AppendSpec, AttrFilter, AttrRange, BBox, IdProbe, Params,
+    window_for_target,
+)
+
+#: 200 boxes evenly spaced along the fixture extent, so the three windows
+#: are real searched windows rather than invented rectangles — and so every
+#: target is exactly reachable, which keeps the fixture's window tags free
+#: of the `-approx` suffix an unreachable target correctly adds. (A square
+#: grid would be a poor choice here: a centred window admits its rows 4, 16,
+#: 36 … at a time, so 25 % is not among the reachable fractions.)
+_BOXES = [
+    (float(i) * 0.5, 50.0, float(i) * 0.5, 50.0) for i in range(200)
+]
+_EXTENT = BBox(minx=0.0, miny=0.0, minz=0.0, maxx=100.0, maxy=100.0, maxz=10.0)
+
+
+def make_probes(hit: str = "obj-1") -> tuple[IdProbe, ...]:
+    """The two `id-lookup` probes a real derivation produces: the hit at
+    the middle of the canonical stream order plus one verified-absent id.
+    Tests that only need "an id" use `hit`, the first probe."""
+    return (
+        IdProbe(tag="id-lookup", id=hit, present=True, position=0.5),
+        IdProbe(tag="id-miss", id=f"{hit}-absent", present=False),
+    )
+
+
+def make_params(**overrides) -> Params:
+    """The canonical test `Params`, with any field overridden by keyword."""
+    defaults = dict(
+        lods=("0", "1.3", "2.2"),
+        bbox_full=_EXTENT,
+        windows=tuple(
+            window_for_target(_BOXES, _EXTENT, target, tag)
+            for target, tag in BBOX_TARGETS
+        ),
+        point_xy=(45.5, 45.5),
+        attr_filter=AttrFilter(
+            column="b3_dak_type", op="eq", eq_value="slanted", ge_bound=None,
+            matched=25, share=0.25, hand_picked=True,
+        ),
+        attr_range=AttrRange(
+            column="b3_h_dak_max", quantile=0.8, threshold=20.0, matched=20,
+        ),
+        numeric_column="h_dak_max",
+        id_probes=make_probes("obj-1"),
+        total_city_objects=100,
+        window_rows=100,
+        append=AppendSpec(
+            path="/tmp/fixture.append.city.jsonl", suffix="-appended",
+            object_count=3, source_feature_id="obj-9",
+            unmapped_references=0,
+        ),
+    )
+    defaults.update(overrides)
+    return Params(**defaults)
+
+
+def ge_attr_filter(column: str = "TerrainHeight", bound: float = 2.45) -> AttrFilter:
+    """The numeric-bound form of the `attr-filter` predicate (Rotterdam's)."""
+    return AttrFilter(
+        column=column, op="ge", eq_value=None, ge_bound=bound,
+        matched=25, share=0.25, hand_picked=True,
+    )
+
+
+@pytest.fixture(autouse=True)
+def fake_engine(monkeypatch):
+    from citybench import engine
+    """A probed-looking podman on Linux, so no engine needs to be installed."""
+    fake = engine.Engine(name="podman", binary="podman", version="podman version 5",
+                         run_flags=frozenset({"--cpus", "--memory", "--shm-size", "--network", "--cpuset-cpus"}),
+                         platform="linux")
+    monkeypatch.setattr(engine, "_ACTIVE", fake)
+    monkeypatch.setattr(engine, "free_host_port", lambda: 40123)
+    return fake
+
+
+@pytest.fixture(autouse=True)
+def _placeholder_extension_build(request, tmp_path_factory, monkeypatch):
+    """Unit tests never depend on a local DuckDB CityJSON extension build.
+
+    `cmd_bench` refuses to start without one (`citybench.extension`); a
+    placeholder file satisfies that check in unit tests, which never load
+    it. Integration tests resolve the real build.
+    """
+    if request.node.get_closest_marker("integration") is None:
+        from citybench import extension
+
+        build = tmp_path_factory.mktemp("ext") / "cityjson.duckdb_extension"
+        build.write_bytes(b"placeholder")
+        monkeypatch.setenv(extension.ENV_VAR, str(build))

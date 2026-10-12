@@ -1,6 +1,6 @@
 ---
 title: Extensions
-description: "CityGML ADEs and CityJSON Extensions: typed where possible, escape-hatched otherwise."
+description: "CityGML ADEs and CityJSON Extensions: typed where possible, every added name carrying its extension's namespace."
 sidebar:
   label: Extensions
 ---
@@ -12,85 +12,182 @@ without losing the source data, preferring typed columns where the extension is 
 and an escape hatch where it is not (see the
 [extensions decision](/design-decisions/extensions)).
 
+Each extension is identified by a short **namespace**, and every name the extension
+adds to a package carries this namespace as a prefix. The examples on this page use the
+Energy ADE 3.0 (beta 7; Agugiaro and Padsala,
+[tudelft3d/Energy_ADE](https://github.com/tudelft3d/Energy_ADE)), whose namespace is
+`energy`. It is split into Core, Building Physics, Occupant Behaviour, Material and
+Construction, and Energy Systems modules; the examples draw on its Building Physics
+module.
+
+## The namespace
+
+Every extension a package uses has a **namespace** that:
+
+- **MUST** match `^[a-z][a-z0-9]*$` — a lower-case letter followed by lower-case
+  letters and digits, with no `_`; and
+- **MUST** be unique within the package: a namespace denotes the same extension in
+  every file of the package.
+
+The **prefix form** of a namespace is the namespace followed by `_` (`energy_`). Because
+a namespace contains no `_`, the first `_` of a prefixed name always ends its namespace.
+
+**Derivation.** A writer derives the namespace from the source:
+
+- **CityJSON Extension** — the extension's name, which is its key in the document's
+  `extensions` member, lower-cased, with every character outside `[a-z0-9]` removed:
+  `"Energy"` → `energy`, `"Noise"` → `noise`, `"Energy ADE"` → `energyade`.
+- **CityGML ADE** — the prefix the source document binds to the ADE's XML namespace,
+  normalised the same way.
+
+A writer **MAY** instead accept a namespace supplied by the operator for an extension;
+the result **MUST** still satisfy the two rules above. A writer **MUST** reject the input
+(a hard error) when a derivation yields an empty namespace, a namespace that does not
+start with a letter, or a namespace that collides with another extension's.
+
+**What carries the prefix.** Every name the extension adds:
+
+| Name | Source | Stored as |
+|---|---|---|
+| Extended attribute (a column name) | `+heatCapacity` | `energy_heatCapacity` |
+| Extended semantic surface type (`geometry_properties_lod*.surfaces[].type`) | `+PartyWallSurface` | `energy_PartyWallSurface` |
+| Extended city-object class (`object_type`) | `+ThermalZone` | `energy_ThermalZone` |
+| Module an extension declares (a file name) | Building Physics module | `energy_building_physics.parquet` |
+
+Core module files and core names are **never** prefixed.
+
 ## Extended feature types
 
-An extension — a CityGML ADE, or the equivalent CityJSON Extension — is a **module** in
-its own right, so its feature types are grouped by the same
-[by-module rule](/specification/dataset-package) as core types.
+An extension — a CityGML ADE, or the equivalent CityJSON Extension — groups its feature
+types into modules, so they follow the same
+[by-module rule](/specification/dataset-package) as core types. Within a file the
+`object_type` column distinguishes each row's class, and an extension class's
+`object_type` is its class name with the namespace prefix (`energy_ThermalZone`).
 
-**The `ModuleKey`.** Every class routes to a file via a single key computed from the
-**original source type**, before any CityJSON `+` is stripped: a core CityGML 3.0
+**The `ModuleKey`.** Every class routes to a file via a single key: a core CityGML 3.0
 module (`Building`, `Transportation`, …), or an **owned extension module** — the module
-name the ADE/Extension itself declares for that class. This is one uniform mechanism,
-not a special case bolted onto the by-module rule:
+the extension itself declares for that class. This is one uniform mechanism, not a
+special case bolted onto the by-module rule:
 
 - A class belonging to a **core module** gets the module's file, exactly as any core
   type does.
 - An extension class that declares its **own module** gets a file named after that
-  module, in **snake_case** — an `Energy` ADE defining `SolarPanel` and `Thermostat`
-  both in an `Energy` module share `energy.parquet`, distinguished by `object_type`.
-- An extension class that **specialises an existing module's class** (declares no
-  module of its own, but subclasses a core or extension type) routes to *that* class's
-  module file — an ADE class specialising `Building` lands in `building.parquet`,
+  module: the namespace prefix followed by the module name in **snake_case** (the
+  [file-name rule](/specification/dataset-package) of core modules). The Energy ADE's
+  `ThermalZone` and `ThermalBoundary` both belong to its Building Physics module, so
+  both are stored in `energy_building_physics.parquet`, distinguished by `object_type`
+  (`energy_ThermalZone`, `energy_ThermalBoundary`).
+- An extension class that **specialises an existing class** (declares no module of its
+  own, but subclasses a core or extension class) routes to *that* class's module
+  file — an extension class specialising `Building` lands in `building.parquet`,
   exactly as `BuildingPart` does. This holds recursively.
-- **Whether a class carries CityJSON's `+` marker is irrelevant to routing.** An ADE
-  class with **no** `+` and a resolvable declared module is a perfectly valid extension
-  class, and routes by that module like any other — the `+` is a detail of CityJSON's
-  own encoding of extension types, not a precondition for being one.
+- **Routing is indifferent to CityJSON's `+` marker.** The `+` is a detail of CityJSON's
+  own encoding of extension types, not a precondition for being one: an ADE class with
+  no `+` and a resolvable declared module routes by that module like any other. A
+  `+`-marked class whose name, without the `+`, is a core class name (`+Building`)
+  routes to that core class's module file, but it remains an extension class, so its
+  `object_type` carries the prefix (`energy_Building`) and stays distinct from the core
+  class's.
 - A class with **no resolvable `ModuleKey`** at all — not a recognised core CityGML
   class, and not declared as belonging to any extension module, `+`-marked or not — is
   a **hard error**. Routing is total: every class the writer encounters must resolve to
   some file, or the input is rejected.
 
-**No `+` in file names.** CityJSON writes an Extension's object types with a leading `+`
-(`+Thermostat`). That marker belongs to CityJSON's encoding, not to the CM, and a `+`
-has no business in a file name — so CityParquet strips it before computing the
-snake_case file name, while the `ModuleKey` computation above still runs against the
-original, un-stripped source type so a module-less extension's identity isn't lost
-before it's resolved.
+The file of a row is therefore its class's module: the declaration does not record it a
+second time.
 
-🟡 Carrying full ADE namespace / object-class metadata beyond the `ModuleKey` +
-`city.extensions` mapping (below) remains an [open question](/open-questions).
+🟡 Carrying full ADE object-class metadata (beyond the class name, its module file and
+the extension declaration below) remains an [open question](/open-questions).
 
 ## Extended semantic surfaces
 
-An extended semantic surface type keeps its source name **inside** the
-[`geometry_properties_lod*` JSON value](/specification/geometry-semantics), including
-CityJSON's `+` prefix where the source used one. Semantic surfaces are never promoted
-to column names, so there is nothing a Parquet column name would have to reject, and no
-renaming is needed.
+An extended semantic surface type is stored with the namespace prefix in the `type` of
+its surface object **inside** the
+[`geometry_properties_lod*` `surfaces` value](/specification/geometry-semantics): the
+Energy ADE's `+PartyWallSurface` is stored as `{ "type": "energy_PartyWallSurface" }`.
+Semantic surfaces are never promoted to column names, but they carry the prefix all the
+same, so one naming rule identifies every extension name in a package and keeps the
+names of different extensions apart.
 
 ## Extended attributes
 
 An extended attribute becomes a typed attribute column like any other, so it gets the
 same predicate and projection pushdown as a core attribute. CityJSON writes these with
-a leading `+` (`+height`). Parquet itself imposes no restriction on a leading `+` in a
-column name, but such a name is hostile to SQL and to many query engines (it cannot be
-referenced unquoted, and reads as an operator). So for portability the `+` **MUST** be
-replaced with `ex_`: `+height` → `ex_height`.
+a leading `+` (`+heatCapacity`). Parquet itself imposes no restriction on a leading `+`
+in a column name, but such a name is hostile to SQL and to many query engines (it
+cannot be referenced unquoted, and reads as an operator). The column name is therefore
+the attribute name with the namespace prefix: the `heatCapacity` attribute of an Energy
+ADE `ThermalZone` is the column `energy_heatCapacity`.
 
-This accepts a low, bounded risk of collision with a genuine `ex_`-prefixed attribute.
 The extended attribute columns are listed in the `attributes`
-[metadata key](/specification/metadata) like any other attribute; distinguishing
-extension attributes from core ones beyond the `ex_` prefix (and carrying ADE
-namespaces) is an [open question](/open-questions).
+[metadata key](/specification/metadata) like any other attribute; the prefix, resolved
+through `city.extensions`, identifies the extension each one belongs to.
 
-## The extension declaration
+## The extension declaration: `city.extensions`
 
-`city.extensions` ([metadata key](/specification/metadata)) carries two things per
-extension, so export can restore exactly what import stripped:
+`city.extensions` ([metadata key](/specification/metadata)) declares the extensions a
+file uses. It is a JSON object keyed by **namespace**; each value **references** the
+extension's schema document rather than embedding it:
 
-- The **real Extension/ADE declaration**, as JSON, verbatim from the source (a CityJSON
-  Extension's schema document, or the ADE identity CityGML declares) — not
-  CityParquet's own summary of it.
-- A **`source-name ↔ class ↔ module` mapping**: for each extension class, its source
-  spelling (with `+` where CityJSON used one), the `object_type` it was stored under,
-  and the `ModuleKey` it was routed by. Export consults this mapping to restore the
-  CityJSON `+` on the classes that originally carried it — the `+` is not re-derived
-  from `object_type` alone, since a module-routed ADE class may have carried no `+` in
-  the first place (see above).
+```json
+"extensions": {
+  "energy": {
+    "name": "Energy",
+    "url": "https://…/energy.ext.json",
+    "version": "3.0"
+  }
+}
+```
+
+| Field | Req. | Description |
+|---|:--:|---|
+| `name` | ✔ | The extension's name in the source: the key of the CityJSON `extensions` member, or the ADE's name. |
+| `url` | ✔ | The extension's schema document — a JSON Schema for a CityJSON Extension, an XSD for a CityGML ADE. |
+| `version` |  | The extension's version, when the source states one. |
+| `xmlns` |  | CityGML ADE only: the ADE's XML namespace URI. |
+
+A file that carries any extension name — a prefixed attribute column, `object_type`
+value or semantic surface type — **MUST** declare that name's namespace here. Every file
+of a package that declares a namespace **MUST** declare it with the same value.
+
+## Attributing names to an extension
+
+A writer attributes each extension name in the source to exactly one declared
+extension:
+
+- **A CityGML ADE name** belongs to the ADE whose XML namespace it is in.
+- **A CityJSON source that declares exactly one extension**: every `+` name belongs to
+  that extension.
+- **A CityJSON source that declares several extensions**: the writer needs the
+  extensions' schema documents (their `extraAttributes`, `extraCityObjects` and
+  `extraSemanticSurfaces`) to attribute each `+` name. A name the writer cannot
+  attribute is a **hard error**.
+- **A `+` name in a CityJSON source that declares no extension** is a **hard error**:
+  CityJSON requires every extension used in a document to be declared in its
+  `extensions` member.
+
+## Collisions
+
+A core (non-extension) attribute, semantic surface type or class whose name starts with
+a declared namespace followed by `_` is a **hard error**: on export it would be
+indistinguishable from an extension name. With the Energy ADE declared, a core
+attribute named `energy_label` is rejected.
+
+Likewise, an extension module whose file name equals a core module's file name (a
+namespace `water` with a module `Body` → `water_body.parquet`) is a **hard error**.
+
+## Export
+
+On export to CityJSON, a name that starts with a declared namespace prefix becomes
+CityJSON's `+` form: `energy_heatCapacity` → `+heatCapacity`,
+`energy_ThermalZone` → `+ThermalZone`, `energy_PartyWallSurface` → `+PartyWallSurface`.
+The document's `extensions` member is rebuilt from `city.extensions`: each entry's
+`name` becomes the member key, with its `url` and `version`. A name with no declared
+prefix is written unchanged. On export to CityGML, `xmlns` gives the XML namespace the
+ADE's names are written in.
 
 :::note[Open item]
-Representing CityGML ADE namespaces and object-class metadata beyond the `ModuleKey` +
-this mapping is unresolved — see [Open questions](/open-questions).
+Attributing names across several extensions of one CityJSON source from their schema
+documents, and representing full ADE object-class metadata, are unresolved — see
+[Open questions](/open-questions).
 :::

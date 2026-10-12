@@ -27,8 +27,10 @@
 //! MultiSurface geometry. An xlink to an id defined in no accessible geometry
 //! contributes no face (its tag is simply never consulted).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cityparquet_schema::{CityParquetError, Result};
 use cjseq::{Appearance, CityJSONFeature, CityObject};
@@ -38,11 +40,11 @@ use serde_json::{Value, json};
 
 use super::appearance::{ModelAppearance, ReadAppearance, ReadMaterial, ReadTexture};
 use super::attributes;
-use super::geometry::{self, Polygon, RawSolid, RefTarget, SolidGeom, SurfaceRef};
+use super::geometry::{self, AggregateMember, Polygon, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use super::vertices::VertexBuilder;
 use super::xml::{
     NS_APP, NS_BLDG, NS_GEN, NS_GML, get_attr_local, gml_id, ns_eq, ns_is, ns_of, skip_element,
-    xml_err,
+    unescaped_text, xml_err,
 };
 use crate::appearance::AppearanceInterner;
 
@@ -98,6 +100,18 @@ pub struct RawBuilding {
     solids: Vec<(String, SolidGeom)>,
     /// Every inline polygon by `gml:id`, resolvable by the solid's xlinks.
     polygons: HashMap<String, Polygon>,
+    /// Every identified surface aggregate (`gml:CompositeSurface`,
+    /// `gml:MultiSurface`) by `gml:id`, with its polygons: an xlink to the
+    /// aggregate stands for all of them.
+    aggregates: HashMap<String, Vec<AggregateMember>>,
+    /// The polygons [`AggregateMember::Polygon`] members index.
+    aggregate_polygons: Vec<Polygon>,
+    /// Polygons harvested from this object's own subtree (its parts count
+    /// theirs), each counted once: what [`XlinkBudget::grant`] is sized by.
+    parsed_polygons: usize,
+    /// The document's allowance for aggregate expansion, attached by
+    /// [`RawBuilding::into_feature`].
+    xlink_budget: Option<Arc<XlinkBudget>>,
     /// Semantic surface kinds (`"WallSurface"`, ...), in document order.
     surfaces: Vec<String>,
     /// `gml:id` of a boundary polygon -> its index into `surfaces`.
@@ -126,6 +140,40 @@ pub struct RawBuilding {
 /// Maximum `bldg:consistsOfBuildingPart` nesting depth — a guard against
 /// attacker-controlled XML recursion.
 const MAX_PART_DEPTH: usize = 32;
+
+/// How deep a chain of surface aggregates xlinking (or nesting) into one
+/// another may run before expansion refuses it. GML has no reason to nest
+/// aggregates more than a few levels.
+const MAX_XLINK_DEPTH: usize = 64;
+
+/// One document's allowance for expanding xlinks to surface aggregates: a
+/// fixed number of surface references per polygon the document has defined
+/// so far, granted as each object is read and spent by every reference any
+/// expansion produces, whichever object it is in.
+///
+/// A polygon legitimately appears a few times over — shared by two solids
+/// of a CompositeSolid, as a boundary surface and a solid face — so the
+/// allowance only bites on aggregates that xlink to each other many times
+/// over, which would otherwise expand exponentially in the document's size.
+#[derive(Debug, Default)]
+pub struct XlinkBudget {
+    allowed: AtomicUsize,
+    spent: AtomicUsize,
+}
+
+impl XlinkBudget {
+    const REFERENCES_PER_POLYGON: usize = 4;
+
+    fn grant(&self, polygons: usize) {
+        self.allowed
+            .fetch_add(Self::REFERENCES_PER_POLYGON * polygons, Ordering::Relaxed);
+    }
+
+    /// Spend one reference; `false` once the allowance is exhausted.
+    fn charge(&self) -> bool {
+        self.spent.fetch_add(1, Ordering::Relaxed) < self.allowed.load(Ordering::Relaxed)
+    }
+}
 
 /// Read a `bldg:Building` subtree (positioned after its `Start`).
 pub fn read_building<R: BufRead>(
@@ -157,6 +205,10 @@ pub fn read_generic_object<R: BufRead>(
         plain_surfaces: Vec::new(),
         solids: Vec::new(),
         polygons: HashMap::new(),
+        aggregates: HashMap::new(),
+        aggregate_polygons: Vec::new(),
+        parsed_polygons: 0,
+        xlink_budget: None,
         surfaces: Vec::new(),
         semantic_of_polygon: HashMap::new(),
         boundary_polys: Vec::new(),
@@ -273,6 +325,10 @@ fn read_abstract_building<R: BufRead>(
         plain_surfaces: Vec::new(),
         solids: Vec::new(),
         polygons: HashMap::new(),
+        aggregates: HashMap::new(),
+        aggregate_polygons: Vec::new(),
+        parsed_polygons: 0,
+        xlink_budget: None,
         surfaces: Vec::new(),
         semantic_of_polygon: HashMap::new(),
         boundary_polys: Vec::new(),
@@ -332,11 +388,7 @@ fn read_abstract_building<R: BufRead>(
                     // A standalone lodNMultiSurface under the Building: harvest
                     // its polygons (they may be xlink targets, e.g. an internal
                     // ceiling). Emitting it as primary geometry is M4.
-                    for (id, poly) in geometry::collect_polygons(reader, buf)? {
-                        if let Some(id) = id {
-                            b.polygons.insert(id, poly);
-                        }
-                    }
+                    b.register(geometry::collect_surfaces(reader, buf)?);
                 } else if bldg && name == b"boundedBy" {
                     read_bounded_by(reader, buf, &mut b, NS_BLDG.as_bytes(), b"boundedBy")?;
                 } else if bldg && name == b"consistsOfBuildingPart" {
@@ -436,13 +488,25 @@ fn read_child_object<R: BufRead>(
                     for (id, poly) in &child.polygons {
                         b.polygons.entry(id.clone()).or_insert_with(|| poly.clone());
                     }
+                    let offset = b.aggregate_polygons.len();
+                    b.aggregate_polygons
+                        .extend(child.aggregate_polygons.iter().cloned());
+                    for (id, members) in &child.aggregates {
+                        b.aggregates.entry(id.clone()).or_insert_with(|| {
+                            members
+                                .iter()
+                                .map(|m| match m {
+                                    AggregateMember::Polygon(i) => {
+                                        AggregateMember::Polygon(i + offset)
+                                    }
+                                    other => other.clone(),
+                                })
+                                .collect()
+                        });
+                    }
                     b.parts.push(child);
                 } else {
-                    for (id, poly) in geometry::collect_polygons(reader, buf)? {
-                        if let Some(id) = id {
-                            b.polygons.insert(id, poly);
-                        }
-                    }
+                    b.register(geometry::collect_surfaces(reader, buf)?);
                 }
             }
             Event::End(e) if e.local_name().as_ref() == prop_name => break,
@@ -788,8 +852,9 @@ fn read_semantic_surface<R: BufRead>(
                 let local = e.local_name();
                 let name = local.as_ref().to_vec();
                 if bldg && let Some(lod) = boundary_lod(&name) {
-                    let (polys, xlinks) = geometry::collect_polygons_with_xlinks(reader, buf)?;
-                    for (id, poly) in polys {
+                    let collected = geometry::collect_surfaces(reader, buf)?;
+                    let xlinks = collected.xlinks.clone();
+                    for (id, poly) in b.absorb(collected) {
                         if let Some(id) = &id {
                             b.semantic_of_polygon.insert(id.clone(), sem_idx);
                             b.polygons.insert(id.clone(), poly.clone());
@@ -829,6 +894,167 @@ fn read_semantic_surface<R: BufRead>(
 }
 
 impl RawBuilding {
+    /// Take in harvested geometry: count its polygons, keep its identified
+    /// aggregates (their polygon members moved into the aggregate arena), and
+    /// hand the polygons back for the caller to place.
+    fn absorb(&mut self, collected: geometry::Collected) -> Vec<(Option<String>, Polygon)> {
+        self.parsed_polygons += collected.polygons.len();
+        let mut arena_index: HashMap<usize, usize> = HashMap::new();
+        for (id, members) in collected.aggregates {
+            let members = members
+                .into_iter()
+                .map(|m| match m {
+                    AggregateMember::Polygon(i) => {
+                        let at = *arena_index.entry(i).or_insert_with(|| {
+                            self.aggregate_polygons
+                                .push(collected.polygons[i].1.clone());
+                            self.aggregate_polygons.len() - 1
+                        });
+                        AggregateMember::Polygon(at)
+                    }
+                    other => other,
+                })
+                .collect();
+            self.aggregates.insert(id, members);
+        }
+        collected.polygons
+    }
+
+    /// Register harvested geometry as xlink targets: every identified polygon
+    /// and every identified surface aggregate.
+    fn register(&mut self, collected: geometry::Collected) {
+        for (id, poly) in self.absorb(collected) {
+            if let Some(id) = id {
+                self.polygons.insert(id, poly);
+            }
+        }
+    }
+
+    /// Polygons harvested from this object's subtree, parts included.
+    fn source_polygons(&self) -> usize {
+        self.parsed_polygons + self.parts.iter().map(Self::source_polygons).sum::<usize>()
+    }
+
+    fn attach_budget(&mut self, budget: &Arc<XlinkBudget>) {
+        self.xlink_budget = Some(Arc::clone(budget));
+        for part in &mut self.parts {
+            part.attach_budget(budget);
+        }
+    }
+
+    /// The polygons an xlink target names: one identified polygon, or every
+    /// polygon an identified surface aggregate stands for. Empty when the id
+    /// resolves to no polygon.
+    fn xlink_polygons(&self, id: &str) -> Result<Vec<Polygon>> {
+        let sref = SurfaceRef {
+            reverse: false,
+            target: RefTarget::Xlink(id.to_string()),
+        };
+        Ok(self
+            .expand(&sref)?
+            .iter()
+            .filter_map(|r| self.resolve(r).ok().cloned())
+            .collect())
+    }
+
+    /// `sref`, with an xlink to a surface aggregate expanded into one
+    /// reference per polygon the aggregate stands for, following xlinked and
+    /// nested members into further aggregates. Each keeps `sref`'s
+    /// orientation, and a member polygon is referenced by its own id when
+    /// that is registered, so its semantics resolve, else inline.
+    ///
+    /// The walk is iterative and refuses, naming the aggregate xlinked to:
+    /// an aggregate reached again through its own members (a cycle); a chain
+    /// of aggregates deeper than [`MAX_XLINK_DEPTH`]; and any reference past
+    /// the document's [`XlinkBudget`], which every reference this expansion
+    /// produces is charged to.
+    fn expand(&self, sref: &SurfaceRef) -> Result<Vec<SurfaceRef>> {
+        let RefTarget::Xlink(root) = &sref.target else {
+            return Ok(vec![sref.clone()]);
+        };
+        let Some((root_key, root_members)) = self
+            .aggregates
+            .get_key_value(root)
+            .filter(|_| !self.polygons.contains_key(root))
+        else {
+            return Ok(vec![sref.clone()]);
+        };
+        let budget = self
+            .xlink_budget
+            .as_ref()
+            .expect("into_feature attaches the document's xlink budget");
+        let mut out = Vec::new();
+        let mut stack: Vec<(&str, &[AggregateMember], usize)> =
+            vec![(root_key.as_str(), root_members.as_slice(), 0)];
+        let mut on_path: HashSet<&str> = HashSet::from([root_key.as_str()]);
+        while let Some(&(key, members, next)) = stack.last() {
+            if next == members.len() {
+                on_path.remove(key);
+                stack.pop();
+                continue;
+            }
+            stack.last_mut().expect("non-empty").2 += 1;
+            let target = match &members[next] {
+                AggregateMember::Polygon(i) => {
+                    let poly = &self.aggregate_polygons[*i];
+                    match &poly.id {
+                        Some(pid) if self.polygons.contains_key(pid) => {
+                            RefTarget::Xlink(pid.clone())
+                        }
+                        _ => RefTarget::Inline(poly.clone()),
+                    }
+                }
+                AggregateMember::Ref(id) => {
+                    if !self.polygons.contains_key(id)
+                        && let Some((key, members)) = self.aggregates.get_key_value(id)
+                    {
+                        if on_path.contains(key.as_str()) {
+                            let path: Vec<&str> = stack.iter().map(|f| f.0).collect();
+                            return Err(self.expansion_error(
+                                root,
+                                &format!(
+                                    "reaches an aggregate again through its own members (an \
+                                     xlink cycle: {} -> {key})",
+                                    path.join(" -> ")
+                                ),
+                            ));
+                        }
+                        if stack.len() >= MAX_XLINK_DEPTH {
+                            return Err(self.expansion_error(
+                                root,
+                                &format!("nests aggregates more than {MAX_XLINK_DEPTH} deep"),
+                            ));
+                        }
+                        on_path.insert(key.as_str());
+                        stack.push((key.as_str(), members.as_slice(), 0));
+                        continue;
+                    }
+                    RefTarget::Xlink(id.clone())
+                }
+            };
+            if !budget.charge() {
+                return Err(self.expansion_error(
+                    root,
+                    "expands to more surfaces than the document defines polygons for (an \
+                     xlink fan-out)",
+                ));
+            }
+            out.push(SurfaceRef {
+                reverse: sref.reverse,
+                target,
+            });
+        }
+        Ok(out)
+    }
+
+    fn expansion_error(&self, root: &str, what: &str) -> CityParquetError {
+        let which = self.id.as_deref().unwrap_or("<no gml:id>");
+        CityParquetError::Schema(format!(
+            "{} {which}: xlink #{root} {what}",
+            self.object_type
+        ))
+    }
+
     /// Record a non-building object's standalone surface geometry at `lod`
     /// (CG-7/CG-5): register ided polygons (so a sibling solid may xlink to
     /// them) and keep the non-empty list as a plain MultiSurface.
@@ -836,6 +1062,7 @@ impl RawBuilding {
         if polys.is_empty() {
             return;
         }
+        self.parsed_polygons += polys.len();
         for poly in &polys {
             if let Some(id) = &poly.id {
                 self.polygons.insert(id.clone(), poly.clone());
@@ -848,12 +1075,15 @@ impl RawBuilding {
     /// pool, quantised against `scale`/`translate`. `index` names the building
     /// when it has no `gml:id`.
     pub fn into_feature(
-        self,
+        mut self,
         scale: &[f64; 3],
         translate: &[f64; 3],
         index: usize,
         model_app: &ModelAppearance,
+        budget: &Arc<XlinkBudget>,
     ) -> Result<CityJSONFeature> {
+        budget.grant(self.source_polygons());
+        self.attach_budget(budget);
         let mut vb = VertexBuilder::new(scale, translate);
         // Feature-local appearance: an assembly (a Building and its parts) shares
         // ONE appearance block, so the parent and every part intern into the same
@@ -1240,19 +1470,22 @@ impl RawBuilding {
             if !emitted.insert(href) {
                 continue; // already emitted (duplicate reference)
             }
-            let Some(poly) = self.polygons.get(href) else {
+            let polys = self.xlink_polygons(href)?;
+            if polys.is_empty() {
                 // A boundedBy xlink to an id defined in no accessible geometry:
                 // contribute no face, but do not stay silent.
                 eprintln!(
                     "warning: bldg:boundedBy references #{href}, which resolves to no polygon in this building; skipping"
                 );
                 continue;
-            };
-            boundaries.push(surface_rings(poly, false, vb)?);
-            values.push(json!(sem_idx));
-            face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
-            ring_ids.push(ring_ids_value(poly));
-            reverse.push(reverse_leaf(poly, false));
+            }
+            for poly in &polys {
+                boundaries.push(surface_rings(poly, false, vb)?);
+                values.push(json!(sem_idx));
+                face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
+                ring_ids.push(ring_ids_value(poly));
+                reverse.push(reverse_leaf(poly, false));
+            }
         }
         // The object's standalone `lodNMultiSurface` at this same LoD is not
         // emitted as a geometry of its own — one LoD yields one geometry, and
@@ -1312,7 +1545,11 @@ impl RawBuilding {
             let mut faces_id = Vec::with_capacity(shell.len());
             let mut faces_ring = Vec::with_capacity(shell.len());
             let mut faces_rev = Vec::with_capacity(shell.len());
+            let mut expanded = Vec::with_capacity(shell.len());
             for sref in shell {
+                expanded.extend(self.expand(sref)?);
+            }
+            for sref in &expanded {
                 let poly = self.resolve(sref)?;
                 faces_b.push(surface_rings(poly, sref.reverse, vb)?);
                 faces_v.push(self.semantic_value(sref));
@@ -1498,7 +1735,7 @@ fn read_leaf_text<R: BufRead>(
     loop {
         buf.clear();
         match reader.read_event_into(buf).map_err(xml_err)? {
-            Event::Text(t) => text.push_str(&t.unescape().map_err(xml_err)?),
+            Event::Text(t) => text.push_str(&unescaped_text(&t)?),
             Event::CData(t) => text.push_str(&String::from_utf8_lossy(&t)),
             Event::Start(_) => {
                 has_child = true;

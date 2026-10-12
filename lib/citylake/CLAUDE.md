@@ -10,7 +10,7 @@ DuckLake catalog: one table per CityGML module the package carries
 (`building`, `bridge`, `tunnel`, `construction`, `transportation`,
 `vegetation`, `relief`, `water_body`, `land_use`, `city_furniture`,
 `generics`), optional sidecars (`materials`, `textures`,
-`geometry_templates`), and the extension's own bookkeeping table,
+`implicit_geometries`), and the extension's own bookkeeping table,
 `__cityparquet`, which records each table's role (`object` or sidecar). The
 service opens one in-memory DuckDB database on startup and `ATTACH`es one
 DuckLake catalog to it, named `lake` by default; every dataset is a schema
@@ -24,26 +24,26 @@ geometry code and no CRS logic of its own.
 
 ## The rule: everything through duckdb-cityjson
 
-Every CityJSON operation *and* every package operation goes through the
+Every CityJSON operation _and_ every package operation goes through the
 `cityjson` DuckDB extension, called as SQL pragmas and table functions. No
 CityJSON parsing, no CityGML-module routing, no CRS resolution and no
 derived-state computation happens in Rust. The pragmas in use, and what each
 is for:
 
-| Pragma / function | For |
-| --- | --- |
-| `insert_cityjson` / `insert_cityjsonseq` / `insert_flatcitybuf` | Bootstrap or extend a package from a CityJSON / CityJSONSeq / FlatCityBuf source, routed to the right module table by the extension. `create_tables = true` lets a source bring further module tables the dataset has not seen yet. |
-| `cityparquet_init` | Register a freshly seeded schema as a CityParquet package. |
-| `cityparquet_read` | Load an existing package directory into a schema, recovering each file's Parquet footer (CRS included). |
-| `cityparquet_write` | Write a schema out as a package directory, minting the footer. |
-| `cityparquet_delete` | Delete by predicate, cascading transitively through `children`. |
-| `cityparquet_reconcile` | Re-derive what a structural edit invalidates: `feature_id`, the reciprocal hierarchy, bbox. |
-| `cityparquet_validate` | Run every structural check the extension knows, materialised into `cityparquet_validation`. |
-| `cityparquet_orphans` / `cityparquet_vacuum` | Find, then reclaim, unreferenced sidecar rows. |
-| `cityparquet_merge` | Fold one package's schema into another's — identity, the one-CRS rule and sidecar renumbering are all the pragma's. |
-| `cityparquet_city_field` | Read one field back out of a table's footer (`crs`, in practice). |
-| `cityjson_metadata` / `cityjsonseq_metadata` / `flatcitybuf_metadata` | A source's declared metadata, `referenceSystem` included. |
-| `ducklake_merge_adjacent_files` | DuckLake's own compaction — not CityParquet's, but the mechanism `compact_impl` uses to merge an object table's small Parquet files without rewriting it behind DuckLake's back. |
+| Pragma / function                                                     | For                                                                                                                                                                                                                                 |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `insert_cityjson` / `insert_cityjsonseq` / `insert_flatcitybuf`       | Bootstrap or extend a package from a CityJSON / CityJSONSeq / FlatCityBuf source, routed to the right module table by the extension. `create_tables = true` lets a source bring further module tables the dataset has not seen yet. |
+| `cityparquet_init`                                                    | Register a freshly seeded schema as a CityParquet package.                                                                                                                                                                          |
+| `cityparquet_read`                                                    | Load an existing package directory into a schema, recovering each file's Parquet footer (CRS included).                                                                                                                             |
+| `cityparquet_write`                                                   | Write a schema out as a package directory, minting the footer.                                                                                                                                                                      |
+| `cityparquet_delete`                                                  | Delete by predicate, cascading transitively through `children`.                                                                                                                                                                     |
+| `cityparquet_reconcile`                                               | Re-derive what a structural edit invalidates: `feature_id`, the reciprocal hierarchy, bbox.                                                                                                                                         |
+| `cityparquet_validate`                                                | Run every structural check the extension knows, materialised into `cityparquet_validation`.                                                                                                                                         |
+| `cityparquet_orphans` / `cityparquet_vacuum`                          | Find, then reclaim, unreferenced sidecar rows.                                                                                                                                                                                      |
+| `cityparquet_merge`                                                   | Fold one package's schema into another's — identity, the one-CRS rule and sidecar renumbering are all the pragma's.                                                                                                                 |
+| `cityparquet_city_field`                                              | Read one field back out of a table's footer (`crs`, in practice).                                                                                                                                                                   |
+| `cityjson_metadata` / `cityjsonseq_metadata` / `flatcitybuf_metadata` | A source's declared metadata, `referenceSystem` included.                                                                                                                                                                           |
+| `ducklake_merge_adjacent_files`                                       | DuckLake's own compaction — not CityParquet's, but the mechanism `compact_impl` uses to merge an object table's small Parquet files without rewriting it behind DuckLake's back.                                                    |
 
 `src/core/db/sql.rs` builds every statement above that names a dataset or
 module — the pragmas, the package operations, the object reads — which is
@@ -125,7 +125,7 @@ per `execute_batch`.
 argument and resolve it by search path, so scoping a call to one dataset (or,
 for a merge, two at once) means setting `search_path`, never `USE`.
 `DuckLakeService::with_search_path` (`service.rs`) is the one place that
-happens: it sets the path, runs the closure, and resets it — on success *and*
+happens: it sets the path, runs the closure, and resets it — on success _and_
 on failure, because leaving it set would silently resolve the next operation
 against this dataset, and a reset failure is logged rather than allowed to
 mask the body's own error. `scoped` is the convenience wrapper for the common
@@ -135,7 +135,7 @@ transaction, where `scoped` cannot go.
 
 **The seed table.** No pragma builds a package from nothing:
 `insert_cityjson` on an empty schema fails with "schema has no CityParquet
-object table", and `create_tables = true` creates the *further* module tables
+object table", and `create_tables = true` creates the _further_ module tables
 a source needs, not the first one. So `create_dataset_impl` creates one
 object table from the source's inferred schema and no rows (`LIMIT 0` — a
 seeded row would be a row the insert then duplicates, and an empty object
@@ -280,19 +280,19 @@ that implies:
 This belongs on a trusted network, run by people who already hold the rights
 it exercises on their behalf. `src/app/handlers/mod.rs` states this in full;
 exposing the API more widely would still need authentication, a path policy
-confining *reads* (`source_path`) to a configured root — writes are confined
+confining _reads_ (`source_path`) to a configured root — writes are confined
 already, as above — and a restricted predicate grammar.
 
-## `geometry_templates` orphans are not vacuumed
+## `implicit_geometries` orphans are not vacuumed
 
 `vacuum_impl` runs `cityparquet_orphans` then `cityparquet_vacuum` inside one
 transaction, and reclaims unreferenced sidecar rows for `materials` and
-`textures`. `geometry_templates` is the exception: the extension's own
-`cityparquet_validate.cpp` probes for template references on a connection of
-its own, using two-part table names that do not resolve under an attached
-catalog's search path, so the probe fails and contributes no term — the
+`textures`. `implicit_geometries` is the exception: the extension's own
+`cityparquet_validate.cpp` probes for implicit-geometry references on a
+connection of its own, using two-part table names that do not resolve under an
+attached catalog's search path, so the probe fails and contributes no term — the
 "undeterminable" fallback fires instead. The effect is fail-safe by
-construction: a `geometry_templates` orphan is missed, never deleted data. It
+construction: an `implicit_geometries` orphan is missed, never deleted data. It
 is the extension's limitation, and is not worked around here.
 
 ## `web/`
@@ -314,27 +314,27 @@ browser, and a path outside the root besides.
 
 `src/app/server.rs` wires 19 routes to `src/app/handlers/`:
 
-| Method | Path | Handler | Does |
-| --- | --- | --- | --- |
-| GET | `/health` | — | Liveness. |
-| GET | `/datasets` | `dataset::list` | Every dataset's name. |
-| POST | `/datasets/{ds}` | `dataset::create` | Bootstrap a dataset from a server-side `source_path` (file or CityParquet package directory). |
-| GET | `/datasets/{ds}` | `dataset::describe` | A dataset's modules, roles, row counts and CRS. |
-| DELETE | `/datasets/{ds}` | `dataset::drop_dataset` | Drop the schema, cascading. |
-| POST | `/datasets/{ds}/upload` | `dataset::create_upload` | Multipart variant of create. |
-| POST | `/datasets/{ds}/objects` | `objects::ingest` | Ingest a further source into an existing dataset. |
-| DELETE | `/datasets/{ds}/objects` | `objects::delete_where` | Delete by SQL predicate, cascading. |
-| POST | `/datasets/{ds}/objects/upload` | `objects::ingest_upload` | Multipart variant of ingest. |
-| GET | `/datasets/{ds}/modules/{module}/objects` | `objects::query` | A bounded, filterable, ordered page of one module's objects as JSON. |
-| PUT | `/datasets/{ds}/objects/{id}` | `objects::update` | Update one object's attributes, then reconcile. |
-| DELETE | `/datasets/{ds}/objects/{id}` | `objects::delete` | Delete one object by id, cascading. |
-| POST | `/datasets/{ds}/export` | `package::export` | Export one module to a single CityJSON-family file. |
-| POST | `/datasets/{ds}/package` | `package::write_package` | Write the whole dataset out as a CityParquet package directory. |
-| POST | `/datasets/{ds}/merge` | `package::merge` | Fold another dataset's schema into this one. |
-| POST | `/datasets/{ds}/validate` | `maintenance::validate` | Run the extension's structural checks; report, do not repair. |
-| POST | `/datasets/{ds}/reconcile` | `maintenance::reconcile` | Re-derive `feature_id`, hierarchy and bbox. |
-| POST | `/datasets/{ds}/vacuum` | `maintenance::vacuum` | Reclaim unreferenced sidecar rows (see the `geometry_templates` caveat above). |
-| POST | `/datasets/{ds}/compact` | `maintenance::compact` | Merge each object table's small Parquet files via DuckLake. |
+| Method | Path                                      | Handler                  | Does                                                                                          |
+| ------ | ----------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------- |
+| GET    | `/health`                                 | —                        | Liveness.                                                                                     |
+| GET    | `/datasets`                               | `dataset::list`          | Every dataset's name.                                                                         |
+| POST   | `/datasets/{ds}`                          | `dataset::create`        | Bootstrap a dataset from a server-side `source_path` (file or CityParquet package directory). |
+| GET    | `/datasets/{ds}`                          | `dataset::describe`      | A dataset's modules, roles, row counts and CRS.                                               |
+| DELETE | `/datasets/{ds}`                          | `dataset::drop_dataset`  | Drop the schema, cascading.                                                                   |
+| POST   | `/datasets/{ds}/upload`                   | `dataset::create_upload` | Multipart variant of create.                                                                  |
+| POST   | `/datasets/{ds}/objects`                  | `objects::ingest`        | Ingest a further source into an existing dataset.                                             |
+| DELETE | `/datasets/{ds}/objects`                  | `objects::delete_where`  | Delete by SQL predicate, cascading.                                                           |
+| POST   | `/datasets/{ds}/objects/upload`           | `objects::ingest_upload` | Multipart variant of ingest.                                                                  |
+| GET    | `/datasets/{ds}/modules/{module}/objects` | `objects::query`         | A bounded, filterable, ordered page of one module's objects as JSON.                          |
+| PUT    | `/datasets/{ds}/objects/{id}`             | `objects::update`        | Update one object's attributes, then reconcile.                                               |
+| DELETE | `/datasets/{ds}/objects/{id}`             | `objects::delete`        | Delete one object by id, cascading.                                                           |
+| POST   | `/datasets/{ds}/export`                   | `package::export`        | Export one module to a single CityJSON-family file.                                           |
+| POST   | `/datasets/{ds}/package`                  | `package::write_package` | Write the whole dataset out as a CityParquet package directory.                               |
+| POST   | `/datasets/{ds}/merge`                    | `package::merge`         | Fold another dataset's schema into this one.                                                  |
+| POST   | `/datasets/{ds}/validate`                 | `maintenance::validate`  | Run the extension's structural checks; report, do not repair.                                 |
+| POST   | `/datasets/{ds}/reconcile`                | `maintenance::reconcile` | Re-derive `feature_id`, hierarchy and bbox.                                                   |
+| POST   | `/datasets/{ds}/vacuum`                   | `maintenance::vacuum`    | Reclaim unreferenced sidecar rows (see the `implicit_geometries` caveat above).               |
+| POST   | `/datasets/{ds}/compact`                  | `maintenance::compact`   | Merge each object table's small Parquet files via DuckLake.                                   |
 
 ## Dev commands
 

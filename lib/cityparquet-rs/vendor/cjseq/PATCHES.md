@@ -194,10 +194,27 @@ a fixed release exists on crates.io, drop this vendor directory and the
 +                    g.update_texture(&mut t_oldnew, &mut t_v_oldnew, t_offset, false);
 ```
 
-No other lines in `src/lib.rs` are changed; `main.rs`/`wasm.rs`/tests/data
+No other lines in `src/lib.rs` are changed but the accessor below; `main.rs`/`wasm.rs`/tests/data
 are carried unmodified for reference and are not built by
 `cityparquet-rs` (only the `cjseq` library target is depended on, via
 `[patch.crates-io]` in the workspace `Cargo.toml`).
+
+## `CityObject::other_members`: read access to the untyped members
+
+`CityObject`'s `#[serde(flatten)] other` field — every member it has no
+typed field for (`address`, `children_roles`, anything a source adds) — is
+private, so the only way to read it was to serialise the whole object,
+geometry included, to a `serde_json::Value` and pick the members back out.
+`cityparquet-rs` did that once per row; on a 100 MB CityJSONSeq it was 30%
+of the conversion. One accessor, after `get_type`:
+
+```diff
++    /// The members this struct has no typed field for (the flattened
++    /// `other`), as parsed.
++    pub fn other_members(&self) -> &serde_json::Value {
++        &self.other
++    }
+```
 
 ## `Cargo.toml`: `serde_json`'s `float_roundtrip` feature
 

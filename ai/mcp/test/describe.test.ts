@@ -18,7 +18,7 @@ suite("the package file inventory", () => {
   });
 
   it("names the three sidecars", () => {
-    expect(SIDECAR_TABLES).toEqual(["materials", "textures", "geometry_templates"]);
+    expect(SIDECAR_TABLES).toEqual(["materials", "textures", "implicit_geometries"]);
   });
 });
 

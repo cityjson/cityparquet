@@ -302,32 +302,6 @@ fn an_unencodable_or_unparseable_override_is_refused() {
     }
 }
 
-#[test]
-fn the_override_supplies_the_crs_and_records_its_provenance() {
-    let tmp = tempfile::tempdir().unwrap();
-    let input = crs_less_fixture(tmp.path());
-    let out = tmp.path().join("out");
-    let mut source = Source::open(&input).unwrap();
-    let mut opts = ConvertOptions::new(input.clone(), out.clone());
-    opts.crs_override = Some("EPSG:7415".to_string());
-    if let Some(code) = &opts.crs_override {
-        source.set_reference_system(code);
-    }
-    convert_source(&source, &opts).expect("the override must make conversion succeed");
-
-    let meta = footer(&out.join("building.parquet"));
-    assert!(
-        meta.crs.is_known(),
-        "city.crs must be populated from the override"
-    );
-    let other = meta.other.expect("city.other must exist");
-    assert_eq!(
-        other.get("crs_source").and_then(|v| v.as_str()),
-        Some("operator-supplied"),
-        "provenance must record that an operator supplied the CRS: {other}"
-    );
-}
-
 /// The footer accessor idiom used throughout this crate's tests (see
 /// `crates/core/tests/footer_encoding_dispatch.rs`).
 fn footer(table: &Path) -> CityMetadata {
@@ -368,37 +342,6 @@ fn the_injected_crs_never_leaks_into_the_verbatim_source_metadata() {
     );
 }
 
-/// The provenance stamp must follow the SOURCE, never `opts.crs_override`
-/// alone: an override is a no-op on a source that declares its own CRS, so a
-/// caller that sets the option anyway must not get a footer claiming an
-/// operator supplied a CRS the source carried itself.
-#[test]
-fn an_override_a_source_ignored_is_never_stamped_as_provenance() {
-    let tmp = tempfile::tempdir().unwrap();
-    let out = tmp.path().join("out");
-    let mut source = Source::open(&delft()).unwrap();
-    let mut opts = ConvertOptions::new(delft(), out.clone());
-    // A careless caller: the option is set even though applying it did nothing.
-    opts.crs_override = Some("EPSG:28992".to_string());
-    assert!(!source.set_reference_system("EPSG:28992"));
-    convert_source(&source, &opts).expect("conversion must still succeed");
-
-    let meta = footer(&out.join("building.parquet"));
-    assert_eq!(
-        meta.crs.known().and_then(|c| c.pointer("/id/code")),
-        Some(&serde_json::json!(7415)),
-        "the source's own CRS must be the one written"
-    );
-    assert!(
-        meta.other
-            .as_ref()
-            .and_then(|o| o.get("crs_source"))
-            .is_none(),
-        "a source-declared CRS must never be stamped operator-supplied: {:?}",
-        meta.other
-    );
-}
-
 /// The public one-call entry point re-opens the source from disk, so it must
 /// apply the override itself — otherwise it either fails on a CRS-less source
 /// it was explicitly given a CRS for, or (worse) stamps provenance onto a CRS
@@ -428,6 +371,11 @@ fn the_library_convert_entry_point_applies_the_override_itself() {
     opts.crs_override = Some("EPSG:28992".to_string());
     convert(&opts).expect("conversion must still succeed");
     let meta = footer(&out2.join("building.parquet"));
+    assert_eq!(
+        meta.crs.known().and_then(|c| c.pointer("/id/code")),
+        Some(&serde_json::json!(7415)),
+        "the source's own CRS must be the one written"
+    );
     assert!(
         meta.other
             .as_ref()

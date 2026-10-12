@@ -1,15 +1,18 @@
-"""Robust summary statistics for benchmark timings.
+"""Summary statistics for benchmark timings.
 
-The median and median absolute deviation are used rather than mean and
-standard deviation because a benchmark sample set routinely contains
-outliers from OS scheduling and background load, and the median is not
-dragged by them.
+``report.py`` reports the seven-column timing block from ``timing_summary``:
+the arithmetic mean (``time_mean_s``), the population standard deviation
+(``time_std_s``), the median, the range and the quartiles. ``mad`` (median
+absolute deviation about the median) is available as a further robust
+estimate.
 """
 
 import statistics
 import os
 import threading
 import subprocess
+
+from citybench import engine
 from collections.abc import Callable
 from typing import TypeVar
 
@@ -28,11 +31,15 @@ def resident_bytes(pid: int) -> int | None:
     return None
 
 
-def host_pid_from_podman(container: str, container_pid: int) -> int | None:
-    """Return one PostgreSQL host PID from Podman's container-scoped table."""
+def host_pid_from_engine_top(container: str, container_pid: int) -> int | None:
+    """Return one PostgreSQL host PID from Podman's container-scoped ``top``
+    table (``hpid`` is Podman's spelling; other engines return ``None``)."""
+    active = engine.active()
+    if active.name != "podman" or active.host_proc_gap():
+        return None
     try:
         rows = subprocess.check_output(
-            ["podman", "top", container, "hpid", "pid", "comm"],
+            active.cmd("top", container, "hpid", "pid", "comm"),
             text=True, stderr=subprocess.DEVNULL,
         ).splitlines()[1:]
         matches = [line.split()[0] for line in rows if len(line.split()) >= 3
@@ -44,10 +51,14 @@ def host_pid_from_podman(container: str, container_pid: int) -> int | None:
 
 
 def container_init_host_pid(container: str) -> int | None:
-    """Host PID of a verified Podman container init, or ``None``."""
+    """Host PID of a verified container init, or ``None`` (always ``None``
+    when the engine runs a virtual machine: its PIDs are not host PIDs)."""
+    active = engine.active()
+    if active.host_proc_gap():
+        return None
     try:
         output = subprocess.check_output(
-            ["podman", "inspect", "--format", "{{.State.Pid}}", container],
+            active.cmd("inspect", "--format", "{{.State.Pid}}", container),
             text=True, stderr=subprocess.DEVNULL,
         ).strip()
         return int(output) if int(output) > 0 else None
@@ -117,6 +128,17 @@ def mean(values: list[float]) -> float:
     return statistics.mean(values)
 
 
+def standard_deviation(values: list[float]) -> float:
+    """Population standard deviation of ``values``. Raises ValueError if empty.
+
+    Population rather than sample: the timed samples are the whole set that
+    was measured, not a draw used to infer a wider population.
+    """
+    if not values:
+        raise ValueError("standard_deviation requires at least one value")
+    return statistics.pstdev(values)
+
+
 def median(values: list[float]) -> float:
     """Median of ``values``. Raises ValueError if empty."""
     if not values:
@@ -130,3 +152,42 @@ def mad(values: list[float]) -> float:
         raise ValueError("mad requires at least one value")
     centre = statistics.median(values)
     return statistics.median([abs(v - centre) for v in values])
+
+
+def quantile(values: list[float], p: float) -> float:
+    """The ``p`` quantile of ``values`` (0 <= p <= 1). Raises ValueError if empty.
+
+    Definition: linear interpolation at position ``p * (n - 1)`` on the sorted
+    samples -- numpy's default, and ``statistics.quantiles(method="inclusive")``.
+    So the median (p = 0.5) of an even count is the mean of the two middle
+    values. The readbench harness (``benchmark/readbench/src/stats.rs``) uses
+    the identical definition, so both families' quartiles are the same statistic.
+    """
+    if not values:
+        raise ValueError("quantile requires at least one value")
+    ordered = sorted(values)
+    position = p * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
+def timing_summary(values: list[float]) -> dict[str, float]:
+    """The seven timing statistics of ``values``, in the CSV block's order.
+
+    Keys ``mean, std, median, min, max, q1, q3``: arithmetic mean, population
+    standard deviation, and the median and quartiles by :func:`quantile`'s
+    linear-interpolation definition. Raises ValueError if empty.
+    """
+    if not values:
+        raise ValueError("timing_summary requires at least one value")
+    return {
+        "mean": mean(values),
+        "std": standard_deviation(values),
+        "median": quantile(values, 0.5),
+        "min": min(values),
+        "max": max(values),
+        "q1": quantile(values, 0.25),
+        "q3": quantile(values, 0.75),
+    }

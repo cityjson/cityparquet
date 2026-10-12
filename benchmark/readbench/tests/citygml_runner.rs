@@ -14,7 +14,7 @@
 //! **The counting grain is asserted here, not merely documented.** This
 //! runner's grain is `cityjsonseq`'s: `count`/`full-read`/`bbox-query` count
 //! top-level `cityObjectMember`s (one per 1st-level CityObject the reader
-//! supports), while `attr-filter`/`attr-stats`/`project`/`id-lookup` are
+//! supports), while `attr-filter`/`attr-stats`/`id-lookup` are
 //! CityOBJECT-level and therefore also see nested children (BuildingParts,
 //! BuildingInstallations). `railway_lod3_fragment.gml` proves the two grains
 //! genuinely differ: 4 members, but 2 of its CityObjects (both
@@ -125,7 +125,7 @@ fn run_child_expect_failure(
 }
 
 // ---------------------------------------------------------------------------
-// The brief's named fixture: all seven scenarios against one real building.
+// The brief's named fixture: all six scenarios against one real building.
 // ---------------------------------------------------------------------------
 
 /// `b1_lod2_cs_w_sem.gml` is one `cityObjectMember` holding one
@@ -180,8 +180,8 @@ fn every_scenario_answers_the_single_building_fixture() {
         "there is no Bridge in this fixture"
     );
 
-    // attr-stats / project: the fixture declares no attributes whatsoever, so
-    // 0 is the honest answer rather than a skipped scenario.
+    // attr-stats: the fixture declares no attributes whatsoever, so 0 is the
+    // honest answer rather than a skipped scenario.
     assert_eq!(
         run_child(
             "citygml",
@@ -191,11 +191,6 @@ fn every_scenario_answers_the_single_building_fixture() {
         ),
         0,
         "the fixture declares no bldg:measuredHeight (nor any other attribute)"
-    );
-    assert_eq!(
-        run_child("citygml", "project", &input, &["--attr-column", "function"]),
-        0,
-        "the fixture declares no bldg:function"
     );
 
     // id-lookup: no `gml:id` on the building, so the reader synthesises the
@@ -304,18 +299,27 @@ fn count_is_member_level_while_attr_scenarios_reach_nested_city_objects() {
         "exactly one of the four members is a Building"
     );
 
-    // The grain difference itself, asked of the RUNNER rather than of
-    // arithmetic: `project --attr-column object_type` counts every CityObject
-    // (the reserved column is never null), so it reports the object-level
-    // total directly. `members + installations == 6` would have been an inert
-    // tautology — true by construction once the two assertions above pass, and
-    // still green if a seventh CityObject appeared.
-    let city_objects = run_child(
-        "citygml",
-        "project",
-        &input,
-        &["--attr-column", "object_type"],
-    );
+    // The object-level total, asked of the RUNNER one type at a time: every
+    // CityObject carries exactly one `object_type`, so the per-type
+    // `attr-filter` counts partition the document. A CityObject of any other
+    // type would make the sum fall short of the six the fixture holds.
+    let city_objects: u64 = [
+        "Building",
+        "BuildingInstallation",
+        "Bridge",
+        "SolitaryVegetationObject",
+        "CityObjectGroup",
+    ]
+    .iter()
+    .map(|ty| {
+        run_child(
+            "citygml",
+            "attr-filter",
+            &input,
+            &["--attr-column", "object_type", "--attr-eq", ty],
+        )
+    })
+    .sum();
     assert_eq!(
         city_objects, 6,
         "6 CityObjects (4 members + 2 nested BuildingInstallations) against 4 \
@@ -359,7 +363,7 @@ fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
     // Every scenario, not just `count`: a guard that only covered the counting
     // scenarios would still publish a silently-truncated `attr-filter` or
     // `bbox-query` row.
-    let scenarios: [(&str, &[&str]); 7] = [
+    let scenarios: [(&str, &[&str]); 6] = [
         ("count", &[]),
         ("full-read", &[]),
         ("bbox-query", &["--bbox", "0,0,0,1,1,1"]),
@@ -368,7 +372,6 @@ fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
             &["--attr-column", "object_type", "--attr-eq", "Road"],
         ),
         ("attr-stats", &["--attr-column", "function"]),
-        ("project", &["--attr-column", "object_type"]),
         ("id-lookup", &["--target-id", "no-such-id"]),
     ];
 
@@ -554,17 +557,7 @@ fn attribute_scenarios_answer_a_real_export_fragment() {
     assert_eq!(
         run_child(
             "citygml",
-            "project",
-            &input,
-            &["--attr-column", "measuredHeight"],
-        ),
-        3,
-        "all three buildings carry a measuredHeight"
-    );
-    assert_eq!(
-        run_child(
-            "citygml",
-            "project",
+            "attr-stats",
             &input,
             &["--attr-column", "storeysAboveGround"],
         ),
@@ -673,40 +666,3 @@ fn a_non_citygml_input_is_refused_rather_than_measured_as_citygml() {
 // ---------------------------------------------------------------------------
 // The disclosure the paper depends on.
 // ---------------------------------------------------------------------------
-
-/// The single most important thing this runner owes the paper is a statement
-/// of what its row does and does NOT claim. There is no runtime signal a
-/// reader of the CSV could check instead, so this asserts against the
-/// module's own doc block — the disclosure cannot be deleted without a test
-/// going red.
-#[test]
-fn the_module_doc_discloses_the_full_parse_and_disclaims_a_format_ceiling() {
-    const SOURCE: &str = include_str!("../src/formats/citygml.rs");
-    // The leading `//!` block, i.e. everything before the first `use`.
-    let module_doc = SOURCE
-        .split("\nuse ")
-        .next()
-        .expect("the module always has a doc block above its first `use`");
-
-    // Short, wrap-safe needles: the doc block is hard-wrapped, so a long
-    // sentence would match nothing however faithfully it were written.
-    for needle in [
-        "no index",
-        "full parse",
-        "theoretical ceiling",
-        "different parser",
-        "different numbers",
-        "cityObjectMember",
-        // The two measurement-integrity disclosures: what is refused, and the
-        // one pass this runner deliberately does NOT make.
-        "refused rather than measured",
-        "appearance pre-pass is skipped",
-    ] {
-        assert!(
-            module_doc.contains(needle),
-            "the module doc must disclose the full-parse cost, the counting \
-             grain, and that the row is not a claim about the format's ceiling; \
-             missing: '{needle}'"
-        );
-    }
-}

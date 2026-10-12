@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use arrow_array::{Array, StringArray};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
+use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::recipe::RecipePreset;
@@ -83,51 +83,176 @@ fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-/// spec "Column naming and reservation rules": `other` is itself the divert
-/// target for a colliding attribute name, so a source attribute literally
-/// called `other` has nowhere further to divert to and is rejected outright
-/// — the same error path as any other undiverted reserved-name collision
-/// ([`cityparquet_schema::model::CityParquetSchema::validate`]'s "collides
-/// with a reserved or geometry column name" text). Derived from the real
-/// `delft` fixture with one injected attribute named `other`.
-#[test]
-fn attribute_literally_named_other_is_rejected() {
-    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
-    let mut injected = false;
-    let mut out_lines = Vec::new();
-    for line in text.lines() {
-        let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
-        if !injected && let Some(cos) = doc.get_mut("CityObjects").and_then(|v| v.as_object_mut()) {
-            for co in cos.values_mut() {
-                if let Some(attrs) = co.get_mut("attributes").and_then(|v| v.as_object_mut()) {
-                    attrs.insert("other".to_string(), serde_json::json!("should-be-rejected"));
-                    injected = true;
-                    break;
+/// Every object table's physical column names, across the package.
+fn package_columns(package_dir: &Path) -> Vec<String> {
+    let tables = PackageTables::open(package_dir).unwrap().tables;
+    let mut names = Vec::new();
+    for table in tables {
+        let file = std::fs::File::open(&table).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        names.extend(builder.schema().fields().iter().map(|f| f.name().clone()));
+    }
+    names
+}
+
+/// Every non-null `other` cell across the package's object tables.
+fn package_other_cells(package_dir: &Path) -> Vec<serde_json::Value> {
+    let tables = PackageTables::open(package_dir).unwrap().tables;
+    let mut cells = Vec::new();
+    for table in tables {
+        let file = std::fs::File::open(&table).unwrap();
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap();
+        for batch in reader {
+            let batch = batch.unwrap();
+            let other = batch
+                .column_by_name("other")
+                .expect("other must be a real physical column")
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                if !other.is_null(row) {
+                    cells.push(serde_json::from_str(other.value(row)).unwrap());
                 }
             }
         }
-        out_lines.push(serde_json::to_string(&doc).unwrap());
     }
+    cells
+}
+
+/// Writes `doc_lines` (one JSON document per line) to a fresh tempdir file.
+fn write_jsonl(name: &str, doc_lines: &[serde_json::Value]) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(name);
+    let text: Vec<String> = doc_lines
+        .iter()
+        .map(|d| serde_json::to_string(d).unwrap())
+        .collect();
+    std::fs::write(&path, text.join("\n") + "\n").unwrap();
+    (dir, path)
+}
+
+/// Converts `input`, exports the package and asserts the export compares
+/// equal with `input`. Returns the package dir (kept alive) for inspection.
+fn assert_round_trips(input: &Path) -> tempfile::TempDir {
+    let (exported, package_dir, _export_dir) = convert_and_export_path(input);
+    let report = compare_datasets(input, &exported, &CompareOptions::default()).unwrap();
+    assert!(
+        report.equal,
+        "the export must compare equal with the source; differences: {:#?}",
+        report.differences
+    );
+    package_dir
+}
+
+/// spec "Column naming and reservation rules": names compare
+/// case-insensitively, so the real Helsinki building's `ID` attribute (next
+/// to the reserved `id`) collides and is stored escaped as `_ID`; the reader
+/// removes the `_` again, so the export carries `ID` and compares equal with
+/// the source.
+#[test]
+fn a_case_insensitive_collision_is_escaped_and_round_trips() {
+    let input = data_fixture("address_location.city.jsonl");
+    let package_dir = assert_round_trips(&input);
+    let columns = package_columns(package_dir.path());
+    assert!(
+        columns.iter().any(|c| c == "_ID"),
+        "`ID` must be stored as `_ID`: {columns:?}"
+    );
+    assert!(
+        !columns.iter().any(|c| c == "ID"),
+        "no column may be named `ID`: {columns:?}"
+    );
+    assert!(
+        package_other_cells(package_dir.path()).is_empty(),
+        "a colliding attribute keeps a column of its own; nothing goes to `other`"
+    );
+}
+
+/// spec "Column naming and reservation rules": a source attribute already
+/// starting with `_` gains one more, so `_ID` → `__ID` and no two source
+/// names meet. Derived from the real `address_location` Helsinki building by
+/// renaming its genuine `ID` attribute to `_ID`.
+#[test]
+fn an_attribute_already_escaped_in_the_source_gains_one_more_underscore() {
+    let text = std::fs::read_to_string(data_fixture("address_location.city.jsonl")).unwrap();
+    let mut renamed = 0;
+    let docs: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(cos) = doc["CityObjects"].as_object_mut() {
+                for co in cos.values_mut() {
+                    if let Some(attrs) = co["attributes"].as_object_mut()
+                        && let Some(v) = attrs.remove("ID")
+                    {
+                        attrs.insert("_ID".to_string(), v);
+                        renamed += 1;
+                    }
+                }
+            }
+            doc
+        })
+        .collect();
+    assert_eq!(
+        renamed, 1,
+        "the fixture's building carries one `ID` attribute"
+    );
+    let (_dir, input) = write_jsonl("address_location_underscore_id.city.jsonl", &docs);
+
+    let package_dir = assert_round_trips(&input);
+    let columns = package_columns(package_dir.path());
+    assert!(
+        columns.iter().any(|c| c == "__ID"),
+        "`_ID` must be stored as `__ID`: {columns:?}"
+    );
+    assert!(!columns.iter().any(|c| c == "_ID"), "{columns:?}");
+}
+
+/// spec "Column naming and reservation rules": `other` is a reserved name like
+/// any other, so a source attribute named `other` is valid input and is
+/// stored as `_other`. Derived from the real `delft` fixture with one
+/// injected attribute named `other`.
+#[test]
+fn an_attribute_named_other_is_escaped_and_round_trips() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut injected = false;
+    let docs: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
+            if !injected && let Some(cos) = doc["CityObjects"].as_object_mut() {
+                for co in cos.values_mut() {
+                    if let Some(attrs) = co["attributes"].as_object_mut() {
+                        attrs.insert("other".to_string(), serde_json::json!("escaped-sentinel"));
+                        injected = true;
+                        break;
+                    }
+                }
+            }
+            doc
+        })
+        .collect();
     assert!(
         injected,
         "delft fixture must carry at least one object with attributes to inject into"
     );
+    let (_dir, input) = write_jsonl("delft_other_attribute.city.jsonl", &docs);
 
-    let dir = tempfile::tempdir().unwrap();
-    let input = dir.path().join("delft_other_collision.city.jsonl");
-    std::fs::write(&input, out_lines.join("\n") + "\n").unwrap();
-
-    let out = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(input, out.path().to_path_buf());
-    let err = convert(&opts).expect_err("an attribute literally named other must be rejected");
-    let msg = format!("{err}");
+    let package_dir = assert_round_trips(&input);
+    let columns = package_columns(package_dir.path());
     assert!(
-        msg.contains("other") && msg.contains("collides"),
-        "error must name the offending attribute and the reserved-name collision, got: {msg}"
+        columns.iter().any(|c| c == "_other"),
+        "`other` must be stored as `_other`: {columns:?}"
     );
 }
 
-/// spec "Appearance & templates" (gap 13): a `transformationMatrix` that
+/// spec "Appearance & implicit geometries" (gap 13): a `transformationMatrix` that
 /// isn't exactly 16 values is rejected at convert time, not silently
 /// truncated/padded. Derived from the real `lod3_railway` fixture (with an
 /// injected CRS, like [`railway_fixture_with_crs`]): the first
@@ -136,7 +261,7 @@ fn attribute_literally_named_other_is_rejected() {
 /// other railway round-trip test above (real `GeometryInstance`s all carry
 /// genuine 16-value matrices).
 #[test]
-fn template_transformation_matrix_wrong_length_is_rejected() {
+fn implicit_geometry_transformation_matrix_wrong_length_is_rejected() {
     let mut doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
             .unwrap();
@@ -177,99 +302,162 @@ fn template_transformation_matrix_wrong_length_is_rejected() {
     );
 }
 
-/// M5 task 3 (the milestone claim): presets change bytes, never semantics.
-/// Every named [`RecipePreset`] must still round-trip delft losslessly —
-/// the per-column tuning a preset picks is purely a `WriterProperties`
-/// concern and must never affect what a reader gets back.
+/// spec "Appearance & implicit geometries" ("Placement"): the matrix is a 4x4
+/// affine transformation, its last row exactly `0, 0, 0, 1`. A source
+/// `GeometryInstance` with a projective matrix is invalid input, and convert
+/// refuses it with an error naming the object. Derived from the real
+/// `lod3_railway` fixture (with an injected CRS, like
+/// [`railway_fixture_with_crs`]): the first `GeometryInstance`'s real matrix
+/// gets `m30 = 0.5`.
 #[test]
-fn every_recipe_preset_round_trips_delft_losslessly() {
-    assert_eq!(
-        RecipePreset::ALL.len(),
-        6,
-        "this gate must cover exactly the 6 binding presets"
-    );
+fn implicit_geometry_projective_transformation_matrix_is_rejected() {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
 
-    for preset in RecipePreset::ALL {
-        let package_dir = tempfile::tempdir().unwrap();
-        let mut opts = ConvertOptions::new(
-            fixture("delft.city.jsonl"),
-            package_dir.path().to_path_buf(),
-        );
-        opts.recipe = preset.recipe();
-        convert(&opts).unwrap();
-
-        let export_dir = tempfile::tempdir().unwrap();
-        let output = export_dir.path().join("export.city.jsonl");
-        export(&ExportOptions {
-            package_dir: package_dir.path().to_path_buf(),
-            output: output.clone(),
-        })
-        .unwrap();
-
-        let report = compare_datasets(
-            &fixture("delft.city.jsonl"),
-            &output,
-            &CompareOptions::default(),
-        )
-        .unwrap();
-        assert!(
-            report.equal,
-            "preset {} must round-trip delft losslessly; differences: {:#?}",
-            preset.name(),
-            report.differences
-        );
-        assert!(
-            report.differences.is_empty(),
-            "preset {} produced non-empty differences",
-            preset.name()
-        );
-        // Pinned counts updated alongside the comparator's coordinate-degenerate
-        // ring fix (3DBAG tile `9-284-556.city.json` finding; see
-        // `crate::compare`'s module docs and `delft_round_trips_losslessly`
-        // below for the full explanation): delft's real, unmutated source
-        // carries 8 objects with an index-distinct/coordinate-identical ring,
-        // previously invisible to the INDEX-only degenerate check. Not a
-        // regression — `report.equal`/`differences.is_empty()` above still hold.
-        let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-            .excluded
-            .iter()
-            .partition(|e| e.starts_with("header: metadata member"));
-        let degenerate = non_header_excluded
-            .iter()
-            .filter(|e| e.contains("degenerate ring"))
-            .count();
-        assert_eq!(
-            (degenerate, non_header_excluded.len()),
-            (16, 17),
-            "preset {}'s only non-header exclusions must be the 16 pinned \
-             coordinate-degenerate-ring drops (8 objects, source + export side each) plus \
-             geographicalExtent (derived from bbox), got: {:#?}",
-            preset.name(),
-            non_header_excluded
-        );
-        assert!(
-            !header_excluded.is_empty(),
-            "preset {} must still document delft's header metadata members, got: {:#?}",
-            preset.name(),
-            report.excluded
-        );
+    let mut mutated = None;
+    if let Some(cos) = doc["CityObjects"].as_object_mut() {
+        'outer: for (id, co) in cos.iter_mut() {
+            if let Some(geoms) = co["geometry"].as_array_mut() {
+                for geom in geoms.iter_mut() {
+                    if geom.get("type").and_then(|t| t.as_str()) == Some("GeometryInstance")
+                        && let Some(matrix) = geom
+                            .get_mut("transformationMatrix")
+                            .and_then(|m| m.as_array_mut())
+                    {
+                        assert_eq!(
+                            matrix[12..],
+                            [0.0, 0.0, 0.0, 1.0].map(|v| serde_json::json!(v)),
+                            "fixture fact: the real matrices are affine"
+                        );
+                        matrix[12] = serde_json::json!(0.5);
+                        mutated = Some(id.clone());
+                        break 'outer;
+                    }
+                }
+            }
+        }
     }
-}
+    let mutated = mutated
+        .expect("fixture must carry at least one GeometryInstance with a transformationMatrix");
 
-/// delft's LoD0 footprint is stored in the un-suffixed `geometry` column, with
-/// its LoD recorded in `geometry_properties.lod` (§9/§12). Export must recover
-/// that LoD so the round-tripped CityJSON carries a genuine `lod:"0"` geometry
-/// (not a lod-less one). This is the narrow behavioural pin behind the fuller
-/// `delft_round_trips_losslessly` semantic-equality gate below.
-#[test]
-fn delft_lod0_footprint_round_trips_with_lod_restored() {
-    let (exported, _package_dir, _export_dir) = convert_and_export("delft.city.jsonl");
-    let text = std::fs::read_to_string(&exported).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("railway_projective_matrix.city.json");
+    std::fs::write(&input, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let err = convert(&ConvertOptions::new(input, out.path().to_path_buf()))
+        .expect_err("a projective transformationMatrix must be rejected");
+    let msg = format!("{err}");
     assert!(
-        text.contains("\"lod\":\"0.0\""),
-        "exported delft must restore LoD0 geometry with the canonical lod \"0.0\""
+        msg.contains(&mutated) && msg.contains("0, 0, 0, 1"),
+        "error must name the object and the affine requirement, got: {msg}"
     );
 }
+
+/// M5 task 3 (the milestone claim): presets change bytes, never semantics.
+/// Every named [`RecipePreset`] must still round-trip delft losslessly — the
+/// per-column tuning a preset picks is purely a `WriterProperties` concern and
+/// must never affect what a reader gets back. The default preset is the
+/// [`delft_round_trips_losslessly`] gate; one test per remaining preset keeps
+/// the five from serialising into a single long loop.
+fn assert_preset_round_trips(preset: RecipePreset) {
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(
+        fixture("delft.city.jsonl"),
+        package_dir.path().to_path_buf(),
+    );
+    opts.recipe = preset.recipe();
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+
+    let report = compare_datasets(
+        &fixture("delft.city.jsonl"),
+        &output,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "preset {} must round-trip delft losslessly; differences: {:#?}",
+        preset.name(),
+        report.differences
+    );
+    assert!(
+        report.differences.is_empty(),
+        "preset {} produced non-empty differences",
+        preset.name()
+    );
+    // Pinned counts updated alongside the comparator's coordinate-degenerate
+    // ring fix (3DBAG tile `9-284-556.city.json` finding; see
+    // `crate::compare`'s module docs and `delft_round_trips_losslessly`
+    // below for the full explanation): delft's real, unmutated source
+    // carries 8 objects with an index-distinct/coordinate-identical ring,
+    // previously invisible to the INDEX-only degenerate check. Not a
+    // regression — `report.equal`/`differences.is_empty()` above still hold.
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        (degenerate, non_header_excluded.len()),
+        (16, 17),
+        "preset {}'s only non-header exclusions must be the 16 pinned \
+         coordinate-degenerate-ring drops (8 objects, source + export side each) plus \
+         geographicalExtent (derived from bbox), got: {:#?}",
+        preset.name(),
+        non_header_excluded
+    );
+    assert!(
+        !header_excluded.is_empty(),
+        "preset {} must still document delft's header metadata members, got: {:#?}",
+        preset.name(),
+        report.excluded
+    );
+}
+
+macro_rules! preset_round_trip_test {
+    ($name:ident, $preset:expr) => {
+        #[test]
+        fn $name() {
+            assert_preset_round_trips($preset);
+        }
+    };
+}
+
+preset_round_trip_test!(
+    parquet_defaults_preset_round_trips_delft_losslessly,
+    RecipePreset::ParquetDefaults
+);
+preset_round_trip_test!(
+    no_dictionary_preset_round_trips_delft_losslessly,
+    RecipePreset::NoDictionary
+);
+preset_round_trip_test!(
+    no_byte_stream_split_preset_round_trips_delft_losslessly,
+    RecipePreset::NoByteStreamSplit
+);
+preset_round_trip_test!(
+    no_delta_preset_round_trips_delft_losslessly,
+    RecipePreset::NoDelta
+);
+preset_round_trip_test!(
+    snappy_preset_round_trips_delft_losslessly,
+    RecipePreset::Snappy
+);
 
 #[test]
 fn delft_round_trips_losslessly() {
@@ -324,98 +512,6 @@ fn delft_round_trips_losslessly() {
         !header_excluded.is_empty(),
         "delft's header sets metadata members; expected at least one documented header-metadata \
          exclusion, got none. Full excluded: {:#?}",
-        report.excluded
-    );
-}
-
-#[test]
-fn railway_round_trips_losslessly_modulo_documented_drops() {
-    let (_crs_dir, railway_path) = railway_fixture_with_crs();
-    let (exported, _package_dir, _export_dir) = convert_and_export_path(&railway_path);
-    let opts = CompareOptions {
-        coord_tolerance: [0.0; 3],
-        exclusions: Exclusions {
-            appearance: true,
-            geometry_instances: true,
-        },
-    };
-    let report = compare_datasets(&railway_path, &exported, &opts).unwrap();
-    assert!(
-        report.equal,
-        "railway must round-trip losslessly modulo the documented appearance/instance drops; \
-         differences: {:#?}",
-        report.differences
-    );
-    assert!(report.differences.is_empty());
-
-    // Split header-metadata exclusions (documented, unbounded — whatever
-    // metadata members railway's header happens to set) from everything
-    // else, and pin the non-header set exactly as before: any non-header,
-    // non-pinned exclusion must still fail this test.
-    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-        .excluded
-        .iter()
-        .partition(|e| e.starts_with("header: metadata member"));
-
-    // The exact exclusion breakdown, recounted by category. The
-    // appearance/instances totals are pinned against counts already proven
-    // elsewhere: 105 stored geometries carry material or texture
-    // (export_real_data.rs's appearance_refs_dropped), 15 objects carry a
-    // GeometryInstance (instance_geometries_dropped) — DOUBLED to 210/30
-    // since spec-alignment gap 19: sidecars (materials/textures/
-    // geometry_templates) are now written whenever the source has content
-    // for them, so `export` actually RESTORES railway's appearance/instances
-    // (unlike the old Core-profile default, which dropped them). With
-    // `exclusions.appearance`/`exclusions.geometry_instances` on, the
-    // comparator excludes rather than compares that data on EACH side that
-    // carries it — now both the source and the export do, logging one
-    // exclusion entry per side. The degenerate count was updated from the
-    // writer-only-index-drop figure of 3 to 23 alongside the comparator's
-    // coordinate-degenerate ring fix (3DBAG tile `9-284-556.city.json`
-    // finding; see `crate::compare`'s module docs): railway's real,
-    // unmutated source carries 20 MORE objects whose boundaries include an
-    // index-distinct/coordinate-identical ring, previously invisible to the
-    // INDEX-only degenerate check. It moved again, 23 to 24, alongside
-    // `wkb_write::normalise_ring`'s `> 3` bound: the writer no longer drops
-    // object `GMLID_855011_330784_753`'s `[a, b, a]` sliver ring (it is a
-    // real 3-vertex ring, not a baked WKB closure), so the export now
-    // carries it too — and the comparator's own (still `>= 2`) fixpoint
-    // strip excludes it on BOTH sides instead of the source side only,
-    // turning that one object's single exclusion into two (the writer's own
-    // drop counts in `wkb_roundtrip_real_data.rs` were updated alongside
-    // this same change: railway's former 6 writer-side drops are now 0).
-    let appearance = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("exclusions.appearance"))
-        .count();
-    let instances = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("exclusions.geometry_instances"))
-        .count();
-    let degenerate = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("degenerate ring"))
-        .count();
-    assert_eq!(
-        (appearance, instances, degenerate),
-        (210, 30, 24),
-        "exclusion breakdown must match the pinned pipeline counts, got: {:#?}",
-        non_header_excluded
-    );
-    assert_eq!(
-        non_header_excluded.len(),
-        265,
-        "210 appearance + 30 instances + 24 degenerate + 1 geographicalExtent (derived from bbox) \
-         = 265 total non-header exclusions, nothing else, got: {:#?}",
-        non_header_excluded
-    );
-
-    // Railway's header sets `metadata.geographicalExtent`, a documented
-    // exclusion: it must be logged, never silently dropped.
-    assert!(
-        !header_excluded.is_empty(),
-        "railway's header sets metadata members; expected at least one documented \
-         header-metadata exclusion, got none. Full excluded: {:#?}",
         report.excluded
     );
 }
@@ -483,20 +579,36 @@ fn railway_interior_ring_texture_survives_round_trip() {
 /// M4 task 11 (the milestone's headline gate): a round trip with NO
 /// exclusions at all — appearance and GeometryInstance geometries are
 /// restored from the sidecars (M4 tasks 6-10, always written now that
-/// sidecars are content-gated rather than profile-gated), so unlike
-/// `railway_round_trips_losslessly_modulo_documented_drops` above (an older
-/// pin from when Core-vs-Compatibility was a real choice), the only
-/// remaining exclusions are the 24 pinned degenerate-ring drops (updated
-/// alongside the comparator's coordinate-degenerate fix, and again alongside
-/// `wkb_write::normalise_ring`'s `> 3` bound — see the comment in
-/// `railway_round_trips_losslessly_modulo_documented_drops` above) and
-/// whatever header metadata members railway's header sets (documented,
-/// unbounded). Any OTHER exclusion here would mean appearance or an
-/// instance silently failed to round-trip.
+/// sidecars are content-gated rather than profile-gated), so the only
+/// remaining exclusions are the 24 pinned degenerate-ring drops and whatever
+/// header metadata members railway's header sets (documented, unbounded). Any
+/// OTHER exclusion here would mean appearance or an instance silently failed
+/// to round-trip.
+///
+/// The degenerate count was updated from the writer-only-index-drop figure of
+/// 3 to 23 alongside the comparator's coordinate-degenerate ring fix (3DBAG
+/// tile `9-284-556.city.json` finding; see `crate::compare`'s module docs):
+/// railway's real, unmutated source carries 20 MORE objects whose boundaries
+/// include an index-distinct/coordinate-identical ring, previously invisible
+/// to the INDEX-only degenerate check. It moved again, 23 to 24, alongside
+/// `wkb_write::normalise_ring`'s `> 3` bound: the writer no longer drops
+/// object `GMLID_855011_330784_753`'s `[a, b, a]` sliver ring (it is a real
+/// 3-vertex ring, not a baked WKB closure), so the export now carries it too
+/// — and the comparator's own (still `>= 2`) fixpoint strip excludes it on
+/// BOTH sides instead of the source side only, turning that one object's
+/// single exclusion into two (the writer's own drop counts in
+/// `wkb_roundtrip_real_data.rs` were updated alongside this same change:
+/// railway's former 6 writer-side drops are now 0).
+///
+/// Written in `RowOrder::Source`, the streaming opt-out, so the round trip is
+/// proven for both orderings: `convert_real_data.rs`'s
+/// `hilbert_ordering_never_changes_railway_compatibility_semantics` is its
+/// Hilbert twin.
 #[test]
 fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
-    let (exported, _package_dir, _export_dir) = convert_and_export_path(&railway_path);
+    let (exported, _package_dir, _export_dir) =
+        convert_and_export_with_path(&railway_path, RowOrder::Source);
     let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
         report.equal,
@@ -531,52 +643,6 @@ fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
         !header_excluded.is_empty(),
         "railway's header sets metadata members; expected at least one documented \
          header-metadata exclusion, got none. Full excluded: {:#?}",
-        report.excluded
-    );
-}
-
-/// M4 task 11: delft carries no appearance and no GeometryInstances, so BOTH
-/// profiles must round-trip with no exclusions beyond delft's own documented
-/// header metadata members and the 16 pinned coordinate-degenerate-ring
-/// drops (see `delft_round_trips_losslessly` above for the full explanation)
-/// — delft has no appearance/templates to write sidecars for, so this must
-/// not introduce any new difference or exclusion relative to the round trip
-/// already proven by `delft_round_trips_losslessly`.
-#[test]
-fn delft_compatibility_round_trips_losslessly_with_only_header_exclusions() {
-    let (exported, _package_dir, _export_dir) = convert_and_export("delft.city.jsonl");
-    let report = compare_datasets(
-        &fixture("delft.city.jsonl"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
-    assert!(
-        report.equal,
-        "delft must round-trip losslessly under the Compatibility profile too; differences: {:#?}",
-        report.differences
-    );
-    assert!(report.differences.is_empty());
-    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-        .excluded
-        .iter()
-        .partition(|e| e.starts_with("header: metadata member"));
-    let degenerate = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("degenerate ring"))
-        .count();
-    assert_eq!(
-        (degenerate, non_header_excluded.len()),
-        (16, 17),
-        "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
-         drops (8 objects, source + export side each; see `delft_round_trips_losslessly` for \
-         the full explanation) plus geographicalExtent (derived from bbox), got: {:#?}",
-        non_header_excluded
-    );
-    assert!(
-        !header_excluded.is_empty(),
-        "delft's header sets metadata members; expected at least one documented header-metadata \
-         exclusion, got none. Full excluded: {:#?}",
         report.excluded
     );
 }
@@ -720,114 +786,6 @@ fn convert_and_export_with_path(
     .unwrap();
 
     (output, package_dir, export_dir)
-}
-
-/// M5 task 5 (Step 3): delft under by-type (Core profile) must round-trip
-/// exactly as losslessly as `delft_round_trips_losslessly` above — the
-/// table layout is purely a physical-file concern, never a semantic one.
-/// Per the family-grouping rule, delft's Building + BuildingPart share the
-/// single `building.parquet` file (see
-/// `by_type_convert_of_delft_writes_exactly_one_family_table` in
-/// `convert_real_data.rs`), so `export` must still read the whole dataset
-/// back from that one table.
-#[test]
-fn delft_by_type_round_trips_losslessly() {
-    let (exported, package_dir, _export_dir) =
-        convert_and_export_with("delft.city.jsonl", RowOrder::Source);
-    assert!(
-        package_dir.path().join("building.parquet").exists(),
-        "sanity: this must actually be a split-by-type package"
-    );
-    assert!(
-        !package_dir.path().join("buildingpart.parquet").exists(),
-        "BuildingPart is 2nd-level and must share building.parquet, not get its own file"
-    );
-    let report = compare_datasets(
-        &fixture("delft.city.jsonl"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
-    assert!(
-        report.equal,
-        "ByType-layout delft must round-trip losslessly; differences: {:#?}",
-        report.differences
-    );
-    assert!(report.differences.is_empty());
-    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-        .excluded
-        .iter()
-        .partition(|e| e.starts_with("header: metadata member"));
-    let degenerate = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("degenerate ring"))
-        .count();
-    assert_eq!(
-        (degenerate, non_header_excluded.len()),
-        (16, 17),
-        "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
-         drops (8 objects, source + export side each; see `delft_round_trips_losslessly` for \
-         the full explanation) plus geographicalExtent (derived from bbox), got: {:#?}",
-        non_header_excluded
-    );
-    assert!(
-        !header_excluded.is_empty(),
-        "delft's header sets metadata members; expected at least one documented header-metadata \
-         exclusion, got none. Full excluded: {:#?}",
-        report.excluded
-    );
-}
-
-/// M5 task 5 (Step 3), updated for the by-module split (spec "By-module
-/// object-table layout"): railway under by-module (Compatibility profile) —
-/// the M4 headline round-trip gate
-/// (`railway_compatibility_round_trips_losslessly_with_no_exclusions` above)
-/// must hold across all 9 pinned module tables (railway's 14 distinct
-/// `object_type` values collapse to 9 distinct CityGML 3.0 modules — see
-/// `by_type_convert_of_railway_writes_nine_module_tables` in
-/// `convert_real_data.rs` for the exact module membership).
-#[test]
-fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
-    let (_crs_dir, railway_path) = railway_fixture_with_crs();
-    let (exported, package_dir, _export_dir) =
-        convert_and_export_with_path(&railway_path, RowOrder::Source);
-    let tables = PackageTables::open(package_dir.path()).unwrap().tables;
-    assert_eq!(
-        tables.len(),
-        9,
-        "railway's pinned type set collapses to 9 distinct CityGML modules, got: {tables:?}"
-    );
-
-    let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
-    assert!(
-        report.equal,
-        "By-type railway must round-trip losslessly with NO exclusions under the \
-         Compatibility profile; differences: {:#?}",
-        report.differences
-    );
-    assert!(report.differences.is_empty());
-
-    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-        .excluded
-        .iter()
-        .partition(|e| e.starts_with("header: metadata member"));
-    let degenerate = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("degenerate ring"))
-        .count();
-    assert_eq!(
-        (degenerate, non_header_excluded.len()),
-        (24, 25),
-        "the 24 pinned degenerate-ring drops plus geographicalExtent (derived from bbox) \
-         must be the only non-header exclusions, got: {:#?}",
-        non_header_excluded
-    );
-    assert!(
-        !header_excluded.is_empty(),
-        "railway's header sets metadata members; expected at least one documented \
-         header-metadata exclusion, got none. Full excluded: {:#?}",
-        report.excluded
-    );
 }
 
 /// M5 task 5 (Step 3, the composed smoke gate): `RowOrder::Hilbert` and the
@@ -1214,36 +1172,30 @@ fn address_location_round_trips() {
     );
 }
 
-/// G12/gap 14 (§5.2): a source attribute whose name collides with a reserved
-/// column name (here `bbox`) is diverted into `other` — the format's single
-/// escape hatch, shared with unmapped source members rather than riding a
-/// dedicated column or a magic `cityparquet:diverted_attributes` key (both
-/// earlier mechanisms) — and restored on export, rather than aborting the
-/// whole conversion. Fixture is real Helsinki objects with one injected
-/// `bbox` attribute alongside 27 genuine (non-colliding) attributes.
-///
-/// Hand-derived from the City of Helsinki open 3D city model (an injected
-/// colliding attribute on real objects); no public URL, so committed in-tree
-/// under `tests/data/` (via [`data_fixture`]) rather than fetched.
+/// spec "Column naming and reservation rules": an exact-case collision is
+/// escaped like a case-insensitive one. `collision_attr.city.jsonl` is two
+/// real Helsinki buildings (City of Helsinki open 3D city model) with an
+/// injected `bbox` attribute next to their 27 genuine ones (`ID` among them);
+/// no public URL, so committed in-tree under `tests/data/` (via
+/// [`data_fixture`]). `bbox` is stored as `_bbox` and `ID` as `_ID`, nothing
+/// goes to `other`, and the export restores both under their source names.
 #[test]
-fn colliding_attribute_is_diverted_and_round_trips() {
-    let (exported, package_dir, _export_dir) =
-        convert_and_export_path(&data_fixture("collision_attr.city.jsonl"));
-    let report = compare_datasets(
-        &data_fixture("collision_attr.city.jsonl"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
+fn an_exact_case_collision_is_escaped_and_round_trips() {
+    let input = data_fixture("collision_attr.city.jsonl");
+    let package_dir = assert_round_trips(&input);
+    let columns = package_columns(package_dir.path());
+    for column in ["_bbox", "_ID"] {
+        assert!(
+            columns.iter().any(|c| c == column),
+            "missing escaped column `{column}`: {columns:?}"
+        );
+    }
     assert!(
-        report.equal,
-        "a colliding attribute must round-trip via `other`; differences: {:#?}",
-        report.differences
+        package_other_cells(package_dir.path()).is_empty(),
+        "a colliding attribute keeps a column of its own; nothing goes to `other`"
     );
 
-    // The diverted attribute is restored into `attributes` on export (not left
-    // as a top-level member), with its value intact; the non-colliding
-    // attributes are unaffected.
+    let (exported, _package_dir, _export_dir) = convert_and_export_path(&input);
     let text = std::fs::read_to_string(&exported).unwrap();
     let mut checked = 0;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -1256,54 +1208,17 @@ fn colliding_attribute_is_diverted_and_round_trips() {
             assert_eq!(
                 attrs.get("bbox"),
                 Some(&serde_json::json!("diverted-sentinel")),
-                "the diverted `bbox` attribute must be restored with its value"
+                "the escaped `bbox` attribute must be restored under its source name"
             );
             assert!(
-                attrs.contains_key("measuredHeight"),
-                "genuine attributes must still round-trip alongside the diverted one"
-            );
-            assert!(
-                co.get("bbox").is_none(),
-                "`bbox` must be an attribute, not promoted to a top-level member"
+                !attrs.contains_key("_bbox"),
+                "the escape must not leak into the export"
             );
             checked += 1;
         }
     }
     assert_eq!(checked, 2, "fixture has two objects, both must be checked");
-
-    // Physical proof (not just decoded values): the PACKAGE's own `other`
-    // Parquet column actually carries the diverted value — `other` is the
-    // format's single escape hatch, so the diverted attribute has nowhere
-    // else to ride.
-    let tables = PackageTables::open(package_dir.path()).unwrap().tables;
-    assert_eq!(tables.len(), 1, "both fixture objects are Buildings");
-    let file = std::fs::File::open(&tables[0]).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .unwrap()
-        .build()
-        .unwrap();
-    let mut other_seen = 0;
-    for batch in reader {
-        let batch = batch.unwrap();
-        let other = batch
-            .column_by_name("other")
-            .expect("other must be a real physical column")
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        for row in 0..batch.num_rows() {
-            assert!(
-                !other.is_null(row),
-                "the diverted attribute must land in the physical other cell"
-            );
-            let cell: serde_json::Value = serde_json::from_str(other.value(row)).unwrap();
-            assert_eq!(cell, serde_json::json!({"bbox": "diverted-sentinel"}));
-            other_seen += 1;
-        }
-    }
-    assert_eq!(other_seen, 2);
 }
-
 /// Spec §metadata "CRS rules", as amended: the whole unknown-CRS path, on a
 /// real fixture that genuinely carries no `referenceSystem` — convert ->
 /// footer `city.crs: null` -> export -> **no** `referenceSystem` -> compare
@@ -1392,4 +1307,46 @@ fn a_crs_less_source_round_trips_through_an_explicit_null_crs() {
         "the unknown-CRS round trip must still be semantically equal; differences: {:#?}",
         compared.differences
     );
+}
+
+/// spec "Column naming and reservation rules": the bare `geometry`,
+/// `geometry_properties`, `material` and `texture` are not reserved names —
+/// every geometry column carries an LoD suffix — so they are ordinary
+/// attributes, also in a dataset with no analysis geometry at all, whose
+/// tables carry no geometry column. Derived from the real `lod3_railway`
+/// fixture: every non-instance geometry removed (keeping its
+/// `GeometryInstance`s), a CRS injected, and the four names added as
+/// attributes on every object that has attributes.
+#[test]
+fn attributes_named_like_bare_geometry_columns_round_trip_without_lods() {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let mut injected = 0;
+    for co in doc["CityObjects"].as_object_mut().unwrap().values_mut() {
+        if let Some(geoms) = co.get_mut("geometry").and_then(|g| g.as_array_mut()) {
+            geoms.retain(|g| g["type"] == "GeometryInstance");
+        }
+        if let Some(attrs) = co.get_mut("attributes").and_then(|a| a.as_object_mut()) {
+            for name in ["geometry", "geometry_properties", "material", "texture"] {
+                attrs.insert(name.to_string(), serde_json::json!(format!("{name}-value")));
+            }
+            injected += 1;
+        }
+    }
+    assert!(injected > 0, "railway must carry objects with attributes");
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("railway_instances_bare_names.city.json");
+    std::fs::write(&input, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let package_dir = assert_round_trips(&input);
+    let columns = package_columns(package_dir.path());
+    for name in ["geometry", "geometry_properties", "material", "texture"] {
+        assert!(
+            columns.iter().any(|c| c == name),
+            "`{name}` must be an attribute column of its own: {columns:?}"
+        );
+    }
 }

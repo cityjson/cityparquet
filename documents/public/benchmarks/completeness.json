@@ -13,9 +13,7 @@
         "id-10pct",
         "id-50pct",
         "id-90pct",
-        "id-miss",
-        "project",
-        "write"
+        "id-miss"
       ]
     },
     "sizes": {
@@ -24,44 +22,13 @@
         "bytes"
       ]
     },
-    "codec": {
-      "present": true,
-      "metrics": [
-        "bbox-1pct",
-        "bbox-25pct",
-        "bbox-5pct",
-        "full-read",
-        "id-50pct",
-        "write"
-      ]
-    },
-    "rowgroup": {
-      "present": true,
-      "metrics": [
-        "bbox-1pct",
-        "bbox-25pct",
-        "bbox-5pct",
-        "full-read",
-        "id-50pct",
-        "write"
-      ]
+    "bloom": {
+      "present": false,
+      "metrics": []
     },
     "databases": {
-      "present": true,
-      "metrics": [
-        "attr-filter",
-        "attr-stats",
-        "bbox-1pct",
-        "bbox-25pct",
-        "bbox-5pct",
-        "count",
-        "full-read",
-        "hierarchy",
-        "id-lookup",
-        "lod-extract",
-        "project",
-        "semantic-surface"
-      ]
+      "present": false,
+      "metrics": []
     }
   }
 }

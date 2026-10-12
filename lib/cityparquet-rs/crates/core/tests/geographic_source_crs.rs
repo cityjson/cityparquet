@@ -15,7 +15,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use cityparquet::package::{ConvertOptions, convert_source};
+use cityparquet::package::{ConvertOptions, RowOrder, convert_source};
 use cityparquet::source::Source;
 
 fn delft() -> PathBuf {
@@ -55,7 +55,10 @@ fn a_source_declaring_a_geographic_crs_converts_longitude_first() {
         let input = fixture_declaring(tmp.path(), code, &format!("geo{code}.city.jsonl"));
         let source = Source::open(&input).unwrap();
         let out = tmp.path().join(format!("out{code}"));
-        let opts = ConvertOptions::new(input.clone(), out.clone());
+        let mut opts = ConvertOptions::new(input.clone(), out.clone());
+        // Source order, so the package's first row is the source's first
+        // feature, the one `first_source_ordinates` reads.
+        opts.ordering = RowOrder::Source;
         convert_source(&source, &opts).unwrap_or_else(|e| panic!("EPSG:{code} must convert: {e}"));
 
         // The fixture's own first ordinate is what EPSG:{code} calls latitude,

@@ -6,27 +6,23 @@ name: Publish crates
 # with release.yml, look at the artefacts, then dispatch this.
 #
 # ---------------------------------------------------------------------------
-# TWO CRATES CANNOT BE PUBLISHED YET, and neither is a CI problem:
+# TWO CRATES SHOULD NOT BE PUBLISHED YET, and it is not a CI problem.
 #
-#   1. `cityparquet` depends on `city3d-stac-types` by git revision, and that
-#      crate is not on crates.io. `cargo publish` refuses outright:
-#      "all dependencies must have a version requirement specified when
-#      publishing". `cityparquet-cli` depends on `cityparquet`, so it inherits
-#      the block. Unblocking means publishing city3d-stac-types from
-#      cityjson/city3d-stac-tool, then giving the dependency a `version`
-#      alongside its `git` (cargo strips the git specification on publish).
+# `cityparquet` depends on `city3d-stac-types` (and `cityparquet-cli` on
+# `city3d-stac-gen`) by crates.io version, so the registry no longer refuses
+# them. One blocker remains:
 #
-#   2. `[patch.crates-io] cjseq = { path = "vendor/cjseq" }` applies to THIS
-#      workspace only. Registry consumers get upstream cjseq 0.4.x, whose
-#      `add_cjfeature`/`update_texture` mis-base merged texture UV-vertex
-#      indices — the exact bug vendor/cjseq/PATCHES.md documents patching.
-#      A published `cityparquet` would silently corrupt Doc-format export.
-#      Unblocking means upstreaming that fix and depending on the release.
+#   `[patch.crates-io] cjseq = { path = "vendor/cjseq" }` applies to THIS
+#   workspace only. Registry consumers get upstream cjseq 0.4.x, whose
+#   `add_cjfeature`/`update_texture` mis-base merged texture UV-vertex
+#   indices — the exact bug vendor/cjseq/PATCHES.md documents patching.
+#   A published `cityparquet` would silently corrupt Doc-format export, and
+#   `cityparquet-cli` depends on `cityparquet`, so it inherits the block.
+#   Unblocking means upstreaming that fix and depending on the release.
 #
-# Until both clear, dispatch with `packages: cityparquet-schema` — it has
-# neither problem and publishes cleanly today. The default input publishes all
-# three, in dependency order, and will fail loudly at the manifest check rather
-# than half-publish.
+# Until it clears, dispatch with `packages: cityparquet-schema` — it does not
+# depend on cjseq and publishes cleanly today. The default input publishes all
+# three, in dependency order.
 # ---------------------------------------------------------------------------
 
 on:
@@ -54,10 +50,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # `cargo publish` verifies each crate by building the packaged .crate, which
-  # reaches city3d-stac-types over git. libgit2 does not honour the HTTPS
-  # credentials `actions/checkout` installs; the git CLI does. See rust.yml.
-  CARGO_NET_GIT_FETCH_WITH_CLI: true
 
 jobs:
   publish:

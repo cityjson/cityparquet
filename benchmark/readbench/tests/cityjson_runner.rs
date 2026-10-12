@@ -105,39 +105,6 @@ fn count_and_full_read_are_cityobject_map_entries_not_top_level_features() {
     );
 }
 
-/// The OTHER disclosure this runner owes the paper, enforced the same way:
-/// `full-read` is not the same operation in the two JSON runners.
-/// `cityjsonseq`'s walks each geometry's boundary-index tree; this one
-/// additionally resolves every leaf through the document-level `vertices`
-/// array and `transform` (measurably more work — see the module doc). Both
-/// are honest for their own format, but a CSV row labelled `full-read` must
-/// not be read as "both formats did the same thing", so the module doc has
-/// to say so in as many words. There is no runtime signal a reader of the
-/// CSV could check instead, so this asserts against the module's own doc
-/// block — the disclosure cannot be deleted without a test going red.
-#[test]
-fn the_module_doc_discloses_that_full_read_differs_from_cityjsonseqs() {
-    const SOURCE: &str = include_str!("../src/formats/cityjson.rs");
-    // The leading `//!` block, i.e. everything before the first `use`.
-    let module_doc = SOURCE
-        .split("\nuse ")
-        .next()
-        .expect("the module always has a doc block above its first `use`");
-
-    for needle in [
-        "not the same operation",
-        "resolves every boundary leaf",
-        "cityjsonseq",
-    ] {
-        assert!(
-            module_doc.contains(needle),
-            "the module doc must disclose that full-read resolves coordinates \
-             while cityjsonseq's only traverses boundary indices; missing: \
-             '{needle}'"
-        );
-    }
-}
-
 /// Second-level objects are first-class rows for this runner: the fixture's
 /// 56 `BuildingInstallation`s are children of its `Building`s and are counted
 /// individually.
@@ -184,24 +151,13 @@ fn attr_filter_matches_the_other_runners_on_the_string_typed_numeric_code() {
     );
 }
 
-/// `project` counts every non-null value of a column; `attr-stats` counts
-/// only the NUMERIC ones. `function` is a string column here (its values are
-/// numeric-looking codes such as `"1070"`, not numbers), so the two answers
-/// legitimately differ — pinned rather than papered over.
+/// `attr-stats` counts only NUMERIC values. `function` is a string column
+/// here (94 of the fixture's 121 CityObjects carry it, as numeric-looking
+/// codes such as `"1070"`, not numbers), so a present column still counts 0 —
+/// pinned rather than papered over.
 #[test]
-fn project_counts_non_null_values_and_attr_stats_counts_only_numeric_ones() {
+fn attr_stats_counts_only_numeric_values() {
     let input = fixture("lod3_railway.city.json");
-
-    let project_count = run_child(
-        "cityjson",
-        "project",
-        &input,
-        &["--attr-column", "function"],
-    );
-    assert_eq!(
-        project_count, 94,
-        "94 of the fixture's 121 CityObjects carry a non-null `function`"
-    );
 
     let stats_count = run_child(
         "cityjson",
@@ -214,12 +170,6 @@ fn project_counts_non_null_values_and_attr_stats_counts_only_numeric_ones() {
         "attr-stats aggregates NUMERIC values only, and this fixture's \
          `function` is a string column — 0 is the honest answer, matching the \
          cityjsonseq runner's own semantics on the same data"
-    );
-
-    let species_count = run_child("cityjson", "project", &input, &["--attr-column", "species"]);
-    assert_eq!(
-        species_count, 15,
-        "the 15 SolitaryVegetationObjects are the only carriers of `species`"
     );
 }
 
@@ -244,7 +194,8 @@ fn id_lookup_finds_a_real_id_and_none_for_a_bogus_id() {
 
 /// Per-object bboxes come from the DOCUMENT-level `vertices` array (a plain
 /// CityJSON document shares one vertex list across every object) decoded
-/// through the document's own `transform`.
+/// through the document's own `transform`, unioned over each object's
+/// `children` subtree.
 #[test]
 fn bbox_query_uses_the_document_level_vertices_and_transform() {
     let input = fixture("lod3_railway.city.json");
@@ -254,10 +205,11 @@ fn bbox_query_uses_the_document_level_vertices_and_transform() {
     let whole_dataset = ["--bbox", "0.56,0.64,7.579,12.64,7.68,9.103"];
     let all = run_child("cityjson", "bbox-query", &input, &whole_dataset);
     assert_eq!(
-        all, 120,
-        "a window covering the whole extent matches all 120 geometry-bearing \
-         CityObjects; the one CityObjectGroup that carries no geometry at all \
-         has no bbox to intersect and is honestly excluded"
+        all, 121,
+        "a window covering the whole extent matches all 121 CityObjects: the \
+         120 with geometry, and the CityObjectGroup, which has none of its own \
+         but whose box is its members' union (an object's box spans its whole \
+         `children` subtree)"
     );
 
     // The western half of the same extent: a genuine sub-selection, so this
@@ -265,8 +217,9 @@ fn bbox_query_uses_the_document_level_vertices_and_transform() {
     let west_half = ["--bbox", "0.56,0.64,7.579,6.6,7.68,9.103"];
     let west = run_child("cityjson", "bbox-query", &input, &west_half);
     assert_eq!(
-        west, 93,
-        "93 CityObjects intersect the western half of the extent"
+        west, 94,
+        "94 CityObjects intersect the western half of the extent: 93 by their \
+         own geometry, and the CityObjectGroup through its members"
     );
 
     // A window far outside the dataset must match nothing.

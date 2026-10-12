@@ -1,17 +1,13 @@
-//! RED (readbench task 2/3/4/6): `query::full_read` / `query::count` /
-//! `query::bbox_query` / `query::attr_filter` / `query::id_lookup` /
-//! `query::project_column`, read primitives of the cross-format
-//! read-benchmark milestone — exercised against a real converted delft
-//! package (never inline artificial CityJSON).
+//! `query::full_read_visit` / `query::count` / `query::bbox_query` /
+//! `query::attr_filter` / `query::attr_stats` / `query::id_lookup`, exercised
+//! against a real converted delft package (never inline artificial CityJSON).
 
 use std::path::{Path, PathBuf};
 
 use arrow_array::{Array, Float64Array, StringArray, StructArray};
 use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
-use cityparquet::query::{
-    AttrPredicate, attr_filter, attr_stats, bbox_query, id_lookup, project_column,
-};
+use cityparquet::query::{AttrPredicate, attr_filter, attr_stats, bbox_query, id_lookup};
 use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -90,18 +86,11 @@ fn full_read_and_count_over_a_converted_delft_package() {
 
     let main_table = out.path().join("building.parquet");
 
-    // `meta` is read independently of `full_read`, exactly as a real caller
-    // (e.g. the readbench harness) would: open once for metadata, then hand
-    // both the path and the parsed metadata to the query primitive.
-    let file = std::fs::File::open(&main_table).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    let meta = builder.cityparquet_metadata().unwrap();
-
-    let full = cityparquet::query::full_read(&main_table, &meta).unwrap();
-    assert_eq!(full.feature_count, 2231);
+    let full = cityparquet::query::full_read_visit(&main_table).unwrap();
+    assert_eq!(full.objects, 2231);
     assert!(
-        full.boundary_count > 0,
-        "delft has real geometry, so decoding every row's WKB must yield at least one surface"
+        full.geometries > 0 && full.coordinates > 0,
+        "delft has real geometry, so visiting every row must walk at least one vertex"
     );
 
     assert_eq!(cityparquet::query::count(&main_table).unwrap(), 2231);
@@ -437,39 +426,5 @@ fn id_lookup_finds_a_real_object_and_none_for_a_bogus_id() {
     assert!(
         missing.is_none(),
         "a bogus id must return None, got {missing:?}"
-    );
-}
-
-/// `project_column` over a non-nullable reserved column (`object_type`) and a
-/// sparse attribute column (`oorspronkelijkbouwjaar`, present only on delft's
-/// 1115 `Building` rows): both counts are derived independently from the
-/// decoded objects, never hardcoded blind.
-#[test]
-fn project_column_counts_non_null_values_for_dense_and_sparse_columns() {
-    let (_out, main_table, objects) = convert_and_decode("delft.city.jsonl");
-
-    let expected_object_type = objects.len() as u64;
-    assert_eq!(expected_object_type, 2231);
-
-    let expected_year_built = objects
-        .iter()
-        .filter(|o| {
-            o.object
-                .attributes
-                .as_ref()
-                .and_then(|v| v.as_object())
-                .and_then(|attrs| attrs.get("oorspronkelijkbouwjaar"))
-                .is_some()
-        })
-        .count() as u64;
-    assert_eq!(expected_year_built, 1115);
-
-    assert_eq!(
-        project_column(&main_table, "object_type").unwrap(),
-        expected_object_type
-    );
-    assert_eq!(
-        project_column(&main_table, "oorspronkelijkbouwjaar").unwrap(),
-        expected_year_built
     );
 }

@@ -28,7 +28,7 @@ pub const OBJECT_MODULES: [&str; 11] = [
 ];
 
 /// The optional sidecars, written only when the source has something for them.
-pub const SIDECAR_TABLES: [&str; 3] = ["materials", "textures", "geometry_templates"];
+pub const SIDECAR_TABLES: [&str; 3] = ["materials", "textures", "implicit_geometries"];
 
 /// The one object table `create_dataset_impl` always seeds before ingest —
 /// there being no pragma that bootstraps a package from nothing. Named here
@@ -339,6 +339,7 @@ mod tests {
         assert!(validate_module("building").is_ok());
         assert!(validate_module("water_body").is_ok());
         assert!(validate_module("materials").is_ok());
+        assert!(validate_module("implicit_geometries").is_ok());
         // Stronger than a character class: the specification defines the set.
         assert!(validate_module("buildings").is_err());
         assert!(validate_module("Building").is_err());

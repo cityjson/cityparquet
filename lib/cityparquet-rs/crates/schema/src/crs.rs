@@ -13,6 +13,7 @@ use std::io::Read;
 use std::sync::OnceLock;
 
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 use crate::error::{CityParquetError, Result};
 
@@ -194,16 +195,19 @@ impl AxisOrder {
 /// version pins live in the asset's `_meta`).
 static ASSET: &[u8] = include_bytes!("../assets/epsg_projjson.json.gz");
 
-/// The parsed table: `"7415"` / `"OGC:CRS84"` -> PROJJSON object. Decompressed
-/// and parsed once, lazily (only the first CRS resolution pays for it).
-fn table() -> &'static HashMap<String, Value> {
-    static TABLE: OnceLock<HashMap<String, Value>> = OnceLock::new();
+/// The parsed table: `"7415"` / `"OGC:CRS84"` -> the entry's raw PROJJSON
+/// text. Decompressed and indexed once, lazily (only the first CRS resolution
+/// pays for it); each entry is parsed into a `Value` only when it is looked
+/// up, so a process resolving one CRS builds a DOM for one entry, not all of
+/// them.
+fn table() -> &'static HashMap<String, Box<RawValue>> {
+    static TABLE: OnceLock<HashMap<String, Box<RawValue>>> = OnceLock::new();
     TABLE.get_or_init(|| {
         let mut gz = flate2::read::GzDecoder::new(ASSET);
         let mut json = String::new();
         gz.read_to_string(&mut json)
             .expect("vendored PROJJSON asset must gunzip");
-        let mut map: HashMap<String, Value> =
+        let mut map: HashMap<String, Box<RawValue>> =
             serde_json::from_str(&json).expect("vendored PROJJSON asset must parse");
         map.remove("_meta");
         map
@@ -290,10 +294,15 @@ pub fn resolve_to_projjson(source: &str) -> Result<Value> {
             "cannot extract an EPSG/OGC code from CRS {source:?}"
         ))
     })?;
-    table().get(&key).cloned().ok_or_else(|| {
+    let raw = table().get(&key).ok_or_else(|| {
         CityParquetError::Schema(format!(
             "CRS {source:?} (code {key}) is not in the vendored EPSG->PROJJSON table; \
              regenerate it with tools/gen_projjson.py if the code is valid"
+        ))
+    })?;
+    serde_json::from_str(raw.get()).map_err(|e| {
+        CityParquetError::Schema(format!(
+            "vendored PROJJSON entry for {key} is not valid JSON: {e}"
         ))
     })
 }

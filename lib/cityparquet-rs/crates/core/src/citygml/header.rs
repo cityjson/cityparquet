@@ -18,7 +18,7 @@
 //! with an explicit null CRS.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use cityparquet_schema::crs::{MM, axis_scale, resolve_to_projjson};
@@ -32,7 +32,17 @@ use super::xml::{NS_GML, get_attr, ns_is, read_text, xml_err};
 
 /// Build the CityJSON header (transform + metadata) for the document at `path`.
 pub fn parse_header(path: &Path) -> Result<CityJSON> {
-    let (srs_name, envelope) = scan_envelope(path)?;
+    let file = File::open(path)
+        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
+    parse_header_from(BufReader::new(file))
+}
+
+/// [`parse_header`] over any `BufRead`. It consumes the preamble (and, for a
+/// document that declares its CRS only on its objects, a bounded run of them),
+/// so a streaming caller that still needs those bytes records them and replays
+/// them ahead of the rest.
+pub fn parse_header_from<R: BufRead>(input: R) -> Result<CityJSON> {
+    let (srs_name, envelope) = scan_envelope(input)?;
 
     let translate = match &envelope {
         Some(e) => [e[0], e[1], e[2]],
@@ -99,10 +109,8 @@ pub fn parse_header(path: &Path) -> Result<CityJSON> {
 /// `srsName`, the scan continues into city objects looking for one — and for
 /// nothing else — because real exports declare the CRS per object and never
 /// ahead of the first `cityObjectMember`.
-fn scan_envelope(path: &Path) -> Result<(Option<String>, Option<[f64; 6]>)> {
-    let file = File::open(path)
-        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
-    let mut reader = NsReader::from_reader(BufReader::new(file));
+fn scan_envelope<R: BufRead>(input: R) -> Result<(Option<String>, Option<[f64; 6]>)> {
+    let mut reader = NsReader::from_reader(input);
     let mut buf = Vec::new();
 
     let mut srs_name: Option<String> = None;

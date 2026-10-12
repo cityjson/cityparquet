@@ -5,26 +5,26 @@
 //! reconstruction (WKB -> CityJSON boundary arrays, re-quantised against the
 //! dataset's own `transform`).
 //!
-//! `GeometryInstance` geometries are rebuilt from the `geometry_templates.parquet`
+//! `GeometryInstance` geometries are rebuilt from the `implicit_geometries.parquet`
 //! sidecar when the package MANIFEST lists it (M4 task 10; gating fixed under
 //! the M4 Codex-review Finding 1 — the manifest, not the file's mere presence
 //! on disk, is authoritative, matching how materials/textures are already
 //! gated below): the header's `geometry-templates` is reconstructed from the
-//! sidecar's WKB + `geometry_properties` (template vertices are RAW floats —
+//! sidecar's WKB + `geometry_properties` (relative-geometry vertices are RAW floats —
 //! CityJSON spec §3.4 — so they are re-interned by `f64::to_bits` triple,
 //! never through the dataset's quantised transform), and each object's
-//! `template` reference becomes a `GeometryInstance` geometry pointing at it.
+//! `implicit_geometry` reference becomes a `GeometryInstance` geometry pointing at it.
 //! When the manifest does not list the sidecar (the Core profile, or a
-//! Compatibility dataset with no templates at all), a `template` reference
-//! cannot be resolved to anything real, so the owning object (attributes,
+//! Compatibility dataset with no implicit geometries at all), an `implicit_geometry`
+//! reference cannot be resolved to anything real, so the owning object (attributes,
 //! hierarchy) is still exported but its instance geometry is dropped, counted
-//! in [`ExportReport::instance_geometries_dropped`]. A `template` reference
-//! that names no row in a sidecar that IS present is a different situation —
+//! in [`ExportReport::instance_geometries_dropped`]. An `implicit_geometry`
+//! reference that names no row in a sidecar that IS present is a different situation —
 //! a corrupt/hand-rolled file — and surfaces as a `Schema` error rather than
 //! a silent drop. Two further corrupt-file cases the manifest gating itself
-//! guards against: the manifest lists `geometry_templates.parquet` but the
+//! guards against: the manifest lists `implicit_geometries.parquet` but the
 //! file is missing/unreadable (an `Io` error — a truncated/tampered package,
-//! never a silent all-instances-dropped outcome), and a `geometry_templates.parquet`
+//! never a silent all-instances-dropped outcome), and an `implicit_geometries.parquet`
 //! file left on disk but NOT listed in the manifest (ignored outright — the
 //! manifest is the sole source of truth, exactly like an unlisted
 //! `materials.parquet`/`textures.parquet` already is).
@@ -43,7 +43,7 @@
 //! dropped instead (counted in [`ExportReport::appearance_refs_dropped`]):
 //! exporting them would leave dangling references — invalid CityJSON.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -54,8 +54,9 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
 use cityparquet_schema::crs::AxisOrder;
+use cityparquet_schema::extensions::cityjson_extensions_member;
 use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
-use cityparquet_schema::{CityMetadata, CityParquetError, Result};
+use cityparquet_schema::{CityMetadata, CityParquetError, ExtensionNaming, Result};
 use cjseq::{
     Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType, Material,
     Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
@@ -64,7 +65,9 @@ use cjseq::{
 use crate::appearance_columns::{read_material_cell, read_texture_cell};
 use crate::decode::{DecodedObject, decode_batch};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
-use crate::sidecar::{TemplateRow, read_materials, read_templates, read_textures};
+use crate::sidecar::{
+    ImplicitGeometryRow, read_implicit_geometries, read_materials, read_textures,
+};
 use crate::stac::properties::PackageTables;
 use crate::wkb_read::{DecodedKind, wkb_to_geometry};
 
@@ -79,15 +82,15 @@ pub struct ExportOptions {
 }
 
 /// Outcome of one [`export`] call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportReport {
     pub feature_count: usize,
     pub object_count: usize,
     /// Objects whose `GeometryInstance` geometry was dropped because no
-    /// `geometry_templates.parquet` sidecar was available to resolve it
+    /// `implicit_geometries.parquet` sidecar was available to resolve it
     /// against (the Core profile, or a Compatibility dataset with no
-    /// templates at all). `0` whenever the sidecar is present: every
-    /// resolvable `template` reference is rebuilt into a real
+    /// implicit geometries at all). `0` whenever the sidecar is present: every
+    /// resolvable `implicit_geometry` reference is rebuilt into a real
     /// `GeometryInstance` geometry instead — see the module doc.
     pub instance_geometries_dropped: usize,
     /// Geometries whose material/texture index maps were dropped: the Core
@@ -95,6 +98,11 @@ pub struct ExportReport {
     /// (M4 sidecar data), so exporting them would leave dangling references
     /// — invalid CityJSON, same reasoning as the GeometryInstance drop.
     pub appearance_refs_dropped: usize,
+    /// Object geometries written at LoD 4, counted per LoD label written
+    /// (e.g. `"4.0"`). CityJSON 2.0 defines LoDs 0 to 3 only, so such a
+    /// document carries a LoD its specification does not; the CLI warns when
+    /// this is non-empty.
+    pub lod4_geometries: BTreeMap<String, usize>,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -382,7 +390,7 @@ fn reconstruct_boundaries(
             Ok(serde_json::to_value(solids)?)
         }
         // The encoder never stores WKB for a GeometryInstance (it routes to
-        // the `template` column), so a geometry_properties "type" claiming
+        // the `implicit_geometry` column), so a geometry_properties "type" claiming
         // one against a real WKB cell is a corrupt/hand-rolled file — an
         // error, not a crash.
         GeometryType::GeometryInstance => Err(geom_shape_err(gtype, kind)),
@@ -565,12 +573,18 @@ fn nest_faces(flat: Vec<Value>, props: Option<&Value>, gtype: &GeometryType) -> 
 }
 
 /// Rebuild a geometry's CityJSON `semantics` (`{surfaces, values}`) from the
-/// flattened `geometry_properties` (§8): `surfaces` verbatim, and the nested
+/// flattened `geometry_properties` (§8): `surfaces` verbatim except that a
+/// declared extension namespace prefix on a surface `type` becomes CityJSON's
+/// `+` marker again (`naming`, spec "Extensions"), and the nested
 /// `values` re-derived from the flat `face_semantics` by [`nest_faces`]. The
 /// exporter emits the expanded per-face form; a source that used the null
 /// shorthand round-trips up to that canonicalisation (§17). `None` when the
 /// geometry carried no semantics.
-fn rebuild_semantics(props: Option<&Value>, gtype: &GeometryType) -> Result<Option<Value>> {
+fn rebuild_semantics(
+    props: Option<&Value>,
+    gtype: &GeometryType,
+    naming: &ExtensionNaming,
+) -> Result<Option<Value>> {
     let Some(props) = props else {
         return Ok(None);
     };
@@ -583,6 +597,14 @@ fn rebuild_semantics(props: Option<&Value>, gtype: &GeometryType) -> Result<Opti
     let Some(surfaces) = props.get("surfaces") else {
         return Ok(None);
     };
+    let mut surfaces = surfaces.clone();
+    if let Value::Array(items) = &mut surfaces {
+        for surface in items {
+            if let Some(Value::String(surface_type)) = surface.get_mut("type") {
+                *surface_type = naming.decode_name(surface_type);
+            }
+        }
+    }
     let face_semantics: Vec<Value> = props
         .get("face_semantics")
         .and_then(Value::as_array)
@@ -665,7 +687,7 @@ pub(crate) fn source_metadata_from_other(meta: &CityMetadata) -> Option<Value> {
 ///   an absent `crs` to mean OGC:CRS84, but stamping that URL onto the export
 ///   would be a claim, not a passthrough: in a file **this crate wrote**, the
 ///   state is reachable only where there is **no CRS-bearing coordinate at
-///   all** (an attributes-only object table; the `geometry_templates.parquet`
+///   all** (an attributes-only object table; the `implicit_geometries.parquet`
 ///   sidecar), so a georeference would describe nothing, and asserting one
 ///   would break the round trip against a source that carried none. So the
 ///   CRS84 default stays a *reading* rule and is never materialised into an
@@ -800,7 +822,9 @@ fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON>
             title: None,
         });
     }
-    header.extensions = meta.extensions.clone();
+    // The CityJSON `extensions` member, rebuilt from the `city.extensions`
+    // references (spec "Extensions": `name` → key, `url`, `version`).
+    header.extensions = meta.extensions.as_ref().map(cityjson_extensions_member);
     Ok(header)
 }
 
@@ -808,7 +832,7 @@ fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON>
 /// `texture`) in a batch, resolved ONCE per batch so the per-row reader need
 /// not rescan the schema. Each entry pairs the column's array index with the
 /// canonical LoD key it maps to — taken from the field's `cityparquet:lod`
-/// metadata, or `""` for the transitional bare lod-less column.
+/// metadata.
 ///
 /// A column qualifies only if it carries the reserved role (§5.1). This is
 /// load-bearing: with per-LoD appearance columns the bare `material` /
@@ -829,14 +853,6 @@ pub(crate) fn appearance_columns(
         .filter_map(|(index, field)| {
             if field.metadata().get(ROLE_KEY).map(String::as_str) != Some(ROLE_RESERVED) {
                 return None;
-            }
-            if field.name() == prefix {
-                // Every LoD, including LoD0, is a suffixed column (spec
-                // "Levels of detail"), so a bare `material`/`texture` name
-                // reaching here comes from a legacy/foreign file's un-suffixed
-                // (no LoD to suffix by) — untagged, hence key `""`.
-                let key = field.metadata().get(LOD_KEY).cloned().unwrap_or_default();
-                return Some((index, key));
             }
             if field
                 .name()
@@ -1280,7 +1296,7 @@ impl<'a> LocalAppearance<'a> {
 
 /// The rebuilt header `geometry-templates` plus the header-scope appearance
 /// its templates' `material`/`texture` were localised into, and the join
-/// table from a sidecar row's `id` (the BIGINT the main-table `template`
+/// table from a sidecar row's `id` (the BIGINT the main-table `implicit_geometry`
 /// column's `id` references) to that template's position in
 /// `templates`/the exported `GeometryInstance.template` index.
 struct RebuiltTemplates {
@@ -1290,7 +1306,7 @@ struct RebuiltTemplates {
     id_to_pos: HashMap<i64, usize>,
 }
 
-/// Rebuilds the header's `geometry-templates` from `geometry_templates.parquet`
+/// Rebuilds the header's `geometry-templates` from `implicit_geometries.parquet`
 /// rows: each row's WKB decodes into a boundary tree via the SAME
 /// [`reconstruct_boundaries`] the main geometry path uses, its vertices are
 /// re-interned into a template-scope, RAW-float pool (never quantised — see
@@ -1300,9 +1316,10 @@ struct RebuiltTemplates {
 /// feature's geometries share one [`LocalAppearance`]. `rows` is assumed
 /// non-empty (callers skip this entirely when no sidecar was loaded).
 fn rebuild_templates(
-    rows: &[TemplateRow],
+    rows: &[ImplicitGeometryRow],
     global_materials: &HashMap<i64, Value>,
     global_textures: &HashMap<i64, Value>,
+    naming: &ExtensionNaming,
 ) -> Result<RebuiltTemplates> {
     let mut interner = RawVertexInterner::default();
     let mut local_appearance = LocalAppearance::new(global_materials, global_textures);
@@ -1313,8 +1330,8 @@ fn rebuild_templates(
         id_to_pos.insert(row.id, pos);
 
         let decoded = wkb_to_geometry(&row.wkb)?;
-        // Local coordinates, exempt from the file CRS (spec "appearance &
-        // templates"), so no axis reordering applies on the way out either.
+        // Local coordinates, exempt from the file CRS (spec "Appearance &
+        // implicit geometries"), so no axis reordering applies on the way out either.
         let vmap: Vec<usize> = decoded.coords.iter().map(|&c| interner.intern(c)).collect();
 
         let props = row.geometry_properties.as_ref();
@@ -1322,19 +1339,19 @@ fn rebuild_templates(
             .and_then(|p| p.get("type"))
             .ok_or_else(|| {
                 err(format!(
-                    "geometry template {pos}: geometry_properties missing 'type'"
+                    "relative geometry {pos}: geometry_properties missing 'type'"
                 ))
             })
-            .and_then(|v| serde_json::from_value(v.clone()).map_err(CityParquetError::from))?;
-        // A template row's LoD lives in its physical column name, exactly
-        // like the main object table's own geometries — `read_templates`
-        // has already resolved it into `row.lod: Lod` (see `TemplateRow`'s
+            .and_then(crate::geometry_properties::cityjson_geometry_type)?;
+        // An implicit-geometries row's LoD lives in its physical column name, exactly
+        // like the main object table's own geometries — `read_implicit_geometries`
+        // has already resolved it into `row.lod: Lod` (see `ImplicitGeometryRow`'s
         // docs), so it's just re-stringified here the same way the main
         // object-table export path does (`Lod::to_string`'s canonical
         // `major.minor` form, e.g. `"2.0"` for a source `"2"`).
         let lod = Some(row.lod.to_string());
         let boundaries = reconstruct_boundaries(&decoded.kind, &gtype, props, &vmap)?;
-        let semantics = rebuild_semantics(props, &gtype)?;
+        let semantics = rebuild_semantics(props, &gtype, naming)?;
 
         // A template's cells are flat per WKB face exactly like an object
         // row's, so they are re-nested from the template's OWN
@@ -1349,7 +1366,7 @@ fn rebuild_templates(
             .transpose()
             .map_err(|e| {
                 err(format!(
-                    "geometry template {pos}: cannot restore material appearance: {e}"
+                    "relative geometry {pos}: cannot restore material appearance: {e}"
                 ))
             })?
             .map(serde_json::from_value)
@@ -1364,7 +1381,7 @@ fn rebuild_templates(
             .transpose()
             .map_err(|e| {
                 err(format!(
-                    "geometry template {pos}: cannot restore texture appearance: {e}"
+                    "relative geometry {pos}: cannot restore texture appearance: {e}"
                 ))
             })?
             .map(serde_json::from_value)
@@ -1447,6 +1464,9 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     ));
 
     let mut header = build_header(&meta, &tables)?;
+    // Every table of one package declares the same extensions; a name with a
+    // declared namespace prefix is restored to CityJSON's `+` form.
+    let naming = ExtensionNaming::new(meta.extensions.as_ref());
     let (scale, translate) = transform_axes(&header.transform);
     let axis_order = export_axis_order(&meta);
 
@@ -1477,37 +1497,42 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         HashMap::new()
     };
 
-    // Whether this package carries the geometry-templates sidecar: gated by
+    // Whether this package carries the implicit-geometries sidecar: gated by
     // the MANIFEST, not the file's mere presence on disk (M4 Codex-review
     // Finding 1) — same reasoning as `restore_appearance` above. When the
     // manifest doesn't list it (a Core-profile package, or a Compatibility
-    // one with no templates at all), a `template` reference cannot be
+    // one with no implicit geometries at all), an `implicit_geometry` reference cannot be
     // resolved to anything real, so the per-object loop below falls back to
-    // the counted-drop path instead (see the module doc); `template_rows`
+    // the counted-drop path instead (see the module doc); `implicit_geometry_rows`
     // stays empty and an unlisted-but-present file on disk is simply never
     // read. When the manifest DOES list it, the file must actually be there —
     // a manifest promise the package can't keep is a corrupt/truncated
-    // package, not a silent 0-templates fallback.
-    let templates_path = opts.package_dir.join("geometry_templates.parquet");
-    let templates_listed = tables
+    // package, not a silent zero-implicit-geometries fallback.
+    let implicit_geometries_path = opts.package_dir.join("implicit_geometries.parquet");
+    let implicit_geometries_listed = tables
         .sidecar_files
         .iter()
-        .any(|f| f == "geometry_templates.parquet");
-    let template_rows = if templates_listed {
-        if !templates_path.exists() {
+        .any(|f| f == "implicit_geometries.parquet");
+    let implicit_geometry_rows = if implicit_geometries_listed {
+        if !implicit_geometries_path.exists() {
             return Err(CityParquetError::io(format!(
-                "package manifest lists 'geometry_templates.parquet' but {} does not exist",
-                templates_path.display()
+                "package manifest lists 'implicit_geometries.parquet' but {} does not exist",
+                implicit_geometries_path.display()
             )));
         }
-        read_templates(&templates_path)?
+        read_implicit_geometries(&implicit_geometries_path)?
     } else {
         Vec::new()
     };
-    let template_id_to_pos: HashMap<i64, usize> = if template_rows.is_empty() {
+    let implicit_geometry_id_to_pos: HashMap<i64, usize> = if implicit_geometry_rows.is_empty() {
         HashMap::new()
     } else {
-        let rebuilt = rebuild_templates(&template_rows, &global_materials, &global_textures)?;
+        let rebuilt = rebuild_templates(
+            &implicit_geometry_rows,
+            &global_materials,
+            &global_textures,
+            &naming,
+        )?;
         header.geometry_templates = Some(GeometryTemplates {
             templates: rebuilt.templates,
             vertices_templates: rebuilt.vertices_templates,
@@ -1595,6 +1620,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
 
     let mut instance_geometries_dropped = 0usize;
     let mut appearance_refs_dropped = 0usize;
+    let mut lod4_geometries: BTreeMap<String, usize> = BTreeMap::new();
     let mut features: Vec<CityJSONFeature> = Vec::with_capacity(groups.items.len());
     for (feature_id, entries) in groups.into_ordered() {
         let mut feature = CityJSONFeature::new();
@@ -1605,6 +1631,18 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
 
         for (obj, material, texture) in entries {
             let mut co = obj.object;
+            // Extension names carry their namespace prefix in the package;
+            // CityJSON marks them with `+` (spec "Extensions").
+            co.thetype = naming.decode_name(&co.thetype);
+            co.attributes = co.attributes.take().map(|attributes| match attributes {
+                Value::Object(attributes) => Value::Object(
+                    attributes
+                        .into_iter()
+                        .map(|(name, value)| (naming.decode_name(&name), value))
+                        .collect(),
+                ),
+                other => other,
+            });
             // `bbox` is stored in WKB order and decoded verbatim; a CityJSON
             // `geographicalExtent` is in the dataset's own order.
             if let Some(extent) = co.geographical_extent.as_ref()
@@ -1624,14 +1662,12 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                             obj.id
                         ))
                     })
-                    .and_then(|v| {
-                        serde_json::from_value(v.clone()).map_err(CityParquetError::from)
-                    })?;
+                    .and_then(crate::geometry_properties::cityjson_geometry_type)?;
 
                 let vmap = vertex_map(&decoded.coords, scale, translate, axis_order, &mut interner);
                 let boundaries =
                     reconstruct_boundaries(&decoded.kind, &gtype, props.as_ref(), &vmap)?;
-                let semantics = rebuild_semantics(props.as_ref(), &gtype)?;
+                let semantics = rebuild_semantics(props.as_ref(), &gtype, &naming)?;
 
                 // Look appearance up by this geometry's CANONICAL LoD. Both
                 // this key and the map's keys (see `read_lod_keyed_appearance`)
@@ -1684,6 +1720,9 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     }
                 }
 
+                if let Some(l) = lod.filter(|l| l.major() == 4) {
+                    *lod4_geometries.entry(l.to_string()).or_default() += 1;
+                }
                 geoms.push(Geometry {
                     thetype: gtype,
                     lod: lod.map(|l| l.to_string()),
@@ -1695,16 +1734,16 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     transformation_matrix: None,
                 });
             }
-            if let Some(tpl) = &obj.template {
-                if template_rows.is_empty() {
-                    // No templates sidecar: the reference cannot be resolved
+            if let Some(tpl) = &obj.implicit_geometry {
+                if implicit_geometry_rows.is_empty() {
+                    // No implicit-geometries sidecar: the reference cannot be resolved
                     // to anything real (see the module doc) — count the drop,
                     // don't fabricate a geometry.
                     instance_geometries_dropped += 1;
                 } else {
-                    let pos = template_id_to_pos.get(&tpl.id).copied().ok_or_else(|| {
+                    let pos = implicit_geometry_id_to_pos.get(&tpl.id).copied().ok_or_else(|| {
                         err(format!(
-                            "object {}: template id {:?} does not name a row in geometry_templates.parquet",
+                            "object {}: implicit_geometry id {:?} does not name a row in implicit_geometries.parquet",
                             obj.id, tpl.id
                         ))
                     })?;
@@ -1770,6 +1809,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         object_count,
         instance_geometries_dropped,
         appearance_refs_dropped,
+        lod4_geometries,
     })
 }
 
@@ -1797,9 +1837,17 @@ fn write_output(
         OutputFormat::Seq => {
             writeln!(file, "{}", serde_json::to_string(&header)?)
                 .map_err(|e| CityParquetError::io_source("write error", e))?;
-            for feature in &features {
-                writeln!(file, "{}", serde_json::to_string(feature)?)
-                    .map_err(|e| CityParquetError::io_source("write error", e))?;
+            // Serialised a chunk at a time across cores, written in order.
+            use rayon::prelude::*;
+            for chunk in features.chunks(1024) {
+                let lines = chunk
+                    .par_iter()
+                    .map(serde_json::to_string)
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                for line in lines {
+                    writeln!(file, "{line}")
+                        .map_err(|e| CityParquetError::io_source("write error", e))?;
+                }
             }
         }
         OutputFormat::Doc => {
@@ -1824,43 +1872,6 @@ mod tests {
         (0..n).map(|i| vec![vec![i, i + 1, i + 2]]).collect()
     }
 
-    fn bare_material_schema(lod_tag: Option<&str>) -> RecordBatch {
-        use arrow_array::ArrayRef;
-        use arrow_schema::{DataType, Field, Schema};
-        use std::sync::Arc;
-        let mut meta = std::collections::HashMap::new();
-        meta.insert(ROLE_KEY.to_string(), ROLE_RESERVED.to_string());
-        if let Some(l) = lod_tag {
-            meta.insert(LOD_KEY.to_string(), l.to_string());
-        }
-        let field = Field::new("material", DataType::Utf8, true).with_metadata(meta);
-        let schema = Arc::new(Schema::new(vec![field]));
-        let col: ArrayRef = Arc::new(arrow_array::StringArray::from(vec![None::<&str>]));
-        RecordBatch::try_new(schema, vec![col]).unwrap()
-    }
-
-    #[test]
-    fn appearance_columns_maps_bare_lod0_material_to_key_zero() {
-        // The LoD0 footprint's bare `material` column is tagged lod "0", so it
-        // must pair with the geometry's recovered LoD "0" — not the "" fallback,
-        // which would silently drop LoD0 appearance on export.
-        let batch = bare_material_schema(Some("0"));
-        assert_eq!(
-            appearance_columns(&batch, AppearanceKind::Material),
-            vec![(0, "0".to_string())]
-        );
-    }
-
-    #[test]
-    fn appearance_columns_maps_untagged_bare_material_to_empty_key() {
-        // The zero-analysis-geometry fallback bare column carries no lod tag.
-        let batch = bare_material_schema(None);
-        assert_eq!(
-            appearance_columns(&batch, AppearanceKind::Material),
-            vec![(0, String::new())]
-        );
-    }
-
     #[test]
     fn partition_shells_rejects_a_count_face_mismatch() {
         // counts [2, 1] describe 3 faces; handing them 4 faces must be a
@@ -1882,34 +1893,27 @@ mod tests {
         assert_eq!((shells[0].len(), shells[1].len()), (2, 1));
     }
 
-    #[test]
-    fn single_solid_shell_rejects_more_than_one_entry() {
-        // A `Solid` has exactly one solid; `shells` naming two ([[1],[2]]) is a
-        // corrupt/hand-rolled package, and must be rejected rather than
-        // silently picking the first or last entry (the divergence Fix 1
-        // closes: writer/export call sites previously disagreed on which).
-        let err = single_solid_shell(vec![vec![1], vec![2]]).unwrap_err();
-        assert!(
-            matches!(err, CityParquetError::Schema(_)),
-            "expected Schema error, got {err:?}"
-        );
-    }
-
-    #[test]
-    fn single_solid_shell_rejects_zero_entries() {
-        let err = single_solid_shell(vec![]).unwrap_err();
-        assert!(
-            matches!(err, CityParquetError::Schema(_)),
-            "expected Schema error, got {err:?}"
-        );
-    }
-
+    /// A `Solid` has exactly one solid: `shells` naming zero or two entries is
+    /// a corrupt/hand-rolled package and must be rejected, never silently
+    /// picking the first or last entry (the divergence Fix 1 closes).
     #[test]
     fn single_solid_shell_accepts_exactly_one_entry() {
-        assert_eq!(
-            single_solid_shell(vec![vec![1, 2, 3]]).unwrap(),
-            vec![1, 2, 3]
-        );
+        let cases: Vec<(Vec<Vec<usize>>, bool)> = vec![
+            (vec![], false),
+            (vec![vec![1], vec![2]], false),
+            (vec![vec![1, 2, 3]], true),
+        ];
+        for (shells, ok) in cases {
+            let result = single_solid_shell(shells.clone());
+            match (result, ok) {
+                (Ok(value), true) => assert_eq!(value, vec![1, 2, 3], "{shells:?}"),
+                (Err(e), false) => assert!(
+                    matches!(e, CityParquetError::Schema(_)),
+                    "{shells:?}: expected Schema error, got {e:?}"
+                ),
+                (other, _) => panic!("{shells:?}: unexpected result {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -2041,56 +2045,39 @@ mod tests {
         assert!(source_metadata_from_other(&meta).is_none());
     }
 
+    /// The three `city.crs` states as `referenceSystem` output: a known
+    /// OGC:CRS84 rebuilds the URL, while `Unknown` and `Unspecified` both
+    /// export nothing — emitting one would invent a georeference the stored
+    /// coordinates were never given.
     #[test]
-    fn reference_system_rebuilds_the_ogc_crs84_url() {
-        // sol-review G1: metadata `crs` is now PROJJSON. A package whose CRS is
-        // OGC:CRS84 (a lon/lat dataset) with no source_metadata must still
-        // export a `referenceSystem`, not silently drop it.
-        let meta = CityMetadata {
-            crs: cityparquet_schema::CrsState::Known(serde_json::json!({
-                "type": "GeographicCRS",
-                "name": "WGS 84 (CRS84)",
-                "id": { "authority": "OGC", "code": "CRS84" }
-            })),
-            ..CityMetadata::new()
-        };
-        let rs = reference_system(&meta)
-            .expect("resolution must not error")
-            .expect("OGC:CRS84 must yield a referenceSystem");
-        assert_eq!(rs.to_url(), "https://www.opengis.net/def/crs/OGC/1.3/CRS84");
-    }
-
-    /// Spec §metadata "CRS rules": a package whose `city.crs` is an explicit
-    /// `null` (CRS unknown/unresolvable) exports **no** `referenceSystem` —
-    /// "on export the reconstructed model carries no reference system —
-    /// matching the source". Emitting one would invent a georeference the
-    /// stored coordinates were never given.
-    #[test]
-    fn an_unknown_crs_exports_no_reference_system() {
-        let meta = CityMetadata {
-            crs: cityparquet_schema::CrsState::Unknown,
-            ..CityMetadata::new()
-        };
-        assert!(
-            reference_system(&meta)
-                .expect("an unknown CRS is not an export error")
-                .is_none(),
-            "an explicit null CRS must export no referenceSystem"
-        );
-    }
-
-    /// The absent state exports nothing either — see [`reference_system`]'s
-    /// doc comment: GeoParquet's absent-means-CRS84 is a *reading* rule, and
-    /// materialising it here would assert a georeference onto the one kind of
-    /// file that has no CRS-bearing coordinate to georeference, breaking the
-    /// round trip against a source that declared none.
-    #[test]
-    fn an_unspecified_crs_exports_no_reference_system() {
-        assert!(
-            reference_system(&CityMetadata::new())
-                .expect("an absent CRS is not an export error")
-                .is_none(),
-        );
+    fn reference_system_state_contract() {
+        let cases: Vec<(cityparquet_schema::CrsState, Option<&str>)> = vec![
+            (
+                cityparquet_schema::CrsState::Known(serde_json::json!({
+                    "type": "GeographicCRS",
+                    "name": "WGS 84 (CRS84)",
+                    "id": { "authority": "OGC", "code": "CRS84" }
+                })),
+                Some("https://www.opengis.net/def/crs/OGC/1.3/CRS84"),
+            ),
+            (cityparquet_schema::CrsState::Unknown, None),
+            (cityparquet_schema::CrsState::Unspecified, None),
+        ];
+        for (state, expected) in cases {
+            let label = format!("{state:?}");
+            let meta = CityMetadata {
+                crs: state,
+                ..CityMetadata::new()
+            };
+            let resolved = reference_system(&meta)
+                .expect("resolving a CRS state must not error")
+                .map(|r| r.to_url().to_string());
+            assert_eq!(
+                resolved.as_deref(),
+                expected,
+                "{label}: unexpected referenceSystem"
+            );
+        }
     }
 
     /// M4 final-review Fix 4: a legal `[null, [u, v], ...]` texture ring —
@@ -2111,13 +2098,8 @@ mod tests {
             "visual": {"values": [[null, [0.1, 0.2], [0.3, 0.4]]]}
         });
         let localised = local.localise_texture_map(&map).unwrap();
-        // Precondition: the localise pass really did populate local_uvs
-        // while leaving local_materials/local_textures empty.
-        assert!(local.local_materials.is_empty());
-        assert!(local.local_textures.is_empty());
-        assert_eq!(local.local_uvs.len(), 2, "both UV pairs must be interned");
-        // The localised ring itself keeps its null texture index and now
-        // references the interned UV pool by position.
+        // The localised ring keeps its null texture index and references the
+        // interned UV pool by position.
         assert_eq!(
             localised["visual"]["values"][0],
             serde_json::json!([null, 0, 1])

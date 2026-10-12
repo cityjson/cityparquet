@@ -1,4 +1,7 @@
-compose := "podman-compose -f docker/compose.yml"
+# Every container call goes through the engine cascade (Apple `container` >
+# docker > podman; override with CITYBENCH_CONTAINER_ENGINE). See src/citybench/engine.py.
+engine := `uv run --quiet python -m citybench.engine binary 2>/dev/null || echo podman`
+compose := "`uv run --quiet python -m citybench.engine compose` -f docker/compose.yml"
 
 # All mutable database state is an explicit bind mount below the shared
 # benchmark data root, never a named Podman volume.
@@ -57,7 +60,7 @@ down:
 
 # Build the pinned citydb-tool image.
 build-citydb:
-    podman build -t citybench/citydb-tool -f docker/citydb.Dockerfile docker/
+    {{engine}} build -t citybench/citydb-tool -f docker/citydb.Dockerfile docker/
 
 # Build the patched cjdb CjdbSystem drives (see vendor/cjdb/README.md).
 # Must be run once before any cjdb ingest (`just smoke`/`just bench`).
@@ -74,11 +77,16 @@ test-all:
 capture-schema DATASET:
     ./scripts/capture_schema.sh {{DATASET}}
 
-derive-params DATASET:
-    uv run python -m citybench.cli derive-params --dataset {{DATASET}}
+# Isolation (see README "Host isolation"): NUMA_NODE is a node id, `auto`
+# (most MemFree at run start; env BENCH_NUMA_NODE overrides the default) or
+# `off`; MAX_LOAD is a load threshold, `auto` (half the node's cores) or `off`.
+# DATASETS: `all`, or comma-separated manifest ids / source stems, each read
+# from PREPARED as <stem>.city.jsonl; one CSV + manifest per dataset id.
+bench-datasets DATASETS PREPARED='../runs/data/readbench' REPEAT='25' NUMA_NODE=env_var_or_default('BENCH_NUMA_NODE', 'auto') MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
+    uv run python -m citybench.cli run --datasets {{DATASETS}} --prepared-dir {{PREPARED}} --repeat {{REPEAT}} --numa-node {{NUMA_NODE}} --max-load {{MAX_LOAD}} --max-load-wait-s {{MAX_LOAD_WAIT_S}}
 
-bench DATASET REPEAT='7':
-    uv run python -m citybench.cli run --dataset {{DATASET}} --repeat {{REPEAT}}
+bench DATASET REPEAT='25' NUMA_NODE=env_var_or_default('BENCH_NUMA_NODE', 'auto') MAX_LOAD='auto' MAX_LOAD_WAIT_S='600':
+    uv run python -m citybench.cli run --dataset {{DATASET}} --repeat {{REPEAT}} --numa-node {{NUMA_NODE}} --max-load {{MAX_LOAD}} --max-load-wait-s {{MAX_LOAD_WAIT_S}}
 
 # Full pipeline on the small fixture. Must pass before any long run.
 smoke:

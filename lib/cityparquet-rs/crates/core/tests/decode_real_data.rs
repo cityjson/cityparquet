@@ -225,15 +225,18 @@ fn delft_decodes_every_object_with_correct_types_and_attributes() {
 /// entries excluded — also yields 8, so the raw count and the stored count
 /// coincide for this fixture).
 #[test]
-fn railway_decodes_templates_and_semantics() {
+fn railway_decodes_implicit_geometries_and_semantics() {
     let (_crs_dir, railway_path) = railway_fixture_with_crs();
     let objects = convert_and_decode_path(&railway_path, "lod3_railway.city.json");
     assert_eq!(objects.len(), 121);
 
-    let template_count = objects.iter().filter(|o| o.template.is_some()).count();
+    let implicit_geometry_count = objects
+        .iter()
+        .filter(|o| o.implicit_geometry.is_some())
+        .count();
     assert_eq!(
-        template_count, 15,
-        "expected exactly 15 objects with a template (the recount above)"
+        implicit_geometry_count, 15,
+        "expected exactly 15 objects with an implicit geometry (the recount above)"
     );
 
     let mut semantics_found = 0usize;
@@ -258,14 +261,14 @@ fn railway_decodes_templates_and_semantics() {
 /// geometry is `GeometryInstance`s (plus objects with no geometry) has no LoD
 /// to suffix, so — per spec "Levels of detail" ("a table whose objects have no
 /// analysis geometry ... simply carries no geometry column") — it carries NO
-/// geometry column at all; the instances route to `template`. This is the ONLY
+/// geometry column at all; the instances route to `implicit_geometry`. This is the ONLY
 /// way `lods` is empty now: a lod-less NON-instance geometry is rejected at
 /// scan (§9, CityJSON 2.0 §3), covered in `scan_real_data.rs`.
 ///
 /// Derived from `lod3_railway.city.json` by removing every non-instance
 /// geometry, keeping its 15 `GeometryInstance`s. Decode must handle a table
 /// with no geometry column without error and still route the instances to
-/// template.
+/// `implicit_geometry`.
 #[test]
 fn instances_only_dataset_carries_no_geometry_column() {
     let text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
@@ -287,7 +290,7 @@ fn instances_only_dataset_carries_no_geometry_column() {
         kept_instances, 15,
         "railway must carry 15 GeometryInstances to keep"
     );
-    // A GeometryInstance's `template.point` (the placement anchor, in
+    // A GeometryInstance's `implicit_geometry.point` (the placement anchor, in
     // DATASET coordinates) is itself a CRS-bearing coordinate (spec "CRS
     // rules"), so this instances-only derivative still needs a CRS, even
     // though it has no LoD-bearing analysis geometry at all.
@@ -347,7 +350,10 @@ fn instances_only_dataset_carries_no_geometry_column() {
     let total_geometries: usize = objects.iter().map(|o| o.geometries.len()).sum();
     assert_eq!(total_geometries, 0, "no non-instance geometry survives");
 
-    // The 15 GeometryInstances still route to template.
-    let template_count = objects.iter().filter(|o| o.template.is_some()).count();
-    assert_eq!(template_count, 15);
+    // The 15 GeometryInstances still route to `implicit_geometry`.
+    let implicit_geometry_count = objects
+        .iter()
+        .filter(|o| o.implicit_geometry.is_some())
+        .count();
+    assert_eq!(implicit_geometry_count, 15);
 }

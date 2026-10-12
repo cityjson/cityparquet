@@ -19,11 +19,11 @@ use arrow_array::types::Int32Type;
 use arrow_array::{ArrayRef, Float64Array, RecordBatch, StructArray};
 use arrow_buffer::NullBufferBuilder;
 use arrow_schema::{DataType, Field, Schema};
-use cjseq::{CityJSON, CityJSONFeature, CityObject, Geometry, GeometryType, Transform};
+use cjseq::{CityJSONFeature, CityObject, Geometry, GeometryType, Transform};
 use serde_json::Value;
 
 use cityparquet_schema::crs::AxisOrder;
-use cityparquet_schema::{AttributeType, CityParquetError, Lod, Result, normalise_attribute_name};
+use cityparquet_schema::{AttributeType, CityParquetError, ExtensionNaming, Lod, Result};
 
 use crate::appearance::AppearanceInterner;
 use crate::appearance_columns::{
@@ -31,7 +31,7 @@ use crate::appearance_columns::{
 };
 use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder};
 use crate::scan::ScanResult;
-use crate::source::{FeatureIter, Source};
+use crate::source::{FeatureIter, OrderedFeatures, Source};
 use crate::wkb_write::{VertexPool, geometry_bbox, geometry_to_wkb, point_to_wkb};
 
 /// Members carried by a dedicated column, stripped from the `other` payload
@@ -50,14 +50,15 @@ pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 8] = [
     "geographicalExtent",
 ];
 
-/// The object serialised to its JSON member map — computed ONCE per row by
-/// [`RowWriter::push_object`] and shared by every consumer needing members
-/// cjseq has no typed field for (`children_roles`, `address`, the `other`
-/// leftovers), instead of each consumer re-serialising the whole object
-/// (review P5b: three whole-object serialisations per row).
+/// The object's members cjseq has no typed field for (`children_roles`,
+/// `address`, and the `other` leftovers) — read once per row by
+/// [`RowWriter::push_object`] and shared by every consumer of them. The typed
+/// fields (`type`, `attributes`, `geometry`, `children`, `parents`,
+/// `geographicalExtent`) are never in it, so no whole-object serialisation
+/// is needed to reach these.
 pub(crate) fn object_json(co: &CityObject) -> Result<serde_json::Map<String, Value>> {
-    match serde_json::to_value(co)? {
-        Value::Object(map) => Ok(map),
+    match co.other_members() {
+        Value::Object(map) => Ok(map.clone()),
         _ => Ok(serde_json::Map::new()),
     }
 }
@@ -84,35 +85,14 @@ pub(crate) fn unmapped_object_members(co: &CityObject) -> Result<serde_json::Map
     Ok(unmapped_from_json(object_json(co)?))
 }
 
-/// Collect an object's diverted attributes (those whose name is in
-/// `diverted`) into a plain JSON map keyed by source attribute name — merged
-/// into the `other` column's cell value alongside the object's unmapped
-/// members (spec "Column naming and reservation rules"; gap 14 — this used
-/// to ride inside `other` under a `cityparquet:diverted_attributes`
-/// transport key, then briefly its own dedicated reserved column, now
-/// folded back into `other` itself since a reader restores every `other`
-/// entry into `attributes` regardless of why it is there). `None` when there
-/// is nothing to divert for this row. Null attribute values are skipped —
-/// the column path drops them and the comparator treats null as absent, so
-/// keeping them would make the diverted path spuriously non-null and
-/// inconsistent.
-fn collect_diverted_attributes(
-    co: &CityObject,
-    diverted: &[String],
-) -> Option<serde_json::Map<String, Value>> {
-    if diverted.is_empty() {
-        return None;
-    }
-    let attrs = co.attributes.as_ref().and_then(Value::as_object)?;
-    let mut map = serde_json::Map::new();
-    for name in diverted {
-        if let Some(v) = attrs.get(name)
-            && !v.is_null()
-        {
-            map.insert(name.clone(), v.clone());
-        }
-    }
-    (!map.is_empty()).then_some(map)
+/// The column a source attribute is stored under: its extension name with the
+/// namespace prefix (spec "Extensions"), escaped with a leading `_` when it
+/// collides with a reserved column name (spec "Column naming and reservation
+/// rules"). `scan` and the row writer both key attributes by this name.
+pub(crate) fn stored_attribute_name(naming: &ExtensionNaming, source: &str) -> Result<String> {
+    Ok(cityparquet_schema::reserved::escape_attribute_name(
+        &naming.encode_name(source, "attribute")?,
+    ))
 }
 
 /// Counters for the row-population edge cases the binding rules ask us to
@@ -132,17 +112,11 @@ pub struct EncodeStats {
     /// Surfaces the writer dropped because their exterior ring was one of
     /// the above, counted over STORED geometries.
     pub degenerate_surfaces_dropped: usize,
-    /// Attribute values diverted into the `other` column because their name
-    /// collides with a reserved/geometry column name (§5.2, G12). Counted
-    /// over all objects: a diverted attribute is preserved but is not
-    /// a queryable column, so the conversion report surfaces it (see
-    /// [`ScanResult::diverted_attribute_names`] for the names).
-    pub diverted_attribute_values: usize,
     /// LoD0 footprints synthesised into the `geometry_lod0_0` column for
     /// objects lacking a source LoD0 (spec "LoD0 synthesis").
     pub synthesized_lod0_footprints: usize,
     /// Unmapped top-level members dropped because an attribute of the same
-    /// name exists on the object (diverted or column-backed): the attribute
+    /// name exists on the object: the attribute
     /// wins ("warn and prefer attribute"), so `other` never carries an entry
     /// duplicating one of the object's own attributes — a reader
     /// MUST-errors on that (`merge_other_members` in `src/decode.rs`), so
@@ -506,10 +480,7 @@ pub(crate) fn compute_geometry_properties(
     geom: &Geometry,
     dropped_surfaces: &[usize],
 ) -> Result<GeometryProperties> {
-    let type_name = serde_json::to_value(&geom.thetype)?
-        .as_str()
-        .ok_or_else(|| CityParquetError::Schema("geometry type is not a string".to_string()))?
-        .to_string();
+    let type_name = crate::geometry_properties::cm_geometry_type(&geom.thetype)?;
 
     let mut surfaces = None;
     let mut face_semantics = None;
@@ -548,40 +519,51 @@ pub(crate) fn compute_geometry_properties(
     })
 }
 
-/// `(template id, WKB point, transformationMatrix)` — one resolved
-/// `template` column's worth of data. The matrix is the flat, row-major
+/// `(relative-geometry id, WKB point, transformationMatrix)` — one resolved
+/// `implicit_geometry` column's worth of data. The matrix is the flat, row-major
 /// 16-value list the reserved `LIST<DOUBLE>` column stores (spec "Appearance
-/// & templates").
-type TemplateFields = (i64, Vec<u8>, Option<Vec<f64>>);
+/// & implicit geometries").
+type ImplicitGeometryFields = (i64, Vec<u8>, Option<Vec<f64>>);
 
 /// Parses a CityJSON `transformationMatrix` value into the flat 16-value
 /// list the reserved column stores, erroring — not silently truncating or
 /// padding — when it is not an array of exactly 16 numbers (spec "Appearance
-/// & templates": "exactly 16 values when non-null").
+/// & implicit geometries": "exactly 16 values when non-null"), and when it is
+/// not affine: its last row MUST be exactly `0, 0, 0, 1` (spec "Placement").
 fn parse_transformation_matrix(v: &Value) -> Result<Vec<f64>> {
     let values: Vec<f64> = serde_json::from_value(v.clone()).map_err(|e| {
         CityParquetError::Schema(format!(
-            "template.transformationMatrix is not an array of numbers: {e}"
+            "implicit_geometry.transformationMatrix is not an array of numbers: {e}"
         ))
     })?;
     if values.len() != 16 {
         return Err(CityParquetError::Schema(format!(
-            "template.transformationMatrix must have exactly 16 values (a flat row-major \
+            "implicit_geometry.transformationMatrix must have exactly 16 values (a flat row-major \
              4x4), got {}",
             values.len()
+        )));
+    }
+    if values[12..] != [0.0, 0.0, 0.0, 1.0] {
+        return Err(CityParquetError::Schema(format!(
+            "implicit_geometry.transformationMatrix must be affine, its last row 0, 0, 0, 1; \
+             got {:?} (a projective matrix has no meaning for an implicit geometry)",
+            &values[12..]
         )));
     }
     Ok(values)
 }
 
-/// `template` binding rule: built from the first `GeometryInstance`
-/// geometry on the object; `None` when it can't be resolved (missing
-/// template index, empty/malformed boundaries) so callers null the column
+/// `implicit_geometry` binding rule: built from the first CityJSON
+/// `GeometryInstance` geometry on the object; `None` when it can't be
+/// resolved (missing `template` index, empty/malformed boundaries) so callers null the column
 /// rather than panic. A present but malformed `transformationMatrix` (wrong
 /// length or non-numeric) is a hard error, not a graceful drop — see
 /// [`parse_transformation_matrix`].
-fn build_template(geom: &Geometry, pool: &VertexPool) -> Result<Option<TemplateFields>> {
-    let Some(template_id) = geom.template else {
+fn build_implicit_geometry(
+    geom: &Geometry,
+    pool: &VertexPool,
+) -> Result<Option<ImplicitGeometryFields>> {
+    let Some(template_index) = geom.template else {
         return Ok(None);
     };
     let Ok(idxs) = serde_json::from_value::<Vec<usize>>(geom.boundaries.clone()) else {
@@ -597,9 +579,9 @@ fn build_template(geom: &Geometry, pool: &VertexPool) -> Result<Option<TemplateF
         .map(parse_transformation_matrix)
         .transpose()?;
     // CityJSON's `template` is the index into `geometry-templates.templates`,
-    // which `build_template_rows` also uses as the sidecar row's `id` — so this
-    // reference resolves by value against `geometry_templates.parquet`.
-    Ok(Some((template_id as i64, point, matrix)))
+    // which `build_implicit_geometry_rows` also uses as the sidecar row's `id` — so this
+    // reference resolves by value against `implicit_geometries.parquet`.
+    Ok(Some((template_index as i64, point, matrix)))
 }
 
 /// One `address[]` entry's resolved fields, ready for the reserved `address`
@@ -617,7 +599,7 @@ struct AddressRow {
 /// malformed (wrong `type`, unparsable `boundaries`, empty, or an
 /// out-of-range vertex index) — a best-effort address field, not load-bearing
 /// geometry, so a malformed one is silently dropped rather than aborting the
-/// whole conversion (mirrors [`build_template`]'s graceful-degradation
+/// whole conversion (mirrors [`build_implicit_geometry`]'s graceful-degradation
 /// style).
 fn build_location_wkb(location: &Value, pool: &VertexPool) -> Option<Vec<u8>> {
     let obj = location.as_object()?;
@@ -702,7 +684,7 @@ struct GeometryAccumulator {
     /// mismatch that the old single-column layout had to guard against
     /// cannot arise: a LoD's geometry, semantics and appearance share one key.
     slots: HashMap<String, GeometrySlotData>,
-    template: Option<TemplateFields>,
+    implicit_geometry: Option<ImplicitGeometryFields>,
     own_bbox: Option<[f64; 6]>,
 }
 
@@ -765,10 +747,10 @@ pub(crate) struct LocalDefs<'a> {
 /// dataset-global ids from `interner` and UV pairs inlined — and build its
 /// `geometry_properties` struct value. This is the exact per-geometry
 /// appearance pipeline [`accumulate_geometry`] runs for a feature's own
-/// geometries, factored out so the geometry-templates sidecar
+/// geometries, factored out so the implicit-geometries sidecar
 /// (`crate::package`) can run the identical rules over `Source::header`'s
 /// `geometry_templates` after the main encode pass, through the SAME
-/// interner — a template's `material`/`texture`/`semantics` follow the same
+/// interner — a CityJSON template's `material`/`texture`/`semantics` follow the same
 /// CityJSON shapes as a regular geometry's, so the same rules apply verbatim.
 ///
 /// A cell is `None` when the geometry carries no map at all AND when the map
@@ -777,7 +759,7 @@ pub(crate) struct LocalDefs<'a> {
 /// map is written as a null cell rather than as an empty MAP.
 ///
 /// `context` names the geometry in any interner error surfaced (e.g.
-/// `"object abc123"` or `"geometry template 0"`).
+/// `"object abc123"` or `"relative geometry 0"`).
 ///
 /// `dropped_surfaces` are the writer-dropped flat surface positions (see
 /// [`crate::wkb_write::WkbOutcome::dropped_surfaces`]) — the caller passes
@@ -788,6 +770,7 @@ pub(crate) fn rewrite_geometry_appearance(
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
     context: &str,
+    naming: &ExtensionNaming,
 ) -> Result<(
     Option<MaterialCell>,
     Option<TextureCell>,
@@ -836,8 +819,25 @@ pub(crate) fn rewrite_geometry_appearance(
         None => None,
     };
 
-    let props = compute_geometry_properties(geom, dropped_surfaces)?;
+    let mut props = compute_geometry_properties(geom, dropped_surfaces)?;
+    namespace_surface_types(&mut props, naming)?;
     Ok((material, texture, props))
+}
+
+/// Stores each semantic surface's `type` through `naming` (spec
+/// "Extensions"): a CityJSON `+` surface type takes its extension's
+/// namespace prefix (`+PartyWallSurface` → `energy_PartyWallSurface`); a core
+/// type is kept as is.
+fn namespace_surface_types(props: &mut GeometryProperties, naming: &ExtensionNaming) -> Result<()> {
+    let Some(Value::Array(surfaces)) = props.surfaces.as_mut() else {
+        return Ok(());
+    };
+    for surface in surfaces {
+        if let Some(Value::String(surface_type)) = surface.get_mut("type") {
+            *surface_type = naming.encode_name(surface_type, "semantic surface type")?;
+        }
+    }
+    Ok(())
 }
 
 /// Walk one object's own geometries, bucketing them into `acc`. `per_lod`
@@ -863,14 +863,22 @@ fn accumulate_geometry(
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
     id: &str,
+    naming: &ExtensionNaming,
 ) -> Result<()> {
     let Some(geoms) = &co.geometry else {
         return Ok(());
     };
     for geom in geoms {
         if geom.thetype == GeometryType::GeometryInstance {
-            if acc.template.is_none() {
-                acc.template = build_template(geom, pool)?;
+            if acc.implicit_geometry.is_none() {
+                // Name the object in a malformed-matrix error.
+                acc.implicit_geometry =
+                    build_implicit_geometry(geom, pool).map_err(|e| match e {
+                        CityParquetError::Schema(msg) => {
+                            CityParquetError::Schema(format!("object '{id}': {msg}"))
+                        }
+                        other => other,
+                    })?;
             }
             continue;
         }
@@ -891,7 +899,7 @@ fn accumulate_geometry(
         union_bbox(&mut acc.own_bbox, bbox);
 
         // Every geometry reaching here is a non-instance that produced a
-        // payload (instances are routed to `template` above). For a
+        // payload (instances are routed to `implicit_geometry` above). For a
         // `ScanResult` that matches this `Source`, [`crate::scan`] guarantees
         // such a geometry carries a valid lod and that the dataset is
         // therefore per-LoD — so both a missing/unparseable lod and
@@ -925,13 +933,14 @@ fn accumulate_geometry(
         // before anything is written, and feature-local material/texture
         // indices are rewritten to dataset-global ids — both handled by the
         // shared pipeline in `rewrite_geometry_appearance` (also used by the
-        // geometry-templates sidecar, see its doc comment).
+        // implicit-geometries sidecar, see its doc comment).
         let (material, texture, props) = rewrite_geometry_appearance(
             geom,
             &dropped_surfaces,
             interner,
             defs,
             &format!("object {id}"),
+            naming,
         )?;
 
         // The LoD lives only in the column name (spec "Levels of detail") —
@@ -1196,16 +1205,12 @@ struct RowWriter {
     bbox_nulls: NullBufferBuilder,
     per_lod: bool,
     geometry_slots: Vec<GeometrySlot>,
-    template_id: Int64Builder,
-    template_point: BinaryBuilder,
-    template_matrix: ListBuilder<Float64Builder>,
-    template_nulls: NullBufferBuilder,
+    implicit_geometry_id: Int64Builder,
+    implicit_geometry_point: BinaryBuilder,
+    implicit_geometry_matrix: ListBuilder<Float64Builder>,
+    implicit_geometry_nulls: NullBufferBuilder,
     other: StringBuilder,
     attributes: Vec<(String, AttrBuilder)>,
-    /// Attribute names diverted into `other` because they collide with a
-    /// reserved/geometry column name (§5.2, G12). Sorted, so the diverted
-    /// map each row emits is deterministic.
-    diverted_attributes: Vec<String>,
     /// When `Some`, synthesise an LoD0 footprint into the `geometry_lod0_0`
     /// slot for any object lacking a source LoD0 (spec "LoD0 synthesis").
     /// Carries the thresholds.
@@ -1213,6 +1218,10 @@ struct RowWriter {
     /// The dataset's axis order ([`ScanResult::axis_order`]), applied to every
     /// vertex this writer turns into WKB or a `bbox`.
     axis_order: AxisOrder,
+    /// The declared extensions' naming policy ([`ScanResult::naming`]):
+    /// every extension attribute, surface type and class is stored under its
+    /// namespace prefix.
+    naming: ExtensionNaming,
     len: usize,
 }
 
@@ -1226,14 +1235,13 @@ impl RowWriter {
             material: MaterialCellBuilder::new(),
             texture: TextureCellBuilder::new(),
         };
-        let geometry_slots = if per_lod {
-            scan.lods
-                .iter()
-                .map(|lod| new_slot(lod.column_suffix()))
-                .collect()
-        } else {
-            vec![new_slot(String::new())]
-        };
+        // A dataset without LoDs carries no geometry column (spec "Levels of
+        // detail"), so it has no slot either.
+        let geometry_slots = scan
+            .lods
+            .iter()
+            .map(|lod| new_slot(lod.column_suffix()))
+            .collect();
         let attributes = scan
             .schema
             .attributes
@@ -1255,20 +1263,20 @@ impl RowWriter {
             bbox_nulls: NullBufferBuilder::new(0),
             per_lod,
             geometry_slots,
-            template_id: Int64Builder::new(),
-            template_point: BinaryBuilder::new(),
+            implicit_geometry_id: Int64Builder::new(),
+            implicit_geometry_point: BinaryBuilder::new(),
             // Item field explicitly pinned to non-null Float64: a
             // `ListBuilder`'s default-derived item field is always nullable,
-            // which would mismatch `template_data_type()`'s non-null matrix
+            // which would mismatch `implicit_geometry_data_type()`'s non-null matrix
             // entries at `StructArray::new` time.
-            template_matrix: ListBuilder::new(Float64Builder::new())
+            implicit_geometry_matrix: ListBuilder::new(Float64Builder::new())
                 .with_field(Arc::new(Field::new("item", DataType::Float64, false))),
-            template_nulls: NullBufferBuilder::new(0),
+            implicit_geometry_nulls: NullBufferBuilder::new(0),
             other: StringBuilder::new(),
             attributes,
-            diverted_attributes: scan.diverted_attribute_names.iter().cloned().collect(),
             synthesize_lod0: scan.synthesize_lod0,
             axis_order: scan.axis_order,
+            naming: scan.naming(),
             len: 0,
         }
     }
@@ -1290,22 +1298,24 @@ impl RowWriter {
         }
     }
 
-    fn push_template(&mut self, template: Option<TemplateFields>) {
-        match template {
+    fn push_implicit_geometry(&mut self, implicit_geometry: Option<ImplicitGeometryFields>) {
+        match implicit_geometry {
             Some((id, point, matrix)) => {
-                self.template_id.append_value(id);
-                self.template_point.append_value(point);
+                self.implicit_geometry_id.append_value(id);
+                self.implicit_geometry_point.append_value(point);
                 match matrix {
-                    Some(m) => self.template_matrix.append_value(m.into_iter().map(Some)),
-                    None => self.template_matrix.append_null(),
+                    Some(m) => self
+                        .implicit_geometry_matrix
+                        .append_value(m.into_iter().map(Some)),
+                    None => self.implicit_geometry_matrix.append_null(),
                 }
-                self.template_nulls.append(true);
+                self.implicit_geometry_nulls.append(true);
             }
             None => {
-                self.template_id.append_null();
-                self.template_point.append_null();
-                self.template_matrix.append_null();
-                self.template_nulls.append(false);
+                self.implicit_geometry_id.append_null();
+                self.implicit_geometry_point.append_null();
+                self.implicit_geometry_matrix.append_null();
+                self.implicit_geometry_nulls.append(false);
             }
         }
     }
@@ -1448,13 +1458,14 @@ impl RowWriter {
         // `ClassInfo::citygml_class` carries the CityGML spelling; every
         // other core class has the same spelling in both fields. An
         // extension (ADE / CityJSON Extension) class has no taxonomy entry,
-        // so it keeps its own source spelling, but with CityJSON's leading
-        // `+` marker stripped (spec: "An extension ... type keeps its own
-        // class name, with the CityJSON `+` prefix stripped").
-        let object_type = cityparquet_schema::class_info(&co.thetype)
-            .map(|info| info.citygml_class)
-            .unwrap_or_else(|| cityparquet_schema::strip_plus(&co.thetype));
-        self.object_type.append(object_type)?;
+        // so it keeps its own class name, with CityJSON's leading `+` marker
+        // replaced by the extension's namespace prefix (spec "Extensions":
+        // `+ThermalZone` → `energy_ThermalZone`) so export can restore it.
+        let object_type = match cityparquet_schema::class_info(&co.thetype) {
+            Some(info) => info.citygml_class.to_string(),
+            None => self.naming.encode_name(&co.thetype, "city-object type")?,
+        };
+        self.object_type.append(&object_type)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());
         Self::push_string_list(&mut self.children, co.children.as_deref());
         let children_roles = Self::children_roles(co, &co_json, id)?;
@@ -1477,6 +1488,7 @@ impl RowWriter {
             interner,
             &defs,
             id,
+            &self.naming,
         )?;
 
         // Synthesise an LoD0 footprint into the `geometry_lod0_0` slot when
@@ -1500,25 +1512,16 @@ impl RowWriter {
         // `other` below (they are pushed further down, with the column).
         let address_rows = build_address_rows(&co_json, &pool)?;
 
-        // `other`: the single escape hatch (§5.1). Two kinds of entry share
-        // it — a source member with no dedicated column, and an attribute
-        // whose name collides with a reserved column — and they are
-        // deliberately not distinguished: the column's whole contract is
-        // that a reader restores every entry into `attributes`. Null when
-        // the object has neither.
+        // `other`: the single escape hatch (§5.1) for source members with no
+        // dedicated column. Null when the object has none.
         //
-        // Where an unmapped top-level member and an attribute (diverted or
-        // column-backed) share a key, the attribute wins ("warn and prefer
-        // attribute"): keeping the member would either silently lose the
-        // attribute's value (diverted case) or make this writer emit an
-        // `other` entry duplicating the attribute's own column, which a
-        // reader MUST-errors on (`merge_other_members` in `src/decode.rs`).
-        // The member is dropped instead, counted and diagnosed rather than
-        // failing the conversion.
+        // Where an unmapped top-level member and an attribute share a key, the
+        // attribute wins ("warn and prefer attribute"): keeping the member
+        // would make this writer emit an `other` entry duplicating the
+        // attribute's own (restored) name, which a reader MUST-errors on
+        // (`merge_other_members` in `src/decode.rs`). The member is dropped
+        // instead, counted and diagnosed rather than failing the conversion.
         let unmapped = unmapped_from_json(co_json);
-        let diverted = collect_diverted_attributes(co, &self.diverted_attributes);
-        stats.diverted_attribute_values += diverted.as_ref().map_or(0, serde_json::Map::len);
-
         let attrs = co.attributes.as_ref().and_then(Value::as_object);
         let mut merged = serde_json::Map::new();
         for (key, value) in unmapped {
@@ -1532,12 +1535,6 @@ impl RowWriter {
                 continue;
             }
             merged.insert(key, value);
-        }
-        // Every key `diverted` carries came from `co.attributes` itself, so
-        // the loop above has already dropped any unmapped member that would
-        // collide with it — `extend` can never overwrite an entry here.
-        if let Some(diverted) = diverted {
-            merged.extend(diverted);
         }
         if merged.is_empty() {
             self.other.append_null();
@@ -1592,7 +1589,7 @@ impl RowWriter {
             union_bbox(&mut bbox, reorder_extent(extent, self.axis_order));
         }
         self.push_bbox(bbox);
-        self.push_template(acc.template);
+        self.push_implicit_geometry(acc.implicit_geometry);
 
         let normalised: HashMap<String, &Value> = co
             .attributes
@@ -1600,9 +1597,10 @@ impl RowWriter {
             .and_then(|v| v.as_object())
             .map(|obj| {
                 obj.iter()
-                    .map(|(k, v)| (normalise_attribute_name(k), v))
-                    .collect()
+                    .map(|(k, v)| Ok((stored_attribute_name(&self.naming, k)?, v)))
+                    .collect::<Result<_>>()
             })
+            .transpose()?
             .unwrap_or_default();
         for (name, builder) in &mut self.attributes {
             push_attribute_value(builder, normalised.get(name).copied(), stats)?;
@@ -1625,16 +1623,17 @@ impl RowWriter {
         Arc::new(StructArray::new(fields, arrays, nulls))
     }
 
-    fn finish_template(&mut self) -> ArrayRef {
-        let DataType::Struct(fields) = cityparquet_schema::model::template_data_type() else {
-            unreachable!("template_data_type always returns Struct")
+    fn finish_implicit_geometry(&mut self) -> ArrayRef {
+        let DataType::Struct(fields) = cityparquet_schema::model::implicit_geometry_data_type()
+        else {
+            unreachable!("implicit_geometry_data_type always returns Struct")
         };
         let arrays: Vec<ArrayRef> = vec![
-            Arc::new(self.template_id.finish()),
-            Arc::new(self.template_point.finish()),
-            Arc::new(self.template_matrix.finish()),
+            Arc::new(self.implicit_geometry_id.finish()),
+            Arc::new(self.implicit_geometry_point.finish()),
+            Arc::new(self.implicit_geometry_matrix.finish()),
         ];
-        let nulls = self.template_nulls.finish();
+        let nulls = self.implicit_geometry_nulls.finish();
         Arc::new(StructArray::new(fields, arrays, nulls))
     }
 
@@ -1659,7 +1658,7 @@ impl RowWriter {
             arrays.push(slot.material.finish());
             arrays.push(slot.texture.finish());
         }
-        arrays.push(self.finish_template());
+        arrays.push(self.finish_implicit_geometry());
         arrays.push(Arc::new(self.other.finish()));
         for (_, builder) in &mut self.attributes {
             arrays.push(builder.finish());
@@ -1684,21 +1683,15 @@ impl RowWriter {
 /// internal builders desynced, so no partially-desynced batch is ever
 /// emitted, even to error-tolerant callers (e.g. `filter_map(Result::ok)`)
 /// that keep pulling past the error.
-/// The one-time source of `CityJSONFeature`s [`BatchIter`] pulls from: EITHER
-/// a plain re-iteration of the [`Source`] the ordinary streaming path
-/// (`encode`) opens, OR a `Vec` a caller has already collected and reordered
-/// (M5 task 4, `crate::package::convert`'s Hilbert row ordering — buffering
-/// every feature in memory, sorting by bbox-centroid Hilbert index, then
-/// handing the sorted `Vec` in here).
-///
-/// Introduced so [`encode_buffered`] can share [`BatchIter::advance`]
-/// (the whole batching/writer-push loop) with [`encode`] instead of
-/// duplicating it: `advance` only ever calls `self.features.next()`, so
-/// swapping WHICH stream backs `BatchIter` is the entire diff between the
-/// two entry points.
+/// The one-time source of `CityJSONFeature`s [`BatchIter`] pulls from:
+/// EITHER a plain re-iteration of the [`Source`] the ordinary streaming path
+/// ([`encode`]) opens, OR the same features in a caller's order
+/// ([`encode_in_order`], `crate::package::convert`'s Hilbert row ordering).
+/// `advance` only ever calls `self.features.next()`, so swapping WHICH
+/// stream backs `BatchIter` is the entire diff between the two entry points.
 enum FeatureStream<'a> {
     Source(FeatureIter<'a>),
-    Buffered(std::vec::IntoIter<CityJSONFeature>),
+    Ordered(OrderedFeatures<'a>),
 }
 
 impl Iterator for FeatureStream<'_> {
@@ -1707,12 +1700,7 @@ impl Iterator for FeatureStream<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             FeatureStream::Source(it) => it.next(),
-            // A buffered `Vec` was already parsed successfully (it came
-            // from a prior `Source::features()` pass whose `Result`s were
-            // all unwrapped before buffering — see `crate::package`), so
-            // yielding it back out wrapped in `Ok` never manufactures an
-            // error `advance` didn't already have a chance to see.
-            FeatureStream::Buffered(it) => it.next().map(Ok),
+            FeatureStream::Ordered(it) => it.next(),
         }
     }
 }
@@ -1751,7 +1739,7 @@ impl BatchIter<'_> {
     }
 
     /// Mutable access to the same interner, so a post-encode pass (the
-    /// geometry-templates sidecar in `crate::package`) can fold MORE
+    /// implicit-geometries sidecar in `crate::package`) can fold MORE
     /// definitions into it — e.g. entries reachable only from
     /// `Source::header`'s `geometry_templates`, which this encode loop never
     /// visits — before [`Self::appearance`] is read to write the
@@ -1850,7 +1838,7 @@ pub fn encode<'a>(
     batch_size: usize,
 ) -> Result<BatchIter<'a>> {
     let schema = Arc::new(scan.schema.to_arrow_schema()?);
-    let features = source.features()?;
+    let features = source.features_batched()?;
     let transform = source.header().transform.clone();
     let writer = RowWriter::new(scan);
     Ok(BatchIter {
@@ -1870,32 +1858,23 @@ pub fn encode<'a>(
 }
 
 /// Sibling entry point to [`encode`] for a caller that has already decided
-/// the exact feature order — M5 task 4's Hilbert row ordering
-/// (`crate::package::convert`): `features` replaces the [`Source`]-driven
-/// stream [`encode`] would otherwise open, entirely. Everything else
-/// (schema, transform, batch size, appearance interning, stats) is
-/// identical, because both entry points build the SAME [`BatchIter`] and
-/// share its [`BatchIter::advance`] loop — see [`FeatureStream`]'s doc
-/// comment for why that never duplicates the encode logic.
-///
-/// `header` supplies the `transform` a plain `encode` call would otherwise
-/// read from `source.header()` — the caller already has `header` in hand
-/// (it read it to compute each feature's Hilbert key in the first place),
-/// so this never needs `Source` itself, and the returned `BatchIter` never
-/// borrows from it: unlike `encode`'s stream, [`FeatureStream::Buffered`]
-/// owns its `Vec` outright, which is why this can hand back a `BatchIter`
-/// good for any lifetime the caller needs.
-pub fn encode_buffered<'a>(
-    features: Vec<CityJSONFeature>,
-    header: &CityJSON,
+/// the feature order — the Hilbert row ordering (`crate::package::convert`):
+/// the features come from [`Source::features_in_order`] (or an
+/// [`OrderedFeatures`] over features already parsed), quantised against
+/// `transform`, the source header's. Everything else (schema, batch size,
+/// appearance interning, stats) is identical, because both entry points
+/// build the SAME [`BatchIter`] and share its [`BatchIter::advance`] loop.
+pub fn encode_in_order<'a>(
+    features: OrderedFeatures<'a>,
+    transform: &Transform,
     scan: &ScanResult,
     batch_size: usize,
 ) -> Result<BatchIter<'a>> {
     let schema = Arc::new(scan.schema.to_arrow_schema()?);
-    let transform = header.transform.clone();
+    let transform = transform.clone();
     let writer = RowWriter::new(scan);
     Ok(BatchIter {
-        features: FeatureStream::Buffered(features.into_iter()),
+        features: FeatureStream::Ordered(features),
         transform,
         schema,
         batch_size: batch_size.max(1),
@@ -1915,38 +1894,6 @@ mod tests {
     use super::*;
 
     use crate::appearance_columns::TextureRing;
-
-    // G12/gap 14: a colliding attribute is collected for merging into
-    // `other`, skipping nulls.
-    #[test]
-    fn collect_diverted_attributes_diverts_present_non_null_values() {
-        let co: CityObject = serde_json::from_value(serde_json::json!({
-            "type": "Building",
-            "attributes": {"bbox": "sentinel", "id": null, "keep": 1}
-        }))
-        .unwrap();
-        let map = collect_diverted_attributes(&co, &["bbox".to_string(), "id".to_string()])
-            .expect("bbox is diverted");
-        assert_eq!(
-            map,
-            serde_json::json!({"bbox": "sentinel"})
-                .as_object()
-                .unwrap()
-                .clone(),
-            "only the non-null `bbox` is diverted; null `id` skipped"
-        );
-    }
-
-    #[test]
-    fn collect_diverted_attributes_is_none_when_nothing_diverts() {
-        let co: CityObject = serde_json::from_value(serde_json::json!({
-            "type": "Building",
-            "attributes": {"keep": 1}
-        }))
-        .unwrap();
-        assert!(collect_diverted_attributes(&co, &["bbox".to_string()]).is_none());
-        assert!(collect_diverted_attributes(&co, &[]).is_none());
-    }
 
     // spec "Addresses" (gap 10): only the recognised postal member names map
     // onto the reserved struct; anything else is dropped without disturbing
@@ -1985,7 +1932,7 @@ mod tests {
         );
     }
 
-    // spec "Appearance & templates": transformationMatrix MUST have exactly
+    // spec "Appearance & implicit geometries": transformationMatrix MUST have exactly
     // 16 values when non-null.
     #[test]
     fn parse_transformation_matrix_rejects_a_non_16_length_matrix() {
@@ -1995,9 +1942,17 @@ mod tests {
 
     #[test]
     fn parse_transformation_matrix_accepts_exactly_16_values() {
-        let values: Vec<f64> = (0..16).map(f64::from).collect();
+        let values: Vec<f64> = (0..12).map(f64::from).chain([0.0, 0.0, 0.0, 1.0]).collect();
         let parsed = parse_transformation_matrix(&serde_json::to_value(&values).unwrap()).unwrap();
         assert_eq!(parsed, values);
+    }
+
+    /// spec "Placement": the last row MUST be exactly `0, 0, 0, 1`.
+    #[test]
+    fn parse_transformation_matrix_rejects_a_projective_matrix() {
+        let values: Vec<f64> = (0..16).map(f64::from).collect();
+        let err = parse_transformation_matrix(&serde_json::to_value(&values).unwrap()).unwrap_err();
+        assert!(format!("{err}").contains("0, 0, 0, 1"), "{err}");
     }
 
     /// No fixture carries MultiSolid/CompositeSolid, so the nested `shells`
@@ -2126,6 +2081,7 @@ mod tests {
             &mut interner,
             &defs,
             "obj1",
+            &ExtensionNaming::default(),
         )
         .unwrap();
 
@@ -2249,6 +2205,7 @@ mod tests {
             &mut interner,
             &defs,
             "obj1",
+            &ExtensionNaming::default(),
         )
         .unwrap();
 
@@ -2394,6 +2351,7 @@ mod tests {
             &mut interner,
             &defs,
             "obj1",
+            &ExtensionNaming::default(),
         )
         .unwrap();
 

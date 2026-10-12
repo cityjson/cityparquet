@@ -20,10 +20,9 @@ use std::str::FromStr;
 /// One format the read benchmark measures.
 ///
 /// Variants are ordered as the benchmark presents them: the formats city
-/// models actually ship as today (CityGML → CityJSON → CityJSONSeq →
-/// gzipped CityJSONSeq), then the indexed/columnar ones (FlatCityBuf →
-/// CityParquet → Hilbert-ordered CityParquet), then the SQL-engine
-/// baseline. See [`Format::ALL`].
+/// models actually ship as today (CityGML → CityJSON → CityJSONSeq), then
+/// the indexed/columnar ones (FlatCityBuf → CityParquet). See
+/// [`Format::ALL`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
     /// CityGML 2.0 XML — the format most national datasets are published in.
@@ -33,128 +32,115 @@ pub enum Format {
     CityJson,
     /// CityJSONSeq: one JSON object per line.
     CityJsonSeq,
-    /// gzipped CityJSONSeq (`.jsonl.gz`).
-    CityJsonSeqGz,
     /// FlatCityBuf: the indexed FlatBuffers encoding.
     FlatCityBuf,
-    /// A CityParquet package in source order.
+    /// A CityParquet package, its rows written in Hilbert-curve order
+    /// (`cityparquet convert --ordering hilbert`): the configuration
+    /// CityParquet would ship with, and the benchmark's only one.
     CityParquet,
-    /// A CityParquet package written in Hilbert-curve order. Read by the
-    /// SAME runner as [`Format::CityParquet`] (a Hilbert-ordered package is
-    /// still a plain CityParquet package on disk); only the artefact path
-    /// differs — see [`Format::artefact`].
-    CityParquetHilbert,
-    /// DuckDB reading the CityParquet package through SQL — a SQL-engine
-    /// baseline driven entirely by `benchmark/scripts/readbench_duckdb.sh`, never by
-    /// this binary's `--child` path or its coordinator.
-    DuckDbParquet,
-}
-
-/// Where a [`Format`]'s artefact lives, relative to the coordinator's
-/// `prepared_dir`.
-///
-/// EVERY measured format reads an artefact `benchmark/scripts/readbench_prepare.sh`
-/// built inside `prepared_dir` — no format reads the original `--input`.
-/// There used to be a third case, `TheInputItself`, for
-/// [`Format::CityJsonSeq`]: it was correct only while `--input` was itself a
-/// `.city.jsonl`, and on the catalogue corpus (whose inputs are `.gml` and
-/// `.city.json`) it silently made the `cityjsonseq` row measure the input's
-/// OWN format under this format's name. The prepare script now always
-/// materialises `<base>.city.jsonl`, and this enum no longer has a way to
-/// say otherwise.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Artefact {
-    /// A file or directory the prepare script builds inside `prepared_dir`.
-    Prepared(String),
-    /// Not this coordinator's business at all.
-    NotCoordinated,
 }
 
 impl Format {
     /// Every variant, in the benchmark's canonical order: the formats data
-    /// ships as, then the indexed/columnar ones, then the engine baseline —
-    /// so a chart reads left-to-right from "what you have" to "what we
-    /// propose".
-    pub const ALL: [Format; 8] = [
+    /// ships as, then the indexed/columnar ones — so a chart reads
+    /// left-to-right from "what you have" to "what we propose". It is also
+    /// what a run with no `--formats` measures: one tag per format family.
+    pub const ALL: [Format; 5] = [
         Format::CityGml,
         Format::CityJson,
         Format::CityJsonSeq,
-        Format::CityJsonSeqGz,
         Format::FlatCityBuf,
         Format::CityParquet,
-        Format::CityParquetHilbert,
-        Format::DuckDbParquet,
     ];
-
-    /// The FORMAT-COMPARISON set: what a run with no `--formats` measures.
-    ///
-    /// One tag per format family, so the CSV answers exactly one question —
-    /// *how do the formats a city model can ship as compare?* CityParquet is
-    /// represented by [`Format::CityParquetHilbert`], the configuration we
-    /// would actually ship, so the comparison is not handicapped by an
-    /// ordering choice no other format here faces; the ordering choice itself
-    /// is a separate question, asked by [`Format::ORDERING_SET`].
-    ///
-    /// [`Format::CityJsonSeqGz`] (a compression variant of a format already
-    /// in the set) and [`Format::DuckDbParquet`] (an SQL-engine baseline, and
-    /// not driven by this coordinator at all) are opt-in: neither is a
-    /// format, so neither belongs on a format axis.
-    pub const DEFAULT_SET: [Format; 5] = [
-        Format::CityGml,
-        Format::CityJson,
-        Format::CityJsonSeq,
-        Format::FlatCityBuf,
-        Format::CityParquetHilbert,
-    ];
-
-    /// The ORDERING-COMPARISON set — the answer to *does Hilbert-curve
-    /// ordering pay for itself?*, and nothing else.
-    ///
-    /// Both members are the same writer, the same reader and the same
-    /// scenarios; the ONLY difference is the row order the package was
-    /// written in (see [`Format::artefact`]). Running this set alongside
-    /// other formats would confound the two axes, which is why it is its own
-    /// set rather than extra members of [`Format::DEFAULT_SET`] — the
-    /// justfile's `ordering-bench` recipe passes exactly these two tags.
-    pub const ORDERING_SET: [Format; 2] = [Format::CityParquet, Format::CityParquetHilbert];
 
     /// The canonical kebab-case CLI/CSV spelling (round-trips through
     /// [`FromStr`]).
+    /// The format's runner counts FEATURES (a top-level object with its
+    /// descendants) for `count` and `full-read`; the others count
+    /// CityObjects (READ_BENCHMARK.md, Caveat 1). The spatial window is
+    /// counted in CityObjects by every format.
+    pub fn counts_features(self) -> bool {
+        matches!(
+            self,
+            Format::CityGml | Format::CityJsonSeq | Format::FlatCityBuf
+        )
+    }
+
+    /// The artefact stores coordinates as GeoParquet does — `x` longitude,
+    /// `y` latitude, whatever the CRS declares. Every other artefact keeps
+    /// the source's own axis order, so a latitude-first dataset's query
+    /// window reaches it with `x` and `y` swapped.
+    pub fn stores_longitude_first(self) -> bool {
+        matches!(self, Format::CityParquet)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Format::CityGml => "citygml",
             Format::CityJson => "cityjson",
             Format::CityJsonSeq => "cityjsonseq",
-            Format::CityJsonSeqGz => "cityjsonseq-gz",
             Format::FlatCityBuf => "flatcitybuf",
             Format::CityParquet => "cityparquet",
-            Format::CityParquetHilbert => "cityparquet-hilbert",
-            Format::DuckDbParquet => "duckdb-parquet",
         }
     }
 
-    /// Where this format's artefact lives, relative to `prepared_dir`.
+    /// The file or directory, relative to the coordinator's `prepared_dir`,
+    /// that holds this format's artefact.
     ///
-    /// Two cases:
-    /// - `Prepared(name)`: a file or directory the prepare script builds.
-    ///   These names are the coordinator's HALF of a contract with
-    ///   `benchmark/scripts/readbench_prepare.sh`, which writes exactly them;
-    ///   `scripts/tests/readbench_prepare_test.sh` reads both sides out of
-    ///   their own sources and fails if they disagree.
-    /// - `NotCoordinated`: `DuckDbParquet` is an SQL-engine baseline driven
-    ///   by `benchmark/scripts/readbench_duckdb.sh`, never by this coordinator.
-    pub fn artefact(self, base: &str) -> Artefact {
+    /// EVERY measured format reads an artefact
+    /// `benchmark/scripts/readbench_prepare.sh` built inside `prepared_dir` —
+    /// no format reads the original `--input`. These names are the
+    /// coordinator's HALF of a contract with that script, which writes
+    /// exactly them; `scripts/tests/readbench_prepare_test.sh` reads both
+    /// sides out of their own sources and fails if they disagree.
+    pub fn artefact(self, base: &str) -> String {
         match self {
-            Format::CityGml => Artefact::Prepared(format!("{base}.gml")),
-            Format::CityJson => Artefact::Prepared(format!("{base}.city.json")),
+            Format::CityGml => format!("{base}.gml"),
+            Format::CityJson => format!("{base}.city.json"),
             // NEVER the `--input` itself: a `.gml`/`.city.json` input would
             // then be measured, and published, as CityJSONSeq.
-            Format::CityJsonSeq => Artefact::Prepared(format!("{base}.city.jsonl")),
-            Format::CityJsonSeqGz => Artefact::Prepared(format!("{base}.jsonl.gz")),
-            Format::FlatCityBuf => Artefact::Prepared(format!("{base}.fcb")),
-            Format::CityParquet => Artefact::Prepared(format!("{base}.parquet")),
-            Format::CityParquetHilbert => Artefact::Prepared(format!("{base}-hilbert.parquet")),
-            Format::DuckDbParquet => Artefact::NotCoordinated,
+            Format::CityJsonSeq => format!("{base}.city.jsonl"),
+            Format::FlatCityBuf => format!("{base}.fcb"),
+            Format::CityParquet => format!("{base}.parquet"),
+        }
+    }
+
+    /// The artefact's key under an HTTP `--base-url`. [`KeyLayout::Flat`] is
+    /// the prepared directory uploaded as it is ([`Format::artefact`]);
+    /// [`KeyLayout::Bucket`] is the hosted corpus's layout, one folder per
+    /// format (`<folder>/<base><suffix>`), which `benchmark/scripts/corpus_bucket.py`
+    /// writes and reads. This is the one place the harness maps a format to
+    /// a bucket folder.
+    pub fn key(self, base: &str, layout: KeyLayout) -> String {
+        let name = self.artefact(base);
+        match layout {
+            KeyLayout::Flat => name,
+            KeyLayout::Bucket => format!("{}/{name}", self.as_str()),
+        }
+    }
+}
+
+/// How an HTTP run lays its artefacts out under `--base-url` (see
+/// [`Format::key`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyLayout {
+    /// `<base>.<ext>`: the prepared directory, uploaded wholesale.
+    #[default]
+    Flat,
+    /// `<format>/<base>.<ext>`: the hosted corpus (`v<chain>/` in the bucket).
+    Bucket,
+}
+
+impl FromStr for KeyLayout {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text {
+            "flat" => Ok(KeyLayout::Flat),
+            "bucket" => Ok(KeyLayout::Bucket),
+            other => Err(format!(
+                "unknown key layout '{other}'; expected flat or bucket"
+            )),
         }
     }
 }
@@ -177,11 +163,8 @@ impl FromStr for Format {
             "citygml" => Ok(Format::CityGml),
             "cityjson" => Ok(Format::CityJson),
             "cityjsonseq" => Ok(Format::CityJsonSeq),
-            "cityjsonseq-gz" => Ok(Format::CityJsonSeqGz),
             "flatcitybuf" => Ok(Format::FlatCityBuf),
             "cityparquet" => Ok(Format::CityParquet),
-            "cityparquet-hilbert" => Ok(Format::CityParquetHilbert),
-            "duckdb-parquet" => Ok(Format::DuckDbParquet),
             other => Err(format!(
                 "unknown format '{other}'; expected one of: {}",
                 Format::ALL
@@ -201,41 +184,52 @@ mod tests {
     #[test]
     fn from_str_is_case_insensitive() {
         assert_eq!(
-            "CityParquet-Hilbert".parse::<Format>().unwrap(),
-            Format::CityParquetHilbert
+            "CityParquet".parse::<Format>().unwrap(),
+            Format::CityParquet
         );
     }
 
-    /// The two CityParquet variants share a runner but never a path: the
-    /// only difference between them IS which artefact resolves.
+    /// The one CityParquet package lives at `<base>.parquet`.
     #[test]
-    fn the_two_cityparquet_orderings_resolve_to_different_artefacts() {
-        assert_eq!(
-            Format::CityParquet.artefact("delft"),
-            Artefact::Prepared("delft.parquet".to_string())
-        );
-        assert_eq!(
-            Format::CityParquetHilbert.artefact("delft"),
-            Artefact::Prepared("delft-hilbert.parquet".to_string())
-        );
+    fn cityparquet_reads_the_one_package() {
+        assert_eq!(Format::CityParquet.artefact("delft"), "delft.parquet");
     }
 
-    /// `duckdb-parquet` is the ONLY format with no artefact of this
-    /// coordinator's own (see [`Artefact`]'s own doc comment).
+    /// Under the hosted corpus's bucket layout every artefact sits in its
+    /// format's folder; the flat layout is the prepared directory's own.
     #[test]
-    fn only_the_sql_engine_baseline_is_uncoordinated() {
+    fn bucket_layout_puts_each_format_in_its_folder() {
+        let cases = [
+            (Format::CityGml, "citygml/x.gml"),
+            (Format::CityJson, "cityjson/x.city.json"),
+            (Format::CityJsonSeq, "cityjsonseq/x.city.jsonl"),
+            (Format::FlatCityBuf, "flatcitybuf/x.fcb"),
+            (Format::CityParquet, "cityparquet/x.parquet"),
+        ];
+        for (format, key) in cases {
+            assert_eq!(format.key("x", KeyLayout::Bucket), key);
+            assert_eq!(format.key("x", KeyLayout::Flat), format.artefact("x"));
+        }
+        assert_eq!("bucket".parse::<KeyLayout>(), Ok(KeyLayout::Bucket));
+        assert_eq!("flat".parse::<KeyLayout>(), Ok(KeyLayout::Flat));
+        assert!("other".parse::<KeyLayout>().is_err());
+    }
+
+    /// The Python side of the hosted corpus (`benchmark/scripts/corpus_bucket.py`,
+    /// which uploads and downloads) must name the same folders and suffixes.
+    #[test]
+    fn bucket_layout_matches_the_corpus_script() {
+        let script = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scripts/corpus_bucket.py"
+        ))
+        .unwrap();
         for format in Format::ALL {
-            match format {
-                Format::DuckDbParquet => assert_eq!(
-                    format.artefact("delft"),
-                    Artefact::NotCoordinated,
-                    "{format} is driven by benchmark/scripts/readbench_duckdb.sh"
-                ),
-                other => assert!(
-                    matches!(other.artefact("delft"), Artefact::Prepared(_)),
-                    "{other} must read an artefact from --prepared-dir"
-                ),
-            }
+            let key = format.key("x", KeyLayout::Bucket);
+            let (folder, rest) = key.split_once('/').unwrap();
+            let suffix = &rest[1..];
+            let line = format!("(\"{folder}\", \"{suffix}\"");
+            assert!(script.contains(&line), "corpus_bucket.py lacks {line}");
         }
     }
 
@@ -248,7 +242,7 @@ mod tests {
     fn cityjsonseq_reads_a_prepared_seq_artefact() {
         assert_eq!(
             Format::CityJsonSeq.artefact("plateau_chuo_fld"),
-            Artefact::Prepared("plateau_chuo_fld.city.jsonl".to_string())
+            "plateau_chuo_fld.city.jsonl"
         );
     }
 }

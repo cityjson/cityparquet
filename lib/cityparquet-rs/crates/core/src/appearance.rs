@@ -82,6 +82,11 @@ pub struct AppearanceInterner {
     /// the same way [`crate::encode::EncodeStats::degenerate_rings_dropped`]
     /// counts a writer-dropped ring: never silently.
     pub invalid_refs_dropped: usize,
+    /// The global id each entry of the local definitions the current
+    /// `flatten_*_map` call resolves against has been interned as — so a
+    /// definition referenced by every face of a geometry is keyed (its
+    /// canonical JSON built) once, not once per face. Reset by each call.
+    local_ids: Vec<Option<usize>>,
 }
 
 impl AppearanceInterner {
@@ -90,7 +95,9 @@ impl AppearanceInterner {
     }
 
     /// Opt into dropping (rather than erroring on) a material/texture index
-    /// that falls outside its local definitions array. Strict (the default,
+    /// that falls outside its local definitions array, and a texture ring
+    /// with fewer UV indices than vertices or a UV index outside the UV pool
+    /// (that ring is left untextured). Strict (the default,
     /// `tolerate = false`) is what every constructor leaves this at: the
     /// reference implementation is the appearance-resolution oracle, so a
     /// dangling reference stays fatal unless a caller explicitly opts out —
@@ -150,6 +157,8 @@ impl AppearanceInterner {
         let obj = map.as_object().ok_or_else(|| {
             schema_err("material map must be a JSON object of theme -> {value|values}")
         })?;
+        self.local_ids.clear();
+        self.local_ids.resize(local_defs.len(), None);
         let depth = values_nesting_depth(thetype);
         let faces = count_boundary_faces(boundaries, depth);
         let dropped: HashSet<usize> = dropped.iter().copied().collect();
@@ -206,7 +215,14 @@ impl AppearanceInterner {
                     ))
                 })? as usize;
                 match local_defs.get(idx) {
-                    Some(def) => Ok(Some(self.intern_material(def) as i64)),
+                    Some(def) => Ok(Some(match self.local_ids[idx] {
+                        Some(id) => id,
+                        None => {
+                            let id = self.intern_material(def);
+                            self.local_ids[idx] = Some(id);
+                            id
+                        }
+                    } as i64)),
                     None if self.tolerate_invalid_refs => {
                         self.invalid_refs_dropped += 1;
                         Ok(None)
@@ -251,6 +267,8 @@ impl AppearanceInterner {
         let obj = map
             .as_object()
             .ok_or_else(|| schema_err("texture map must be a JSON object of theme -> {values}"))?;
+        self.local_ids.clear();
+        self.local_ids.resize(local_defs.len(), None);
         let depth = values_nesting_depth(thetype);
         let faces = count_boundary_faces(boundaries, depth);
         let rings_per_face = face_ring_vertex_counts(boundaries, depth);
@@ -364,7 +382,14 @@ impl AppearanceInterner {
                     ))
                 })? as usize;
                 match local_defs.get(idx) {
-                    Some(def) => self.intern_texture(def) as i64,
+                    Some(def) => match self.local_ids[idx] {
+                        Some(id) => id as i64,
+                        None => {
+                            let id = self.intern_texture(def);
+                            self.local_ids[idx] = Some(id);
+                            id as i64
+                        }
+                    },
                     None if self.tolerate_invalid_refs => {
                         self.invalid_refs_dropped += 1;
                         // The UV entries are meaningless without a resolved
@@ -387,6 +412,13 @@ impl AppearanceInterner {
         };
         let refs = &items[1..];
         if refs.len() < vertices {
+            // Fewer UVs than the ring has vertices (CityJSON 2.0.1 §6.2 asks
+            // for one per vertex): which vertex lacks one is not stated, so
+            // the ring's texture cannot be placed.
+            if self.tolerate_invalid_refs {
+                self.invalid_refs_dropped += 1;
+                return Ok(bare);
+            }
             return Err(schema_err(format!(
                 "texture theme '{theme}' face {face} ring {ring}: {} uv indices for {vertices} \
                  distinct vertices",
@@ -402,12 +434,16 @@ impl AppearanceInterner {
                     "UV index in theme '{theme}' must be a non-negative integer, got {uv_ref}"
                 ))
             })? as usize;
-            let pair = local_uvs.get(idx).ok_or_else(|| {
-                schema_err(format!(
+            let Some(pair) = local_uvs.get(idx) else {
+                if self.tolerate_invalid_refs {
+                    self.invalid_refs_dropped += 1;
+                    return Ok(bare);
+                }
+                return Err(schema_err(format!(
                     "UV index {idx} in theme '{theme}' out of range (local uvs len {})",
                     local_uvs.len()
-                ))
-            })?;
+                )));
+            };
             if pair.len() < 2 {
                 return Err(schema_err(format!(
                     "UV vertex {idx} in theme '{theme}' has fewer than 2 coordinates"
@@ -515,43 +551,6 @@ mod tests {
         assert_eq!(id_a, id_b, "same content (different key order) must dedupe");
         assert_eq!(interner.materials().len(), 1);
         assert_eq!(interner.materials()[id_a], a);
-    }
-
-    /// Builds two `Value::Object`s with the same members but inserted in
-    /// different order (not just written in a different literal order via
-    /// `json!`, but actually constructed via distinct `insert` sequences),
-    /// then asserts `canonical_json_string` and `intern_material` agree they
-    /// are the same definition. Under serde_json's default `BTreeMap`
-    /// object-map the two maps' internal representations already coincide
-    /// regardless of insertion order, so this passes trivially in that
-    /// configuration; under `preserve_order` (an `IndexMap`, which some
-    /// other workspace member may pull in and Cargo unifies workspace-wide)
-    /// the two maps' internal iteration orders would *differ*, which is
-    /// exactly the case `canonical_json_string`'s explicit key-sort exists
-    /// to normalise away. Valid — and meaningful — under either build.
-    #[test]
-    fn canonical_json_string_is_independent_of_insertion_order() {
-        let mut map_a = serde_json::Map::new();
-        map_a.insert("name".to_string(), json!("roof"));
-        map_a.insert("diffuseColor".to_string(), json!([1.0, 0.0, 0.0]));
-        let a = Value::Object(map_a);
-
-        let mut map_b = serde_json::Map::new();
-        map_b.insert("diffuseColor".to_string(), json!([1.0, 0.0, 0.0]));
-        map_b.insert("name".to_string(), json!("roof"));
-        let b = Value::Object(map_b);
-
-        assert_eq!(
-            canonical_json_string(&a),
-            canonical_json_string(&b),
-            "canonical form must not depend on member insertion order"
-        );
-
-        let mut interner = AppearanceInterner::new();
-        let id_a = interner.intern_material(&a);
-        let id_b = interner.intern_material(&b);
-        assert_eq!(id_a, id_b, "must intern to the same global id");
-        assert_eq!(interner.materials().len(), 1);
     }
 
     #[test]

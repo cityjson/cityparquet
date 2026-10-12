@@ -170,3 +170,36 @@ fn ingolstadt_lod2_solids_round_trip_gml_to_parquet_to_gml() {
         "Ingolstadt attributes are all representable"
     );
 }
+
+/// spec "Column naming and reservation rules": the CityGML writer restores an
+/// escaped attribute column to its source name. The real Helsinki building in
+/// `address_location.city.jsonl` carries `ID` next to the reserved `id`; the
+/// package stores it as `_ID`, and the CityGML document names it `ID` again,
+/// typed by its column.
+#[test]
+fn an_escaped_attribute_is_written_under_its_source_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("pkg");
+    let out_gml = tmp.path().join("out.gml");
+    convert(&ConvertOptions::new(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/address_location.city.jsonl"),
+        pkg.clone(),
+    ))
+    .unwrap();
+    let report = write_package(&WriteOptions {
+        package_dir: pkg,
+        output: out_gml.clone(),
+    })
+    .unwrap();
+    assert_eq!(report.buildings_written, 1);
+
+    let gml = std::fs::read_to_string(&out_gml).unwrap();
+    assert!(
+        gml.contains(r#"name="ID""#),
+        "the escaped `_ID` column must be written as `ID`"
+    );
+    assert!(
+        !gml.contains(r#"name="_ID""#),
+        "the escape must not leak into the CityGML document"
+    );
+}

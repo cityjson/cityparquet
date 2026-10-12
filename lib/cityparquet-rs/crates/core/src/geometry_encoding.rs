@@ -44,8 +44,7 @@ fn declared_encoding(meta: &CityMetadata, geometry_name: &str) -> Result<Option<
 }
 
 /// The fall back for a file whose footer declares no `city.columns` entry for
-/// this column — a legacy or foreign writer, or one of this crate's own
-/// geometry-less/legacy bare-`geometry` shapes. `Binary` is WKB; anything
+/// this column — a legacy or foreign writer. `Binary` is WKB; anything
 /// else is rejected rather than misread.
 fn encoding_from_physical_shape(
     geometry_name: &str,

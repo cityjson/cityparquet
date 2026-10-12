@@ -1,10 +1,14 @@
 //! Benchmark variant identifiers — the one grammar behind `cityparquet bench
 //! --variants` and `cityparquet-readbench run --variants`.
 //!
-//! An id is `<preset>[+hilbert][+rg<N>][+<codec>[<level>]]`: a
-//! [`RecipePreset`] name, then any of three suffixes, each at most once, in
+//! An id is `<preset>[+source][+rg<N>][+<codec>[<level>]][+nobloom]`: a
+//! [`RecipePreset`] name, then any of four suffixes, each at most once, in
 //! any order on input. [`Variant::id`] spells the same variant back in the
 //! fixed order above, and that spelling is what the result CSVs carry.
+//! Every variant is written in the library's default row order,
+//! [`RowOrder::Hilbert`], unless it carries `+source`, which streams rows in
+//! source order instead. `+nobloom` writes no Parquet bloom filter; without
+//! it the recipe's default bloom policy applies.
 //!
 //! Only `zstd` takes a level (`zstd9`), because zstd is the codec CityParquet
 //! ships with and the benchmark sweeps its effort. Every other codec runs at
@@ -20,7 +24,7 @@ use crate::package::RowOrder;
 use crate::recipe::{Codec, RecipePreset, WriterRecipe};
 
 /// The grammar, as printed in every rejection.
-pub const GRAMMAR: &str = "<preset>[+hilbert][+rg<N>][+<codec>[<level>]]";
+pub const GRAMMAR: &str = "<preset>[+source][+rg<N>][+<codec>[<level>]][+nobloom]";
 
 /// One parsed variant id. See the module doc for the grammar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +35,8 @@ pub struct Variant {
     pub compression: Option<Codec>,
     /// Only ever `Some` together with `compression == Some(Codec::Zstd)`.
     pub zstd_level: Option<i32>,
+    /// `false` only for `+nobloom`.
+    pub bloom: bool,
 }
 
 impl Variant {
@@ -40,11 +46,12 @@ impl Variant {
         let preset_name = parts.next().unwrap_or("");
         let preset = RecipePreset::parse(preset_name).ok_or_else(|| grammar_err(id, None))?;
 
-        let mut ordering = RowOrder::Source;
+        let mut ordering = RowOrder::default();
         let mut row_group_size: Option<usize> = None;
         let mut compression: Option<Codec> = None;
         let mut zstd_level: Option<i32> = None;
-        let mut seen_hilbert = false;
+        let mut seen_source = false;
+        let mut bloom = true;
         for part in parts {
             if let Some(digits) = part.strip_prefix("rg") {
                 if row_group_size.is_some() {
@@ -83,9 +90,12 @@ impl Variant {
                 continue;
             }
             match part {
-                "hilbert" if !seen_hilbert => {
-                    seen_hilbert = true;
-                    ordering = RowOrder::Hilbert;
+                "source" if !seen_source => {
+                    seen_source = true;
+                    ordering = RowOrder::Source;
+                }
+                "nobloom" if bloom => {
+                    bloom = false;
                 }
                 _ => return Err(grammar_err(id, None)),
             }
@@ -97,14 +107,15 @@ impl Variant {
             row_group_size,
             compression,
             zstd_level,
+            bloom,
         })
     }
 
-    /// The canonical spelling: preset, then `+hilbert`, `+rg<N>`, `+<codec>[<level>]`.
+    /// The canonical spelling: preset, then `+source`, `+rg<N>`, `+<codec>[<level>]`, `+nobloom`.
     pub fn id(&self) -> String {
         let mut id = self.preset.name().to_string();
-        if self.ordering == RowOrder::Hilbert {
-            id.push_str("+hilbert");
+        if self.ordering == RowOrder::Source {
+            id.push_str("+source");
         }
         if let Some(n) = self.row_group_size {
             id.push_str(&format!("+rg{n}"));
@@ -116,11 +127,14 @@ impl Variant {
                 id.push_str(&level.to_string());
             }
         }
+        if !self.bloom {
+            id.push_str("+nobloom");
+        }
         id
     }
 
-    /// The preset's recipe with this variant's row-group size, codec and
-    /// zstd level applied on top.
+    /// The preset's recipe with this variant's row-group size, codec, zstd
+    /// level and bloom switch applied on top.
     pub fn recipe(&self) -> WriterRecipe {
         let mut recipe = self.preset.recipe();
         if let Some(row_group_size) = self.row_group_size {
@@ -132,6 +146,7 @@ impl Variant {
         if let Some(level) = self.zstd_level {
             recipe.zstd_level = level;
         }
+        recipe.bloom.enabled = self.bloom;
         recipe
     }
 
@@ -189,6 +204,27 @@ mod tests {
         "cityparquet+rg512",
     ];
 
+    const BLOOM_LIST: [&str; 2] = ["cityparquet", "cityparquet+nobloom"];
+
+    #[test]
+    fn nobloom_round_trips_and_switches_the_recipe_policy_off() {
+        for id in BLOOM_LIST {
+            let v = Variant::parse(id).unwrap();
+            assert_eq!(v.id(), id, "canonical spelling must be the list's spelling");
+            assert_eq!(Variant::parse(&v.id()).unwrap(), v);
+        }
+        let off = Variant::parse("cityparquet+nobloom").unwrap();
+        assert!(!off.bloom);
+        assert!(!off.recipe().bloom.enabled);
+        let on = Variant::parse("cityparquet").unwrap();
+        assert!(on.bloom);
+        assert!(on.recipe().bloom.enabled);
+
+        let mixed = Variant::parse("cityparquet+nobloom+rg512+source+zstd9").unwrap();
+        assert_eq!(mixed.id(), "cityparquet+source+rg512+zstd9+nobloom");
+        assert_eq!(Variant::parse(&mixed.id()).unwrap(), mixed);
+    }
+
     #[test]
     fn the_two_benchmark_lists_round_trip_through_their_canonical_ids() {
         for id in CODEC_LIST.iter().chain(ROWGROUP_LIST.iter()) {
@@ -217,7 +253,8 @@ mod tests {
 
         let default = Variant::parse("cityparquet").unwrap();
         assert_eq!(default.recipe(), WriterRecipe::default());
-        assert_eq!(default.ordering(), RowOrder::Source);
+        assert_eq!(default.ordering(), RowOrder::Hilbert);
+        assert_eq!(default.ordering(), RowOrder::default());
     }
 
     #[test]
@@ -244,7 +281,8 @@ mod tests {
     #[test]
     fn duplicates_malformed_suffixes_and_unknown_presets_are_rejected_with_the_grammar() {
         for id in [
-            "cityparquet+hilbert+hilbert",
+            "cityparquet+source+source",
+            "cityparquet+hilbert",
             "cityparquet+rg4096+rg8192",
             "cityparquet+gzip+zstd",
             "cityparquet+rg0",
@@ -253,6 +291,8 @@ mod tests {
             "cityparquet+rg",
             "not-a-real-preset",
             "cityparquet+bogus",
+            "cityparquet+nobloom+nobloom",
+            "cityparquet+bloom",
             "",
         ] {
             let err = Variant::parse(id).unwrap_err().to_string();
@@ -263,11 +303,11 @@ mod tests {
 
     #[test]
     fn suffix_order_on_input_does_not_matter_but_the_id_is_canonical() {
-        let a = Variant::parse("cityparquet+rg512+hilbert+gzip").unwrap();
-        let b = Variant::parse("cityparquet+gzip+hilbert+rg512").unwrap();
+        let a = Variant::parse("cityparquet+rg512+source+gzip").unwrap();
+        let b = Variant::parse("cityparquet+gzip+source+rg512").unwrap();
         assert_eq!(a, b);
-        assert_eq!(a.id(), "cityparquet+hilbert+rg512+gzip");
-        assert_eq!(a.ordering(), RowOrder::Hilbert);
+        assert_eq!(a.id(), "cityparquet+source+rg512+gzip");
+        assert_eq!(a.ordering(), RowOrder::Source);
         assert_eq!(a.recipe().row_group_size, 512);
         assert_eq!(a.recipe().compression, Some(Codec::Gzip));
     }

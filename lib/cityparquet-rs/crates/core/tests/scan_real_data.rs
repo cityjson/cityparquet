@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use cityparquet::scan::{city_and_geo_for_file, scan};
@@ -253,10 +254,16 @@ fn extensions_declarations_reach_metadata() {
     let extensions = meta
         .extensions
         .expect("extensions declaration must survive the scan");
-    assert!(
-        extensions.get("Noise").is_some(),
-        "expected the Noise declaration in {extensions}"
+    // Keyed by the derived namespace, carrying the source name, the schema
+    // document's URL and its version (spec "Extensions").
+    let noise = &extensions["noise"];
+    assert_eq!(noise.name, "Noise");
+    assert_eq!(
+        noise.url,
+        "https://www.cityjson.org/extensions/download/noise.ext.json"
     );
+    assert_eq!(noise.version.as_deref(), Some("1.1.0"));
+    assert_eq!(extensions.len(), 1);
 
     // The delft header carries no extensions key at all; that absence must be
     // preserved as None, not fabricated.
@@ -386,5 +393,85 @@ fn an_unresolvable_reference_system_scans_to_an_explicit_null_crs() {
     assert!(
         diagnostic.contains("IGNF") && diagnostic.contains("could not be resolved"),
         "the diagnostic must name the identifier it could not resolve, got: {diagnostic}"
+    );
+}
+
+/// The estimator's hasher is seeded deterministically, so the selection —
+/// and with it the package layout — is identical run to run.
+///
+/// Two scans in ONE process would agree under a per-process random seed too,
+/// which is exactly the failure this is meant to catch, so both scans are
+/// checked against the hard-coded set rather than only against each other.
+#[test]
+fn the_bloom_attribute_selection_is_deterministic() {
+    let expected: BTreeSet<String> = ["documentnummer", "identificatie"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let first = scan(&Source::open(&fixture("delft.city.jsonl")).unwrap()).unwrap();
+    let second = scan(&Source::open(&fixture("delft.city.jsonl")).unwrap()).unwrap();
+    assert_eq!(first.bloom_attributes, expected);
+    assert_eq!(second.bloom_attributes, expected);
+}
+
+/// A copy of delft with every LoD `0` geometry dropped and every
+/// `identificatie` attribute renamed to `to` — a JSON mutation of the real
+/// fixture, never hand-written CityJSON. Without its LoD0 footprints delft
+/// keeps LoDs 1.2, 1.3 and 2.2, so LoD0 synthesis has work to do.
+fn delft_without_lod0_and_identificatie_renamed(to: &str) -> (tempfile::TempDir, PathBuf) {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut out = String::new();
+    for (index, line) in text.lines().enumerate() {
+        if index == 0 || line.trim().is_empty() {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        for (_, object) in feature["CityObjects"].as_object_mut().unwrap() {
+            if let Some(geometries) = object.get_mut("geometry").and_then(|g| g.as_array_mut()) {
+                geometries.retain(|g| g["lod"] != "0");
+            }
+            if let Some(attrs) = object.get_mut("attributes").and_then(|a| a.as_object_mut())
+                && let Some(value) = attrs.remove("identificatie")
+            {
+                attrs.insert(to.to_string(), value);
+            }
+        }
+        out.push_str(&serde_json::to_string(&feature).unwrap());
+        out.push('\n');
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delft_renamed.city.jsonl");
+    std::fs::write(&path, out).unwrap();
+    (dir, path)
+}
+
+/// Stripped of its LoD0, delft has no `0.*` LoD, yet an attribute named
+/// `geometry_lod0_0` still collides: reservation follows the LoD suffix
+/// grammar, not the dataset's LoDs (spec "Column naming and reservation
+/// rules"). `scan` stores it escaped as `_geometry_lod0_0` — a qualifying
+/// bloom column — and LoD0 synthesis, which then adds the real
+/// `geometry_lod0_0`, leaves it untouched.
+#[test]
+fn an_attribute_named_like_a_per_lod_column_is_escaped_at_scan() {
+    let (_dir, path) = delft_without_lod0_and_identificatie_renamed("geometry_lod0_0");
+    let mut result = scan(&Source::open(&path).unwrap()).unwrap();
+    let names = |r: &cityparquet::scan::ScanResult| -> Vec<String> {
+        r.schema.attributes.iter().map(|(n, _)| n.clone()).collect()
+    };
+    assert!(names(&result).contains(&"_geometry_lod0_0".to_string()));
+    assert!(!names(&result).contains(&"geometry_lod0_0".to_string()));
+    assert!(
+        result.bloom_attributes.contains("_geometry_lod0_0"),
+        "before synthesis: {:?}",
+        result.bloom_attributes
+    );
+    result.add_synthesized_lod0_column();
+    assert!(names(&result).contains(&"_geometry_lod0_0".to_string()));
+    assert!(
+        result.bloom_attributes.contains("_geometry_lod0_0"),
+        "after synthesis: {:?}",
+        result.bloom_attributes
     );
 }

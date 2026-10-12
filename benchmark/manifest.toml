@@ -3,19 +3,40 @@
 # the inputs that produced them.
 
 [suite]
-version = 1
-families = ["sizes", "formats", "codec", "rowgroup", "databases"]
-scaling_sizes = [1000, 5000, 10000, 50000, 100000, 500000, 1000000]
-largest_scaling_dataset = "3dbag_n1000000"
+version = 2
+families = ["sizes", "formats", "bloom", "databases", "network"]
+# The 3DBAG slice: the largest input of the format and size comparisons, and
+# the dataset the database family measures.
+slice_dataset = "3dbag_n1000000"
+# The dataset that stands in for the slice in the database family under the
+# `short` and `smoke` profiles: small, and in the slice's CRS (EPSG:7415).
+small_database_dataset = "rotterdam"
+
+# The network family's simulated profiles: a bandwidth shared by every
+# connection and a latency paid by every request. `typical` is the default.
+# The network family's whole-file formats (citygml, cityjson, cityjsonseq)
+# answer every query with one whole-object GET, so they are measured only on
+# these scenarios and every other scenario is a derived row (read all's bytes
+# and requests, no time). `full-read,id-lookup`, `full-read` or `all`;
+# `--network-whole-file-scenarios` overrides it.
+[network]
+whole_file_scenarios = "full-read,id-lookup"
+
+[network_profiles.fast]
+bandwidth_mbps = 1000.0
+latency_ms = 5.0
+
+[network_profiles.typical]
+bandwidth_mbps = 100.0
+latency_ms = 20.0
+
+[network_profiles.slow]
+bandwidth_mbps = 20.0
+latency_ms = 50.0
 
 [datasets.rotterdam]
 source = "rotterdam_delfshaven.city.json"
 title = "Rotterdam"
-role = "corpus"
-
-[datasets.ingolstadt]
-source = "ingolstadt.city.json"
-title = "Ingolstadt"
 role = "corpus"
 
 [datasets.vienna]
@@ -33,49 +54,32 @@ source = "zurich_building_lod2.city.json"
 title = "Zurich"
 role = "corpus"
 
-# The scaling generator cuts strict CityObject prefixes from one published
-# FlatCityBuf source.  The largest prefix replaces the former small 3DBAG
-# corpus entry in the format and size comparisons.
-[datasets.3dbag_n1000]
-source = "3dbag_n1000.city.jsonl"
-title = "3DBAG (Netherlands)"
-target_objects = 1000
-role = "scaling"
+[datasets.tokyo]
+source = "tokyo.city.json"
+title = "Tokyo (Chiyoda)"
+role = "corpus"
 
-[datasets.3dbag_n5000]
-source = "3dbag_n5000.city.jsonl"
-title = "3DBAG (Netherlands)"
-target_objects = 5000
-role = "scaling"
+[datasets.montreal]
+source = "montreal.city.json"
+title = "Montréal"
+role = "corpus"
 
-[datasets.3dbag_n10000]
-source = "3dbag_n10000.city.jsonl"
-title = "3DBAG (Netherlands)"
-target_objects = 10000
-role = "scaling"
-
-[datasets.3dbag_n50000]
-source = "3dbag_n50000.city.jsonl"
-title = "3DBAG (Netherlands)"
-target_objects = 50000
-role = "scaling"
-
-[datasets.3dbag_n100000]
-source = "3dbag_n100000.city.jsonl"
-title = "3DBAG (Netherlands)"
-target_objects = 100000
-role = "scaling"
-
-[datasets.3dbag_n500000]
-source = "3dbag_n500000.city.jsonl"
-title = "3DBAG (Netherlands)"
-target_objects = 500000
-role = "scaling"
-
+# The one 3DBAG input: the first 1,000,000 CityObjects of one published
+# FlatCityBuf source, in source order and in whole features (so slightly more
+# than the nominal count), cut without LoD 1.2 by the `fcb-slice` binary that
+# `just fetch-3dbag` drives.
 [datasets.3dbag_n1000000]
 source = "3dbag_n1000000.city.jsonl"
+# The bloom axis's attribute probes (`attr-lookup`): text attributes that
+# carry a Bloom filter in the `cityparquet` package (`just bloom-columns`
+# lists them). `identificatie` is near-unique; `documentnummer` repeats.
+bloom_attributes = ["identificatie", "documentnummer"]
+# Configuration-axis packages preparation builds beside the main package
+# (by the code path a `--variants` run uses) and the hosted corpus carries:
+# the bloom axis's package without Bloom filters.
+variant_artefacts = ["cityparquet-nobloom"]
 title = "3DBAG (Netherlands)"
 # The feature-boundary cutter records the observed total in each result
 # sidecar; this nominal identifier remains stable for paths and commands.
 target_objects = 1000000
-role = "largest-scaling"
+role = "slice"

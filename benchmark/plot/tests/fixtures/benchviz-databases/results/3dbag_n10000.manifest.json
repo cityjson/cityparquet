@@ -1,0 +1,49 @@
+{
+  "baseline": "3dcitydb",
+  "dataset": "3dbag_n10000",
+  "memory_measurement": {
+    "cityparquet": "fixture: allocator peak of the fresh reader child process",
+    "duckdb": "fixture: peak RssAnon of a fresh spawned process per read scenario",
+    "metric": "peak_working_mem_bytes",
+    "postgresql": "fixture: summed RssAnon of the query backend and its parallel workers"
+  },
+  "size_definitions": {
+    "no_index_bytes": {
+      "cityparquet": "fixture: without Bloom filters and page indexes; footer kept",
+      "postgresql": "fixture: heap and TOAST, no index"
+    },
+    "policy": "Fixture: every queried predicate is indexed; index sizes are reported separately.",
+    "total_bytes": {
+      "cityparquet": "fixture: every file of the package",
+      "postgresql": "fixture: heap, TOAST and all indexes"
+    }
+  },
+  "sizes": {
+    "3dcitydb": {
+      "index_bytes": 52469760,
+      "no_index_bytes": 96231424,
+      "total_bytes": 148701184
+    },
+    "cjdb": {
+      "index_bytes": 16744448,
+      "no_index_bytes": 44310528,
+      "total_bytes": 61054976
+    },
+    "duckdb-cityparquet": {
+      "bloom_filter_bytes": 20000,
+      "footer_bytes": 4000,
+      "index_bytes": 30166,
+      "no_index_bytes": 7560000,
+      "page_index_bytes": 6166,
+      "total_bytes": 7590166
+    },
+    "duckdb-cityparquet-writeback": {
+      "bloom_filter_bytes": 20000,
+      "footer_bytes": 4000,
+      "index_bytes": 30166,
+      "no_index_bytes": 7560000,
+      "page_index_bytes": 6166,
+      "total_bytes": 7590166
+    }
+  }
+}

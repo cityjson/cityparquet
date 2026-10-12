@@ -389,7 +389,7 @@ pub fn is_extension_type(cityjson_type: &str) -> bool {
 /// partitions on — see [`module_file`] for the file name it derives.
 ///
 /// `Ord`/`PartialOrd` (a simple derive: `Core` variants order by
-/// [`CityGmlModule`], `Extension` variants by name, and every `Core` sorts
+/// [`CityGmlModule`], `Extension` variants by namespace then module, and every `Core` sorts
 /// before every `Extension`) exist so a caller can key a `BTreeMap<ModuleKey,
 /// _>` — e.g. `crate::scan::ScanResult::module_lods` (in the `cityparquet`
 /// crate) — deterministically; no ordering is spec-mandated, this is purely
@@ -398,9 +398,11 @@ pub fn is_extension_type(cityjson_type: &str) -> bool {
 pub enum ModuleKey {
     /// A recognised core CityGML 3.0 module.
     Core(CityGmlModule),
-    /// An extension (ADE / CityJSON Extension) module, named as the
-    /// extension itself declares it (pre-snake_case; see [`module_file`]).
-    Extension(String),
+    /// An extension (ADE / CityJSON Extension) module: the declaring
+    /// extension's namespace (spec "Extensions") and the module's name as
+    /// the extension itself declares it (pre-snake_case; see
+    /// [`module_file`]).
+    Extension { namespace: String, module: String },
 }
 
 /// One extension (ADE / CityJSON Extension) class's declaration, as parsed
@@ -411,7 +413,9 @@ pub enum ModuleKey {
 /// marker stripped, since resolution is defined to be `+`-insensitive.
 #[derive(Debug, Clone, Default)]
 pub struct ExtensionClassDecl {
-    /// The module this class declares as its own, e.g. `"Energy"`.
+    /// The namespace of the extension declaring this class, e.g. `"energy"`.
+    pub namespace: String,
+    /// The module this class declares as its own, e.g. `"BuildingPhysics"`.
     pub module: Option<String>,
     /// The class this one specialises (its declared CM parent), by source
     /// spelling (`+`-marker optional — stripped on lookup).
@@ -450,11 +454,9 @@ impl ExtensionRegistry {
 
 /// Strips CityJSON's leading `+` extension marker, if present. Resolution is
 /// defined to be indifferent to whether it is there (spec "extensions" —
-/// "Whether a class carries CityJSON's `+` marker is irrelevant to routing"),
-/// and `object_type` storage drops it outright for an extension class (spec
-/// "object_table-schema" — "object_type vocabulary": "with the CityJSON `+`
-/// prefix stripped") — `crate::encode`'s `RowWriter::push_object` is the
-/// latter's caller.
+/// "Whether a class carries CityJSON's `+` marker is irrelevant to routing").
+/// `object_type` storage does not use this: it replaces the marker with the
+/// extension's namespace prefix (see [`crate::extensions::ExtensionNaming`]).
 pub fn strip_plus(source_type: &str) -> &str {
     source_type.strip_prefix('+').unwrap_or(source_type)
 }
@@ -484,7 +486,8 @@ fn class_info_by_any_spelling(name: &str) -> Option<&'static ClassInfo> {
 ///
 /// Resolution order:
 /// 1. A recognised core CityGML 3.0 class (`TAXONOMY`) → `Core(module)`.
-/// 2. An extension class declaring its own module → `Extension(module)`.
+/// 2. An extension class declaring its own module → `Extension` (its
+///    namespace and module).
 /// 3. An extension class specialising another class (declares a parent, no
 ///    module of its own) → resolved recursively from that parent, walking
 ///    the chain until a core class or a module-declaring ancestor is hit.
@@ -524,7 +527,10 @@ fn resolve_module_key_inner(
         ))
     })?;
     if let Some(module) = decl.module.as_deref() {
-        return Ok(ModuleKey::Extension(module.to_string()));
+        return Ok(ModuleKey::Extension {
+            namespace: decl.namespace.clone(),
+            module: module.to_string(),
+        });
     }
     match decl.parent.as_deref() {
         Some(parent) => {
@@ -626,8 +632,10 @@ fn to_snake_case(s: &str) -> String {
 /// The snake_case file-body name (no `.parquet` extension) for a
 /// [`ModuleKey`] (spec "By-module object-table layout" / "extensions" —
 /// "File-name rule"). Core module names come from the pinned
-/// [`core_module_file`] table; extension module names run through
-/// [`to_snake_case`]. Panics only if given `ModuleKey::Core(CityGmlModule::Core)`,
+/// [`core_module_file`] table; an extension module's file is its
+/// namespace, an underscore and the module name run through
+/// [`to_snake_case`] (`energy_building_physics`), so it never collides with
+/// a core module file. Panics only if given `ModuleKey::Core(CityGmlModule::Core)`,
 /// which [`resolve_module_key`] never produces (no `TAXONOMY` entry has that
 /// module) — see [`core_module_file`]'s doc comment.
 pub fn module_file(key: &ModuleKey) -> String {
@@ -635,7 +643,9 @@ pub fn module_file(key: &ModuleKey) -> String {
         ModuleKey::Core(module) => core_module_file(*module)
             .expect("ModuleKey::Core is only ever constructed for a file-bearing module")
             .to_string(),
-        ModuleKey::Extension(name) => to_snake_case(name),
+        ModuleKey::Extension { namespace, module } => {
+            format!("{namespace}_{}", to_snake_case(module))
+        }
     }
 }
 
@@ -643,88 +653,45 @@ pub fn module_file(key: &ModuleKey) -> String {
 mod lod_tests {
     use super::*;
 
+    /// The canonical form of every LoD spelling: display, column suffix,
+    /// major component, and the suffix→LoD inverse. Every input/output pair
+    /// the split-out tests pinned lives in one row here.
     #[test]
-    fn parses_and_displays() {
-        // Display always carries the minor (canonical export spelling).
-        assert_eq!(Lod::parse("2").unwrap().to_string(), "2.0");
-        assert_eq!(Lod::parse("2.2").unwrap().to_string(), "2.2");
-        assert!(Lod::parse("").is_err());
-        assert!(Lod::parse("2.x").is_err());
-        assert!(Lod::parse("2.2.2").is_err());
-    }
+    fn lod_canonical_forms() {
+        let cases = [
+            ("0", "0.0", "lod0_0", 0u8),
+            ("1", "1.0", "lod1_0", 1),
+            ("1.0", "1.0", "lod1_0", 1),
+            ("2", "2.0", "lod2_0", 2),
+            ("2.2", "2.2", "lod2_2", 2),
+            ("0.3", "0.3", "lod0_3", 0),
+        ];
+        for (input, display, suffix, major) in cases {
+            let lod = Lod::parse(input).unwrap_or_else(|e| panic!("{input}: {e}"));
+            assert_eq!(lod.to_string(), display, "{input}: canonical display");
+            assert_eq!(lod.column_suffix(), suffix, "{input}: column suffix");
+            assert_eq!(lod.major(), major, "{input}: major component");
+            assert_eq!(
+                Lod::from_column_suffix(suffix),
+                Some(lod),
+                "{input}: suffix must parse back to the same Lod"
+            );
+            assert_eq!(
+                geometry_column_name("geometry", &lod),
+                format!("geometry_{suffix}"),
+                "{input}: every LoD's geometry column is suffixed"
+            );
+        }
 
-    #[test]
-    fn column_suffix_round_trip() {
-        let lod = Lod::parse("2.2").unwrap();
-        assert_eq!(lod.column_suffix(), "lod2_2");
-        assert_eq!(Lod::from_column_suffix("lod2_2"), Some(lod));
-        assert_eq!(Lod::from_column_suffix("geometry"), None);
-    }
-
-    /// spec §"Levels of detail": "A suffix always carries a minor. LoD `1`
-    /// yields `geometry_lod1_0`, never `geometry_lod1`."
-    #[test]
-    fn column_suffix_always_carries_a_minor() {
-        assert_eq!(Lod::parse("1").unwrap().column_suffix(), "lod1_0");
-        assert_eq!(Lod::parse("0").unwrap().column_suffix(), "lod0_0");
+        for bad in ["", "2.x", "2.2.2"] {
+            assert!(Lod::parse(bad).is_err(), "{bad:?} must not parse");
+        }
         assert_eq!(
             Lod::from_column_suffix("lod1"),
             None,
-            "a bare-major suffix with no minor is no longer legal column-name shape"
+            "a bare-major suffix with no minor is not a legal column-name shape"
         );
-    }
-
-    /// spec: "a source `\"1\"` and a source `\"1.0\"` both map to the same
-    /// column `geometry_lod1_0`" — a canonicalisation of the LoD string, not
-    /// its value, so the two must be the identical `Lod`.
-    #[test]
-    fn bare_and_dot_zero_minor_collapse_to_the_same_lod() {
-        assert_eq!(Lod::parse("1").unwrap(), Lod::parse("1.0").unwrap());
-        assert_eq!(Lod::parse("0").unwrap(), Lod::parse("0.0").unwrap());
-        assert_eq!(
-            Lod::parse("1").unwrap().column_suffix(),
-            Lod::parse("1.0").unwrap().column_suffix()
-        );
-    }
-
-    /// spec: `Display` always shows `"{major}.{minor}"`, e.g. `"1.0"`, never
-    /// bare `"1"` — the canonical export spelling.
-    #[test]
-    fn display_always_shows_the_minor() {
-        assert_eq!(Lod::parse("1").unwrap().to_string(), "1.0");
-        assert_eq!(Lod::parse("0").unwrap().to_string(), "0.0");
-        assert_eq!(Lod::parse("2.2").unwrap().to_string(), "2.2");
-    }
-
-    /// spec "Levels of detail": every LoD's geometry column is suffixed,
-    /// including the `0.*` family — there is no picked-out "footprint" LoD
-    /// that goes unsuffixed.
-    #[test]
-    fn geometry_column_name_always_suffixes_every_lod() {
-        let p = |s: &str| Lod::parse(s).unwrap();
-        assert_eq!(
-            geometry_column_name("geometry", &p("0.3")),
-            "geometry_lod0_3"
-        );
-        assert_eq!(
-            geometry_column_name("geometry_properties", &p("0")),
-            "geometry_properties_lod0_0"
-        );
-        assert_eq!(
-            geometry_column_name("geometry", &p("0.1")),
-            "geometry_lod0_1"
-        );
-        assert_eq!(
-            geometry_column_name("geometry", &p("2.2")),
-            "geometry_lod2_2"
-        );
-    }
-
-    #[test]
-    fn lod_major_extracts_major_component() {
-        assert_eq!(Lod::parse("2").unwrap().major(), 2);
-        assert_eq!(Lod::parse("2.2").unwrap().major(), 2);
-        assert_eq!(Lod::parse("1").unwrap().major(), 1);
+        assert_eq!(Lod::from_column_suffix("geometry"), None);
     }
 
     #[test]
@@ -838,7 +805,7 @@ mod taxonomy_tests {
             Some("Building")
         );
         // An extension class name has no taxonomy entry at all.
-        assert_eq!(cityjson_type_for_citygml_class("SolarPanel"), None);
+        assert_eq!(cityjson_type_for_citygml_class("ThermalZone"), None);
     }
 }
 
@@ -901,21 +868,39 @@ mod module_key_tests {
         let _ = module_file(&ModuleKey::Core(CityGmlModule::Core));
     }
 
-    /// spec "By-module object-table layout" — "File-name rule": extension
-    /// module names are snake_cased, unlike the pinned core names.
+    fn ext(namespace: &str, module: &str) -> ModuleKey {
+        ModuleKey::Extension {
+            namespace: namespace.to_string(),
+            module: module.to_string(),
+        }
+    }
+
+    fn decl(module: Option<&str>, parent: Option<&str>) -> ExtensionClassDecl {
+        ExtensionClassDecl {
+            namespace: "energy".to_string(),
+            module: module.map(str::to_string),
+            parent: parent.map(str::to_string),
+        }
+    }
+
+    /// spec "By-module object-table layout" — "File-name rule" and
+    /// "Extensions": an extension module file is the extension's namespace,
+    /// an underscore, and the snake_cased module name, unlike the pinned
+    /// core names.
     #[test]
-    fn extension_module_names_are_snake_cased() {
+    fn extension_module_files_carry_the_namespace_prefix() {
         assert_eq!(
-            module_file(&ModuleKey::Extension("Energy".to_string())),
-            "energy"
+            module_file(&ext("energy", "BuildingPhysics")),
+            "energy_building_physics"
         );
         assert_eq!(
-            module_file(&ModuleKey::Extension("MyExtensionModule".to_string())),
-            "my_extension_module"
+            module_file(&ext("energy", "Building")),
+            "energy_building",
+            "an extension module named like a core module cannot collide with its file"
         );
         assert_eq!(
-            module_file(&ModuleKey::Extension("HTTPServer".to_string())),
-            "http_server",
+            module_file(&ext("noise", "HTTPServer")),
+            "noise_http_server",
             "a run of upper-case letters (an acronym) splits only at its trailing edge"
         );
     }
@@ -957,20 +942,14 @@ mod module_key_tests {
     }
 
     /// spec "extensions": an extension class declaring its own module
-    /// resolves to `Extension(module)`.
+    /// resolves to that extension module.
     #[test]
     fn extension_class_with_its_own_module_resolves_directly() {
         let mut extensions = ExtensionRegistry::new();
-        extensions.declare(
-            "SolarPanel",
-            ExtensionClassDecl {
-                module: Some("Energy".to_string()),
-                parent: None,
-            },
-        );
+        extensions.declare("ThermalZone", decl(Some("BuildingPhysics"), None));
         assert_eq!(
-            resolve_module_key("+SolarPanel", &extensions).unwrap(),
-            ModuleKey::Extension("Energy".to_string())
+            resolve_module_key("+ThermalZone", &extensions).unwrap(),
+            ext("energy", "BuildingPhysics")
         );
     }
 
@@ -980,16 +959,10 @@ mod module_key_tests {
     #[test]
     fn resolution_is_indifferent_to_the_plus_marker() {
         let mut extensions = ExtensionRegistry::new();
-        extensions.declare(
-            "Thermostat",
-            ExtensionClassDecl {
-                module: Some("Energy".to_string()),
-                parent: None,
-            },
-        );
+        extensions.declare("ThermalBoundary", decl(Some("BuildingPhysics"), None));
         assert_eq!(
-            resolve_module_key("Thermostat", &extensions).unwrap(),
-            resolve_module_key("+Thermostat", &extensions).unwrap()
+            resolve_module_key("ThermalBoundary", &extensions).unwrap(),
+            resolve_module_key("+ThermalBoundary", &extensions).unwrap()
         );
     }
 
@@ -1001,13 +974,7 @@ mod module_key_tests {
     fn specialising_class_recurses_to_an_ancestors_module() {
         let mut extensions = ExtensionRegistry::new();
         // +NoiseBuilding specialises Building directly (core parent).
-        extensions.declare(
-            "NoiseBuilding",
-            ExtensionClassDecl {
-                module: None,
-                parent: Some("Building".to_string()),
-            },
-        );
+        extensions.declare("NoiseBuilding", decl(None, Some("Building")));
         assert_eq!(
             resolve_module_key("+NoiseBuilding", &extensions).unwrap(),
             ModuleKey::Core(CityGmlModule::Building)
@@ -1015,13 +982,7 @@ mod module_key_tests {
 
         // +ExtraNoisyBuilding specialises +NoiseBuilding, which itself has
         // no module and specialises Building — two hops to a core module.
-        extensions.declare(
-            "ExtraNoisyBuilding",
-            ExtensionClassDecl {
-                module: None,
-                parent: Some("+NoiseBuilding".to_string()),
-            },
-        );
+        extensions.declare("ExtraNoisyBuilding", decl(None, Some("+NoiseBuilding")));
         assert_eq!(
             resolve_module_key("+ExtraNoisyBuilding", &extensions).unwrap(),
             ModuleKey::Core(CityGmlModule::Building)
@@ -1033,23 +994,11 @@ mod module_key_tests {
     #[test]
     fn specialising_class_recurses_to_an_extension_modules_ancestor() {
         let mut extensions = ExtensionRegistry::new();
-        extensions.declare(
-            "SolarPanel",
-            ExtensionClassDecl {
-                module: Some("Energy".to_string()),
-                parent: None,
-            },
-        );
-        extensions.declare(
-            "RooftopSolarPanel",
-            ExtensionClassDecl {
-                module: None,
-                parent: Some("+SolarPanel".to_string()),
-            },
-        );
+        extensions.declare("ThermalZone", decl(Some("BuildingPhysics"), None));
+        extensions.declare("HeatedThermalZone", decl(None, Some("+ThermalZone")));
         assert_eq!(
-            resolve_module_key("+RooftopSolarPanel", &extensions).unwrap(),
-            ModuleKey::Extension("Energy".to_string())
+            resolve_module_key("+HeatedThermalZone", &extensions).unwrap(),
+            ext("energy", "BuildingPhysics")
         );
     }
 
@@ -1068,7 +1017,7 @@ mod module_key_tests {
     #[test]
     fn declared_class_with_neither_module_nor_parent_is_a_hard_error() {
         let mut extensions = ExtensionRegistry::new();
-        extensions.declare("Empty", ExtensionClassDecl::default());
+        extensions.declare("Empty", decl(None, None));
         let e = resolve_module_key("+Empty", &extensions).unwrap_err();
         assert!(matches!(e, CityParquetError::Schema(_)));
     }
@@ -1078,20 +1027,8 @@ mod module_key_tests {
     #[test]
     fn parent_cycle_is_a_hard_error_not_infinite_recursion() {
         let mut extensions = ExtensionRegistry::new();
-        extensions.declare(
-            "A",
-            ExtensionClassDecl {
-                module: None,
-                parent: Some("+B".to_string()),
-            },
-        );
-        extensions.declare(
-            "B",
-            ExtensionClassDecl {
-                module: None,
-                parent: Some("+A".to_string()),
-            },
-        );
+        extensions.declare("A", decl(None, Some("+B")));
+        extensions.declare("B", decl(None, Some("+A")));
         let e = resolve_module_key("+A", &extensions).unwrap_err();
         assert!(matches!(e, CityParquetError::Schema(_)));
         assert!(e.to_string().to_lowercase().contains("cycl"));
@@ -1106,23 +1043,17 @@ mod module_key_tests {
     #[test]
     fn resolver_memoises_by_source_type_string() {
         let mut extensions = ExtensionRegistry::new();
-        extensions.declare(
-            "SolarPanel",
-            ExtensionClassDecl {
-                module: Some("Energy".to_string()),
-                parent: None,
-            },
-        );
+        extensions.declare("ThermalZone", decl(Some("BuildingPhysics"), None));
         let mut resolver = ModuleKeyResolver::new(extensions);
-        let first = resolver.resolve("+SolarPanel").unwrap();
-        assert_eq!(first, ModuleKey::Extension("Energy".to_string()));
+        let first = resolver.resolve("+ThermalZone").unwrap();
+        assert_eq!(first, ext("energy", "BuildingPhysics"));
 
         // A repeat lookup of the identical string, and of its bare
         // (non-`+`) spelling, both hit the one cache entry the first call
         // populated (`strip_plus` makes them the same cache key) — proven
         // by the cache holding exactly one entry after both calls.
-        let second = resolver.resolve("+SolarPanel").unwrap();
-        let bare = resolver.resolve("SolarPanel").unwrap();
+        let second = resolver.resolve("+ThermalZone").unwrap();
+        let bare = resolver.resolve("ThermalZone").unwrap();
         assert_eq!(second, first);
         assert_eq!(bare, first);
         assert_eq!(resolver.cache.len(), 1);

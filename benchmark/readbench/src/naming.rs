@@ -5,9 +5,8 @@
 //! coordinator resolves its artefacts under (`<dataset>.parquet`,
 //! `<dataset>.fcb`, …), what `benchmark/scripts/readbench_prepare.sh` writes them as,
 //! and what the justfile's per-dataset recipes name a package directory or
-//! a results CSV after. One rule, four implementations — this Rust one, the
-//! prepare script's, the justfile's (used by four recipes), and the
-//! package-name counterpart in `benchmark/scripts/readbench_duckdb.sh` — because a
+//! a results CSV after. One rule, three implementations — this Rust one, the
+//! prepare script's and the justfile's (used by three recipes) — because a
 //! shell script cannot import a Rust function and `just` has no functions.
 //!
 //! `benchmark/readbench/tests/strip_extension.rs` extracts each of

@@ -1,5 +1,5 @@
 //! Sidecar table schemas (`materials.parquet`, `textures.parquet`,
-//! `geometry_templates.parquet`) — spec-alignment M3 dropped the `Profile`
+//! `implicit_geometries.parquet`) — spec-alignment M3 dropped the `Profile`
 //! concept these used to live alongside (gap 19: a writer now emits a
 //! sidecar whenever the source has content for it, never gated by a
 //! core/compatibility profile choice), so this module keeps only what was
@@ -10,13 +10,10 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema};
 
-use crate::model::{geometry_properties_data_type, material_data_type, texture_data_type};
+use crate::model::{
+    geometry_properties_data_type, json_field, material_data_type, texture_data_type,
+};
 use crate::types::{Lod, geometry_column_name};
-
-fn json_col(name: &str) -> Field {
-    Field::new(name, DataType::Utf8, true)
-        .with_metadata([("ARROW:extension:name".to_string(), "arrow.json".to_string())].into())
-}
 
 /// A nullable `LIST<DOUBLE>` column (spec "materials.parquet" /
 /// "textures.parquet": `diffuseColor`/`specularColor`/`emissiveColor`/
@@ -50,7 +47,7 @@ pub fn materials_schema() -> Schema {
         Field::new("transparency", DataType::Float64, true),
         Field::new("shininess", DataType::Float64, true),
         Field::new("isSmooth", DataType::Boolean, true),
-        json_col("other"),
+        json_field("other", true),
     ])
 }
 
@@ -75,23 +72,23 @@ pub fn textures_schema() -> Schema {
         Field::new("wrapMode", DataType::Utf8, true),
         Field::new("textureType", DataType::Utf8, true),
         double_list_col("borderColor"),
-        json_col("other"),
+        json_field("other", true),
     ])
 }
 
-/// `geometry_templates.parquet` schema (spec "geometry_templates.parquet"),
+/// `implicit_geometries.parquet` schema (spec "implicit_geometries.parquet"),
 /// per-LoD-suffixed exactly like the main object table's own geometry and
 /// appearance columns (spec: "using the same geometry strategy as the
-/// object table ... so a template's LoD is carried by its column name here
+/// object table ... so a relative geometry's LoD is carried by its column name here
 /// exactly as it is in an object table"). `lods` is the set of LoDs actually
-/// used by the templates being rendered — not necessarily every LoD the
+/// used by the relative geometries being rendered — not necessarily every LoD the
 /// dataset's own object table carries.
 ///
-/// A template row populates exactly the column set matching its own LoD and
+/// A row populates exactly the column set matching its own LoD and
 /// leaves every other LoD's columns null (spec: "each row populates exactly
 /// the column set matching its own LoD ... sparse by construction"). There
 /// is no `lod` column (the column name already carries it, like the main
-/// table) and no `other` column (spec: "a geometry template is a plain
+/// table) and no `other` column (spec: "a relative geometry is a plain
 /// geometry (WKB + properties + appearance) with no members left over to
 /// preserve").
 ///
@@ -99,17 +96,17 @@ pub fn textures_schema() -> Schema {
 /// face_semantics, shells>` the main object table uses (spec: "same struct,
 /// reused").
 ///
-/// Unlike the main table's own geometry columns, a template's `geometry_lod*`
-/// carries no `geoarrow.wkb`/CRS tagging: template coordinates are in the
-/// template's own LOCAL frame, exempt from the file CRS (spec: "Templates
-/// are in local coordinates, and are exempt from the file CRS").
-pub fn geometry_templates_schema(lods: &[Lod]) -> Schema {
-    // `id` is BIGINT, not the template's source label: sidecar ids are
+/// Unlike the main table's own geometry columns, a relative geometry's `geometry_lod*`
+/// carries no `geoarrow.wkb`/CRS tagging: its coordinates are in the
+/// relative geometry's own LOCAL frame, exempt from the file CRS (spec: "Relative
+/// geometries are in local coordinates, and are exempt from the file CRS").
+pub fn implicit_geometries_schema(lods: &[Lod]) -> Schema {
+    // `id` is BIGINT, not the source's label: sidecar ids are
     // renumbered by an integer offset (`dst_max + 1 - src_min`) when packages
     // merge, which a string cannot carry, and the object table's
-    // `template.id` that references this column is BIGINT too. `name` is
+    // `implicit_geometry.id` that references this column is BIGINT too. `name` is
     // where a source identifier survives — null for CityJSON, whose
-    // templates are unnamed array entries.
+    // `geometry-templates` entries are unnamed.
     let mut fields = vec![
         Field::new("id", DataType::Int64, false),
         Field::new("name", DataType::Utf8, true),
@@ -223,7 +220,7 @@ mod tests {
             "textures.borderColor must be LIST<DOUBLE>"
         );
 
-        let g = geometry_templates_schema(&[Lod::parse("2.2").unwrap()]);
+        let g = implicit_geometries_schema(&[Lod::parse("2.2").unwrap()]);
         for col in [
             "id",
             "name",
@@ -232,16 +229,19 @@ mod tests {
             "material_lod2_2",
             "texture_lod2_2",
         ] {
-            assert!(g.field_with_name(col).is_ok(), "templates missing {col}");
+            assert!(
+                g.field_with_name(col).is_ok(),
+                "implicit_geometries missing {col}"
+            );
         }
-        // Spec "geometry_templates.parquet": `id BIGINT` required, `name
+        // Spec "implicit_geometries.parquet": `id BIGINT` required, `name
         // VARCHAR` optional — the same id/name pair as materials and
         // textures, so all three sidecars remap identically on merge.
         assert_eq!(
             g.field_with_name("id").unwrap().data_type(),
             &DataType::Int64,
-            "templates.id must be BIGINT so it can be offset-shifted on merge like the \
-             other sidecars, and so it matches the object table's template.id"
+            "implicit_geometries.id must be BIGINT so it can be offset-shifted on merge like the \
+             other sidecars, and so it matches the object table's implicit_geometry.id"
         );
         assert!(!g.field_with_name("id").unwrap().is_nullable());
         assert_eq!(
@@ -250,7 +250,7 @@ mod tests {
         );
         assert!(
             g.field_with_name("name").unwrap().is_nullable(),
-            "templates.name is optional — CityJSON templates are array entries with no \
+            "implicit_geometries.name is optional — CityJSON `geometry-templates` entries are array entries with no \
              identifier of their own"
         );
         for col in [
@@ -263,7 +263,7 @@ mod tests {
         ] {
             assert!(
                 g.field_with_name(col).is_err(),
-                "templates schema must not carry an un-suffixed/lod/other column '{col}'"
+                "implicit_geometries schema must not carry an un-suffixed/lod/other column '{col}'"
             );
         }
         assert_eq!(
@@ -279,7 +279,7 @@ mod tests {
 
         // A different LoD set renders a different (disjoint) column set —
         // the schema is genuinely a function of `lods`, not a fixed shape.
-        let g2 = geometry_templates_schema(&[Lod::parse("1").unwrap(), Lod::parse("0").unwrap()]);
+        let g2 = implicit_geometries_schema(&[Lod::parse("1").unwrap(), Lod::parse("0").unwrap()]);
         for col in [
             "geometry_lod0_0",
             "geometry_lod1_0",
@@ -290,7 +290,10 @@ mod tests {
             "texture_lod0_0",
             "texture_lod1_0",
         ] {
-            assert!(g2.field_with_name(col).is_ok(), "templates missing {col}");
+            assert!(
+                g2.field_with_name(col).is_ok(),
+                "implicit_geometries missing {col}"
+            );
         }
         assert!(g2.field_with_name("geometry_lod2_2").is_err());
     }

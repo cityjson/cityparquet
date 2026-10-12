@@ -1,0 +1,3 @@
+rank,dataset,title,city_objects,cityparquet_factor
+best,nyc_da13_buildings,New York,23777,32.9519
+worst,vienna_102081,Vienna,1322,15.0728

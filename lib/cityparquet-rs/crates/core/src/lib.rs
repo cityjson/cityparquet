@@ -11,6 +11,7 @@ pub mod counting_store;
 pub mod decode;
 pub mod encode;
 pub mod export;
+pub mod fcb;
 mod geometry_encoding;
 mod geometry_properties;
 pub mod inputs;
@@ -29,7 +30,9 @@ pub mod scan;
 pub mod sidecar;
 pub mod source;
 pub mod stac;
+pub mod validate;
 pub mod variant;
+pub mod visit;
 pub mod wkb_read;
 pub mod wkb_write;
 

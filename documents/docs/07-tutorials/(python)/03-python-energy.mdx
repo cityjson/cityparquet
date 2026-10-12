@@ -1,0 +1,127 @@
+---
+title: Prepare building-energy inputs with Python
+description: Read a neighbourhood from CityParquet, calculate surface-to-volume ratios, and save a building feature table with Python and DuckDB.
+sidebar:
+  label: Python energy inputs
+  icon: code
+---
+
+Which buildings have more surface area relative to their volume? This small
+Python example prepares a feature table for exploring that question in Delft.
+It adapts the attribute inputs and surface-to-volume metric from the
+[energy use case](https://github.com/cityjson/cityparquet/tree/main/usecase/energy).
+
+The full use case computes geometry metrics, separates semantic surfaces, and
+runs an energy-demand screen. Here we use **3DBAG's recorded attributes** instead
+of recomputing geometry. You need only Python and DuckDB, with no 3D extension,
+Pandas, or downloaded national dataset.
+
+## Set up Python
+
+Create a virtual environment and install DuckDB:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install duckdb
+```
+
+On Windows, activate it with `.venv\Scripts\activate` instead.
+
+## Extract a neighbourhood and calculate a form metric
+
+Save the following as `energy_inputs.py`. It selects buildings overlapping a
+1 km × 1 km window in Delft from the hosted national 3DBAG file. The window uses
+the dataset's Dutch national grid coordinates (`EPSG:7415`).
+
+```python
+import csv
+from pathlib import Path
+
+import duckdb
+
+SOURCE = "https://cityparquet.open3d.city/data/3dbag/building.parquet"
+OUTPUT = Path("delft_energy_inputs.csv")
+# xmin, ymin, xmax, ymax in the dataset's coordinate reference system.
+EXTENT = (84000, 446000, 85000, 447000)
+
+with duckdb.connect() as con:
+    con.execute("INSTALL httpfs")
+    con.execute("LOAD httpfs")
+    result = con.execute(
+        """
+        WITH buildings AS (
+          SELECT id AS building_id,
+                 oorspronkelijkbouwjaar AS construction_year,
+                 b3_volume_lod22 AS volume_m3,
+                 b3_opp_dak_plat + b3_opp_dak_schuin AS roof_m2,
+                 b3_opp_buitenmuur AS external_wall_m2,
+                 b3_opp_scheidingsmuur AS party_wall_m2,
+                 b3_opp_grond AS ground_m2
+          FROM read_parquet(?)
+          WHERE object_type = 'Building'
+            AND bbox.xmin < ? AND bbox.xmax > ?
+            AND bbox.ymin < ? AND bbox.ymax > ?
+        )
+        SELECT *,
+               (roof_m2 + external_wall_m2 + party_wall_m2 + ground_m2)
+                 / NULLIF(volume_m3, 0) AS surface_to_volume_per_m
+        FROM buildings
+        WHERE volume_m3 > 0
+        ORDER BY surface_to_volume_per_m DESC NULLS LAST, building_id
+        """,
+        [SOURCE, EXTENT[2], EXTENT[0], EXTENT[3], EXTENT[1]],
+    )
+    columns = [column[0] for column in result.description]
+    rows = result.fetchall()
+
+with OUTPUT.open("w", newline="", encoding="utf-8") as stream:
+    writer = csv.writer(stream)
+    writer.writerow(columns)
+    writer.writerows(rows)
+
+print(f"Wrote {len(rows)} buildings to {OUTPUT}")
+print("Highest surface-to-volume ratios (building ID, 1/m):")
+for row in [row for row in rows if row[-1] is not None][:5]:
+    print(f"  {row[0]}: {row[-1]:.3f}")
+```
+
+Run it from the directory where you saved it:
+
+```bash
+python energy_inputs.py
+```
+
+The script writes `delft_energy_inputs.csv` in that directory. Change `EXTENT`
+to select another area, or replace `SOURCE` with a local 3DBAG CityParquet file
+carrying the same attributes. SQL parameters keep paths and bounds separate
+from the query text.
+
+## Interpret the output
+
+Each row represents one `Building`. In this 3DBAG package, the parent building
+holds the attributes used here; its `BuildingPart` children carry the detailed
+3D geometry. Filtering to buildings avoids counting those parts again.
+
+The table contains construction year, recorded LoD 2.2 volume, roof, wall and
+ground areas, and a surface-to-volume ratio in inverse metres. Larger ratios
+indicate more model surface per unit volume. The sum includes party walls, so
+it is a geometric form metric, **not an exposed heat-loss envelope or an energy
+demand estimate**. Recorded model volume is not necessarily heated volume.
+
+Buildings with missing or non-positive volume are excluded. Missing area values
+remain unknown: their ratios are empty in the CSV, rather than treating missing
+surfaces as zero. The spatial selection includes whole buildings whose bounding
+boxes overlap the window; it does not clip them.
+
+## Why CityParquet helps
+
+DuckDB reads the selected attributes and bounding-box fields without fetching
+the geometry columns. Parquet statistics allow it to skip row groups outside
+the window. Python receives only the selected building records, ready for a
+spreadsheet, plot, or further analysis.
+
+For geometry-derived volume and semantic roof/wall/ground areas, continue with
+the [full energy use case](https://github.com/cityjson/cityparquet/tree/main/usecase/energy).
+For more SQL examples over the same hosted file, see
+[Working with 3DBAG at cloud scale](/tutorials/cloud-scale-3dbag).

@@ -143,20 +143,20 @@ fn convert_railway(generate_lod0: bool) -> tempfile::TempDir {
 /// synthesise a footprint FROM, so it gets no `geometry_lod0_0` column at
 /// all — the non-null footprint count is still summed across every table
 /// that DOES carry the column (a synthesised footprint can land in any of
-/// them), and the first table (`building.parquet`, which does have solids)
-/// is still checked directly for the column's presence.
+/// them), and `building.parquet`, which does have solids, is checked directly
+/// for the column's presence.
 #[test]
 fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
     let with = convert_railway(true);
     let with_tables = manifest_tables(with.path());
-    let first_file = std::fs::File::open(with.path().join(&with_tables[0])).unwrap();
-    let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file).unwrap();
+    let building_file = std::fs::File::open(with.path().join("building.parquet")).unwrap();
+    let building_builder = ParquetRecordBatchReaderBuilder::try_new(building_file).unwrap();
     assert!(
-        first_builder
+        building_builder
             .schema()
             .field_with_name("geometry_lod0_0")
             .is_ok(),
-        "synthesis reserves the suffixed geometry_lod0_0 column on the first (Building) table"
+        "synthesis reserves the suffixed geometry_lod0_0 column on the Building table"
     );
     let mut non_null = 0usize;
     for table in &with_tables {
@@ -222,6 +222,36 @@ fn synthesised_railway_has_independent_city_and_geo_primaries() {
     // Both columns are legal, so both are declared in geo.columns too.
     assert!(geo.columns.contains_key("geometry_lod0_0"));
     assert!(geo.columns.contains_key("geometry_lod3_0"));
+}
+
+/// spec 05 "The declaration rule": a column carries the Parquet `GEOMETRY`
+/// logical type if and only if `geo.columns` declares it — the synthesised
+/// footprint included.
+#[test]
+fn the_synthesised_footprint_column_carries_the_geometry_annotation_geo_declares() {
+    let pkg = convert_railway(true);
+    let file = std::fs::File::open(pkg.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let (_, geo) = builder.cityparquet_footer().unwrap();
+    let geo = geo.expect("railway's building table has GeoParquet-legal columns");
+    let descr = builder.metadata().file_metadata().schema_descr();
+    for i in 0..descr.num_columns() {
+        let column = descr.column(i);
+        let name = column.path().string();
+        if !name.starts_with("geometry_lod") {
+            continue;
+        }
+        let annotated = matches!(
+            column.logical_type_ref(),
+            Some(parquet::basic::LogicalType::Geometry { .. })
+        );
+        assert_eq!(
+            annotated,
+            geo.columns.contains_key(&name),
+            "`{name}`: annotated iff declared in geo.columns"
+        );
+    }
+    assert!(geo.columns.contains_key("geometry_lod0_0"));
 }
 
 /// Synthesis is idempotent: exporting a synthesised package yields real `lod:"0"`

@@ -1,5 +1,15 @@
 //! The CityParquet [`FormatRunner`]: maps each [`Scenario`] onto the
-//! matching `cityparquet::query::*` primitive.
+//! matching `cityparquet::query::*` primitive (or its `query_async` mirror
+//! over HTTP), following the return rule in [`super::returned`]:
+//!
+//! - read all: `full_read_visit` visits every field of every row in place;
+//! - spatial window: `bbox_query_geometry` returns the matching identifiers
+//!   and walks each one's highest-LoD WKB in place;
+//! - attribute filter: `attr_filter_ids` returns the matching identifiers
+//!   (bloom, then min/max statistics, prune the row groups);
+//! - identifier and feature lookup: `id_lookup_visit`/`feature_lookup_visit`
+//!   visit every field of the matching rows (bloom, then statistics, prune);
+//! - `count` and `attr-stats`: the format's own count and aggregates.
 //!
 //! **Cross-format counting caveat — deliberately NOT papered over here.**
 //! CityParquet's `Count`/`FullRead` count ONE ROW PER CITYOBJECT: both
@@ -14,7 +24,6 @@
 //! alongside the numbers, never silently normalising one format's count to
 //! match another's.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,18 +32,15 @@ use object_store::ObjectStore;
 use object_store::ObjectStoreExt;
 use object_store::http::{HttpBuilder, HttpStore};
 use object_store::path::Path as ObjectPath;
-use parquet::arrow::ParquetRecordBatchStreamBuilder;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::arrow::async_reader::ParquetObjectReader;
 
 use cityparquet::counting_store::CountingObjectStore;
-use cityparquet::query::{self, AttrPredicate};
+use cityparquet::query::{self, AttrPredicate, BBoxGeometryResult, LookupStats};
 use cityparquet::query_async;
-use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::stac::properties::{PackageTables, table_names_from_manifest_bytes};
-use cityparquet_schema::CityMetadata;
+use cityparquet::visit::VisitTotals;
 
-use super::{FormatRunner, IoStats, RunOutcome, Source};
+use super::returned::{ComparableTotals, IdDigest, Returned, ReturnedGeometry};
+use super::{AttrAggregates, FormatRunner, IoStats, LookupCounters, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// Locates the main CityObject table inside a CityParquet package:
@@ -117,6 +123,86 @@ fn to_query_predicate(pred: &AttrPred) -> AttrPredicate {
     }
 }
 
+fn counters(stats: LookupStats) -> LookupCounters {
+    LookupCounters {
+        row_groups_total: stats.row_groups_total as u64,
+        bloom_pruned: stats.bloom_pruned as u64,
+        filter_bytes: stats.filter_bytes,
+        stats_pruned: stats.stats_pruned as u64,
+    }
+}
+
+/// One scenario's answer before the transport adds [`IoStats`]: the
+/// `result_count`, the lookup counters, the aggregates and what was
+/// returned.
+#[derive(Default)]
+struct Reply {
+    result_count: u64,
+    lookup: Option<LookupCounters>,
+    attr_stats: Option<AttrAggregates>,
+    returned: Returned,
+}
+
+/// Read all and the lookups: every field of every read row was visited by
+/// the library; the comparable totals are what is returned.
+fn visited(totals: &VisitTotals, stats: Option<LookupStats>) -> Reply {
+    Reply {
+        result_count: totals.objects,
+        lookup: stats.map(counters),
+        returned: Returned {
+            totals: Some(ComparableTotals::from(totals)),
+            ..Returned::default()
+        },
+        ..Reply::default()
+    }
+}
+
+/// The spatial window: the matching objects' identifiers and the highest-LoD
+/// geometry the library walked in place for each.
+fn window(result: &BBoxGeometryResult) -> Reply {
+    Reply {
+        result_count: result.ids.len() as u64,
+        returned: Returned {
+            ids: Some(IdDigest::of(result.ids.iter().map(String::as_str))),
+            geometry: Some(ReturnedGeometry {
+                geometries: result.geometries,
+                extent: result.extent,
+            }),
+            ..Returned::default()
+        },
+        ..Reply::default()
+    }
+}
+
+/// The attribute filter: the matching objects' identifiers.
+/// [`matched`] plus the lookup counters: the bloom axis's attribute probe.
+fn counted(ids: &[String], stats: LookupStats) -> Reply {
+    Reply {
+        lookup: Some(counters(stats)),
+        ..matched(ids)
+    }
+}
+
+fn matched(ids: &[String]) -> Reply {
+    Reply {
+        result_count: ids.len() as u64,
+        returned: Returned {
+            ids: Some(IdDigest::of(ids.iter().map(String::as_str))),
+            ..Returned::default()
+        },
+        ..Reply::default()
+    }
+}
+
+/// The aggregates of an `attr-stats` run.
+fn stats_reply(stats: AttrAggregates) -> Reply {
+    Reply {
+        result_count: stats.count,
+        attr_stats: Some(stats),
+        ..Reply::default()
+    }
+}
+
 /// One scenario's fully-resolved parameters — the single place the
 /// `--bbox`/`--attr-column`/`--target-id` requirements are checked and the
 /// CLI predicate is converted, shared by the local (sync) and HTTP (async)
@@ -136,8 +222,12 @@ enum ScenarioPlan<'a> {
     IdLookup {
         id: &'a str,
     },
-    Project {
+    FeatureLookup {
+        feature_id: &'a str,
+    },
+    AttrLookup {
         column: &'a str,
+        pred: AttrPredicate,
     },
 }
 
@@ -161,21 +251,29 @@ impl<'a> ScenarioPlan<'a> {
             Scenario::IdLookup => Self::IdLookup {
                 id: require(&params.target_id, "target-id", scenario)?.as_str(),
             },
-            Scenario::Project => Self::Project {
+            Scenario::AttrLookup => Self::AttrLookup {
                 column: require(&params.attr_column, "attr-column", scenario)?.as_str(),
+                pred: to_query_predicate(require(&params.attr_pred, "attr-eq", scenario)?),
+            },
+            Scenario::FeatureLookup => Self::FeatureLookup {
+                feature_id: require(&params.target_feature_id, "target-feature-id", scenario)?
+                    .as_str(),
             },
         })
     }
 }
 
-/// Opens `table` once, just far enough to read its embedded CityParquet
-/// key-value metadata — the `meta` argument `query::full_read`/
-/// `query::id_lookup` need to decode geometry/attributes.
-fn open_metadata(table: &Path) -> Result<CityMetadata> {
-    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .with_context(|| format!("reading Parquet metadata from {}", table.display()))?;
-    Ok(builder.cityparquet_metadata()?)
+/// The library's [`query::AttrStats`] as the runner reports it. The
+/// aggregation itself stays the format's own mechanism — min and max from
+/// column-chunk statistics, sum and count from a one-column projected scan —
+/// and is not re-derived here.
+fn aggregates(stats: query::AttrStats) -> AttrAggregates {
+    AttrAggregates {
+        min: stats.min,
+        max: stats.max,
+        sum: stats.sum,
+        count: stats.count,
+    }
 }
 
 /// Resolves `base_url`/`key`'s single main table over HTTP: range-fetches
@@ -194,7 +292,7 @@ async fn resolve_http_main_table(
     // so it is set unconditionally rather than sniffed from `base_url`.
     let store = HttpBuilder::new()
         .with_url(base_url)
-        .with_client_options(object_store::ClientOptions::new().with_allow_http(true))
+        .with_client_options(cityparquet_readbench::http_client::client_options())
         .build()?;
     let counting = Arc::new(CountingObjectStore::new(store));
 
@@ -212,18 +310,6 @@ async fn resolve_http_main_table(
     Ok((counting, table_path))
 }
 
-/// Opens `table_path` (over `store`) just far enough to read its embedded
-/// CityParquet key-value metadata — the async, HTTP-sourced mirror of
-/// [`open_metadata`].
-async fn open_metadata_http(
-    store: Arc<dyn ObjectStore>,
-    table_path: &ObjectPath,
-) -> Result<CityMetadata> {
-    let reader = ParquetObjectReader::new(store, table_path.clone());
-    let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-    Ok(CityParquetReaderBuilder::cityparquet_metadata(&builder)?)
-}
-
 /// The HTTP-transport body of [`CityParquetRunner::run`]: resolves the
 /// package's main table, dispatches `scenario` onto the matching
 /// `cityparquet::query_async::*_async` primitive (the exact async mirror of
@@ -239,46 +325,54 @@ async fn run_http(
     let dyn_store = || Arc::clone(&store) as Arc<dyn ObjectStore>;
 
     let plan = ScenarioPlan::resolve(scenario, params)?;
-    let result_count = match plan {
-        ScenarioPlan::Count => query_async::count_async(dyn_store(), &table_path).await?,
-        ScenarioPlan::FullRead => {
-            let meta = open_metadata_http(dyn_store(), &table_path).await?;
-            query_async::full_read_async(dyn_store(), &table_path, &meta)
-                .await?
-                .feature_count
-        }
+    let reply = match plan {
+        ScenarioPlan::Count => Reply {
+            result_count: query_async::count_async(dyn_store(), &table_path).await?,
+            ..Reply::default()
+        },
+        ScenarioPlan::FullRead => visited(
+            &query_async::full_read_visit_async(dyn_store(), &table_path).await?,
+            None,
+        ),
         ScenarioPlan::BBoxQuery(bbox) => {
-            query_async::bbox_query_async(dyn_store(), &table_path, bbox)
-                .await?
-                .ids
-                .len() as u64
+            window(&query_async::bbox_query_geometry_async(dyn_store(), &table_path, bbox).await?)
         }
         ScenarioPlan::AttrFilter { column, pred } => {
-            query_async::attr_filter_async(dyn_store(), &table_path, column, &pred).await?
+            let (ids, _) =
+                query_async::attr_filter_ids_async(dyn_store(), &table_path, column, &pred).await?;
+            matched(&ids)
         }
-        ScenarioPlan::AttrStats { column } => {
-            query_async::attr_stats_async(dyn_store(), &table_path, column)
-                .await?
-                .count
-        }
+        ScenarioPlan::AttrStats { column } => stats_reply(aggregates(
+            query_async::attr_stats_async(dyn_store(), &table_path, column).await?,
+        )),
         ScenarioPlan::IdLookup { id } => {
-            let meta = open_metadata_http(dyn_store(), &table_path).await?;
-            query_async::id_lookup_async(dyn_store(), &table_path, &meta, id)
-                .await?
-                .is_some() as u64
+            let (totals, stats) =
+                query_async::id_lookup_visit_async(dyn_store(), &table_path, id).await?;
+            visited(&totals, Some(stats))
         }
-        ScenarioPlan::Project { column } => {
-            query_async::project_column_async(dyn_store(), &table_path, column).await?
+        ScenarioPlan::AttrLookup { column, pred } => {
+            let (ids, stats) =
+                query_async::attr_filter_ids_async(dyn_store(), &table_path, column, &pred).await?;
+            counted(&ids, stats)
+        }
+        ScenarioPlan::FeatureLookup { feature_id } => {
+            let (totals, stats) =
+                query_async::feature_lookup_visit_async(dyn_store(), &table_path, feature_id)
+                    .await?;
+            visited(&totals, Some(stats))
         }
     };
 
     let stats = store.tally();
     Ok(RunOutcome {
-        result_count,
+        result_count: reply.result_count,
         io: Some(IoStats {
             bytes: stats.bytes,
             requests: stats.requests,
         }),
+        lookup: reply.lookup,
+        attr_stats: reply.attr_stats,
+        returned: reply.returned,
     })
 }
 
@@ -295,28 +389,40 @@ impl FormatRunner for CityParquetRunner {
             Source::Local(path) => {
                 let table = locate_main_table(path)?;
                 let plan = ScenarioPlan::resolve(scenario, params)?;
-                let result_count = match plan {
-                    ScenarioPlan::Count => query::count(&table)?,
-                    ScenarioPlan::FullRead => {
-                        let meta = open_metadata(&table)?;
-                        query::full_read(&table, &meta)?.feature_count
-                    }
+                let reply = match plan {
+                    ScenarioPlan::Count => Reply {
+                        result_count: query::count(&table)?,
+                        ..Reply::default()
+                    },
+                    ScenarioPlan::FullRead => visited(&query::full_read_visit(&table)?, None),
                     ScenarioPlan::BBoxQuery(bbox) => {
-                        query::bbox_query(&table, bbox)?.ids.len() as u64
+                        window(&query::bbox_query_geometry(&table, bbox)?)
                     }
                     ScenarioPlan::AttrFilter { column, pred } => {
-                        query::attr_filter(&table, column, &pred)?
+                        matched(&query::attr_filter_ids(&table, column, &pred)?.0)
                     }
-                    ScenarioPlan::AttrStats { column } => query::attr_stats(&table, column)?.count,
+                    ScenarioPlan::AttrStats { column } => {
+                        stats_reply(aggregates(query::attr_stats(&table, column)?))
+                    }
+                    ScenarioPlan::AttrLookup { column, pred } => {
+                        let (ids, stats) = query::attr_filter_ids(&table, column, &pred)?;
+                        counted(&ids, stats)
+                    }
                     ScenarioPlan::IdLookup { id } => {
-                        let meta = open_metadata(&table)?;
-                        query::id_lookup(&table, &meta, id)?.is_some() as u64
+                        let (totals, stats) = query::id_lookup_visit(&table, id)?;
+                        visited(&totals, Some(stats))
                     }
-                    ScenarioPlan::Project { column } => query::project_column(&table, column)?,
+                    ScenarioPlan::FeatureLookup { feature_id } => {
+                        let (totals, stats) = query::feature_lookup_visit(&table, feature_id)?;
+                        visited(&totals, Some(stats))
+                    }
                 };
                 return Ok(RunOutcome {
-                    result_count,
+                    result_count: reply.result_count,
                     io: None,
+                    lookup: reply.lookup,
+                    attr_stats: reply.attr_stats,
+                    returned: reply.returned,
                 });
             }
             Source::Http { base_url, key } => (base_url, key),

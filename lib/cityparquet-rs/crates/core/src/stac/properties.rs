@@ -134,7 +134,7 @@ fn classify_assets(item: &Item) -> Result<(Vec<String>, Vec<String>)> {
         const SIDECAR_BASENAMES: [&str; 3] = [
             "materials.parquet",
             "textures.parquet",
-            "geometry_templates.parquet",
+            "implicit_geometries.parquet",
         ];
         for name in parquet_assets(item) {
             if SIDECAR_BASENAMES.contains(&name.as_str()) {

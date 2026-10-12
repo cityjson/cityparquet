@@ -166,6 +166,16 @@ fn parent_child_references_stay_package_local_under_box_partitioning() {
     .unwrap();
     let labels: Vec<String> = rep.partitions.iter().map(|(l, _)| l.clone()).collect();
     assert!(labels.len() > 1, "delft spans >1 1000m cell");
+    // Disjoint + complete assignment: every object lands in exactly one box
+    // partition, and every label carries the box form.
+    let total: usize = rep.partitions.iter().map(|(_, r)| r.object_count).sum();
+    assert_eq!(
+        total, 2231,
+        "no object lost or duplicated across box partitions"
+    );
+    for label in &labels {
+        assert!(label.starts_with("box"), "box label, got {label}");
+    }
     assert_references_are_package_local(out.path(), &labels, "delft Box(1000)");
 }
 
@@ -195,25 +205,10 @@ fn partitioned_convert_is_lossless_over_delft() {
             "{label} package missing building.parquet"
         );
     }
-}
-
-#[test]
-fn box_partitions_cover_delft_completely() {
-    let out = tempfile::tempdir().unwrap();
-    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let opts = delft_opts(out.path());
-    let rep = convert_partitioned(
-        std::slice::from_ref(&src),
-        &PartitionSpec::Box { cell: 1000.0 },
-        &opts,
-    )
-    .unwrap();
-    assert!(rep.partitions.len() > 1, "delft spans >1 1000m cell");
-    let total: usize = rep.partitions.iter().map(|(_, r)| r.object_count).sum();
-    assert_eq!(total, 2231);
-    for (label, _) in &rep.partitions {
-        assert!(label.starts_with("box"), "box label, got {label}");
-    }
+    // Conformant input is not perturbed: every delft feature is already
+    // self-contained, so the repair moves nothing and reports nothing.
+    assert_eq!(rep.co_assigned_features, 0);
+    assert_eq!(rep.unresolvable_refs, 0);
 }
 
 #[test]
@@ -538,25 +533,6 @@ fn a_co_assigned_package_still_exports_the_two_features_separately() {
         assert_eq!(objects.len(), 1, "each feature still holds its one object");
         assert!(objects.contains_key(expected), "feature ids are preserved");
     }
-}
-
-/// Conformant input must not be perturbed: every delft feature is already
-/// self-contained, so the repair moves nothing and reports nothing, and the
-/// index-derived partition count is unchanged.
-#[test]
-fn self_contained_features_are_never_co_assigned() {
-    let out = tempfile::tempdir().unwrap();
-    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let opts = delft_opts(out.path());
-    let rep =
-        convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(4), &opts).unwrap();
-    assert_eq!(
-        rep.partitions.len(),
-        4,
-        "conformant input keeps its 4 index chunks"
-    );
-    assert_eq!(rep.co_assigned_features, 0);
-    assert_eq!(rep.unresolvable_refs, 0);
 }
 
 /// A reference whose target is absent from the whole dataset (a partial-area

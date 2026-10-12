@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 import os
-from contextlib import nullcontext
-from citybench.lifecycle import isolated_databases
+
+from citybench import engine as container_engine
+from citybench.lifecycle import CPU_LIMIT, MEMORY_LIMIT, isolated_databases
+from citybench import extension
+from citybench import isolation as isolation_mod
 from pathlib import Path
 
 from citybench import manifest, params as params_mod
@@ -15,11 +19,13 @@ from citybench.config import Dataset
 from citybench.report import write_csv
 from citybench.runner import run_matrix
 from citybench.scenarios import sql_citydb, sql_cjdb
-from citybench.scenarios.registry import SQL_SYSTEMS, TIER1, TIER2
+from citybench.runner import DEFAULT_COUNT_TOLERANCE
+from citybench.scenarios.registry import READ_SCENARIOS, TIER3
 from citybench.systems import pg
 from citybench.systems.cjdb import CjdbSystem
 from citybench.systems.citydb import CityDbSystem
 from citybench.systems.duckdb_cp import DuckDBCityParquet
+from citybench.systems import readbench as readbench_mod
 from citybench.systems.readbench import ReadbenchSystem
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,8 +38,42 @@ READBENCH_BIN = BENCHMARK_DIR / "readbench" / "target" / "release" / "cityparque
 
 def _dataset(source: Path, prepared_dir: Path | None = None) -> Dataset:
     name = Dataset.name_from_path(source)
-    prepared = prepared_dir or BENCHMARK_DIR / "formats" / "data" / "readbench"
-    return Dataset(name=name, source=source, cityparquet_dir=prepared / f"{name}.parquet", hilbert_dir=prepared / f"{name}-hilbert.parquet")
+    # By default the package the format benchmark's preparation wrote
+    # (`readbench_prepare.sh`, no `--lod0`) under the suite's data root, so
+    # both families read the same bytes and no LoD 0 is synthesised.
+    prepared = prepared_dir or BENCHMARK_DIR / "runs" / "data" / "readbench"
+    if source.name.endswith(".city.json"):
+        # cjdb imports CityJSONSeq only: a CityJSON input is run from the
+        # `.city.jsonl` the preparation wrote beside the package, or else
+        # one beside the input.
+        candidates = (prepared / f"{name}.city.jsonl", source.with_name(f"{name}.city.jsonl"))
+        found = next((c for c in candidates if c.is_file()), None)
+        if found is None:
+            raise FileNotFoundError(
+                f"{source} is CityJSON and cjdb imports CityJSONSeq only; "
+                f"none of {', '.join(map(str, candidates))} exists"
+            )
+        source = found
+    return Dataset(name=name, source=source, cityparquet_dir=prepared / f"{name}.parquet")
+
+
+#: The two named execution conditions, both measured and both reported.
+#:
+#: `single` is the PRIMARY figure: DuckDB on one thread, PostgreSQL in one
+#: backend. It is the condition under which the two engines are asked for
+#: the same amount of CPU, and it matches the format harness's
+#: single-threaded readers. DuckDB on 16 threads against a PostgreSQL with
+#: parallel query disabled concentrates DuckDB's advantage on exactly the
+#: headline rows (`notes/benchmark-fairness-review-2026-09-22.md` §4.3).
+#:
+#: `parallel` gives both engines a parallel budget. PostgreSQL's planner
+#: thresholds (`parallel_setup_cost`, `min_parallel_table_scan_size`) stay
+#: at their defaults: raising the worker cap is a resource decision;
+#: lowering those would be tuning the query.
+THREAD_CONFIGURATIONS: tuple[tuple[str, int, int], ...] = (
+    ("single", 1, 0),
+    ("parallel", 16, 8),
+)
 
 
 def _build_systems(tags: list[str], *, ports: dict[str, int] | None = None) -> list:
@@ -42,10 +82,10 @@ def _build_systems(tags: list[str], *, ports: dict[str, int] | None = None) -> l
         "cjdb": lambda: CjdbSystem(port=ports.get("cjdb", 55432)),
         "3dcitydb": lambda: CityDbSystem(port=ports.get("3dcitydb", 55433)),
         "duckdb-cityparquet": lambda: DuckDBCityParquet(),
+        # The write tier's second row: the same mutations, timed with the
+        # package write-back included.
+        "duckdb-cityparquet-writeback": lambda: DuckDBCityParquet(writeback=True),
         "cityparquet": lambda: ReadbenchSystem(binary=READBENCH_BIN),
-        "cityparquet-hilbert": lambda: ReadbenchSystem(
-            binary=READBENCH_BIN, hilbert=True
-        ),
     }
     unknown = set(tags) - set(available)
     if unknown:
@@ -53,30 +93,74 @@ def _build_systems(tags: list[str], *, ports: dict[str, int] | None = None) -> l
     return [available[tag]() for tag in tags]
 
 
-def _run_all_scenarios(systems: list, params, dataset_name: str, repeat: int,
-                        sizes: dict[str, tuple[int, int]]) -> list[dict[str, str]]:
-    """Run TIER1 on every requested system, TIER2 on the SQL-only subset.
+def _apply_threads(systems: list, threads: int, workers: int) -> None:
+    for system in systems:
+        if hasattr(system, "set_threads"):
+            system.set_threads(threads)
+        elif hasattr(system, "set_parallel_workers"):
+            system.set_parallel_workers(workers)
 
-    A single `run_matrix(systems, ..., scenarios=ALL)` call would hand the
-    Rust child (`cityparquet`/`cityparquet-hilbert`) a TIER2 scenario name
-    it does not implement — `ReadbenchSystem.run` raises `ValueError` for
-    those (see `systems/readbench.py`'s `build_child_args`), which
-    `run_matrix` cannot tell apart from a genuine failure and records as
-    `error: ValueError`. Since `just smoke` fails on ANY `error:` note,
-    that single-call shape would make the smoke target fail forever, not
-    just on a real regression. `registry.systems_for` already documents
-    the intended split (TIER1 -> every system, TIER2 -> `SQL_SYSTEMS`
-    only); this is that split, applied at the one call site that drives
-    the whole matrix.
+
+def _session_settings(systems: list) -> dict[str, dict[str, str]]:
+    """What each PostgreSQL session's parallelism resolves to RIGHT NOW."""
+    settings: dict[str, dict[str, str]] = {}
+    for system in systems:
+        if hasattr(system, "session_settings"):
+            try:
+                settings[system.tag] = system.session_settings()
+            except Exception as exc:           # a closed session is a result
+                settings[system.tag] = {"error": str(exc)}
+    return settings
+
+
+def _run_all_scenarios(systems: list, params, dataset_name: str, repeat: int,
+                        sizes: dict[str, tuple[int, int]],
+                        tolerance: float,
+                        resolved: dict[str, dict] | None = None,
+                        gate=None,
+                        ) -> list[dict[str, str]]:
+    """Every read scenario under BOTH thread configurations, then the writes.
+
+    Order is load-bearing, not incidental:
+
+    - every read row of both configurations comes first, because CJDB's
+      Q6-Q8 leave dead tuples on cjdb and rewritten pages on 3DCityDB that
+      a later read pass would measure as if they were the steady state;
+    - the write tier then runs ONCE, under the `single` configuration, and
+      its rows say so. Measuring mutations under both conditions would mean
+      restoring both databases between them, which is a longer and less
+      informative experiment than the one the paper needs.
+
+    `run_matrix` selects which systems answer each scenario from
+    `registry.systems_for`, so the native Rust child is never handed a
+    scenario name it does not implement (which it would raise `ValueError`
+    for, indistinguishable from a real failure) and the two
+    package-ordering tags appear only on the ordering-sensitive rows.
     """
-    tier1_rows = run_matrix(
-        systems, params, dataset_name, repeat=repeat, scenarios=TIER1, sizes=sizes,
+    rows: list[dict[str, str]] = []
+    for name, threads, workers in THREAD_CONFIGURATIONS:
+        _apply_threads(systems, threads, workers)
+        # Read back while the configuration is LIVE: recording it once at
+        # the end of the run would describe only whichever configuration
+        # happened to be set last, and `max_worker_processes` (which bounds
+        # how many workers a query can actually get) is exactly the figure a
+        # reader needs beside the per-gather cap that was asked for.
+        if resolved is not None:
+            resolved[name] = _session_settings(systems)
+        rows += run_matrix(
+            systems, params, dataset_name, repeat=repeat,
+            scenarios=READ_SCENARIOS, sizes=sizes, tolerance=tolerance,
+            run_note=f"threads={name}", gate=gate,
+        )
+
+    primary = THREAD_CONFIGURATIONS[0]
+    _apply_threads(systems, primary[1], primary[2])
+    rows += run_matrix(
+        systems, params, dataset_name, repeat=repeat, scenarios=TIER3,
+        sizes=sizes, tolerance=tolerance, run_note=f"threads={primary[0]}",
+        gate=gate,
     )
-    sql_systems = [s for s in systems if s.tag in SQL_SYSTEMS]
-    tier2_rows = run_matrix(
-        sql_systems, params, dataset_name, repeat=repeat, scenarios=TIER2, sizes=sizes,
-    )
-    return tier1_rows + tier2_rows
+    return rows
 
 
 def _format_ddl(statements: list[str]) -> str:
@@ -92,7 +176,7 @@ def _format_ddl(statements: list[str]) -> str:
     return ";\n".join(statements) + ";\n"
 
 
-def _indexes_sql(systems: list) -> str:
+def _indexes_sql(systems: list, params=None) -> str:
     """The full ``results/<dataset>.indexes.sql`` artefact text.
 
     I7 (final whole-branch review): this used to write ONLY what each
@@ -119,6 +203,15 @@ def _indexes_sql(systems: list) -> str:
         "-- correct, verified answer, not an omission.\n"
         + _format_ddl(sql_citydb.index_ddl()),
     ]
+    if params is not None:
+        sections += [
+            "-- cjdb: per-dataset attribute indexes (index policy; built by\n"
+            "-- build_indexes() after the import, see sql_cjdb.attribute_index_ddl()):\n"
+            + _format_ddl(sql_cjdb.attribute_index_ddl(params)),
+            "-- 3dcitydb: per-dataset attribute index (index policy; see\n"
+            "-- sql_citydb.attribute_index_ddl()):\n"
+            + _format_ddl(sql_citydb.attribute_index_ddl(params)),
+        ]
 
     by_tag = {system.tag: system for system in systems}
     for tag, label in (("cjdb", "cjdb"), ("3dcitydb", "3dcitydb")):
@@ -159,74 +252,233 @@ def cmd_prep(args) -> int:
     return 0
 
 
-def cmd_derive_params(args) -> int:
-    source = Path(args.dataset)
-    p = params_mod.derive(source)
-    out = ROOT / "params" / f"{Dataset.name_from_path(source)}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(params_mod.to_json(p))
-    print(f"wrote {out}")
-    return 0
+def _isolation(args) -> tuple[dict, isolation_mod.LoadGate]:
+    """Plan and apply host isolation once per run, before any container
+    starts, so the PostgreSQL containers can be given the same node."""
+    if getattr(args, "isolation", None) is None:
+        args.isolation, args.gate = isolation_mod.setup(
+            numa_node=getattr(args, "numa_node", "auto"),
+            max_load=getattr(args, "max_load", "auto"),
+            max_load_wait_s=getattr(args, "max_load_wait_s", 600.0),
+            memory_max=getattr(args, "memory_max", None),
+        )
+    return args.isolation, args.gate
+
+
+#: The SRID 3DCityDB's schema is created with for a dataset whose package
+#: declares no CRS (Vienna, New York, Zurich): its image refuses SRID 0. The
+#: coordinates are imported unchanged and every window is compared as plain
+#: numbers, as the format readers compare them; the manifest marks the SRID
+#: `assumed`. 7415 (Amersfoort / RD New + NAP) is a projected CRS, so
+#: PostGIS treats the coordinates as planar.
+CRSLESS_SRID = 7415
+
+
+def _corpus() -> dict[str, str]:
+    """Manifest dataset id -> source stem, in manifest order."""
+    import tomllib
+    data = tomllib.loads((BENCHMARK_DIR / "manifest.toml").read_text())
+    return {key: entry["source"].split(".")[0] for key, entry in data["datasets"].items()}
+
+
+def resolve_datasets(selection: str, prepared_dir: Path) -> list[Path]:
+    """The CityJSONSeq sources a `--datasets` selection names: `all`, or a
+    comma-separated list of manifest ids or source stems."""
+    corpus = _corpus()
+    names = list(corpus.values()) if selection == "all" else []
+    if selection != "all":
+        for token in (t.strip() for t in selection.split(",") if t.strip()):
+            if token in corpus:
+                names.append(corpus[token])
+            elif token in corpus.values():
+                names.append(token)
+            else:
+                raise SystemExit(f"unknown dataset {token!r}; known: {', '.join(corpus)}")
+    sources = [prepared_dir / f"{name}.city.jsonl" for name in names]
+    missing = [str(p) for p in sources if not p.exists()]
+    if missing:
+        raise SystemExit("prepared source(s) missing: " + ", ".join(missing))
+    return sources
+
+
+def srid_for(crs) -> tuple[int, bool]:
+    """``(srid, assumed)``: the package's EPSG code, or `CRSLESS_SRID`."""
+    code = params_mod.epsg_of(crs)
+    return (code, False) if code else (CRSLESS_SRID, True)
+
+
+def _dataset_crs(args):
+    """The `city.crs` PROJJSON of the run's CityParquet package."""
+    prepared = Path(args.prepared_dir) if getattr(args, "prepared_dir", None) else None
+    return params_mod.package_crs(_dataset(Path(args.dataset), prepared).cityparquet_dir)
 
 
 def cmd_bench(args) -> int:
+    if getattr(args, "datasets", None):
+        prepared = Path(args.prepared_dir) if args.prepared_dir else BENCHMARK_DIR / "runs" / "data" / "readbench"
+        status = 0
+        for source in resolve_datasets(args.datasets, prepared):
+            one = argparse.Namespace(**{**vars(args), "datasets": None,
+                                        "dataset": str(source), "ports": None})
+            status = max(status, cmd_bench(one))
+        return status
+    if not getattr(args, "ports", None):
+        args.crs = _dataset_crs(args)
+        args.srid, args.srid_assumed = srid_for(args.crs)
+    systems = getattr(args, "systems", None)
+    _require_extension(systems.split(",") if systems else list(DUCKDB_TAGS))
+    record, gate = _isolation(args)
     # The public runner creates fresh, UUID-scoped databases when a data root
     # is supplied. Recursive entry carries only discovered ports.
     if getattr(args, "data_root", None) and not getattr(args, "ports", None):
-        with isolated_databases(Path(args.data_root), args.srid) as context:
+        record["containers"]["started_by_run"] = True
+        engine = container_engine.active()
+        record["containers"]["engine"] = engine.manifest()
+        if record["containers"]["args"] and engine.cpuset_gap():
+            record["containers"]["cpuset"] = engine.cpuset_gap()
+            record["containers"]["args"] = []
+        with isolated_databases(Path(args.data_root), args.srid,
+                                container_args=record["containers"]["args"]) as context:
             args.ports = context["ports"]
             os.environ["CITYBENCH_CJDB_CONTAINER"] = context["containers"]["cjdb"]
             os.environ["CITYBENCH_CITYDB_CONTAINER"] = context["containers"]["3dcitydb"]
             os.environ["CITYBENCH_CJDB_PORT"] = str(context["ports"]["cjdb"])
             os.environ["CITYBENCH_CITYDB_PORT"] = str(context["ports"]["3dcitydb"])
+            if record["containers"]["args"] and not context.get("container_args_applied"):
+                record["containers"]["cpuset"] = (
+                    f"not applied: {container_engine.active().name} rejected the cpuset flags; started without them"
+                )
+                record["containers"]["args"] = []
             return cmd_bench(args)
     source = Path(args.dataset)
     dataset = _dataset(source, Path(args.prepared_dir) if getattr(args, "prepared_dir", None) else None)
     tags = args.systems.split(",") if args.systems else [
-        "duckdb-cityparquet", "cjdb", "3dcitydb",
+        "duckdb-cityparquet", "duckdb-cityparquet-writeback", "cjdb", "3dcitydb",
     ]
     systems = _build_systems(tags, ports=getattr(args, "ports", None))
 
-    # Never reuse name-keyed parameters: scaling inputs can be regenerated at
-    # the same path. Derive from this run's source and persist beside output.
-    p = params_mod.derive(source)
+    # Never reuse name-keyed parameters: a prepared input can be regenerated
+    # at the same path. Derive from this run's source and persist beside output.
+    #
+    # The package-derived parameters do not depend on the package's row
+    # order: the windows come from the `bbox` column, the attribute picks
+    # from value counts, and the id probes from the CityJSONSeq stream order.
+    #
+    # The results directory is resolved HERE, before the run rather than
+    # after it, because `append-object`'s derived one-feature CityJSONSeq
+    # file is written into it and every system is handed that path.
+    results_dir = Path(args.output_dir) if args.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    p = params_mod.derive(
+        dataset.source, dataset.cityparquet_dir,
+        append_dir=results_dir, dataset=dataset.name,
+    )
+    sidecar = readbench_mod.format_params(
+        READBENCH_BIN, dataset.source, dataset.cityparquet_dir.parent,
+        results_dir / "format-params")
+    p = params_mod.adopt_format_params(p, json.loads(sidecar.read_text()))
+    (results_dir / f"{dataset.name}.params.json").write_text(params_mod.to_json(p))
+    axis_order: dict[str, str] = {}
 
     ingest_times: dict[str, float] = {}
+    index_build: dict[str, float | None] = {}
     sizes: dict[str, tuple[int, int]] = {}
+    size_detail: dict[str, dict[str, int]] = {}
     for system in systems:
         system.prepare()
         result = system.ingest(dataset)
         ingest_times[system.tag] = result.wall_clock_s
+        if hasattr(system, "orient_to"):
+            axis_order[system.tag] = (
+                "source order, x/y exchanged for windows" if system.orient_to(p.bbox_full)
+                else "package order")
+        index_build[system.tag] = system.build_indexes(p)
         report = system.size()
         sizes[system.tag] = (
             report.size_bytes,
-            report.size_bytes_no_index or report.size_bytes,
+            report.size_bytes_no_index if report.size_bytes_no_index is not None
+            else report.size_bytes,
         )
+        if report.detail:
+            size_detail[system.tag] = report.detail
 
-    rows = _run_all_scenarios(systems, p, dataset.name, args.repeat, sizes)
+    tolerance = getattr(args, "count_tolerance", DEFAULT_COUNT_TOLERANCE)
+    resolved: dict[str, dict] = {}
+    rows = _run_all_scenarios(
+        systems, p, dataset.name, args.repeat, sizes, tolerance, resolved, gate
+    )
+    if not record["containers"].get("started_by_run"):
+        record["containers"]["cpuset"] = (
+            "not applied: the PostgreSQL containers were not started by this run"
+        )
+        record["containers"]["args"] = []
+    elif record["containers"]["cpuset"] != "applied" and record["client"]["cpu"].startswith("applied"):
+        record["containers"]["inherited_affinity"] = (
+            "the container engine was launched from the pinned client, so the container "
+            "processes are expected to inherit its CPU affinity; no cgroup "
+            "enforces it"
+        )
+    record["containers"].update(cpus=CPU_LIMIT, memory=MEMORY_LIMIT)
+    isolation_record = {
+        **record,
+        "load": {**record["load"], **gate.summary(), "cells": gate.cells},
+    }
 
-    results_dir = Path(args.output_dir) if args.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
-    results_dir.mkdir(parents=True, exist_ok=True)
-    (results_dir / f"{dataset.name}.params.json").write_text(params_mod.to_json(p))
     write_csv(results_dir / f"{dataset.name}.csv", rows)
 
     pg_settings = _pg_settings(getattr(args, "ports", None))
-    for settings in pg_settings.values():
-        if isinstance(settings, dict):
-            settings["max_parallel_workers_per_gather"] = "0 (benchmark session)"
 
     (results_dir / f"{dataset.name}.manifest.json").write_text(
         json.dumps(
-            manifest.collect(
+            {**manifest.collect(
                 dataset_name=dataset.name,
-                source=__import__("hashlib").sha256(source.read_bytes()).hexdigest(),
+                source=__import__("hashlib").sha256(dataset.source.read_bytes()).hexdigest(),
                 ingest=ingest_times,
                 sizes=sizes,
+                index_build=index_build,
+                size_detail=size_detail,
+                memory_read=dict(pg.MEMORY_READ),
                 versions=_versions(systems),
                 pg_settings=pg_settings,
                 patches=_patches(systems),
                 srid=_srids(systems),
-            ),
+                servers=_servers(systems),
+                execution=_execution(resolved, args.repeat),
+                isolation=isolation_record,
+                count_check={
+                    "relative_spread_tolerance": tolerance,
+                    "statuses": {
+                        "ok": "every answering system returned the same count",
+                        "ok-deviation": (
+                            "the counts differ, but the relative spread "
+                            "(max - min) / max is within the tolerance; the "
+                            "`count-mismatch: ...` detail stays in `notes` "
+                            "and the run does not fail"
+                        ),
+                        "mismatch": (
+                            "the spread exceeds the tolerance; the run exits "
+                            "non-zero and the row is not citable"
+                        ),
+                        "id-mismatch": (
+                            "the counts agree but the systems returned "
+                            "different object identifiers or non-null "
+                            "geometry counts (untimed verification pass, "
+                            "`citybench.identity`); the run exits non-zero "
+                            "and the row is not citable"
+                        ),
+                    },
+                },
+            ), **{
+                "crs": {"declared": getattr(args, "crs", None),
+                        "srid": getattr(args, "srid", None),
+                        "assumed": getattr(args, "srid_assumed", None),
+                        "swap_xy": p.swap_xy},
+                "axis_order": axis_order,
+                "format_params": {
+                    "path": str(sidecar),
+                    "sha256": __import__("hashlib").sha256(sidecar.read_bytes()).hexdigest(),
+                },
+            }},
             indent=2,
             sort_keys=True,
         )
@@ -234,20 +486,35 @@ def cmd_bench(args) -> int:
     )
 
     (results_dir / f"{dataset.name}.indexes.sql").write_text(
-        _indexes_sql(systems)
+        _indexes_sql(systems, p)
     )
 
     for system in systems:
         system.teardown()
 
-    mismatches = [r for r in rows if "count-mismatch" in r["notes"]]
+    deviations = [r for r in rows if r["status"] == "ok-deviation"]
+    if deviations:
+        print(
+            f"NOTE: {len(deviations)} row(s) carry an explained count "
+            f"deviation within the {tolerance:.4%} tolerance; see `notes`",
+            file=sys.stderr,
+        )
+    id_mismatches = [r for r in rows if r["status"] == "id-mismatch"]
+    if id_mismatches:
+        print(
+            f"ERROR: {len(id_mismatches)} row(s) returned different object "
+            "identifiers or geometry counts across systems; see `notes`",
+            file=sys.stderr,
+        )
+    mismatches = [r for r in rows if r["status"] == "mismatch"]
     if mismatches:
         print(
-            f"WARNING: {len(mismatches)} row(s) carry a count mismatch",
+            f"WARNING: {len(mismatches)} row(s) carry a count mismatch "
+            "beyond the tolerance",
             file=sys.stderr,
         )
     print(f"wrote {results_dir / f'{dataset.name}.csv'} ({len(rows)} rows)")
-    if any(row["status"] in {"error", "mismatch"} for row in rows):
+    if any(row["status"] in {"error", "mismatch", "id-mismatch"} for row in rows):
         return 1
     return 0
 
@@ -263,32 +530,111 @@ def cmd_smoke(args) -> int:
         ports=None,
         data_root=getattr(args, "data_root", None),
         srid=getattr(args, "srid", 7415),
+        count_tolerance=getattr(args, "count_tolerance", DEFAULT_COUNT_TOLERANCE),
+        # Pinned like a real run, but never held back by the load gate: the
+        # smoke run checks correctness, not timings.
+        numa_node=os.environ.get("BENCH_NUMA_NODE", "auto"),
+        max_load="off",
+        max_load_wait_s=0.0,
+        memory_max=None,
     )
     bench_status = cmd_bench(ns)
     output_dir = Path(ns.output_dir) if ns.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
     csv_path = output_dir / f"{Dataset.name_from_path(ns.dataset)}.csv"
-    text = csv_path.read_text()
     if bench_status:
         return bench_status
-    if "count-mismatch" in text:
+    # The STATUS column, not the `notes` text: an `ok-deviation` row keeps
+    # its full `count-mismatch: ...` decomposition in `notes` on purpose,
+    # so a substring search there would now fail every run that has one.
+    with csv_path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    if any(row["status"] == "mismatch" for row in rows):
         print(
-            "SMOKE FAILED: systems disagree on a result count. "
-            "At least one is answering a different question; its timing "
-            "is meaningless until reconciled.",
+            "SMOKE FAILED: systems disagree on a result count by more than "
+            "the tolerance. At least one is answering a different question; "
+            "its timing is meaningless until reconciled.",
             file=sys.stderr,
         )
         return 1
-    if "error:" in text:
+    if any(row["status"] == "error" for row in rows):
         print("SMOKE FAILED: a system errored; see notes column.", file=sys.stderr)
         return 1
-    print("smoke OK")
+    deviations = sum(1 for row in rows if row["status"] == "ok-deviation")
+    print(f"smoke OK ({len(rows)} rows, {deviations} explained deviation(s))")
     return 0
+
+
+def _execution(resolved: dict[str, dict], repeat: int) -> dict:
+    """The two thread configurations, and what each session resolved to.
+
+    The PostgreSQL block is read back from the benchmark session itself
+    (`pg.parallel_settings`) WHILE each configuration is live, because
+    `max_worker_processes` bounds how many workers a query can actually get
+    regardless of what `max_parallel_workers_per_gather` asks for —
+    recorded rather than assumed.
+    """
+    return {
+        "repeat": repeat,
+        "repeat_note": "timed samples per cell after one discarded warm-up (--repeat); the CSV's repeat column holds the samples each row took",
+        "configurations": [
+            {"name": name, "duckdb_threads": threads,
+             "postgresql_max_parallel_workers_per_gather": workers,
+             "primary": index == 0}
+            for index, (name, threads, workers) in enumerate(THREAD_CONFIGURATIONS)
+        ],
+        "read_tier": "every read scenario is measured under BOTH configurations; CSV `notes` carry threads=<name>",
+        "write_tier": (
+            f"measured once, under the {THREAD_CONFIGURATIONS[0][0]} "
+            "configuration, after every read row"
+        ),
+        "postgresql_session_resolved": resolved,
+        "postgresql_session_resolved_note": (
+            "read back from each benchmark session while that configuration "
+            "was live; `max_worker_processes` is the cluster-wide pool that "
+            "bounds how many workers a query actually receives"
+        ),
+        "postgresql_planner_thresholds": (
+            "parallel_setup_cost and min_parallel_table_scan_size are left at "
+            "their defaults under both configurations"
+        ),
+    }
+
+
+#: The tags that load the DuckDB CityJSON extension.
+DUCKDB_TAGS = ("duckdb-cityparquet", "duckdb-cityparquet-writeback")
+
+
+def _require_extension(tags: list[str]) -> None:
+    """Refuse to start a run with a DuckDB system and no extension build.
+
+    Checked before any database is started, so a missing build costs
+    nothing rather than failing the write tier hours into the run.
+    """
+    if any(tag in DUCKDB_TAGS for tag in tags):
+        extension.resolve()
+
+
+def _extension_reported_version(path: Path) -> str | None:
+    conn = extension.connect()
+    try:
+        extension.load(conn, path)
+        return extension.reported_version(conn)
+    finally:
+        conn.close()
 
 
 def _versions(systems: list) -> dict[str, str]:
     import duckdb
 
     versions = {"duckdb": duckdb.__version__}
+    # The write tier runs through the DuckDB CityJSON extension's package
+    # model, so which build of that extension answered is part of the
+    # result, not an environment detail: its path, the submodule commit,
+    # the file's SHA-256 and the version it reports (`citybench.extension`).
+    if any(s.tag in DUCKDB_TAGS for s in systems):
+        path = extension.resolve()
+        versions.update(extension.provenance(
+            path, reported=_extension_reported_version(path)))
     if any(s.tag == "cjdb" for s in systems):
         from citybench.systems.cjdb import CJDB_UPSTREAM_VERSION
 
@@ -315,6 +661,23 @@ def _patches(systems: list) -> dict[str, dict[str, str]]:
     return patches
 
 
+def _servers(systems: list) -> dict:
+    """Live provenance of the database servers and the images behind them:
+    each PostgreSQL system's `provenance()` (server, PostGIS, and for
+    3DCityDB the schema version and citydb-tool's `--version`), plus the
+    container engine's digest of every image the run used."""
+    out: dict = {s.tag: s.provenance() for s in systems if hasattr(s, "provenance")}
+    if out:
+        from citybench.lifecycle import CJDB_IMAGE, CITYDB_IMAGE
+        from citybench.systems.citydb import _IMAGE as CITYDB_TOOL_IMAGE
+        engine = container_engine.active()
+        out["images"] = {
+            image: engine.image_digest(image) or "not reported by the engine"
+            for image in (CJDB_IMAGE, CITYDB_IMAGE, CITYDB_TOOL_IMAGE)
+        }
+    return out
+
+
 def _srids(systems: list) -> dict[str, int]:
     """The SRID each PostgreSQL-backed system actually landed on.
 
@@ -334,6 +697,13 @@ def _srids(systems: list) -> dict[str, int]:
 
 def _pg_settings(ports: dict[str, int] | None = None) -> dict[str, str]:
     """Human-readable values for the manifest's ``pg_settings`` block.
+
+    The FILE settings only. Anything this harness sets per run
+    configuration on the benchmark session — currently
+    ``max_parallel_workers_per_gather`` — belongs in the manifest's
+    ``execution`` block instead, read back while that configuration is
+    live, and is excluded here so the two blocks cannot disagree.
+
 
     M1 (final whole-branch review): this used to concatenate
     ``pg_settings.setting`` (the raw stored integer) directly with
@@ -361,16 +731,17 @@ def _pg_settings(ports: dict[str, int] | None = None) -> dict[str, str]:
                 cur.execute(
                     "SELECT name, current_setting(name) FROM pg_settings "
                     "WHERE name = ANY(%s)",
+                    # `max_parallel_workers_per_gather` is deliberately NOT
+                    # here any more. It is the setting that binds PER QUERY
+                    # (leader plus this many workers), and it is now set per
+                    # thread configuration on the benchmark session rather
+                    # than taken from the file. Reading it back on a FRESH
+                    # connection would report the file's value and
+                    # contradict `execution.postgresql_session_resolved`,
+                    # which records what each configuration's own session
+                    # actually resolved to. One manifest, one answer.
                     (["shared_buffers", "work_mem", "effective_cache_size",
-                      "random_page_cost", "max_parallel_workers",
-                      # I4 (final whole-branch review): this is the setting
-                      # that actually binds PER QUERY (leader + this many
-                      # workers) -- max_parallel_workers above is only the
-                      # cluster-wide pool it draws from. Omitting it let a
-                      # published manifest look "tuned identically" while
-                      # the per-query CPU budget silently differed from
-                      # DuckDB's own (see README "Tuning parity").
-                      "max_parallel_workers_per_gather"],),
+                      "random_page_cost", "max_parallel_workers"],),
                 )
                 settings[tag] = dict(cur.fetchall())
             conn.close()
@@ -381,6 +752,15 @@ def _pg_settings(ports: dict[str, int] | None = None) -> dict[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="citybench")
+    parser.add_argument(
+        "--container-engine", choices=container_engine.ENGINE_PRIORITY, default=None,
+        help="override the engine cascade (" + " > ".join(container_engine.ENGINE_PRIORITY)
+             + f"); also ${container_engine.ENV_VAR}")
+    parser.add_argument(
+        "--duckdb-cityjson-extension", default=None,
+        help="the DuckDB CityJSON extension build the DuckDB systems load "
+             "(default: lib/duckdb-cityjson's local release build); also "
+             f"${extension.ENV_VAR}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_prep = sub.add_parser("prep")
@@ -389,20 +769,39 @@ def main(argv: list[str] | None = None) -> int:
     p_prep.add_argument("--srid", type=int, default=None)
     p_prep.set_defaults(func=cmd_prep)
 
-    p_derive = sub.add_parser("derive-params")
-    p_derive.add_argument("--dataset", required=True)
-    p_derive.set_defaults(func=cmd_derive_params)
-
     p_bench = sub.add_parser("run")
-    p_bench.add_argument("--dataset", required=True)
-    p_bench.add_argument("--repeat", type=int, default=7)
+    selection = p_bench.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--dataset", help="one CityJSONSeq source path")
+    selection.add_argument("--datasets", help="`all`, or comma-separated manifest ids or "
+                           "source stems, resolved in --prepared-dir as <stem>.city.jsonl")
+    p_bench.add_argument("--repeat", type=int, default=25)
     p_bench.add_argument("--systems", default=None,
                          help="comma-separated tags; default is DuckDB over CityParquet, cjdb, and 3DCityDB")
     p_bench.add_argument("--prepared-dir", default=None)
     p_bench.add_argument("--data-root", default=None)
-    p_bench.add_argument("--srid", type=int, default=7415)
+    p_bench.add_argument("--count-tolerance", type=float,
+                         default=DEFAULT_COUNT_TOLERANCE,
+                         help="relative spread (max-min)/max below which a "
+                              "cross-system count disagreement is published "
+                              "as status=ok-deviation with its decomposition "
+                              "in `notes`, instead of failing the run "
+                              f"(default {DEFAULT_COUNT_TOLERANCE})")
     p_bench.add_argument("--output-dir", default=None,
                          help="directory for CSV, manifest, and index artefacts")
+    p_bench.add_argument("--numa-node", default=os.environ.get("BENCH_NUMA_NODE", "auto"),
+                         help="NUMA node to pin the client (and DuckDB) and, when the "
+                              "cpuset controller is delegated, the PostgreSQL containers "
+                              "to: a node id, `auto` (most MemFree at run start) or `off` "
+                              "(env BENCH_NUMA_NODE; default auto)")
+    p_bench.add_argument("--max-load", default="auto",
+                         help="wait before a cell while the node's share of load1 exceeds "
+                              "this: a number, `auto` (half the node's cores) or `off`")
+    p_bench.add_argument("--max-load-wait-s", type=float, default=600.0,
+                         help="longest wait per cell before proceeding and tagging it "
+                              "`busy` in `notes` (default 600)")
+    p_bench.add_argument("--memory-max", default=None,
+                         help="memory cap in bytes; recorded in the manifest's `isolation` "
+                              "object but not applied to the database family")
     p_bench.set_defaults(func=cmd_bench)
 
     p_smoke = sub.add_parser("smoke")
@@ -412,9 +811,17 @@ def main(argv: list[str] | None = None) -> int:
     p_smoke.add_argument("--prepared-dir", default=None)
     p_smoke.add_argument("--data-root", default=None)
     p_smoke.add_argument("--srid", type=int, default=7415)
+    p_smoke.add_argument("--count-tolerance", type=float,
+                         default=DEFAULT_COUNT_TOLERANCE)
     p_smoke.set_defaults(func=cmd_smoke)
 
     args = parser.parse_args(argv)
+    if args.container_engine:
+        # The environment carries the choice into recursive and child runs.
+        os.environ[container_engine.ENV_VAR] = args.container_engine
+    if args.duckdb_cityjson_extension:
+        # Likewise: the systems resolve the build from the environment.
+        os.environ[extension.ENV_VAR] = args.duckdb_cityjson_extension
     return args.func(args)
 
 

@@ -6,13 +6,14 @@
 //! resolves `--prepared-dir/<dataset>.parquet` and friends, the prepare
 //! script writes those very artefacts, and the justfile's per-dataset
 //! recipes name a CSV/package directory after it. The rule is therefore
-//! implemented four times over — once in Rust
+//! implemented three times over — once in Rust
 //! ([`strip_known_extension`]), once in `benchmark/scripts/readbench_prepare.sh`,
-//! four identical times in the MONOREPO's root `justfile` (which is where
+//! three identical times in the MONOREPO's root `justfile` (which is where
 //! the per-dataset recipes live: they reach both this crate and the corpora
-//! under `benchmark/`), and once (as its composable package-name
-//! counterpart) in `benchmark/scripts/readbench_duckdb.sh` — because a shell script
-//! cannot import a Rust function and `just` has no functions of its own.
+//! under `benchmark/`) — because a shell script cannot import a Rust
+//! function and `just` has no functions of its own. The suite runner,
+//! `benchmark/scripts/bench_suite.py`, carries a Python copy
+//! (`dataset_stem`), run here over the same table.
 //!
 //! Every one of them used to know only `.json`/`.jsonl`. A `.gml` input was
 //! therefore invisible to every `find` pattern in the justfile, and a
@@ -56,7 +57,7 @@ const CASES: &[(&str, &str)] = &[
 /// The MONOREPO root: `benchmark/readbench/` sits two levels below it.
 ///
 /// One root, not two. Everything this test reads — the shell implementations
-/// under `benchmark/scripts/`, and the four per-dataset recipes in the root
+/// under `benchmark/scripts/`, and the three per-dataset recipes in the root
 /// `justfile` — is named relative to the repository root, so a second base
 /// would only be a second thing to keep correct.
 fn mono_root() -> PathBuf {
@@ -215,8 +216,53 @@ fn extract_shell_function(source: &str, name: &str) -> String {
     panic!("no `{name}()` shell function found");
 }
 
+// 2b. benchmark/scripts/bench_suite.py
 // ---------------------------------------------------------------------------
-// 3. the justfile (four recipes, one shared extension list)
+
+#[test]
+fn the_suite_runner_strips_identically() {
+    // The function is extracted and run on its own, like the shell copies:
+    // importing the whole runner would tie this test to its interpreter
+    // version and imports.
+    let source = read("benchmark/scripts/bench_suite.py");
+    let start = source
+        .find("def dataset_stem(")
+        .expect("bench_suite.py defines dataset_stem");
+    let body: String = source[start..]
+        .lines()
+        .enumerate()
+        .take_while(|(i, line)| *i == 0 || line.is_empty() || line.starts_with(' '))
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    let program = format!(
+        "import sys\nfrom pathlib import Path\n{body}\nprint(dataset_stem(Path(sys.argv[1])))\n"
+    );
+    let produced: Vec<String> = CASES
+        .iter()
+        .map(|(input, _)| {
+            let out = Command::new("python3")
+                .arg("-I")
+                .arg("-c")
+                .arg(&program)
+                .arg(input)
+                .output()
+                .unwrap_or_else(|e| panic!("running bench_suite.dataset_stem under python3: {e}"));
+            assert!(
+                out.status.success(),
+                "bench_suite.dataset_stem failed on '{input}': {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout)
+                .expect("a dataset name is UTF-8")
+                .trim_end_matches('\n')
+                .to_string()
+        })
+        .collect();
+    assert_matches_the_table("benchmark/scripts/bench_suite.py", &produced);
+}
+
+// ---------------------------------------------------------------------------
+// 3. the justfile (three recipes, one shared extension list)
 // ---------------------------------------------------------------------------
 
 /// Every `for ext in {{KNOWN_INPUT_EXTENSIONS}} ... done` block in the
@@ -243,11 +289,11 @@ fn justfile_stripper_blocks(justfile: &str) -> Vec<String> {
 fn the_justfile_has_exactly_one_stripper_repeated_verbatim() {
     let justfile = read("justfile");
     let blocks = justfile_stripper_blocks(&justfile);
-    // convert-all, bench, write-bench, variant-bench.
+    // convert-all, bench, variant-bench.
     assert_eq!(
         blocks.len(),
-        4,
-        "expected four per-dataset recipes to strip the input extension, found {}",
+        3,
+        "expected three per-dataset recipes to strip the input extension, found {}",
         blocks.len()
     );
     for block in &blocks[1..] {
@@ -266,7 +312,7 @@ fn the_justfile_has_exactly_one_stripper_repeated_verbatim() {
     // be wrong in a way the block itself cannot catch.
     assert_eq!(
         justfile.matches(r#"name="$(basename "$f")""#).count(),
-        4,
+        3,
         "every per-dataset recipe must strip the basename, not the path"
     );
 }
@@ -334,8 +380,8 @@ fn every_recipe_discovers_inputs_through_the_shared_pattern() {
     let justfile = read("justfile");
     assert_eq!(
         justfile.matches("{{KNOWN_INPUT_FIND}}").count(),
-        4,
-        "expected four per-dataset recipes to discover inputs through KNOWN_INPUT_FIND"
+        3,
+        "expected three per-dataset recipes to discover inputs through KNOWN_INPUT_FIND"
     );
     let inline = justfile
         .lines()
@@ -346,52 +392,4 @@ fn every_recipe_discovers_inputs_through_the_shared_pattern() {
         inline, 0,
         "a justfile recipe still carries its own inline `find` name pattern"
     );
-}
-
-// ---------------------------------------------------------------------------
-// 5. benchmark/scripts/readbench_duckdb.sh — the composable package-name counterpart
-// ---------------------------------------------------------------------------
-
-/// `readbench_duckdb.sh` is handed a `<dataset>.parquet` PACKAGE directory,
-/// never the original input, so it strips `.parquet`/`-hilbert` rather than
-/// an input extension — a different convention, which is exactly why it is
-/// checked by COMPOSITION rather than by running it over [`CASES`]
-/// directly. What must hold is that the dataset name the justfile derives
-/// (by stripping the input extension) survives the round trip through the
-/// package name this script is given back, for every input the benchmark
-/// now accepts — including the CityGML ones.
-#[test]
-fn the_duckdb_baseline_recovers_the_justfile_dataset_name() {
-    let script = read("benchmark/scripts/readbench_duckdb.sh");
-    let stripper: String = script
-        .lines()
-        .filter(|l| l.starts_with("PKG_BASE=\"${PKG_BASE%"))
-        .map(|l| format!("{l}\n"))
-        .collect();
-    assert!(
-        stripper.lines().count() >= 2,
-        "expected readbench_duckdb.sh to strip both `.parquet` and `-hilbert`"
-    );
-    for (input, dataset) in CASES {
-        for suffix in [".parquet", "-hilbert.parquet"] {
-            let program = format!(
-                "set -euo pipefail\nPKG_BASE=\"$(basename \"$1\")\"\n{stripper}printf '%s' \"$PKG_BASE\"\n"
-            );
-            let package = format!("benchmark/runs/data/readbench/{dataset}{suffix}");
-            let out = Command::new("bash")
-                .arg("-c")
-                .arg(&program)
-                .arg("bash")
-                .arg(&package)
-                .output()
-                .expect("running readbench_duckdb.sh's package-name stripper");
-            assert!(out.status.success());
-            assert_eq!(
-                String::from_utf8_lossy(&out.stdout),
-                *dataset,
-                "the package the justfile derives from '{input}' ({package}) does not strip \
-                 back to '{dataset}'"
-            );
-        }
-    }
 }

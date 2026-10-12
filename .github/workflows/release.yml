@@ -30,18 +30,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # `cityparquet` depends on `city3d-stac-types` by git rev. libgit2 does not
-  # honour the HTTPS credentials `actions/checkout` installs, falls through to
-  # ssh-agent, and fails with "no authentication methods succeeded"; shelling
-  # out to the git CLI does honour them. See the same note in rust.yml.
-  CARGO_NET_GIT_FETCH_WITH_CLI: true
 
 jobs:
   # The Rust gate, run again against the tagged commit. This CALLS rust.yml
   # rather than repeating it: that job carries a runner-specific dance (freeing
-  # disk before the link step, CARGO_NET_GIT_FETCH_WITH_CLI for the
-  # city3d-stac-types git dependency, an SSH-to-HTTPS rewrite for the vendored
-  # submodule) which a second copy would drift out of step with.
+  # disk before the link step, dropping debug info so the test binaries link)
+  # which a second copy would drift out of step with.
   #
   # A tag is usually cut from a commit rust.yml has already passed, so this is
   # insurance rather than discovery — but a release is exactly the moment where
@@ -91,8 +85,7 @@ jobs:
 
   # The `cityparquet` CLI binary, for people who want the tool without a Rust
   # toolchain. Nothing here needs a submodule: vendor/cjseq is an in-tree
-  # vendored copy, and city3d-stac-types is a git dependency cargo fetches
-  # itself.
+  # vendored copy, and the city3d-stac crates come from crates.io.
   binaries:
     name: ${{ matrix.target }}
     needs: gate

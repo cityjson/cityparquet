@@ -1,0 +1,3 @@
+dataset,format,bytes,mb_decimal
+delft,cityparquet,2412000,2.412000
+delft,cityparquet+nobloom,2392201,2.392201

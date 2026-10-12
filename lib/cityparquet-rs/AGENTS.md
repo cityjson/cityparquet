@@ -4,7 +4,7 @@
 encoding. Part of the CityParquet + CityLake research stack (TU Delft 3D
 Geoinformation). It stores a 3D city model as a **directory of Parquet files** (one row
 per city object, WKB geometry per LoD, typed attribute columns, optional
-material/texture/geometry-template sidecars), with an Arrow in-memory representation,
+material/texture/implicit-geometry sidecars), with an Arrow in-memory representation,
 and round-trips back to CityJSON / CityJSONSeq with **semantic** losslessness.
 
 ## Where you are
@@ -18,8 +18,8 @@ and round-trips back to CityJSON / CityJSONSeq with **semantic** losslessness.
 - **The catalogue driver is not here either**: `../../scripts/catalog2cityparquet`.
 - **`just check` here gates the library alone**, and is self-contained: no `uv`,
   no `jq`, no corpus. Recipes that reach both the library and the benchmark —
-  `bench`, `convert-all`, `write-bench`, `variant-bench`, the fetchers, the
-  renderers, `plot-test`, `scripts-test`, `catalog-*` — are in the **root**
+  `bench`, `convert-all`, `variant-bench`, the fetchers, the renderers,
+  `plot-test`, `scripts-test`, `catalog-*` — are in the **root**
   `justfile` and run from the repository root.
 - **Directory names under `crates/` are short** (`core`, `schema`, `cli`); the
   package names stay namespaced (`cityparquet`, `cityparquet-schema`,
@@ -39,12 +39,12 @@ implementation-status table (`../../documents/docs/06-resources/02-software.mdx`
 Three crates in the Cargo workspace. The read-benchmark harness and the
 catalogue driver used to be listed here; both have moved out (see above).
 
-| Component                           | Purpose                                                                                                                                                                                                                                                                                                                                                                      |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cityparquet-schema`                | Type system, CityGML taxonomy, Arrow schema, sidecar schemas, manifest — **the spec as code**. Kept free of `arrow-array`/`parquet` (enforced by `just isolation`) so it stays an executable specification.                                                                                                                                                                  |
-| `cityparquet`                       | Parquet writer/reader, WKB, appearance interning, sidecars, export, comparator, Hilbert ordering, recipe presets.                                                                                                                                                                                                                                                            |
-| `cityparquet-cli`                   | The `cityparquet` binary and the benchmark harness.                                                                                                                                                                                                                                                                                                                          |
-| `../../scripts/catalog2cityparquet` | Python driver converting the published City3D STAC catalogue (53 collections, ~74k items) into a CityParquet mirror, and ledgering **why** each item did or did not convert. Shells out to `cityparquet` and to the vendored `city3dstac`; interprets no format itself. Its own suite is `just catalog-test`, not `just check`. See `scripts/catalog2cityparquet/README.md`. |
+| Component                           | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cityparquet-schema`                | Type system, CityGML taxonomy, Arrow schema, sidecar schemas, manifest — **the spec as code**. Kept free of `arrow-array`/`parquet` (enforced by `just isolation`) so it stays an executable specification.                                                                                                                                                                                                                       |
+| `cityparquet`                       | Parquet writer/reader, WKB, appearance interning, sidecars, export, comparator, Hilbert ordering, recipe presets.                                                                                                                                                                                                                                                                                                                 |
+| `cityparquet-cli`                   | The `cityparquet` binary and the benchmark harness.                                                                                                                                                                                                                                                                                                                                                                               |
+| `../../scripts/catalog2cityparquet` | Python driver converting the published City3D STAC catalogue (53 collections, ~74k items) into a CityParquet mirror, and ledgering **why** each item did or did not convert. Shells out to `cityparquet` and to the released `city3dstac` (city3d-stac-gen, installed by `just catalog-tools`); interprets no format itself. Its own suite is `just catalog-test`, not `just check`. See `scripts/catalog2cityparquet/README.md`. |
 
 ## Commands
 
@@ -61,11 +61,11 @@ Catalogue driver (`scripts/catalog2cityparquet`; all but `catalog-test` need the
 and none of them is part of `just check`):
 
 ```bash
-just catalog-tools                       # build the two binaries the driver shells out to
+just catalog-tools                       # build `cityparquet`, install the released `city3dstac`
 just catalog-convert [OUT] [ARGS...]     # whole catalogue -> CityParquet mirror (hours; resumable)
 just catalog-convert-collection ID [OUT] # one collection, the way to prove a change on real data
 just catalog-aggregate [OUT]             # rebuild the mirror's root catalog.json, no downloads
-just catalog-test                        # the driver's own suite (261 tests, no network)
+just catalog-test                        # the driver's own suite (no network)
 ```
 
 CLI (add `--release` for realistic timing):
@@ -74,16 +74,20 @@ CLI (add `--release` for realistic timing):
 cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite  # CityJSON/Seq/CityGML → package
 cargo run -p cityparquet-cli -- export  PACKAGE_DIR  OUT.city.jsonl    # package → CityJSON/Seq
 cargo run -p cityparquet-cli -- compare A.city.jsonl B.city.jsonl      # semantic equality (round-trip proof)
+cargo run -p cityparquet-cli -- validate PACKAGE_DIR                   # conformance against the spec (exit 2 on an error)
 cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 ```
 
 `convert` takes the output directory as the **required `-o`/`--output` flag**, not
-positionally. Other flags include `--recipe`, `--ordering source|hilbert`,
+positionally. Other flags include `--recipe`, `--ordering hilbert|source`
+(Hilbert by default, which holds a CityGML or FlatCityBuf input in memory to
+sort; `source` streams, the low-memory path),
 `--row-group-size`, `--zstd-level`,
-`--partition`, `--no-lod0`, `--crs` (an operator-supplied CRS for a source that
+`--partition`, `--lod0` (opt-in LoD0 footprint synthesis), `--crs` (an operator-supplied CRS for a source that
 declares none — without it such a source still converts, writing `city.crs: null`), and
-`--tolerate-invalid-appearance` (drop a dangling material/texture index instead of
-aborting; off by default — strict is the oracle). The
+`--tolerate-invalid-appearance` (drop a dangling material/texture index, or the
+texture of a ring with fewer UVs than vertices, instead of aborting; off by
+default — strict is the oracle). The
 round-trip is proven by `convert` → `export` → `compare` against the source. See
 `README.md` for the full flag tables and the per-command stdout report formats, and
 `../../benchmark/formats/README.md` for benchmark methodology and comparability caveats.
@@ -113,6 +117,6 @@ round-trip is proven by `convert` → `export` → `compare` against the source.
 
 - `docs/design.md` — data model & format (package layout, columns, geometry/appearance encoding, round-trip semantics).
 - `docs/architecture.md` — the code: crates, the two-pass conversion pipeline, reader/export/compare, the benchmark harness.
-- `../../benchmark/README.md` — what the three benchmark families measure, which evidence is committed and which is re-measured, and the caveats that are load-bearing.
+- `../../benchmark/README.md` — what the three benchmark families measure, where their results land, and the caveats that are load-bearing.
 - `../../benchmark/formats/README.md` — the write/compression benchmark's methodology and comparability caveats (no CSVs committed).
-- `../../benchmark/formats/READ_BENCHMARK.md` — the cross-format read benchmark: methodology, the six-dataset cityjson.org corpus, the two benchmark sets, and 18 fairness caveats. No CSVs are committed; `benchmark/formats/read_results/` and `benchmark/formats/ordering_results/` are populated by `just bench` / `just ordering-bench` from the repository root.
+- `../../benchmark/formats/READ_BENCHMARK.md` — the cross-format read benchmark: methodology, the six-dataset cityjson.org corpus, the two benchmark sets, and 35 fairness caveats. A full run writes its results to `benchmark/runs/formats/results/` (`just bench-run --families formats` from the repository root); none is committed until the run on the benchmark host.

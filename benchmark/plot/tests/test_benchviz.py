@@ -25,19 +25,44 @@ def test_preparation_and_paper_figure_set(tmp_path: Path):
     path.write_text(prep.json.dumps(data), encoding="utf-8")
     output = figures.main(path, tmp_path / "figures")
     names = {p.name for p in output.glob("*")}
-    expected = {
-        f"{name}.{kind}"
-        for name in ("sizes", "heatmap", "codec", "codec-scaling", "rowgroup", "rowgroup-scaling")
-        for kind in ("svg", "png")
-    }
+    expected = {f"bloom.{kind}" for kind in ("svg", "png")}
     assert expected <= names
-    assert not any("pareto" in name for name in names)
+    assert not any(name.startswith("bloom-corpus") for name in names)
+    assert {"sizes.svg", "sizes.png"} <= {p.name for p in (output / "formats").glob("*")}
+    assert not any("pareto" in name or "heatmap" in name for name in names)
+
+
+def test_the_compression_table_beside_the_results_is_not_a_dataset(tmp_path: Path):
+    """`bench-run --families sizes` leaves `compression.csv` next to the dataset
+    CSVs; the loader must not read it as a dataset."""
+    bench = fixture_bench(tmp_path)
+    (bench / "results" / "compression.csv").write_text(
+        "dataset,status,level,name,group,encodings,compressed_bytes,uncompressed_bytes,"
+        "compressed_mb_decimal,share_of_column_bytes,share_of_package_bytes,compression_ratio\n"
+        "delft,ok,group,geometry,geometry,,344836,2254857,0.344836,0.506210,0.482903,6.5389\n",
+        encoding="utf-8",
+    )
+    data, _ = prep.build(prep.Inputs(bench))
+    assert "compression" not in {dataset["id"] for dataset in data["datasets"]}
+
+
+def test_every_dataset_gets_its_own_formats_folder(tmp_path: Path):
+    bench = fixture_bench(tmp_path)
+    data, _ = prep.build(prep.Inputs(bench))
+    path = tmp_path / "bench_data.json"
+    path.write_text(prep.json.dumps(data), encoding="utf-8")
+    output = figures.main(path, tmp_path / "figures")
+    ids = [dataset["id"] for dataset in data["datasets"]]
+    assert ids
+    for i in ids:
+        names = {p.name for p in (output / "formats" / i).glob("*")}
+        assert {f"{m}.{k}" for m in ("time", "rss") for k in ("svg", "png")} <= names
 
 
 def test_cityparquet_label_and_missing_database_are_honest(tmp_path: Path):
     bench = fixture_bench(tmp_path)
     data, _ = prep.build(prep.Inputs(bench))
-    assert figures._label("cityparquet-hilbert") == "CityParquet"
+    assert figures._label("cityparquet") == "CityParquet"
     assert data["databases"] == {"baseline": "3dcitydb", "records": [], "sizes": []}
 
 
@@ -47,15 +72,14 @@ DB_COLUMNS = [
     "scenario",
     "selectivity",
     "result_count",
-    "time_s",
-    "time_mad_s",
+    *prep.TIMING_BLOCK,
     "peak_heap_bytes",
-    "peak_rss_bytes",
+    "peak_working_mem_bytes",
     "repeat",
     "notes",
     "bytes_read",
     "http_requests",
-    "server_time_s",
+    *(f"server_{c}" for c in prep.TIMING_BLOCK),
     "size_bytes",
     "size_bytes_no_index",
     "status",
@@ -98,8 +122,16 @@ def test_database_loader_selects_largest_and_preserves_bbox_keys(tmp_path: Path)
                 "scenario": "bbox-query",
                 "notes": tag,
                 "status": "ok",
-                "time_s": "2.0",
-                "peak_rss_bytes": "100",
+                "time_mean_s": "2.0",
+                "time_std_s": "0.4",
+                "time_median_s": "1.5",
+                "time_min_s": "1.0",
+                "time_max_s": "3.5",
+                "time_q1_s": "1.2",
+                "time_q3_s": "2.5",
+                "server_time_median_s": "1.4",
+                "server_time_mean_s": "1.9",
+                "peak_working_mem_bytes": "100",
                 "size_bytes": "20",
             }
         )
@@ -111,7 +143,7 @@ def test_database_loader_selects_largest_and_preserves_bbox_keys(tmp_path: Path)
             "scenario": "bbox-query",
             "notes": "bbox-5pct",
             "status": "error",
-            "time_s": "bad",
+            "time_median_s": "bad",
             "size_bytes": "10",
         }
     )
@@ -122,6 +154,40 @@ def test_database_loader_selects_largest_and_preserves_bbox_keys(tmp_path: Path)
     assert {r["scenario"] for r in loaded["records"]} == {"bbox-1pct", "bbox-5pct", "bbox-25pct"}
     error = next(r for r in loaded["records"] if r["format"] == "cjdb")
     assert error["time_s"] is None and error["status"] == "error"
+    median = next(r for r in loaded["records"] if r["format"] == "3dcitydb")
+    assert (median["time_s"], median["time_lo_s"], median["time_hi_s"]) == (1.5, 1.2, 2.5)
+    assert (median["time_min_s"], median["time_max_s"]) == (1.0, 3.5)
+    assert median["server_time_s"] == 1.4
+
+
+def test_database_loader_mean_statistic_switches_value_and_spread(tmp_path: Path):
+    root = tmp_path / "benchmark"
+    results = root / "databases" / "results"
+    results.mkdir(parents=True)
+    base = {key: "" for key in DB_COLUMNS}
+    _db_csv(
+        results / "one.csv",
+        [
+            {
+                **base,
+                "dataset": "one",
+                "format": "3dcitydb",
+                "scenario": "geometry-scan",
+                "status": "ok",
+                "time_mean_s": "2.0",
+                "time_std_s": "0.5",
+                "time_median_s": "1.5",
+                "time_q1_s": "1.2",
+                "time_q3_s": "2.5",
+                "server_time_mean_s": "1.9",
+                "server_time_median_s": "1.4",
+            }
+        ],
+    )
+    loaded = prep.load_databases(prep.Inputs(root / "formats"), statistic="mean")
+    (record,) = loaded["records"]
+    assert (record["time_s"], record["time_lo_s"], record["time_hi_s"]) == (2.0, 1.5, 2.5)
+    assert record["server_time_s"] == 1.9
 
 
 def test_database_loader_uses_explicit_smoke_mode(tmp_path: Path):
@@ -142,3 +208,325 @@ def test_database_loader_uses_explicit_smoke_mode(tmp_path: Path):
     )
     (smoke / "smoke.params.json").write_text(json.dumps({"total_city_objects": 100}))
     assert prep.load_databases(prep.Inputs(root / "formats" / "smoke"))["dataset"] == "smoke"
+
+
+def test_database_loader_reads_the_quick_profiles_own_directory(tmp_path: Path):
+    root = tmp_path / "benchmark"
+    base = {key: "" for key in DB_COLUMNS}
+    for profile, directory in (("full", root / "databases" / "results"), ("quick", root / "databases" / "quick")):
+        directory.mkdir(parents=True)
+        _db_csv(
+            directory / f"{profile}.csv",
+            [{**base, "dataset": profile, "format": "3dcitydb", "scenario": "count", "status": "ok"}],
+        )
+        (directory / f"{profile}.params.json").write_text(json.dumps({"total_city_objects": 20}))
+    assert prep.load_databases(prep.Inputs(root / "formats" / "quick"))["dataset"] == "quick"
+
+
+def test_bloom_axis_keys_the_lookup_probes_and_carries_the_counters(tmp_path: Path):
+    bench = fixture_bench(tmp_path)
+    data, _ = prep.build(prep.Inputs(bench))
+    axis = data["bloom"]
+    assert axis["variants"] == ["cityparquet", "cityparquet+nobloom"]
+    assert {r["measure"] for r in axis["records"]} == set(prep.BLOOM_MEASURES)
+
+    def record(variant: str, measure: str) -> dict:
+        return next(
+            r for r in axis["records"] if r["variant"] == variant and r["measure"] == measure
+        )
+
+    on = record("cityparquet", "id-miss")
+    assert (on["row_groups_total"], on["bloom_pruned"]) == (1, 1)
+    assert on["filter_bytes"] == 8192
+    off = record("cityparquet+nobloom", "id-miss")
+    assert (off["bloom_pruned"], off["filter_bytes"]) == (0, 0)
+    # The statistics count rides next to the bloom count on both variants.
+    assert (on["stats_pruned"], off["stats_pruned"]) == (0, 0)
+    assert off["time_ratio"] == 0.0049 / 0.0021
+
+
+def _with_attr_lookups(bench: Path) -> None:
+    """Append `documentnummer` attribute lookups, as a tile run with nine
+    row groups writes them, and record their probe values in the sidecar."""
+    directory = bench / "bloom_results"
+    hit, miss = "attr-documentnummer-50pct;value-substituted", "attr-documentnummer-miss"
+    rows = [
+        ("cityparquet", hit, 23, "0.003000", "9,6,0,4096"),
+        ("cityparquet", miss, 0, "0.001500", "9,9,0,4096"),
+        ("cityparquet+nobloom", hit, 23, "0.004500", "9,0,6,0"),
+        ("cityparquet+nobloom", miss, 0, "0.004000", "9,0,0,0"),
+    ]
+    with (directory / "delft.csv").open("a", encoding="utf-8") as csv:
+        for variant, notes, count, t, counters in rows:
+            csv.write(
+                f"delft.city.jsonl,{variant},attr-lookup,0.01,{count},{t},0.0001,{t},{t},{t},"
+                f"{t},{t},380000,14600000,2,{notes},,,{counters}\n"
+            )
+    sidecar = directory / "delft.csv.params.json"
+    params = json.loads(sidecar.read_text(encoding="utf-8"))
+    params["attr_probes"] = [
+        {"column": "documentnummer", "tag": "attr-documentnummer-50pct", "value": "704452.tif",
+         "present": True, "substituted": True},
+        {"column": "documentnummer", "tag": "attr-documentnummer-miss",
+         "value": "408537.tif-readbench-absent", "present": False, "substituted": False},
+    ]
+    sidecar.write_text(json.dumps(params), encoding="utf-8")
+
+
+def test_bloom_axis_keys_the_attribute_lookups_with_their_probe_values(tmp_path: Path):
+    bench = fixture_bench(tmp_path)
+    _with_attr_lookups(bench)
+    axis = prep.load_bloom_axis(bench / "bloom_results", attributes=["documentnummer"])
+    assert axis["measures"] == [
+        *prep.BLOOM_MEASURES,
+        "attr-documentnummer-50pct",
+        "attr-documentnummer-miss",
+    ]
+    assert axis["not_measured"] == []
+    hit = next(
+        r
+        for r in axis["records"]
+        if r["variant"] == "cityparquet+nobloom" and r["measure"] == "attr-documentnummer-50pct"
+    )
+    # Without filters the statistics still prune; both counts are kept.
+    assert (hit["row_groups_total"], hit["bloom_pruned"], hit["stats_pruned"]) == (9, 0, 6)
+    assert hit["probe_value"] == "704452.tif"
+    assert "value-substituted" in hit["notes"]
+
+
+def test_unmeasured_attribute_lookups_are_listed_and_drawn_as_not_measured(tmp_path: Path):
+    """The fixture has no attribute rows:
+    the configured columns stay on the axis as `not measured`."""
+    import matplotlib.pyplot as plt
+
+    bench = fixture_bench(tmp_path)
+    data, _ = prep.build(prep.Inputs(bench))
+    axis = data["bloom"]
+    configured = prep.bloom_attributes()
+    assert configured, "the manifest's slice configures bloom_attributes"
+    expected = [m for c in configured for m in (f"attr-{c}-50pct", f"attr-{c}-miss")]
+    assert axis["not_measured"] == expected
+    assert {r["measure"] for r in axis["records"]} == set(prep.BLOOM_MEASURES)
+    data["meta"]["slice_dataset"] = "delft"
+    with plt.rc_context({"svg.fonttype": "none"}):
+        figures._axis_main(data, "bloom", tmp_path / "figures")
+    text = (tmp_path / "figures" / "bloom.svg").read_text(encoding="utf-8")
+    assert "Not measured in this run:" in text
+    assert f"{configured[0]} lookup (miss)" in text
+    assert "row groups pruned (bloom + stats of total)" in text
+    assert "1 + 0" in text
+
+
+def test_bloom_objects_come_from_the_parameter_sidecar_not_a_lookup_count(tmp_path: Path):
+    bench = fixture_bench(tmp_path)
+    data, _ = prep.build(prep.Inputs(bench))
+    axis = data["bloom"]
+    assert {r["objects"] for r in axis["records"] + axis["sizes"]} == {2231}
+    # Without the sidecar the lookups' result counts (0, 1, 2) say nothing
+    # about the dataset's size, so the count is unknown rather than wrong.
+    (bench / "bloom_results" / "delft.csv.params.json").unlink()
+    data, _ = prep.build(prep.Inputs(bench))
+    axis = data["bloom"]
+    assert {r["objects"] for r in axis["records"]} == {None}
+
+
+SLICE = "3dbag_n1000000"
+
+
+def _mixed_bloom_fixture(bench: Path) -> None:
+    """The slice and two corpus datasets in one bloom directory.
+
+    The slice reports 1,000,004 objects; the corpus `rotterdam_delfshaven`
+    and `vienna_102081` report 2,231 and 1,322.
+    """
+    directory = bench / "bloom_results"
+    template = (directory / "delft.csv").read_text().splitlines()
+    (directory / "delft.csv").unlink()
+    (directory / "delft.csv.params.json").unlink()
+    counts = {SLICE: 1_000_004, "rotterdam_delfshaven": 2231, "vienna_102081": 1322}
+    sizes = ["dataset,format,bytes,mb_decimal"]
+    for i, (name, count) in enumerate(counts.items()):
+        rows = [template[0]]
+        for line in template[1:]:
+            cells = line.split(",")
+            cells[0] = f"{name}.city.jsonl"
+            cells[5] = f"{float(cells[5]) * (i + 1):.6f}"
+            rows.append(",".join(cells))
+        (directory / f"{name}.csv").write_text("\n".join(rows) + "\n")
+        (directory / f"{name}.csv.params.json").write_text(f'{{"cp_object_total": {count}}}')
+        sizes.append(f"{name},cityparquet,{1000 * (i + 1)},0.000001")
+        sizes.append(f"{name},cityparquet+nobloom,{900 * (i + 1)},0.000001")
+    (directory / "sizes.csv").write_text("\n".join(sizes) + "\n")
+
+
+def test_the_bloom_headline_is_the_manifest_slice_and_draws_no_corpus_figure(tmp_path: Path):
+    bench = fixture_bench(tmp_path)
+    _mixed_bloom_fixture(bench)
+    data, _ = prep.build(prep.Inputs(bench))
+    assert data["meta"]["slice_dataset"] == SLICE
+    output = figures.main(_dump(data, tmp_path), tmp_path / "figures")
+    names = {p.name for p in output.glob("*")}
+    assert "bloom.svg" in names
+    assert not any(name.startswith("bloom-corpus") for name in names)
+
+
+def test_an_unmeasured_slice_leaves_the_bloom_headline_a_placeholder(tmp_path: Path):
+    """The fixture's one bloom dataset is a corpus model, not the slice: the
+    headline says so instead of promoting a corpus city to it."""
+    import matplotlib.pyplot as plt
+
+    bench = fixture_bench(tmp_path)
+    data, _ = prep.build(prep.Inputs(bench))
+    data["meta"]["slice_dataset"] = SLICE
+    with plt.rc_context({"svg.fonttype": "none"}):
+        figures._axis_main(data, "bloom", tmp_path / "figures")
+    text = (tmp_path / "figures" / "bloom.svg").read_text(encoding="utf-8")
+    assert f"the slice dataset ({SLICE}) was not measured" in text
+
+
+def _dump(data: dict, tmp_path: Path) -> Path:
+    path = tmp_path / "bench_data.json"
+    path.write_text(prep.json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_a_retired_corpus_figure_in_a_reused_directory_is_removed(tmp_path: Path):
+    """The bloom axis measures the slice alone; a `bloom-corpus` figure an
+    earlier run left in a re-used output directory must not reach the page."""
+    from benchviz import html
+
+    bench = fixture_bench(tmp_path)
+    _mixed_bloom_fixture(bench)
+    figures_dir = tmp_path / "figures"
+    figures_dir.mkdir()
+    for suffix in ("svg", "png"):
+        (figures_dir / f"bloom-corpus.{suffix}").write_text("stale")
+    data, _ = prep.build(prep.Inputs(bench))
+    data_path = _dump(data, tmp_path)
+    figures.main(data_path, figures_dir)
+    assert not (figures_dir / "bloom-corpus.svg").exists()
+    assert not (figures_dir / "bloom-corpus.png").exists()
+    page = html.main(data_path=data_path, out_path=tmp_path / "index.html", figures_dir=figures_dir)
+    text = page.read_text(encoding="utf-8")
+    assert "Bloom filters on the corpus" not in text
+    assert "bloom-corpus" not in text
+
+
+def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path):
+    """Every caveat the bloom figures need reaches the page, because it is a
+    numbered fairness caveat in the LIVE `READ_BENCHMARK.md`.
+
+    `prep.read_caveats` extracts that one list and `html.main` is the only
+    thing that prints caveats — it reads `meta.caveats_read` and nothing else.
+    So a bloom caveat kept in `benchmark/formats/README.md` instead would leave
+    the bloom figure on the page with no warning beside them
+    at all. Phrases, not a count: the list is allowed to
+    grow (see `prep.read_caveats`), and each phrase is one source line with no
+    character `html.escape` rewrites.
+    """
+    from benchviz import html
+
+    bench = fixture_bench(tmp_path)
+    _mixed_bloom_fixture(bench)
+    data, _ = prep.build(prep.Inputs(bench))
+    data_path = _dump(data, tmp_path)
+    figures_dir = tmp_path / "figures"
+    figures.main(data_path, figures_dir)
+    page = html.main(data_path=data_path, out_path=tmp_path / "index.html", figures_dir=figures_dir)
+    text = page.read_text(encoding="utf-8")
+
+    # The premise: the page really is showing bloom figures.
+    for title in ("Bloom-filter configuration",):
+        section = text.split(f"<h2>{title}</h2>", 1)[1].split("</section>", 1)[0]
+        assert "<img" in section, title
+
+    caveats = text.split("<h2>Measurement caveats</h2>", 1)[1]
+    for phrase in (
+        # 24-29: the bloom family's own.
+        "about how pruning scales",
+        "a miss can still keep a row group",
+        "reads the footer twice per lookup",
+        "measures single-table packages only",
+        "the same verified-absent string as `id-miss`",
+        "counts the requests the reader made after",
+        # 30-31: the evidence carries default-on filters and one timing statistic.
+        "The format evidence is measured on bloom-enabled packages.",
+        "One generation of results, one timing block, one header.",
+        "refuses to",
+    ):
+        assert phrase in caveats, phrase
+
+
+def test_a_single_statistic_csv_is_refused_loudly_in_both_loaders(tmp_path: Path):
+    """A CSV with one `time_s` column instead of the seven-column timing
+    block cannot say which statistic it holds: both the format and the bloom
+    loaders refuse it rather than plotting it or skipping it quietly."""
+    import pytest
+
+    legacy = (
+        "dataset,format,scenario,selectivity,result_count,time_s,time_std_s,"
+        "peak_heap_bytes,peak_rss_bytes,repeat,notes\n"
+        "delft.city.jsonl,cityparquet,full-read,,2231,0.1,0.01,1,2,7,\n"
+    )
+    for directory in ("results", "bloom_results"):
+        bench = fixture_bench(tmp_path / directory)
+        (bench / directory / "delft.csv").write_text(legacy, encoding="utf-8")
+        with pytest.raises(prep.PrepError, match="unexpected columns"):
+            prep.build(prep.Inputs(bench))
+
+
+def test_the_lod_query_label_follows_the_target_the_harness_recorded():
+    """`citybench` records the LoD `lod-query` asked for as
+    `lod_query_target` in every params sidecar; the label names it, and a
+    sidecar without it is refused rather than guessed at."""
+    import pytest
+
+    assert figures.lod_query_label({"lod_query_target": "2.2", "lods": ["0", "1.3", "2.2"]}) == "LoD 2.2 rows"
+    assert figures.lod_query_label({"lod_query_target": "1.2", "lods": ["1.2", "2.2", "3"]}) == "LoD 1.2 rows"
+    for params in ({}, {"lod_query_target": ""}, {"lods": ["0", "2.2"]}):
+        with pytest.raises(prep.PrepError, match="lod_query_target"):
+            figures.lod_query_label(params)
+
+
+def test_the_database_figure_prints_the_targeted_lod(tmp_path: Path):
+    import matplotlib.pyplot as plt
+    import pytest
+
+    root = tmp_path / "benchmark"
+    results = root / "databases" / "results"
+    results.mkdir(parents=True)
+    base = {key: "" for key in DB_COLUMNS}
+    timing = {
+        "status": "ok",
+        "time_mean_s": "1.0",
+        "time_std_s": "0.1",
+        "time_median_s": "1.0",
+        "time_min_s": "0.9",
+        "time_max_s": "1.1",
+        "time_q1_s": "0.95",
+        "time_q3_s": "1.05",
+        "size_bytes": "100",
+    }
+    _db_csv(
+        results / "one.csv",
+        [
+            {**base, **timing, "dataset": "one", "format": system, "scenario": scenario}
+            for system in ("3dcitydb", "cjdb")
+            for scenario in ("geometry-scan", "lod-query")
+        ],
+    )
+    params = results / "one.params.json"
+    for target, label in (("2.2", "LoD 2.2 rows"), ("1.2", "LoD 1.2 rows")):
+        params.write_text(
+            json.dumps({"total_city_objects": 10, "lods": ["0", "1.2", "2.2"], "lod_query_target": target})
+        )
+        data, _ = prep.build(prep.Inputs(root / "formats"))
+        assert data["databases"]["records"]
+        with plt.rc_context({"svg.fonttype": "none"}):
+            figures.databases(data, tmp_path / "f")
+        text = (tmp_path / "f" / "databases.svg").read_text(encoding="utf-8")
+        assert label in text
+    params.write_text(json.dumps({"total_city_objects": 10, "lods": ["0", "1.2", "2.2"]}))
+    data, _ = prep.build(prep.Inputs(root / "formats"))
+    with pytest.raises(prep.PrepError, match="lod_query_target"):
+        figures.databases(data, tmp_path / "f")

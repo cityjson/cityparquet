@@ -9,10 +9,13 @@
 
 use arrow_array::{
     Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, StructArray,
+    new_empty_array,
 };
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Schema};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::{ArrowPredicateFn, RowFilter};
+use parquet::basic::{ConvertedType, LogicalType, Type as PhysicalType};
+use parquet::bloom_filter::Sbbf;
 use parquet::file::metadata::{ParquetMetaData, RowGroupMetaData};
 use parquet::file::statistics::Statistics;
 use parquet::schema::types::{ColumnPath, SchemaDescriptor};
@@ -21,36 +24,6 @@ use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 
 use crate::decode::{DecodedObject, decode_batch};
 use crate::reader::{box_intersects_query, row_group_intersects};
-use crate::wkb_read::DecodedKind;
-
-/// The result of a [`crate::query::full_read`]: the total feature (row) count
-/// and a stable geometry-work metric (`boundary_count`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FullReadResult {
-    pub feature_count: u64,
-    /// Total number of decoded surfaces/faces across every non-null
-    /// geometry cell read (`DecodedKind::MultiPolygon`/`PolyhedralSurface`'s
-    /// outer `Vec` length, summed, recursing into
-    /// `DecodedKind::GeometryCollection` members). `MultiPoint`/
-    /// `MultiLineString` geometries contribute 0 — they have no surfaces.
-    /// Deliberately simple and deterministic: this is the metric later
-    /// cross-format ("full read forces materialisation") comparisons key
-    /// off, so its definition must be stable across formats, not a
-    /// CityParquet-specific detail.
-    pub boundary_count: u64,
-}
-
-/// Total surface/face count in `kind`, recursing into
-/// [`DecodedKind::GeometryCollection`] members.
-fn surface_count(kind: &DecodedKind) -> u64 {
-    match kind {
-        DecodedKind::MultiPoint(_) | DecodedKind::MultiLineString(_) => 0,
-        DecodedKind::MultiPolygon(surfaces) | DecodedKind::PolyhedralSurface(surfaces) => {
-            surfaces.len() as u64
-        }
-        DecodedKind::GeometryCollection(members) => members.iter().map(surface_count).sum(),
-    }
-}
 
 /// The result of an exact [`crate::query::bbox_query`]: the matching object
 /// `id`s, plus how many of the table's row groups were pruned away vs.
@@ -66,6 +39,267 @@ pub struct BBoxQueryResult {
     /// count [`crate::reader::CityParquetReaderBuilder::with_bbox_row_groups`]
     /// keeps for the scan below).
     pub row_groups_touched: usize,
+}
+
+/// One candidate row group's bloom filter for the target column, located
+/// from footer metadata alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BloomTarget {
+    pub row_group: usize,
+    pub offset: u64,
+    /// `bloom_filter_length`, when the writer declared it.
+    pub length: Option<u64>,
+}
+
+/// Where the target column's filters are, per candidate row group.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BloomTargets {
+    /// The column's Parquet leaf index, resolved by path from the file
+    /// schema (never an Arrow field ordinal); `None` when the file has no
+    /// such leaf.
+    pub leaf: Option<usize>,
+    pub with_filter: Vec<BloomTarget>,
+    /// Candidates whose chunk carries no filter. They are always kept.
+    pub without_filter: Vec<usize>,
+}
+
+/// The outcome of probing a column's bloom filters for a set of values
+/// (IN semantics): which candidate row groups can still hold one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BloomPrune {
+    /// Row groups to read, ascending — for `with_row_groups`.
+    pub keep: Vec<usize>,
+    /// Candidates considered.
+    pub total: usize,
+    /// Candidates whose filter rejected every value.
+    pub pruned: usize,
+    /// Candidates kept unexamined: no filter on their chunk, or no probe made.
+    pub without_filter: usize,
+    /// Bitset bytes of every filter examined (32 per block), the same on the
+    /// sync and async paths. Header bytes and transport overhead are not
+    /// counted; `crate::counting_store::CountingObjectStore` reports the latter.
+    pub filter_bytes: u64,
+}
+
+impl BloomPrune {
+    /// Assembles the outcome from `targets` and one verdict per
+    /// `targets.with_filter` entry (`true`: keep).
+    pub(crate) fn from_verdicts(
+        targets: &BloomTargets,
+        candidates: &[usize],
+        verdicts: &[bool],
+        filter_bytes: u64,
+    ) -> Self {
+        let mut keep = targets.without_filter.clone();
+        keep.extend(
+            targets
+                .with_filter
+                .iter()
+                .zip(verdicts)
+                .filter(|(_, keep)| **keep)
+                .map(|(target, _)| target.row_group),
+        );
+        keep.sort_unstable();
+        Self {
+            keep,
+            total: candidates.len(),
+            pruned: verdicts.iter().filter(|keep| !**keep).count(),
+            without_filter: targets.without_filter.len(),
+            filter_bytes,
+        }
+    }
+
+    /// Every candidate kept, none examined — a predicate no filter answers.
+    pub(crate) fn unpruned(candidates: &[usize]) -> Self {
+        Self {
+            keep: candidates.to_vec(),
+            total: candidates.len(),
+            pruned: 0,
+            without_filter: candidates.len(),
+            filter_bytes: 0,
+        }
+    }
+}
+
+/// What the row-group filters did for one lookup or filter: the bloom
+/// filters first, then the min/max column statistics on the row groups the
+/// bloom filters kept ([`attr_row_groups`]'s rules). A row group counts once,
+/// against the filter that dropped it first, so
+/// `row_groups_total - bloom_pruned - stats_pruned` row groups are read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LookupStats {
+    pub row_groups_total: usize,
+    pub bloom_pruned: usize,
+    /// [`BloomPrune::filter_bytes`].
+    pub filter_bytes: u64,
+    /// Row groups the bloom filters kept whose statistics rule out a match.
+    pub stats_pruned: usize,
+}
+
+impl LookupStats {
+    pub(crate) fn from_prune(prune: &BloomPrune) -> Self {
+        Self {
+            row_groups_total: prune.total,
+            bloom_pruned: prune.pruned,
+            filter_bytes: prune.filter_bytes,
+            stats_pruned: 0,
+        }
+    }
+
+    /// Applies statistics pruning to the row groups `prune` kept, returning
+    /// the row groups to read with the combined counts.
+    pub(crate) fn from_prune_and_statistics(
+        prune: BloomPrune,
+        metadata: &ParquetMetaData,
+        column: &str,
+        pred: &AttrPredicate,
+    ) -> (Vec<usize>, Self) {
+        let mut stats = Self::from_prune(&prune);
+        let survivors = attr_row_groups(metadata, column, pred);
+        let keep: Vec<usize> = prune
+            .keep
+            .into_iter()
+            .filter(|rg| survivors.binary_search(rg).is_ok())
+            .collect();
+        stats.stats_pruned = stats.row_groups_total - stats.bloom_pruned - keep.len();
+        (keep, stats)
+    }
+}
+
+impl std::ops::AddAssign for LookupStats {
+    fn add_assign(&mut self, other: Self) {
+        self.row_groups_total += other.row_groups_total;
+        self.bloom_pruned += other.bloom_pruned;
+        self.filter_bytes += other.filter_bytes;
+        self.stats_pruned += other.stats_pruned;
+    }
+}
+
+/// Resolves `column`'s leaf by path and, for each candidate row group, where
+/// its filter is — from footer metadata alone, no I/O. Shared verbatim by
+/// the sync and async pruners.
+pub fn bloom_targets(
+    meta: &ParquetMetaData,
+    column: &ColumnPath,
+    candidates: &[usize],
+) -> BloomTargets {
+    let leaf = meta
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .position(|descr| descr.path() == column);
+    let Some(leaf) = leaf else {
+        return BloomTargets {
+            leaf: None,
+            with_filter: Vec::new(),
+            without_filter: candidates.to_vec(),
+        };
+    };
+    let mut targets = BloomTargets {
+        leaf: Some(leaf),
+        ..BloomTargets::default()
+    };
+    for &row_group in candidates {
+        let chunk = meta.row_group(row_group).column(leaf);
+        match chunk
+            .bloom_filter_offset()
+            .and_then(|offset| u64::try_from(offset).ok())
+        {
+            Some(offset) => targets.with_filter.push(BloomTarget {
+                row_group,
+                offset,
+                length: chunk
+                    .bloom_filter_length()
+                    .and_then(|length| u64::try_from(length).ok()),
+            }),
+            None => targets.without_filter.push(row_group),
+        }
+    }
+    targets
+}
+
+/// A filter keeps its row group when ANY value may be present (IN
+/// semantics). Values are probed as their raw UTF-8 bytes, which is what
+/// the writer hashed.
+pub(crate) fn sbbf_matches_any(sbbf: &Sbbf, values: &[&str]) -> bool {
+    values.iter().any(|value| sbbf.check(*value))
+}
+
+/// The [`BloomPrune::filter_bytes`] one filter contributes.
+pub(crate) fn filter_bitset_bytes(sbbf: &Sbbf) -> u64 {
+    32 * sbbf.num_blocks() as u64
+}
+
+/// A top-level column's single-part leaf path.
+pub(crate) fn top_level_path(name: &str) -> ColumnPath {
+    ColumnPath::new(vec![name.to_string()])
+}
+
+/// The mask selecting top-level `column`, matched by its exact name.
+/// `ProjectionMask::columns` splits a name on `.`, so an attribute whose name
+/// holds a literal `.` would select no leaf at all.
+pub(crate) fn root_mask(parquet_schema: &SchemaDescriptor, column: &str) -> Result<ProjectionMask> {
+    let root = parquet_schema
+        .root_schema()
+        .get_fields()
+        .iter()
+        .position(|field| field.name() == column)
+        .ok_or_else(|| {
+            CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+        })?;
+    Ok(ProjectionMask::roots(parquet_schema, [root]))
+}
+
+/// The value `pred` probes `column`'s bloom filter with, or `None` when no
+/// probe applies. The predicate's type rules come first — checked on an
+/// empty array of the column's own type, so the error is the scan's own and
+/// never depends on whether the file carries filters. A probe is made only
+/// for string equality on a string column (`Utf8` or `Dictionary<Int32,
+/// Utf8>`) whose Parquet leaf is `BYTE_ARRAY` with a UTF-8 annotation: the
+/// numeric predicates compare through `f64` and never consult a filter.
+pub(crate) fn string_probe<'a>(
+    arrow_schema: &Schema,
+    parquet_schema: &SchemaDescriptor,
+    column: &str,
+    pred: &'a AttrPredicate,
+) -> Result<Option<&'a str>> {
+    let field = arrow_schema.field_with_name(column).map_err(|_| {
+        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+    })?;
+    evaluate_attr_predicate(column, new_empty_array(field.data_type()).as_ref(), pred)?;
+    let AttrPredicate::Eq(serde_json::Value::String(value)) = pred else {
+        return Ok(None);
+    };
+    let string_column = match field.data_type() {
+        DataType::Utf8 => true,
+        DataType::Dictionary(key, value) => {
+            key.as_ref() == &DataType::Int32 && value.as_ref() == &DataType::Utf8
+        }
+        _ => false,
+    };
+    if !string_column {
+        return Ok(None);
+    }
+    let root = parquet_schema
+        .root_schema()
+        .get_fields()
+        .iter()
+        .position(|f| f.name() == column);
+    let leaves: Vec<usize> = match root {
+        Some(root) => (0..parquet_schema.num_columns())
+            .filter(|&leaf| parquet_schema.get_column_root_idx(leaf) == root)
+            .collect(),
+        None => Vec::new(),
+    };
+    let [leaf] = leaves[..] else {
+        return Ok(None);
+    };
+    let descr = parquet_schema.column(leaf);
+    let utf8 = descr.physical_type() == PhysicalType::BYTE_ARRAY
+        && (matches!(descr.logical_type_ref(), Some(LogicalType::String))
+            || descr.converted_type() == ConvertedType::UTF8);
+    Ok(utf8.then_some(value.as_str()))
 }
 
 /// One row's `bbox` struct leaves at `row`, or `None` if the struct itself
@@ -234,6 +468,122 @@ fn statistics_min_max(stats: &Statistics) -> Option<(f64, f64)> {
     }
 }
 
+/// The string-equality predicate a lookup by `value` applies to the
+/// statistics.
+pub(crate) fn eq_str(value: &str) -> AttrPredicate {
+    AttrPredicate::Eq(serde_json::Value::String(value.to_string()))
+}
+
+/// Visits every batch of `batches` natively into one [`VisitTotals`],
+/// stopping after the first batch that holds a row when `first_only`.
+/// Shared by the sync and async visit queries, which differ only in how the
+/// batches arrive.
+pub(crate) fn visit_into(
+    totals: &mut crate::visit::VisitTotals,
+    batch: &RecordBatch,
+    first_only: bool,
+) -> Result<bool> {
+    crate::visit::visit_batch(batch, totals)?;
+    Ok(first_only && totals.objects > 0)
+}
+
+/// The row groups of `metadata` whose `column` statistics cannot rule out a
+/// row satisfying `pred` — a superset of the matching row groups, never a
+/// subset. The rules:
+///
+/// - no statistics for the top-level `column` chunk: keep;
+/// - every value of the chunk null (`null_count == num_rows`): prune, since a
+///   null never matches;
+/// - `Int64`/`Double` statistics: keep unless `[min, max]` and the
+///   predicate's interval are disjoint, compared as `f64` exactly as
+///   [`evaluate_attr_predicate`] compares values (the `i64` to `f64` cast is
+///   monotone, so it cannot move a bound past a value); a NaN on either side
+///   keeps the group;
+/// - byte-array (string) statistics under `Eq(<string>)`: prune when the
+///   value sorts below `min` or, only when `max` is exact, above `max`. A
+///   truncated `min` is a prefix of the true minimum and so still a lower
+///   bound; an inexact (truncated) `max` is not trusted;
+/// - anything else: keep.
+///
+/// Page-index pruning is out of scope.
+pub(crate) fn attr_row_groups(
+    metadata: &ParquetMetaData,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Vec<usize> {
+    (0..metadata.num_row_groups())
+        .filter(|&i| row_group_may_match(metadata.row_group(i), column, pred))
+        .collect()
+}
+
+fn row_group_may_match(rg: &RowGroupMetaData, column: &str, pred: &AttrPredicate) -> bool {
+    let Some(stats) = column_statistics(rg, column) else {
+        return true;
+    };
+    if stats.null_count_opt() == Some(rg.num_rows() as u64) {
+        return false;
+    }
+    match stats {
+        Statistics::Int64(_) | Statistics::Double(_) => {
+            let Some((min, max)) = statistics_min_max(stats) else {
+                return true;
+            };
+            let (lo, hi) = match pred {
+                AttrPredicate::Ge(b) => (*b, f64::INFINITY),
+                AttrPredicate::Le(b) => (f64::NEG_INFINITY, *b),
+                AttrPredicate::Range(l, h) => (*l, *h),
+                AttrPredicate::Eq(v) => match v.as_f64() {
+                    Some(x) => (x, x),
+                    None => return true,
+                },
+            };
+            if [min, max, lo, hi].iter().any(|v| v.is_nan()) {
+                return true;
+            }
+            !(max < lo || min > hi)
+        }
+        Statistics::ByteArray(s) => {
+            let AttrPredicate::Eq(serde_json::Value::String(want)) = pred else {
+                return true;
+            };
+            let want = want.as_bytes();
+            if s.min_bytes_opt().is_some_and(|min| want < min) {
+                return false;
+            }
+            !(s.max_is_exact() && s.max_bytes_opt().is_some_and(|max| want > max))
+        }
+        _ => true,
+    }
+}
+
+/// The bbox-intersection [`RowFilter`] the spatial geometry query installs:
+/// the predicate reads only the `bbox` struct, so a row outside the window
+/// never has its geometry decoded.
+pub(crate) fn bbox_row_filter(
+    parquet_schema: &SchemaDescriptor,
+    query_bbox: [f64; 6],
+) -> RowFilter {
+    let predicate_mask = ProjectionMask::columns(parquet_schema, ["bbox"]);
+    let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
+        let bbox_col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .ok_or_else(|| {
+                arrow_schema::ArrowError::SchemaError("'bbox' column is not a struct".to_string())
+            })?;
+        (0..bbox_col.len())
+            .map(|row| {
+                Ok(Some(row_bbox(bbox_col, row)?.is_some_and(|(lo, hi)| {
+                    box_intersects_query(lo, hi, &query_bbox)
+                })))
+            })
+            .collect::<Result<BooleanArray>>()
+            .map_err(arrow_schema::ArrowError::from)
+    });
+    RowFilter::new(vec![Box::new(predicate_fn)])
+}
+
 /// Fail fast with a clear error when `column` is not in the file's schema
 /// (both transports run this before consuming their builder).
 pub(crate) fn require_column(schema: &arrow_schema::Schema, column: &str) -> Result<()> {
@@ -254,23 +604,6 @@ pub(crate) fn bbox_row_group_counts(
         .filter(|&i| row_group_intersects(metadata.row_group(i), query_bbox))
         .count();
     (total, touched)
-}
-
-/// Fold one (already restamped, on the async path) batch into a running
-/// [`FullReadResult`]: row count plus decoded surface/face count.
-pub(crate) fn accumulate_full_read(
-    acc: &mut FullReadResult,
-    batch: &RecordBatch,
-    meta: &CityMetadata,
-) -> Result<()> {
-    acc.feature_count += batch.num_rows() as u64;
-    let decoded = decode_batch(batch, meta)?;
-    for object in &decoded {
-        for (_, geometry, _) in &object.geometries {
-            acc.boundary_count += surface_count(&geometry.kind);
-        }
-    }
-    Ok(())
 }
 
 /// Exact row-level bbox filter over one `id`/`bbox`-projected batch,
@@ -302,14 +635,14 @@ pub(crate) fn collect_bbox_ids(
 }
 
 /// The single-column attribute-predicate [`RowFilter`] both transports
-/// install: `pred` evaluated by [`evaluate_attr_predicate`] over a
-/// `column`-only projection.
+/// install: `pred` evaluated by [`evaluate_attr_predicate`] over `column`
+/// alone, selected by exact name ([`root_mask`]).
 pub(crate) fn attr_predicate_row_filter(
     parquet_schema: &SchemaDescriptor,
     column: &str,
     pred: &AttrPredicate,
-) -> RowFilter {
-    let predicate_mask = ProjectionMask::columns(parquet_schema, [column]);
+) -> Result<RowFilter> {
+    let predicate_mask = root_mask(parquet_schema, column)?;
     let owned_column = column.to_string();
     let owned_pred = pred.clone();
     let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
@@ -317,28 +650,31 @@ pub(crate) fn attr_predicate_row_filter(
         evaluate_attr_predicate(&owned_column, array.as_ref(), &owned_pred)
             .map_err(arrow_schema::ArrowError::from)
     });
-    RowFilter::new(vec![Box::new(predicate_fn)])
+    Ok(RowFilter::new(vec![Box::new(predicate_fn)]))
 }
 
-/// The `id == <target>` [`RowFilter`] both transports install for
-/// `id_lookup`: the predicate's own projection is `id` alone; the output
-/// projection stays untouched (the full row is decoded on a hit).
-pub(crate) fn id_row_filter(parquet_schema: &SchemaDescriptor, id: &str) -> RowFilter {
-    let predicate_mask = ProjectionMask::columns(parquet_schema, ["id"]);
-    let owned_id = id.to_string();
+/// The `column == value` [`RowFilter`] both transports install for the
+/// identifier lookups (`id`, `feature_id`): the predicate's own projection is
+/// `column` alone; the output projection stays untouched (the full row is
+/// decoded on a hit). Accepts `Utf8` and `Dictionary<Int32, Utf8>` — a
+/// writer's physical choice a reader must not depend on. A positive bloom
+/// result is never a match: this filter decides every row.
+pub(crate) fn utf8_eq_row_filter(
+    parquet_schema: &SchemaDescriptor,
+    column: &str,
+    value: &str,
+) -> Result<RowFilter> {
+    let predicate_mask = root_mask(parquet_schema, column)?;
+    let owned_column = column.to_string();
+    let owned_value = value.to_string();
     let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
-        let ids = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| {
-                arrow_schema::ArrowError::SchemaError("'id' column is not Utf8".to_string())
-            })?;
-        Ok(BooleanArray::from_iter((0..ids.len()).map(|i| {
-            Some(!ids.is_null(i) && ids.value(i) == owned_id)
+        let values = crate::arrow_compat::string_view(batch.column(0).as_ref(), &owned_column)
+            .map_err(arrow_schema::ArrowError::from)?;
+        Ok(BooleanArray::from_iter((0..batch.num_rows()).map(|i| {
+            Some(!values.is_null(i) && values.value(i) == owned_value)
         })))
     });
-    RowFilter::new(vec![Box::new(predicate_fn)])
+    Ok(RowFilter::new(vec![Box::new(predicate_fn)]))
 }
 
 /// Decode the first object of a (row-filtered, restamped) batch — `None`
@@ -351,12 +687,6 @@ pub(crate) fn first_decoded_object(
         return Ok(None);
     }
     Ok(decode_batch(batch, meta)?.into_iter().next())
-}
-
-/// Non-null cells in a single-column projected batch.
-pub(crate) fn non_null_count(batch: &RecordBatch) -> u64 {
-    let array = batch.column(0);
-    (array.len() - array.null_count()) as u64
 }
 
 /// The `attr_stats` aggregation state: the statistics min/max fast path is
@@ -458,5 +788,209 @@ impl AttrStatsAccumulator {
             sum: self.sum,
             count: self.count,
         }
+    }
+}
+
+/// The result of [`crate::query::bbox_query_geometry`]: the ids of the
+/// objects whose `bbox` intersects the window, in row order, and each such
+/// object's geometry at its highest LoD — walked in place (every stored
+/// coordinate read as an `f64`, nothing converted into another
+/// representation). An object with no geometry contributes its id only.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BBoxGeometryResult {
+    pub ids: Vec<String>,
+    /// Geometries walked: one per returned object that has any.
+    pub geometries: u64,
+    /// `[min x, min y, min z, max x, max y, max z]` over every walked
+    /// coordinate; infinite bounds when nothing was walked.
+    pub extent: [f64; 6],
+    pub polygons: u64,
+    pub rings: u64,
+    /// Stored WKB vertices walked, ring-closing vertex included.
+    pub coordinates: u64,
+    pub row_groups_total: usize,
+    pub row_groups_touched: usize,
+}
+
+/// The geometry columns of `schema`, most detailed LoD first: the
+/// `geometry_lod{major}_{minor}` columns ordered numerically by their parsed
+/// LoD (so `lod2_2 > lod1_3 > lod0_0`), then the un-suffixed primary
+/// `geometry` column, if any.
+pub(crate) fn geometry_columns_by_lod_desc(schema: &Schema) -> Vec<String> {
+    let mut ranked: Vec<(Option<cityparquet_schema::Lod>, String)> = schema
+        .fields()
+        .iter()
+        .filter_map(|f| {
+            let name = f.name();
+            if name == "geometry" {
+                return Some((None, name.clone()));
+            }
+            name.strip_prefix("geometry_")
+                .and_then(cityparquet_schema::Lod::from_column_suffix)
+                .map(|lod| (Some(lod), name.clone()))
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    ranked.into_iter().map(|(_, name)| name).collect()
+}
+
+/// The mask selecting the top-level columns named in `columns`, matched by
+/// exact name; a name absent from the schema is an error.
+pub(crate) fn roots_mask(
+    parquet_schema: &SchemaDescriptor,
+    columns: &[&str],
+) -> Result<ProjectionMask> {
+    let fields = parquet_schema.root_schema().get_fields();
+    let roots = columns
+        .iter()
+        .map(|column| {
+            fields
+                .iter()
+                .position(|f| f.name() == *column)
+                .ok_or_else(|| {
+                    CityParquetError::Schema(format!(
+                        "column '{column}' missing from the file's schema"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ProjectionMask::roots(parquet_schema, roots))
+}
+
+/// The projection of a spatial geometry query: `id`, `bbox` and every
+/// geometry column.
+pub(crate) fn bbox_geometry_mask(
+    schema: &Schema,
+    parquet_schema: &SchemaDescriptor,
+) -> Result<ProjectionMask> {
+    let lods = geometry_columns_by_lod_desc(schema);
+    let mut columns = vec!["id", "bbox"];
+    columns.extend(lods.iter().map(String::as_str));
+    roots_mask(parquet_schema, &columns)
+}
+
+/// WKB value `row` of the binary geometry column `col`, `None` when null.
+fn wkb_value<'a>(name: &str, col: &'a dyn Array, row: usize) -> Result<Option<&'a [u8]>> {
+    use arrow_array::cast::AsArray;
+    if col.is_null(row) {
+        return Ok(None);
+    }
+    Ok(Some(match col.data_type() {
+        DataType::Binary => col.as_binary::<i32>().value(row),
+        DataType::LargeBinary => col.as_binary::<i64>().value(row),
+        DataType::BinaryView => col.as_binary_view().value(row),
+        other => {
+            return Err(CityParquetError::Schema(format!(
+                "geometry column '{name}' is not binary WKB: {other:?}"
+            )));
+        }
+    }))
+}
+
+/// Folds one batch of a spatial geometry query — rows the `bbox`
+/// [`RowFilter`] already kept, projected by [`bbox_geometry_mask`] — into
+/// `acc`: each row's id, then its first non-null geometry in
+/// [`geometry_columns_by_lod_desc`] order walked in place.
+pub(crate) fn fold_bbox_geometry(batch: &RecordBatch, acc: &mut BBoxGeometryResult) -> Result<()> {
+    let ids = crate::arrow_compat::string_view(
+        batch
+            .column_by_name("id")
+            .ok_or_else(|| CityParquetError::Schema("'id' column missing".to_string()))?
+            .as_ref(),
+        "id",
+    )?;
+    let lods: Vec<(String, &dyn Array)> = geometry_columns_by_lod_desc(&batch.schema())
+        .into_iter()
+        .map(|name| {
+            let col = batch.column_by_name(&name).expect("projected").as_ref();
+            (name, col)
+        })
+        .collect();
+    let mut walk = crate::visit::VisitTotals {
+        extent: acc.extent,
+        ..Default::default()
+    };
+    for row in 0..batch.num_rows() {
+        acc.ids.push(ids.value(row).to_string());
+        for (name, col) in &lods {
+            if let Some(bytes) = wkb_value(name, *col, row)? {
+                acc.geometries += 1;
+                crate::wkb_read::visit_wkb(bytes, &mut walk)?;
+                break;
+            }
+        }
+    }
+    acc.extent = walk.extent;
+    acc.polygons += walk.polygons;
+    acc.rings += walk.rings;
+    acc.coordinates += walk.coordinates;
+    Ok(())
+}
+
+/// Collects the `id` of every row of one batch of an id-returning attribute
+/// filter (the predicate `RowFilter` already dropped the non-matching rows).
+pub(crate) fn collect_ids(batch: &RecordBatch, ids: &mut Vec<String>) -> Result<()> {
+    let col = batch
+        .column_by_name("id")
+        .ok_or_else(|| CityParquetError::Schema("'id' column missing".to_string()))?;
+    let view = crate::arrow_compat::string_view(col.as_ref(), "id")?;
+    ids.extend((0..col.len()).map(|row| view.value(row).to_string()));
+    Ok(())
+}
+
+impl BBoxGeometryResult {
+    /// An empty result carrying the row-group counts.
+    pub(crate) fn empty(row_groups_total: usize, row_groups_touched: usize) -> Self {
+        Self {
+            ids: Vec::new(),
+            geometries: 0,
+            extent: crate::visit::VisitTotals::default().extent,
+            polygons: 0,
+            rings: 0,
+            coordinates: 0,
+            row_groups_total,
+            row_groups_touched,
+        }
+    }
+}
+
+#[cfg(test)]
+mod lod_order_tests {
+    use super::*;
+    use arrow_schema::Field;
+
+    /// Geometry columns rank by the parsed LoD, numerically per part — not
+    /// by name — with the primary `geometry` column last and the
+    /// `geometry_properties_*` and attribute columns ignored.
+    #[test]
+    fn geometry_columns_rank_by_numeric_lod() {
+        let names = [
+            "id",
+            "geometry_lod0_0",
+            "geometry",
+            "geometry_lod2_2",
+            "geometry_properties_lod2_2",
+            "geometry_lod1_3",
+            "geometry_lod10_0",
+            "geometry_lod1_10",
+            "geometry_lodx",
+        ];
+        let schema = Schema::new(
+            names
+                .iter()
+                .map(|n| Field::new(*n, DataType::Binary, true))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            geometry_columns_by_lod_desc(&schema),
+            [
+                "geometry_lod10_0",
+                "geometry_lod2_2",
+                "geometry_lod1_10",
+                "geometry_lod1_3",
+                "geometry_lod0_0",
+                "geometry",
+            ]
+        );
     }
 }

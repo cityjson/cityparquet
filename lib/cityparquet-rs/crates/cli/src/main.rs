@@ -5,8 +5,9 @@ use cityparquet::inputs::resolve_inputs;
 use cityparquet::merge::merge_sources;
 use cityparquet::package::{ConvertOptions, RowOrder, convert_source};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
-use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
+use cityparquet::recipe::{BloomPolicy, Codec, RecipePreset, WriterRecipe};
 use cityparquet::source::{Source, SourceFormat};
+use cityparquet::validate::validate_package;
 use cityparquet_cli::bench::{self, BenchOptions};
 use cityparquet_schema::Result as CpResult;
 use clap::{Parser, Subcommand};
@@ -22,11 +23,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Convert CityJSON/CityJSONSeq/CityGML to a CityParquet package
+    /// Convert CityJSON/CityJSONSeq/CityGML 2.0/FlatCityBuf to a CityParquet package
     Convert {
         /// Input files, directories, or glob patterns (CityJSON, CityJSONSeq,
-        /// CityGML). Multiple inputs are merged into one dataset; directories
-        /// contribute their immediate .json/.jsonl/.gml children.
+        /// CityGML 2.0, FlatCityBuf). Multiple inputs are merged into one
+        /// dataset; directories contribute their immediate
+        /// .json/.jsonl/.gml/.fcb children.
         #[arg(value_name = "INPUTS", required = true, num_args = 1..)]
         inputs: Vec<PathBuf>,
 
@@ -88,20 +90,33 @@ enum Commands {
         #[arg(long)]
         compression: Option<String>,
 
-        /// Row-emission order for the main table: "source" (as the input
-        /// stream yields features) or "hilbert" (buffer every feature and
-        /// sort by bbox-centroid Hilbert index, improving bbox row-group
-        /// pruning at the cost of holding the whole dataset in memory).
-        #[arg(long, value_enum, default_value = "source")]
+        /// Write no Parquet bloom filter. By default every object table
+        /// carries filters on `id`, `feature_id` and its high-cardinality
+        /// string attributes, placed after the last row group.
+        #[arg(long, default_value_t = false)]
+        no_bloom: bool,
+
+        /// Target false-positive probability of every bloom filter, strictly
+        /// between 0 and 1.
+        #[arg(long, default_value_t = BloomPolicy::DEFAULT_FPP)]
+        bloom_fpp: f64,
+
+        /// Row-emission order for the main table: "hilbert" (the default:
+        /// features sorted by the Hilbert index of their centre, improving
+        /// bbox row-group pruning; a CityJSON or CityJSONSeq input is read
+        /// back in that order, a CityGML or FlatCityBuf input is held parsed
+        /// in memory) or "source" (stream features as the input yields them,
+        /// one at a time — the low-memory path for any input).
+        #[arg(long, value_enum, default_value = "hilbert")]
         ordering: OrderingArg,
 
-        /// Do NOT synthesise an LoD0 footprint into the primary `geometry`
-        /// column for objects lacking a source LoD0. By default a footprint is
-        /// derived from the lowest higher LoD (§9 "LoD0 synthesis") so the
-        /// GeoParquet primary column is populated; pass this to keep the output
-        /// strictly source-faithful.
+        /// Synthesise an LoD0 footprint into `geometry_lod0_0` for every
+        /// object that lacks a source LoD0, derived from its higher-LoD
+        /// geometry (ground surfaces first, else downward-facing faces), so
+        /// the GeoParquet-legal footprint column is populated. Off by default:
+        /// the package then holds only what the source carries.
         #[arg(long, default_value_t = false)]
-        no_lod0: bool,
+        lod0: bool,
 
         /// Operator-supplied CRS (e.g. EPSG:25832, or the bare 25832) used
         /// ONLY when the source declares none — it is ignored for a source
@@ -117,7 +132,8 @@ enum Commands {
         crs: Option<String>,
 
         /// Drop a material/texture index that falls outside its local
-        /// definitions array instead of aborting conversion. Off by default:
+        /// definitions array (or a texture ring with fewer UVs than vertices,
+        /// which is left untextured) instead of aborting conversion. Off by default:
         /// this implementation is the appearance-resolution oracle, so a
         /// dangling reference is fatal unless explicitly waived — pass this
         /// for input another CityParquet implementation reads regardless. A
@@ -125,15 +141,21 @@ enum Commands {
         /// never silent.
         #[arg(long, default_value_t = false)]
         tolerate_invalid_appearance: bool,
+        /// The STAC `datetime` written to `metadata.json` (RFC 3339, e.g.
+        /// `2026-10-05T00:00:00Z`). Without it the source's `referenceDate`
+        /// is used, else the conversion time; pass it for a package that must
+        /// be reproducible byte for byte.
+        #[arg(long)]
+        datetime: Option<String>,
     },
 
-    /// Export CityParquet package back to CityJSON/CityJSONSeq
+    /// Export CityParquet package back to CityJSON, CityJSONSeq, or CityGML
     Export {
         /// Input CityParquet package directory
         #[arg(value_name = "PACKAGE_DIR")]
         package_dir: PathBuf,
 
-        /// Output file (.city.jsonl for Seq, .city.json for doc)
+        /// Output file (.city.jsonl for Seq, .city.json for doc, .gml for CityGML)
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
     },
@@ -157,6 +179,45 @@ enum Commands {
         exclude_instances: bool,
     },
 
+    /// Write a STAC Collection (`collection.json`) over several packages'
+    /// `metadata.json` Items: `city3d:*` summaries, the union of their extents,
+    /// and one `item` link per package
+    #[cfg(feature = "collection")]
+    Collection {
+        /// CityParquet package directories
+        #[arg(value_name = "PACKAGE_DIR", required = true, num_args = 1..)]
+        packages: Vec<PathBuf>,
+
+        /// The collection.json to write
+        #[arg(short = 'o', long = "output", value_name = "OUTPUT")]
+        output: PathBuf,
+
+        /// The Collection's `id`
+        #[arg(long)]
+        id: String,
+
+        /// The Collection's `title`
+        #[arg(long)]
+        title: Option<String>,
+
+        /// The Collection's `description`
+        #[arg(long)]
+        description: Option<String>,
+
+        /// The Collection's `license` (an SPDX identifier, or `other`)
+        #[arg(long)]
+        license: Option<String>,
+    },
+
+    /// Check a CityParquet package against the specification. Prints one
+    /// line per violation (a MUST is an error, a SHOULD a warning) and exits
+    /// with status 2 when there is any error
+    Validate {
+        /// CityParquet package directory
+        #[arg(value_name = "PACKAGE_DIR")]
+        package_dir: PathBuf,
+    },
+
     /// Run the variant-matrix benchmark harness, appending one CSV row per
     /// variant to --out
     Bench {
@@ -175,9 +236,10 @@ enum Commands {
         repeat: usize,
 
         /// Comma-separated variant identifiers
-        /// (`<preset>[+hilbert][+rg<N>][+<codec>[<level>]]`, e.g.
-        /// `cityparquet+hilbert`, `cityparquet+rg512`, `cityparquet+zstd9`;
-        /// see `cityparquet::variant`); omit for the default 9-variant set
+        /// (`<preset>[+source][+rg<N>][+<codec>[<level>]][+nobloom]`, e.g.
+        /// `cityparquet+source`, `cityparquet+rg512`, `cityparquet+zstd9`;
+        /// every variant is Hilbert-ordered unless it says `+source`; see
+        /// `cityparquet::variant`); omit for the default 9-variant set
         #[arg(long)]
         variants: Option<String>,
 
@@ -391,10 +453,13 @@ fn main() -> std::process::ExitCode {
             zstd_level,
             recipe,
             compression,
+            no_bloom,
+            bloom_fpp,
             ordering,
-            no_lod0,
+            lod0,
             crs,
             tolerate_invalid_appearance,
+            datetime,
         } => {
             // `--compression` deliberately keeps its hand-rolled parse: its
             // "error: invalid compression '<v>' (expected one of: …)" text and
@@ -417,12 +482,21 @@ fn main() -> std::process::ExitCode {
                 None => None,
             };
 
+            let bloom = BloomPolicy {
+                enabled: !no_bloom,
+                fpp: bloom_fpp,
+            };
+            if let Err(e) = bloom.validate() {
+                eprintln!("error: --bloom-fpp: {}", render_error(&e));
+                return std::process::ExitCode::FAILURE;
+            }
             let recipe = WriterRecipe {
                 row_group_size,
                 zstd_level,
                 statistics_for_json: false,
                 preset: recipe.preset(),
                 compression,
+                bloom,
             };
             let ordering = ordering.row_order();
 
@@ -433,10 +507,11 @@ fn main() -> std::process::ExitCode {
                 batch_size,
                 recipe,
                 ordering,
-                generate_lod0: !no_lod0,
+                generate_lod0: lod0,
                 lod0: cityparquet::lod0::Lod0Options::default(),
                 crs_override: None,
                 tolerate_invalid_appearance,
+                datetime,
             };
 
             // A sizing flag only makes sense with --partition.
@@ -547,6 +622,14 @@ fn main() -> std::process::ExitCode {
                                 .iter()
                                 .map(|(_, r)| r.invalid_appearance_refs_dropped)
                                 .sum();
+                            if invalid_appearance_refs_dropped > 0 {
+                                eprintln!(
+                                    "warning: {} invalid material/texture reference(s) dropped \
+                                     (--tolerate-invalid-appearance): a dangling index, or a \
+                                     texture ring with fewer UVs than vertices, left untextured",
+                                    invalid_appearance_refs_dropped
+                                );
+                            }
                             println!(
                                 "partitions={} duplicate_ids={} invalid_appearance_refs_dropped={}",
                                 report.partitions.len(),
@@ -592,6 +675,14 @@ fn main() -> std::process::ExitCode {
                             for message in &report.dropped_colliding_member_diagnostics {
                                 eprintln!("warning: {message}");
                             }
+                            if report.invalid_appearance_refs_dropped > 0 {
+                                eprintln!(
+                                    "warning: {} invalid material/texture reference(s) dropped \
+                                     (--tolerate-invalid-appearance): a dangling index, or a \
+                                     texture ring with fewer UVs than vertices, left untextured",
+                                    report.invalid_appearance_refs_dropped
+                                );
+                            }
                             println!(
                                 "{} {} {} {} {} {} {} {} {} {}",
                                 report.object_count,
@@ -602,7 +693,7 @@ fn main() -> std::process::ExitCode {
                                 report.degenerate_surfaces_dropped,
                                 report.materials_written,
                                 report.textures_written,
-                                report.templates_written,
+                                report.implicit_geometries_written,
                                 report.invalid_appearance_refs_dropped
                             );
                             std::process::ExitCode::SUCCESS
@@ -664,6 +755,19 @@ fn main() -> std::process::ExitCode {
                             report.instance_geometries_dropped,
                             report.appearance_refs_dropped
                         );
+                        if !report.lod4_geometries.is_empty() {
+                            let count: usize = report.lod4_geometries.values().sum();
+                            let labels = report
+                                .lod4_geometries
+                                .keys()
+                                .map(|l| format!("\"{l}\""))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            eprintln!(
+                                "warning: {count} geometries are LoD 4, written as {labels}; \
+                                 CityJSON 2.0 defines LoDs 0 to 3 only"
+                            );
+                        }
                         std::process::ExitCode::SUCCESS
                     }
                     Err(e) => {
@@ -719,6 +823,50 @@ fn main() -> std::process::ExitCode {
                 }
             }
         }
+
+        #[cfg(feature = "collection")]
+        Commands::Collection {
+            packages,
+            output,
+            id,
+            title,
+            description,
+            license,
+        } => {
+            let opts = cityparquet_cli::collection::CollectionOptions {
+                packages,
+                output,
+                id,
+                title,
+                description,
+                license,
+            };
+            match cityparquet_cli::collection::write_collection(&opts) {
+                Ok(n) => {
+                    println!("{n} items aggregated into {}", opts.output.display());
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: {}", render_error(&e));
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+
+        Commands::Validate { package_dir } => match validate_package(&package_dir) {
+            Ok(report) => {
+                println!("{report}");
+                if report.is_conformant() {
+                    std::process::ExitCode::SUCCESS
+                } else {
+                    std::process::ExitCode::from(2)
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {}", render_error(&e));
+                std::process::ExitCode::FAILURE
+            }
+        },
 
         Commands::Bench {
             input,

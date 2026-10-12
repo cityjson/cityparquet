@@ -81,8 +81,8 @@ impl<'de> Deserialize<'de> for SourceFormat {
 /// - [`CrsState::Unspecified`] — the key is **absent**. Per GeoParquet an
 ///   absent `crs` is read as OGC:CRS84, so a conforming writer never relies on
 ///   it: absence is legitimate **only** for a file with no CRS-bearing
-///   coordinate at all (the `geometry_templates.parquet` sidecar, whose
-///   templates are unplaced local coordinates, and the attributes-only object
+///   coordinate at all (the `implicit_geometries.parquet` sidecar, whose
+///   relative geometries are unplaced local coordinates, and the attributes-only object
 ///   table).
 ///
 /// `Option<Value>` cannot express this: it collapses "absent" and "null" onto
@@ -133,8 +133,8 @@ impl CrsState {
     /// The spec's writer rule as code: a CRS the writer resolved to PROJJSON
     /// is [`CrsState::Known`]; otherwise the key is an explicit `null`
     /// whenever the file holds **any** CRS-bearing coordinate (object
-    /// geometry, an address `location`, a `bbox`, a geometry-template
-    /// instance's `point`), and absent only when it holds none.
+    /// geometry, an address `location`, a `bbox`, an implicit
+    /// geometry's `point`), and absent only when it holds none.
     ///
     /// "A writer never relies on the absent-CRS default": the
     /// `has_crs_bearing_coordinate` argument is the whole of that rule, so no
@@ -247,6 +247,28 @@ impl CityColumnEntry {
     }
 }
 
+/// One `city.extensions` entry (spec "Extensions"): a reference to an
+/// extension's schema document — a JSON Schema for a CityJSON Extension, an
+/// XSD for a CityGML ADE. The schema itself is not embedded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionDeclaration {
+    /// The extension's source name: the CityJSON `extensions` key, or the
+    /// ADE name.
+    pub name: String,
+    /// The extension's schema document.
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub version: Option<String>,
+    /// The ADE's XML namespace URI (CityGML ADEs only).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub xmlns: Option<String>,
+}
+
+/// `city.extensions`: every declared extension, keyed by its namespace
+/// (`^[a-z][a-z0-9]*$`, unique within the package). `BTreeMap` for
+/// deterministic serialisation.
+pub type ExtensionDeclarations = std::collections::BTreeMap<String, ExtensionDeclaration>;
+
 /// The `city` Parquet key-value metadata object (spec §metadata "The `city`
 /// object") — CityParquet's own metadata: version, provenance, CRS, the
 /// geometry-column registry, the attribute list, and extensions. Describes
@@ -257,7 +279,7 @@ impl CityColumnEntry {
 /// Requirements depend on the file's role: an object table carries
 /// `source_format`/`attributes`/`primary_column`/`columns` when it has the
 /// data to back them; a sidecar (`materials.parquet`, `textures.parquet`,
-/// `geometry_templates.parquet`) carries only `version` plus `crs` when it has
+/// `implicit_geometries.parquet`) carries only `version` plus `crs` when it has
 /// CRS-bearing coordinates — none of the object-table-only fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CityMetadata {
@@ -268,8 +290,8 @@ pub struct CityMetadata {
     pub source_version: Option<String>,
     /// The file CRS, **tri-state** ([`CrsState`]): PROJJSON when known, an
     /// explicit `null` when the file holds CRS-bearing coordinates (object
-    /// geometry, an address `location`, a `bbox`, a geometry-template
-    /// instance's `point`) whose CRS is unknown or unresolvable, and absent
+    /// geometry, an address `location`, a `bbox`, an implicit
+    /// geometry's `point`) whose CRS is unknown or unresolvable, and absent
     /// only when the file holds no CRS-bearing coordinate at all.
     #[serde(skip_serializing_if = "CrsState::is_unspecified", default)]
     pub crs: CrsState,
@@ -286,9 +308,12 @@ pub struct CityMetadata {
     /// column is a reserved structural column.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub attributes: Vec<String>,
-    /// Extension / ADE declarations.
+    /// The extensions (CityJSON Extensions / CityGML ADEs) the package
+    /// declares, keyed by namespace (spec "Extensions"). Each entry is a
+    /// reference to the extension's schema document, not the schema itself.
+    /// Absent when the source declares no `extensions` member at all.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub extensions: Option<Value>,
+    pub extensions: Option<ExtensionDeclarations>,
     /// Source default material / texture theme, when present.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub appearance_defaults: Option<Value>,
@@ -484,26 +509,53 @@ mod tests {
         );
     }
 
+    /// A footer round trip over `(city variant, Option<geo>)`: the optional
+    /// `geo` key is restored (or stays absent), and an unrecognised
+    /// `source_format` string round-trips as `Other`, never rejected.
+    /// spec "Extensions": `city.extensions` is an object keyed by
+    /// namespace, each entry carrying `name`, `url` and the optional
+    /// `version`/`xmlns`, and it reads back to the same typed value.
     #[test]
-    fn round_trips_through_key_values() {
-        let city = sample_city();
-        let geo = sample_geo();
-        let kvs = city.to_key_values(Some(&geo)).unwrap();
-        let (back_city, back_geo) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert_eq!(back_city, city);
-        assert_eq!(back_geo, Some(geo));
+    fn extensions_serialise_keyed_by_namespace() {
+        let mut city = CityMetadata::new();
+        let mut decls = ExtensionDeclarations::new();
+        decls.insert(
+            "energy".to_string(),
+            ExtensionDeclaration {
+                name: "Energy".to_string(),
+                url: "https://example.org/energy.ext.json".to_string(),
+                version: Some("3.0".to_string()),
+                xmlns: None,
+            },
+        );
+        city.extensions = Some(decls);
+        let v = serde_json::to_value(&city).unwrap();
+        assert_eq!(
+            v["extensions"],
+            json!({"energy": {"name": "Energy", "url": "https://example.org/energy.ext.json", "version": "3.0"}})
+        );
+        let back: CityMetadata = serde_json::from_value(v).unwrap();
+        assert_eq!(back, city);
     }
 
     #[test]
-    fn from_key_values_without_geo_key_returns_none() {
-        let city = sample_city();
-        let kvs = city.to_key_values(None).unwrap();
-        let (_back, geo) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert!(geo.is_none());
+    fn footer_round_trips_city_and_optional_geo() {
+        let mut other_source = sample_city();
+        other_source.source_format = Some(SourceFormat::Other("3DCityDB".to_string()));
+
+        let cases: Vec<(&str, CityMetadata, Option<GeoMetadata>)> = vec![
+            ("city + geo", sample_city(), Some(sample_geo())),
+            ("city only", sample_city(), None),
+            ("Other source format", other_source, None),
+        ];
+        for (name, city, geo) in cases {
+            let kvs = city.to_key_values(geo.as_ref()).unwrap();
+            let (back_city, back_geo) =
+                CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                    .unwrap();
+            assert_eq!(back_city, city, "{name}: city must round-trip");
+            assert_eq!(back_geo, geo, "{name}: geo must round-trip");
+        }
     }
 
     #[test]
@@ -521,35 +573,6 @@ mod tests {
         );
         let value = serde_json::to_value(&entry).unwrap();
         assert_eq!(value["orientation_3d"], "right-handed");
-    }
-
-    /// `CityColumnEntry::new` records the encoding the column was rendered
-    /// under, taken from [`GeometryEncoding::footer_token`], so the footer can
-    /// never disagree with the physical Arrow schema.
-    #[test]
-    fn city_column_entry_records_the_encoding_it_was_rendered_under() {
-        let entry = CityColumnEntry::new(
-            "geometry_lod2_2".to_string(),
-            vec!["MultiPolygon Z".to_string()],
-            GeometryEncoding::Wkb,
-        );
-        assert_eq!(entry.encoding, GeometryEncoding::WKB_TOKEN);
-    }
-
-    /// `source_format` is open-ended: an unrecognised string round-trips as
-    /// `Other`, never rejected.
-    #[test]
-    fn source_format_other_round_trips() {
-        let mut city = sample_city();
-        city.source_format = Some(SourceFormat::Other("3DCityDB".to_string()));
-        let kvs = city.to_key_values(None).unwrap();
-        let (back, _) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert_eq!(
-            back.source_format,
-            Some(SourceFormat::Other("3DCityDB".to_string()))
-        );
     }
 
     /// `source_format` is optional: a table authored natively omits it
@@ -578,89 +601,45 @@ mod tests {
     /// states must survive a footer round trip. `Option<Value>` collapsed
     /// "absent" and "null" onto one `None`, so a writer that meant `null`
     /// silently emitted absence — which per GeoParquet asserts OGC:CRS84 over
-    /// a projected national city model.
+    /// a projected national city model. The three distinct expected members
+    /// also make the serialised footers pairwise distinct.
     #[test]
-    fn crs_known_serialises_as_the_projjson_object_and_round_trips() {
-        let city = sample_city();
-        let members = city_members(&city);
+    fn crs_state_footer_contract() {
+        let known = json!({"type": "ProjectedCRS", "id": {"authority": "EPSG", "code": 28992}});
+        let cases: Vec<(CrsState, Option<Value>)> = vec![
+            (CrsState::Known(known.clone()), Some(known)),
+            (CrsState::Unknown, Some(Value::Null)),
+            (CrsState::Unspecified, None),
+        ];
+        let mut footers = Vec::new();
+        for (state, expected_member) in cases {
+            let mut city = sample_city();
+            city.crs = state.clone();
+
+            let members = city_members(&city);
+            match &expected_member {
+                Some(value) => assert_eq!(
+                    members.get("crs"),
+                    Some(value),
+                    "{state:?} must serialise as {value:?}"
+                ),
+                None => assert!(
+                    !members.contains_key("crs"),
+                    "an unspecified CRS writes NO key at all: {members:?}"
+                ),
+            }
+
+            let kvs = city.to_key_values(None).unwrap();
+            let (back, _) =
+                CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                    .unwrap();
+            assert_eq!(back.crs, state, "the footer must restore {state:?}");
+            footers.push(kvs[0].1.clone());
+        }
         assert!(
-            members["crs"].is_object(),
-            "a known CRS is a PROJJSON object: {:?}",
-            members["crs"]
+            footers[0] != footers[1] && footers[1] != footers[2] && footers[0] != footers[2],
+            "the three CRS states must serialise to three different footers"
         );
-        assert_eq!(members["crs"]["id"]["code"], 28992);
-
-        let kvs = city.to_key_values(None).unwrap();
-        let (back, _) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert_eq!(back.crs, city.crs);
-        assert!(back.crs.is_known());
-    }
-
-    #[test]
-    fn crs_unknown_serialises_as_an_explicit_null_and_round_trips() {
-        let mut city = sample_city();
-        city.crs = CrsState::Unknown;
-        let members = city_members(&city);
-        assert!(
-            members.contains_key("crs"),
-            "an unknown CRS is DECLARED, never omitted: {members:?}"
-        );
-        assert_eq!(
-            members["crs"],
-            Value::Null,
-            "an unknown CRS is an explicit JSON null"
-        );
-
-        let kvs = city.to_key_values(None).unwrap();
-        let (back, _) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert_eq!(
-            back.crs,
-            CrsState::Unknown,
-            "null must not decode as absent"
-        );
-    }
-
-    #[test]
-    fn crs_unspecified_stays_absent_and_round_trips() {
-        let mut city = sample_city();
-        city.crs = CrsState::Unspecified;
-        let members = city_members(&city);
-        assert!(
-            !members.contains_key("crs"),
-            "an unspecified CRS writes NO key at all: {members:?}"
-        );
-
-        let kvs = city.to_key_values(None).unwrap();
-        let (back, _) =
-            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .unwrap();
-        assert_eq!(
-            back.crs,
-            CrsState::Unspecified,
-            "absent must not decode as null"
-        );
-    }
-
-    /// The three states are genuinely distinguishable at the byte level —
-    /// pinned as one assertion so a regression that collapses any two of them
-    /// cannot pass by satisfying the individual tests above in isolation.
-    #[test]
-    fn the_three_crs_states_serialise_to_three_different_footers() {
-        let known = sample_city();
-        let mut unknown = sample_city();
-        unknown.crs = CrsState::Unknown;
-        let mut unspecified = sample_city();
-        unspecified.crs = CrsState::Unspecified;
-
-        let json = |c: &CityMetadata| c.to_key_values(None).unwrap()[0].1.clone();
-        let (k, u, a) = (json(&known), json(&unknown), json(&unspecified));
-        assert!(k != u && u != a && k != a, "\n{k}\n{u}\n{a}");
-        assert!(u.contains("\"crs\":null"), "{u}");
-        assert!(!a.contains("\"crs\""), "{a}");
     }
 
     /// `geo`'s mirror is GeoParquet's OWN tri-state, so a `null` there is

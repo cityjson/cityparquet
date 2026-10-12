@@ -70,7 +70,7 @@ fn railway_by_type_writes_one_file_per_citygml_module() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    // railway carries materials/textures/templates, now written whenever the
+    // railway carries materials/textures/implicit geometries, now written whenever the
     // source has content for them (spec-alignment gap 19 dropped the
     // Profile choice this test used to rely on being Core-by-default) — the
     // sidecars aren't CityGML modules, so they're excluded from this
@@ -78,7 +78,7 @@ fn railway_by_type_writes_one_file_per_citygml_module() {
     const SIDECARS: [&str; 3] = [
         "materials.parquet",
         "textures.parquet",
-        "geometry_templates.parquet",
+        "implicit_geometries.parquet",
     ];
     let main_tables: BTreeSet<String> = table_files(&out)
         .into_iter()

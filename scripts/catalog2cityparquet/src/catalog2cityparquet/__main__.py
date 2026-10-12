@@ -1195,7 +1195,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--tool",
         type=Path,
-        default=Path("lib/cityparquet-rs/vendor/city3d-stac-tool/target/release/city3dstac"),
+        default=Path("lib/cityparquet-rs/target/bin/city3dstac"),
     )
     parser.add_argument(
         "--collection",
@@ -1396,7 +1396,7 @@ def publish_main(argv: list[str]) -> int:
     parser.add_argument(
         "--tool",
         type=Path,
-        default=Path("lib/cityparquet-rs/vendor/city3d-stac-tool/target/release/city3dstac"),
+        default=Path("lib/cityparquet-rs/target/bin/city3dstac"),
     )
     parser.add_argument("--base-url", default=BASE_URL)
     args = parser.parse_args(argv)

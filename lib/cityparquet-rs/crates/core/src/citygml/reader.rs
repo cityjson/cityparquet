@@ -9,7 +9,7 @@
 //! non-building objects are out of scope for this milestone.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use cityparquet_schema::{CityParquetError, Result};
@@ -48,7 +48,7 @@ fn citygml_object_type(local: &[u8]) -> Option<&'static str> {
 }
 
 pub struct FeatureReader {
-    reader: NsReader<BufReader<File>>,
+    reader: NsReader<Box<dyn BufRead + Send>>,
     buf: Vec<u8>,
     scale: [f64; 3],
     translate: [f64; 3],
@@ -61,6 +61,9 @@ pub struct FeatureReader {
     /// (CG-3). Empty when the caller opened via
     /// [`FeatureReader::open_without_appearance`].
     model_appearance: ModelAppearance,
+    /// The document's allowance for expanding xlinks to surface aggregates,
+    /// shared by every object it holds.
+    xlink_budget: std::sync::Arc<super::building::XlinkBudget>,
     /// Whether the reader is currently positioned directly inside a
     /// `cityObjectMember`, i.e. the next `Start` is that member's own object.
     /// Cleared as soon as that object has been seen (mapped or not), so
@@ -80,6 +83,50 @@ pub struct FeatureReader {
     skipped_members: std::collections::BTreeMap<String, usize>,
 }
 
+/// Whether the bytes of `path` may contain `needle` — `false` only when a
+/// document in an ASCII-compatible encoding certainly does not. A document
+/// that may be UTF-16 (a byte-order mark or a zero byte at its start) is
+/// assumed to contain it, since its element names are not stored as these
+/// bytes.
+fn may_contain(path: &Path, needle: &[u8]) -> Result<bool> {
+    may_contain_in_chunks(path, needle, 8 << 20)
+}
+
+fn may_contain_in_chunks(path: &Path, needle: &[u8], chunk: usize) -> Result<bool> {
+    use std::io::Read;
+    let io = |e| CityParquetError::io_source(format!("cannot read {}", path.display()), e);
+    let mut file = File::open(path).map_err(io)?;
+    let finder = memchr::memmem::Finder::new(needle);
+    let keep = needle.len() - 1;
+    let mut buf = vec![0u8; chunk.max(needle.len())];
+    let mut filled = 0;
+    let mut first = true;
+    loop {
+        let read = file.read(&mut buf[filled..]).map_err(io)?;
+        if first {
+            let head = &buf[..read.min(4)];
+            if head.starts_with(&[0xFE, 0xFF])
+                || head.starts_with(&[0xFF, 0xFE])
+                || head.contains(&0)
+            {
+                return Ok(true);
+            }
+            first = false;
+        }
+        let end = filled + read;
+        if finder.find(&buf[..end]).is_some() {
+            return Ok(true);
+        }
+        if read == 0 {
+            return Ok(false);
+        }
+        // Carry the tail over, so a needle across the boundary is found.
+        let tail = end.saturating_sub(keep);
+        buf.copy_within(tail..end, 0);
+        filled = end - tail;
+    }
+}
+
 /// Pre-pass: read every CityModel-level `app:appearanceMember` (the conformant
 /// CityGML 2.0 global-appearance property — a `_FeatureCollection` member of
 /// `CityModel`, distinct from a feature's own `app:appearance`) into one
@@ -87,6 +134,11 @@ pub struct FeatureReader {
 /// feature-level `app:appearance` (which uses the other property name) is NOT
 /// promoted to model scope.
 fn read_model_appearance(path: &Path) -> Result<ModelAppearance> {
+    // A document that never spells `appearanceMember` has no CityModel-level
+    // appearance; a byte search says so far faster than parsing it.
+    if !may_contain(path, b"appearanceMember")? {
+        return Ok(ModelAppearance::build(ReadAppearance::default()));
+    }
     let file = File::open(path)
         .map_err(|e| CityParquetError::io_source(format!("cannot reopen {}", path.display()), e))?;
     let mut reader = NsReader::from_reader(BufReader::new(file));
@@ -145,6 +197,21 @@ impl FeatureReader {
         Self::open_inner(path, transform, false)
     }
 
+    /// Stream features from any `BufRead` — an HTTP response body, say —
+    /// quantising vertices against `transform`.
+    ///
+    /// Always one pass, WITHOUT the CityModel-level appearance pre-pass (it
+    /// would need a second read of a stream that can be read once): features
+    /// stream exactly as from [`Self::open_without_appearance`]. Nothing is
+    /// read beyond what the features pulled so far need, so a caller that
+    /// stops early and drops the reader never reads the rest of the input.
+    /// `input` must start at the document's first byte; a caller that ran
+    /// [`super::sniff_citygml_from`]/[`super::parse_header_from`] on the same
+    /// stream replays the bytes they consumed ahead of the rest.
+    pub fn from_reader(input: Box<dyn BufRead + Send>, transform: &Transform) -> Result<Self> {
+        Self::from_parts(input, transform, ModelAppearance::default())
+    }
+
     /// Every `cityObjectMember` object whose element name this reader does not
     /// map, by document-spelled name (`tran:Track` -> 3). Empty for a document
     /// every member of which was read.
@@ -167,14 +234,22 @@ impl FeatureReader {
         let file = File::open(path).map_err(|e| {
             CityParquetError::io_source(format!("cannot reopen {}", path.display()), e)
         })?;
-        let scale = triple(&transform.scale, "scale")?;
-        let translate = triple(&transform.translate, "translate")?;
         let model_appearance = if with_appearance {
             read_model_appearance(path)?
         } else {
             ModelAppearance::default()
         };
-        let mut reader = NsReader::from_reader(BufReader::new(file));
+        Self::from_parts(Box::new(BufReader::new(file)), transform, model_appearance)
+    }
+
+    fn from_parts(
+        input: Box<dyn BufRead + Send>,
+        transform: &Transform,
+        model_appearance: ModelAppearance,
+    ) -> Result<Self> {
+        let scale = triple(&transform.scale, "scale")?;
+        let translate = triple(&transform.translate, "translate")?;
+        let mut reader = NsReader::from_reader(input);
         // Self-closing elements (`<gml:surfaceMember xlink:href=.../>`) must
         // arrive as Start+End so the geometry parsers see the xlink; otherwise
         // quick-xml emits Event::Empty, which the Start-matching loops drop.
@@ -187,6 +262,7 @@ impl FeatureReader {
             index: 0,
             done: false,
             model_appearance,
+            xlink_budget: std::sync::Arc::default(),
             inside_member: false,
             skipped_members: std::collections::BTreeMap::new(),
         })
@@ -240,6 +316,7 @@ impl FeatureReader {
                             &self.translate,
                             self.index,
                             &self.model_appearance,
+                            &self.xlink_budget,
                         )?;
                         // This member's object has been consumed whole; the
                         // member's own `End` is next.
@@ -256,6 +333,7 @@ impl FeatureReader {
                             &self.translate,
                             self.index,
                             &self.model_appearance,
+                            &self.xlink_budget,
                         )?;
                         // This member's object has been consumed whole; the
                         // member's own `End` is next.
@@ -306,5 +384,34 @@ fn triple(v: &[f64], what: &str) -> Result<[f64; 3]> {
             "CityGML header transform {what} must have 3 components, got {}",
             v.len()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn data(name: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(name)
+    }
+
+    /// The byte search that lets the CityModel-appearance pre-pass be skipped
+    /// finds the element wherever it lies — including across the boundary
+    /// between two reads, exercised with reads shorter than the needle — and
+    /// reports a document without it.
+    #[test]
+    fn the_appearance_member_search_finds_it_across_read_boundaries() {
+        let with = data("tests/data/building_citymodel_appearance.gml");
+        let without = data("../../tests/fixtures/b1_lod2_s.gml");
+        for chunk in [5, 7, 4096, 8 << 20] {
+            assert!(
+                may_contain_in_chunks(&with, b"appearanceMember", chunk).unwrap(),
+                "{chunk}"
+            );
+            assert!(
+                !may_contain_in_chunks(&without, b"appearanceMember", chunk).unwrap(),
+                "{chunk}"
+            );
+        }
     }
 }
