@@ -1,0 +1,319 @@
+name: Publish crates
+
+# Publishes the Rust workspace under lib/cityparquet-rs to crates.io:
+# `cityparquet-schema`, `cityparquet` (the library) and `cityparquet-cli` (the
+# `cityparquet` binary). citylake and benchmark/readbench are not published.
+#
+# Run it from main (Actions → Publish crates → Run workflow) and choose the
+# bump. The three crates share one version, so one run publishes all three:
+#
+#   1. bump the version (.github/scripts/bump-version.py) and refuse one that is
+#      already tagged or already on crates.io;
+#   2. run the Rust gate and build the CLI for five targets, side by side;
+#   3. only once both pass, publish in dependency order, then push a
+#      `release: vX.Y.Z` commit and `vX.Y.Z` tag to main and merge the commit
+#      back into develop.
+#
+# On success the Release workflow creates the GitHub release for `vX.Y.Z`,
+# with the archives built in step 2 attached. A crates.io version is permanent
+# — yanking hides it, it never frees the number — which is why every build
+# happens before the upload and none after it.
+#
+# A dry run does all of this except the upload and the push: it bumps, gates,
+# builds every archive and runs `cargo publish --dry-run`. It runs from any
+# branch; a real publish runs only from main.
+#
+# Needs CARGO_REGISTRY_TOKEN (an organisation secret) and pushes with the
+# workflow's own token, so main and develop must accept pushes from
+# github-actions[bot].
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (none publishes the version already in Cargo.toml, e.g. the first 0.1.0)"
+        type: choice
+        options: [patch, minor, major, none]
+        default: patch
+      dry_run:
+        description: "Dry run: bump, gate, build and package; upload and push nothing"
+        type: boolean
+        default: true
+
+run-name: Publish crates (${{ inputs.bump }}${{ inputs.dry_run && ', dry run' || '' }})
+
+# One publish at a time across the crates and the MCP server: both push to main.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Choose the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Refuse a real publish off main
+        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::a real publish runs from main; this run is on ${GITHUB_REF_NAME}. Dry runs may use any branch."
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the tags, to refuse one that exists
+          submodules: false
+
+      - name: Test the bump script
+        run: python3 -m unittest discover -s .github/scripts
+
+      - name: Bump the version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: echo "version=$(python3 .github/scripts/bump-version.py rust "$BUMP")" >> "$GITHUB_OUTPUT"
+
+      # crates.io would refuse a taken version too, but only partway through a
+      # multi-crate upload, which is a worse place to find out.
+      - name: Check v${{ steps.version.outputs.version }} is free
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" > /dev/null; then
+            echo "::error::tag v${VERSION} already exists"
+            exit 1
+          fi
+          for crate in cityparquet-schema cityparquet cityparquet-cli; do
+            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
+                        -H 'User-Agent: cityjson/cityparquet publish workflow' \
+                        "https://crates.io/api/v1/crates/${crate}/${VERSION}")"
+            case "${status}" in
+              404) echo "${crate} ${VERSION} is free" ;;
+              200) echo "::error::${crate} ${VERSION} is already on crates.io"; exit 1 ;;
+              *) echo "::error::crates.io answered ${status} for ${crate} ${VERSION}"; exit 1 ;;
+            esac
+          done
+          echo "Version: **v${VERSION}** (${{ inputs.bump }})" >> "$GITHUB_STEP_SUMMARY"
+
+  # The full Rust gate on the commit being released. The bump changes no code,
+  # so the gate runs on the commit as it stands.
+  gate:
+    name: Rust gate
+    needs: prepare
+    uses: ./.github/workflows/rust.yml
+
+  # The `cityparquet` CLI for people without a Rust toolchain. Built here,
+  # before the upload, so a target that fails to build stops the release
+  # while nothing has been published; the Release workflow attaches these.
+  binaries:
+    name: CLI ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          # Native ARM runner rather than a cross toolchain: parquet's zstd
+          # pulls in a C build, and cross-compiling that is more moving parts
+          # than it is worth when GitHub hosts the hardware.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # macos-latest is Apple silicon; the Intel image is the separate
+          # `-intel` label.
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+
+      # The binary reports the version it is released as.
+      - name: Bump the version
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPECTED: ${{ needs.prepare.outputs.version }}
+          PYTHON: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
+        run: |
+          set -euo pipefail
+          version="$("$PYTHON" .github/scripts/bump-version.py rust "$BUMP")"
+          test "${version}" = "${EXPECTED}"
+
+      # rust-toolchain.toml pins the version; rustup honours it on first use.
+      # The target is added explicitly so the pinned toolchain owns it too.
+      - name: Add the target
+        working-directory: lib/cityparquet-rs
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/cityparquet-rs/target
+          key: release-${{ matrix.target }}-${{ hashFiles('lib/cityparquet-rs/Cargo.lock') }}
+          restore-keys: release-${{ matrix.target }}-
+
+      - name: Build the CLI
+        working-directory: lib/cityparquet-rs
+        run: cargo build --release --locked -p cityparquet-cli --target ${{ matrix.target }}
+
+      # Every runner is native to its target, so each binary can run here.
+      - name: Check the binary's version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          out="$(lib/cityparquet-rs/target/${{ matrix.target }}/release/cityparquet --version)"
+          echo "${out}"
+          case "${out}" in *"${VERSION}"*) ;; *) echo "::error::expected ${VERSION}"; exit 1 ;; esac
+
+      # One archive per target, carrying the binary, both licences and the
+      # README: .tar.gz for Linux and macOS, .zip for Windows.
+      - name: Package
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          stage="cityparquet-v${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/${stage}"
+          exe=""
+          if [ "${RUNNER_OS}" = "Windows" ]; then exe=".exe"; fi
+          cp "lib/cityparquet-rs/target/${{ matrix.target }}/release/cityparquet${exe}" "dist/${stage}/"
+          cp LICENSE-MIT LICENSE-APACHE README.md "dist/${stage}/"
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            (cd dist && 7z a -tzip "${stage}.zip" "${stage}" > /dev/null)
+          else
+            tar -C dist -czf "dist/${stage}.tar.gz" "${stage}"
+          fi
+          rm -rf "dist/${stage}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: ${{ inputs.dry_run && 'cargo publish --dry-run' || 'cargo publish' }}
+    needs: [prepare, gate, binaries]
+    runs-on: ubuntu-latest
+    # An environment, so the registry token can sit behind whatever protection
+    # rule the repository wants (required reviewers, a branch filter). GitHub
+    # creates it on first run; add rules in Settings → Environments.
+    environment: crates-io
+    permissions:
+      contents: write # push the release commit and tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the release commit is rebased onto main and merged into develop
+          submodules: false
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/cityparquet-rs/target
+          key: publish-${{ runner.os }}-${{ hashFiles('lib/cityparquet-rs/Cargo.lock') }}
+          restore-keys: publish-${{ runner.os }}-
+
+      # Committed and tagged BEFORE the upload, so the packaged crates record
+      # the release commit (.cargo_vcs_info.json) and the tree is clean. Neither
+      # leaves the runner until the upload has succeeded.
+      - name: Bump, commit and tag v${{ needs.prepare.outputs.version }}
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPECTED: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="$(python3 .github/scripts/bump-version.py rust "$BUMP")"
+          test "${version}" = "${EXPECTED}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -am "release: v${version}"
+          git tag -a "v${version}" -m "v${version}"
+
+      # cargo orders a multi-package publish itself, waits for each crate to
+      # reach the index before uploading its dependents, and verifies every
+      # named crate before uploading any of them. A dry run verifies against
+      # the not-yet-published siblings the same way.
+      - name: Publish
+        working-directory: lib/cityparquet-rs
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          crates=(-p cityparquet-schema -p cityparquet -p cityparquet-cli)
+          if [ "${DRY_RUN}" = "true" ]; then
+            cargo publish --dry-run --locked "${crates[@]}"
+          else
+            if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+              echo "::error::CARGO_REGISTRY_TOKEN is not set"
+              exit 1
+            fi
+            cargo publish --locked "${crates[@]}"
+          fi
+
+      - name: Push the release commit and tag
+        if: ${{ !inputs.dry_run }}
+        run: bash .github/scripts/push-release.sh "v${{ needs.prepare.outputs.version }}"
+
+      # What the Release workflow reads. Uploaded only by a real publish, so a
+      # dry run leaves it nothing to release.
+      - name: Describe the release
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-meta
+          echo "v${VERSION}" > release-meta/tag
+          echo "v${VERSION}" > release-meta/title
+          echo "true" > release-meta/latest
+          cat > release-meta/notes.md <<EOF
+          Published to crates.io:
+          - [\`cityparquet ${VERSION}\`](https://crates.io/crates/cityparquet/${VERSION}): the library ([docs](https://docs.rs/cityparquet/${VERSION}))
+          - [\`cityparquet-schema ${VERSION}\`](https://crates.io/crates/cityparquet-schema/${VERSION}): the type system and Arrow schema
+          - [\`cityparquet-cli ${VERSION}\`](https://crates.io/crates/cityparquet-cli/${VERSION}): the \`cityparquet\` command-line tool
+
+          Install the CLI with \`cargo install cityparquet-cli@${VERSION}\`, or download a prebuilt binary below and check it against \`SHA256SUMS\`.
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.dry_run }}
+        with:
+          name: release-meta
+          path: release-meta/
+          if-no-files-found: error
+
+      - name: Summary
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "Dry run: v${VERSION} was gated, built for five targets and packaged. Nothing was published or pushed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Published cityparquet-schema, cityparquet and cityparquet-cli ${VERSION}; tagged v${VERSION}." >> "$GITHUB_STEP_SUMMARY"
+          fi
