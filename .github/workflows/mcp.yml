@@ -50,5 +50,9 @@ jobs:
         # Compares corpus content only, never the `generatedFrom` provenance
         # stamp — see ai/mcp/src/check-corpus-fresh.ts for why a byte-for-byte
         # diff against a regenerated file would fail on every commit.
+        # Only on main: on develop, mcp-corpus.yml regenerates the corpus after
+        # every docs change, so a branch or pull request that edits the docs is
+        # expected to carry a corpus that is one regeneration behind.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: pnpm corpus:check
         working-directory: ai/mcp
