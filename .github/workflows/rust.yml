@@ -187,6 +187,11 @@ jobs:
         working-directory: lib/cityparquet-rs
         run: just fixtures
 
+      # tests/returned_agreement.rs builds the FlatCityBuf input exactly as the
+      # benchmark does, with `fcb ser -A`; the version is fetch_tools.sh's.
+      - name: Install the fcb CLI
+        run: cargo install fcb_cli --version 0.7.8 --locked
+
       - name: clippy, tests, fmt
         working-directory: benchmark/readbench
         run: |
