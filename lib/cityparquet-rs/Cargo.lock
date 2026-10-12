@@ -809,8 +809,9 @@ dependencies = [
 
 [[package]]
 name = "city3d-stac-gen"
-version = "0.3.0"
-source = "git+https://github.com/cityjson/city3d-stac-tool?rev=c8ab8d9ae7ebd7b2cf4cc9f35b50b592c9b735df#c8ab8d9ae7ebd7b2cf4cc9f35b50b592c9b735df"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a25f33a472f00fdf454e4ad873ff2c396d74c22ec5f85ca8b928b7aa5c292765"
 dependencies = [
  "anyhow",
  "bytes",
@@ -853,8 +854,9 @@ dependencies = [
 
 [[package]]
 name = "city3d-stac-types"
-version = "0.1.0"
-source = "git+https://github.com/cityjson/city3d-stac-tool?rev=c8ab8d9ae7ebd7b2cf4cc9f35b50b592c9b735df#c8ab8d9ae7ebd7b2cf4cc9f35b50b592c9b735df"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef715a86f6a1d94149be2394ddc6417ac50a3a5107201f61a883cd9e23b7aa0c"
 dependencies = [
  "chrono",
  "hex",

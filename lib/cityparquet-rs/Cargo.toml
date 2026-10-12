@@ -9,8 +9,8 @@ members = ["crates/schema", "crates/core", "crates/cli"]
 # the rest of the benchmark under ../../benchmark/readbench, and it is its own
 # workspace there (see the migration note's D6 — independent workspaces are the
 # established pattern in this tree).
-# Vendored submodules are independent Cargo projects with their own lockfiles and
-# toolchains; they must not be pulled into this workspace.
+# vendor/ holds a patched copy of cjseq, consumed through [patch.crates-io]
+# below; it is its own Cargo project and must not be pulled into this workspace.
 exclude = ["vendor"]
 
 [workspace.package]
@@ -60,13 +60,14 @@ geo-traits = "0.3"
 geo = "0.31"
 tempfile = "3"
 cityparquet-schema = { path = "crates/schema", version = "0.1.0" }
-city3d-stac-types = { git = "https://github.com/cityjson/city3d-stac-tool", rev = "c8ab8d9ae7ebd7b2cf4cc9f35b50b592c9b735df" }
+city3d-stac-types = "0.1.1"
 # The STAC generator — `StacCollectionBuilder` for `cityparquet collection`.
 # Only the CLI depends on it, behind its `collection` feature: it pulls in the
 # `stac`, `object_store`, `reqwest` and `fcb_core` stacks, which neither the
-# library nor the schema crate may carry. Same revision as city3d-stac-types,
-# so the two resolve to one copy of the types crate.
-city3d-stac-gen = { git = "https://github.com/cityjson/city3d-stac-tool", rev = "c8ab8d9ae7ebd7b2cf4cc9f35b50b592c9b735df" }
+# library nor the schema crate may carry. Same release line as
+# city3d-stac-types (gen 0.3.1 requires types ^0.1.1), so the two resolve to
+# one copy of the types crate.
+city3d-stac-gen = "0.3.1"
 jsonschema = "0.26"
 # HyperLogLog++ distinct counts for the bloom-filter high-cardinality rule
 # (`scan`). Deterministic WyHash default: the selected columns, and so the

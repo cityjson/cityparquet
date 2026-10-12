@@ -56,14 +56,11 @@ stage() {
 
 # --- 1. the Rust workspace -------------------------------------------------
 #
-# `just check` gates on the vendored city3d-stac-tool being checked out, and the
-# tests read real fixtures rather than inline CityJSON, so both are
-# preconditions rather than part of the suite.
+# The tests read real fixtures rather than inline CityJSON, so the fixtures are
+# a precondition rather than part of the suite.
 rs_skip=""
 have cargo || rs_skip="cargo not on PATH"
 have just  || rs_skip="just not on PATH"
-[[ -z "$rs_skip" && ! -f lib/cityparquet-rs/vendor/city3d-stac-tool/Cargo.toml ]] \
-    && rs_skip="vendor/city3d-stac-tool not checked out; run 'just setup'"
 [[ -z "$rs_skip" && ! -f lib/cityparquet-rs/tests/fixtures/delft.city.jsonl ]] \
     && rs_skip="fixtures absent; run 'just fixtures' in lib/cityparquet-rs"
 

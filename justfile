@@ -11,7 +11,7 @@
 # both are visible. Every path below is relative to the repository root.
 #
 # `lib/cityparquet-rs/justfile` keeps what belongs to the library alone:
-# `test`, `lint`, `fmt`, `check`, `vendor-check`, `fixtures`, `interop`. Run
+# `test`, `lint`, `fmt`, `check`, `fixtures`, `interop`. Run
 # those from inside that directory; its `check` needs no `uv`, no `jq` and no
 # corpus, which is the point of the split.
 #
@@ -590,16 +590,17 @@ db *ARGS:
 # STAC catalogue -> CityParquet mirror (scripts/catalog2cityparquet)
 # ---------------------------------------------------------------------------
 
-# Build the two release binaries the Python driver shells out to: the
-# `cityparquet` converter (one package per catalogue item) and the vendored
-# `city3dstac` aggregator (collection.json / items.parquet / catalog.json).
-# The driver's own defaults point at exactly these two paths, so building them
-# here is what makes the `catalog-*` recipes below runnable from a clean tree.
-# Compiling only; kept OUT of `just check`, which builds and tests both trees
-# anyway (see `vendor-check`).
+# Provide the two binaries the Python driver shells out to: the `cityparquet`
+# converter (one package per catalogue item), built from this tree, and the
+# `city3dstac` aggregator (collection.json / items.parquet / catalog.json),
+# installed from the city3d-stac-gen release on crates.io into
+# lib/cityparquet-rs/target/bin. `--locked` builds it against the lockfile
+# published with that release. The driver's own defaults point at exactly
+# these two paths, so this is what makes the `catalog-*` recipes below runnable
+# from a clean tree. Kept OUT of `just check`, whose gate needs neither binary.
 catalog-tools:
     cargo build --release {{CARGO}} -p cityparquet-cli
-    cargo build --release --manifest-path {{RS}}/vendor/city3d-stac-tool/Cargo.toml
+    cargo install city3d-stac-gen@0.3.1 --locked --root {{RS}}/target
 
 # Convert every collection of the published City3D STAC catalogue into a
 # CityParquet mirror under OUT. Resumable: an item whose package already
