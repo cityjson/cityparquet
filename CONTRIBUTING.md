@@ -86,35 +86,51 @@ corpus-dependent, and they are not in CI.
 
 ## Releasing
 
-The three consumable crates — `cityparquet-schema`, `cityparquet`,
-`cityparquet-cli` — share one version, `[workspace.package] version` in
-`lib/cityparquet-rs/Cargo.toml`, so one tag releases all of them and the tag
-carries no crate name.
+Two things are published, each by a workflow run by hand from `main`
+(Actions → the workflow → Run workflow), and each with its own tags:
 
-```sh
-# 1. bump [workspace.package] version, commit, and tag it
-git tag v0.1.0 && git push origin v0.1.0    # -> .github/workflows/release.yml
-# 2. check the artefacts on the GitHub Release, then dispatch
-#    .github/workflows/publish.yml (dry run first)
-```
+| Workflow                                  | Publishes                                                           | Version lives in                                                 | Tag          |
+| ----------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------ |
+| **Publish crates** (`publish-crates.yml`) | `cityparquet-schema`, `cityparquet`, `cityparquet-cli` to crates.io | `[workspace.package] version` in `lib/cityparquet-rs/Cargo.toml` | `vX.Y.Z`     |
+| **Publish MCP** (`publish-mcp.yml`)       | `@cityjson/cityparquet-mcp` to npm                                  | `ai/mcp/package.json`                                            | `mcp-vX.Y.Z` |
 
-`release.yml` re-runs the gate, builds the `cityparquet` CLI for five targets
-and creates the GitHub Release. It refuses a tag that disagrees with the
-workspace version. It does **not** touch crates.io: publishing is a separate
-manual dispatch, because a version number on the registry is permanent —
-yanking hides a release, it never frees the number.
+Bare `vX.Y.Z` belongs to the Rust reference implementation. Anything else
+published from this repository takes a `<name>-vX.Y.Z` prefix, never a
+`-suffix`, which semver reads as a pre-release.
+
+Each run takes a bump (`patch`, `minor`, `major`, or `none` to publish the
+version already written down, as for a first release) and a dry-run switch,
+on by default. It bumps the version with `.github/scripts/bump-version.py`,
+runs its gate, builds and packs, and uploads only once all of that has passed;
+then it pushes a `release: <tag>` commit and the tag to `main` and merges that
+commit back into `develop`. Do not edit these versions by hand. A dry run does
+everything but the upload and the push, and runs from any branch.
+
+When a publish succeeds, **Release** (`release.yml`) creates the GitHub
+release for its tag, with what the run built attached and a `SHA256SUMS`: the
+`cityparquet` CLI for five targets, or the npm tarball. Rerun it by hand with
+the publish run's id if it fails.
+
+A crates.io or npm version is permanent: yanking or deprecating hides it, it
+never frees the number. That is why every build happens before the upload.
+
+The crate publish needs the organisation secret `CARGO_REGISTRY_TOKEN`; the
+MCP publish needs `NPM_TOKEN`, a token that may publish under `@cityjson`.
+Both push with the workflow's own token, so `main` and `develop` must accept
+pushes from `github-actions[bot]`.
 
 `cityparquet-readbench` is `publish = false` and lives outside the library
 workspace entirely, in `benchmark/readbench`: it is evidence, and only means
-anything next to the corpora under `benchmark/`.
+anything next to the corpora under `benchmark/`. CityLake is not published.
 
-**Only `cityparquet-schema` should be published today.** `cityparquet` depends
-on `city3d-stac-types` by crates.io version, so the registry accepts it, but the
-`[patch.crates-io]` entry for `cjseq` applies to this workspace only, so a
-registry consumer would get upstream 0.4.x with the texture UV-index bug
-`vendor/cjseq/PATCHES.md` documents patching; `cityparquet-cli` inherits the
-block. That has to clear before `cityparquet` belongs on the registry;
-`publish.yml` explains what clearing it means.
+**`cityparquet` cannot be published yet**, and `cityparquet-cli` depends on
+it. It builds against `vendor/cjseq`, a patched copy of cjseq 0.4.1 consumed
+through `[patch.crates-io]`, which applies to this workspace only. The
+packaged crate is verified against upstream cjseq 0.4.1, which lacks
+`CityObject::other_members` and so fails to compile, and which would carry the
+texture UV-index bug `vendor/cjseq/PATCHES.md` documents. A real publish stops
+at that verification, before anything is uploaded. It clears once cjseq
+publishes a release carrying the patches and the workspace depends on it.
 
 ## Measurements
 

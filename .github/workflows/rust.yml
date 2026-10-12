@@ -26,15 +26,18 @@ on:
       - "justfile"
       - ".github/workflows/rust.yml"
   workflow_dispatch:
-  # release.yml re-runs this gate against the tagged commit. Calling the real
+  # publish-crates.yml runs this gate before uploading. Calling the real
   # workflow rather than copying its steps: this job has accumulated a runner
   # -specific dance — freeing disk before the link step, dropping debug info —
   # and a copy of it in the release pipeline would drift out of step with this
   # one.
   workflow_call:
 
+# The workflow name is part of the group because a caller's run shares its ref:
+# the gate inside "Publish crates" on main must not cancel, or be cancelled
+# by, a push to main.
 concurrency:
-  group: rust-${{ github.ref }}
+  group: rust-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
