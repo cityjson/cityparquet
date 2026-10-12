@@ -14,18 +14,23 @@ For FlatCityBuf or SQL-based conversion, use the
 
 ## Install the CLI
 
-With Rust and Cargo installed, clone the repository and install the CLI from
-source:
+The CLI is published on [crates.io](https://crates.io/crates/cityparquet-cli) as
+`cityparquet-cli`. With Rust and Cargo installed:
 
 ```bash
-git clone --recurse-submodules https://github.com/cityjson/cityparquet.git
-cd cityparquet/lib/cityparquet-rs
-cargo install --path crates/cli --locked
+cargo install cityparquet-cli --locked
 cityparquet --help
 ```
 
 Cargo installs the `cityparquet` executable in its bin directory, normally
 `~/.cargo/bin`; ensure that directory is on your `PATH`.
+
+Without Rust, download a prebuilt binary from the repository's
+[releases](https://github.com/cityjson/cityparquet/releases) instead. Each release
+of the crates attaches one archive per platform, `cityparquet-vX.Y.Z-<target>`:
+`.tar.gz` for Linux (`x86_64` and `aarch64-unknown-linux-gnu`) and macOS
+(`aarch64` and `x86_64-apple-darwin`), `.zip` for Windows
+(`x86_64-pc-windows-msvc`). Unpack it and put `cityparquet` on your `PATH`.
 
 ## Convert CityJSONSeq to CityParquet
 
@@ -41,12 +46,12 @@ curl -fL https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl \
 Convert it into a package:
 
 ```bash
-cityparquet convert delft.city.jsonl --output delft_package --no-lod0
+cityparquet convert delft.city.jsonl --output delft_package
 ```
 
-`--no-lod0` disables synthesis of extra LoD0 footprints, which makes this example
-suitable for comparing the exported model with its source later. Omit it when
-you want the default footprint synthesis for objects without a source LoD0.
+The package holds what the source carries and nothing more, which keeps it
+comparable with its source later. `--lod0` would additionally synthesise an LoD0
+footprint for every object that has no LoD0 geometry of its own.
 
 The output is a directory containing one Parquet object table per CityGML module
 and a `metadata.json` file. Delft's buildings and building parts go into

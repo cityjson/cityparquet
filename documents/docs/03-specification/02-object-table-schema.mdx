@@ -13,7 +13,8 @@ metadata.
 ## Reserved columns
 
 Reserved columns appear in the order below, before any attribute columns. "Req." =
-required and non-null on every row.
+required and non-null on every row. Types are written in the
+[type notation](#type-notation) defined further down.
 
 | Column | Logical type | Req. | Physical / nullability notes | Description |
 |---|---|:--:|---|---|
@@ -175,6 +176,33 @@ look alike; but several reserved columns share a logical type — `parents`, `ch
 and `children_roles` are all `LIST<VARCHAR>` — so a reader that trusted position
 rather than name would misread a differently ordered file **silently**, producing
 plausible values attached to the wrong column.
+
+### Type notation
+
+Column types on these pages are written in DuckDB/Arrow logical-type notation:
+`VARCHAR`, `INT`, `BIGINT`, `DOUBLE`, `BOOLEAN`, `BLOB`, `JSON`, `LIST<T>`,
+`STRUCT<…>`, `MAP<K, V>`. Their physical Parquet encoding is:
+
+| Logical type | Physical Parquet encoding |
+|---|---|
+| `VARCHAR` | `BYTE_ARRAY` (UTF8) |
+| `BIGINT` | `INT64` |
+| `INT` | `INT32` |
+| `DOUBLE` | `DOUBLE` |
+| `BOOLEAN` | `BOOLEAN` |
+| `DATE` | `INT32` with the `DATE` logical type |
+| `TIME` | `INT64` with the `TIME` logical type (microseconds, UTC-normalised) |
+| `TIMESTAMP` | `INT64` with the `TIMESTAMP` logical type (microseconds, UTC-normalised) |
+| `BLOB` | `BYTE_ARRAY` (no logical type) |
+| `JSON` | `BYTE_ARRAY` (UTF8), tagged with the Arrow field-metadata extension `ARROW:extension:name = arrow.json`. A reader without Arrow extension support sees a UTF8 string. |
+| `LIST<T>` | Parquet `LIST` of nullable items |
+| `MAP<K, V>` | Parquet `MAP` logical type: a required key of type `K`, unique within the map, a nullable value of type `V`, entries in no defined order |
+| `STRUCT<…>` | Parquet group (see the individual column for field types and nullability) |
+
+A column **MAY** additionally be dictionary-encoded. That is a writer's choice and
+changes nothing about the logical type; where it is particularly worthwhile —
+`object_type`, the appearance enumerations — this specification says so, but never
+requires it.
 
 ### Bloom filters
 

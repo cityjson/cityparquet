@@ -50,8 +50,8 @@ defaults to `sandbox: false`, so a local client's engine neither restricts
    loads**. `cityjson` touches the secret manager on `LOAD` (it can read URLs
    itself), and once the secret manager has been used DuckDB **refuses**
    further changes to secret-manager settings with `Invalid Input Error:
-   Changing Secret Manager settings after the secret manager is used is not
-   allowed!` — a loud error, not a silent no-op. Set this one first, or the
+Changing Secret Manager settings after the secret manager is used is not
+allowed!` — a loud error, not a silent no-op. Set this one first, or the
    sandboxed engine fails to start.
 2. `INSTALL`/`LOAD` of the wanted extensions must run **before**
    `disabled_filesystems` is set, because installing and loading touch the
@@ -82,7 +82,7 @@ change that makes any one of them **pass** (i.e. the blocked operation now
 succeeds) is a regression in the sandbox, not a test to relax. Treat a red
 test here as a stop-and-investigate signal before treating it as a test bug.
 
-The one test in that block that verifies something *succeeds* —
+The one test in that block that verifies something _succeeds_ —
 `LOAD json` — is correct as written, not an oversight: `json` is statically
 linked into the DuckDB binary, so loading it reads no file. The sandbox's
 actual property is "only extensions already compiled into the binary can be
@@ -92,9 +92,12 @@ loaded"; every extension that would need a disk read is blocked.
 
 It is built by `src/build-corpus.ts` from `documents/docs/03-specification`,
 `documents/docs/04-design-decisions`, and both extensions'
-`docs/FUNCTIONS.md`. Regenerate it with `just mcp-corpus` from the repository
-root (needs `lib/duckdb-cityjson` and `lib/duckdb-3d` checked out — `just
-setup`) and commit the result; do not edit `corpus/corpus.json` by hand. It is
+`docs/FUNCTIONS.md`. CI regenerates it: `.github/workflows/mcp-corpus.yml`
+runs on every push to `develop` that touches the docs, either submodule or
+the builder, and commits the corpus back when its content changed. To
+regenerate it by hand, run `just mcp-corpus` from the repository root (needs
+`lib/duckdb-cityjson` and `lib/duckdb-3d` checked out — `just setup`) and
+commit the result; do not edit `corpus/corpus.json` by hand. It is
 committed, not built at request time or at server startup, because the two
 extensions live in submodules a plain clone does not have, and because a
 container image built from this package alone must still serve all three
@@ -110,6 +113,9 @@ commit forever and could never distinguish a genuinely stale corpus from the
 ordinary case. The check builds its comparison in memory and never writes to
 `corpus/corpus.json`, so it leaves the working tree exactly as found whether
 it passes or fails — nobody has to remember not to commit a churned stamp.
+`mcp.yml` runs it on pushes to `main` only, since a branch that edits the docs
+carries a corpus one regeneration behind until it reaches `develop`; Publish MCP
+runs it before every publish.
 
 ## Check what the loaded build provides
 
@@ -162,7 +168,7 @@ it are load-bearing:
   not isolate callers: DuckDB's catalogs, attached ones included, are
   instance-wide, so a table one caller creates is readable by the next, and
   `duckdb_databases()` lists every attached catalog. A per-request `ATTACH
-  ':memory:'` on a shared instance was tried and leaks exactly this way. The
+':memory:'` on a shared instance was tried and leaks exactly this way. The
   pool builds each slot's next engine as soon as the last is released (a few
   hundred milliseconds with the extensions on disk), and its size is the
   server's concurrency; beyond `maxWaiting` queued requests it answers 503.

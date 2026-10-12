@@ -150,7 +150,7 @@ it.
 
 Writing the package with **tighter row groups**, or ordering rows along a Hilbert
 curve so spatially close objects land together, makes this sharper still. The
-[`cityparquet-rs`](/resources/software) writer orders rows along a Hilbert curve by
+[`cityparquet` CLI](/tutorials/cli-conversion) orders rows along a Hilbert curve by
 default, and the row-group size is a flag.
 
 ## The footprint is GeoParquet
@@ -459,6 +459,6 @@ at three levels:
 
 The same three properties are what make CityParquet a _delivery_ format for 3D city
 models, not just a storage one. To reproduce these numbers on your own data, convert
-a CityJSON source with the [`cityparquet-rs`](/resources/software) reference writer or
+a CityJSON source with the reference [`cityparquet` CLI](/tutorials/cli-conversion) or
 the [format-conversion walkthrough](/tutorials/duckdb), and point the queries at your
 package.

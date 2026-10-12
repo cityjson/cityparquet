@@ -7,13 +7,13 @@ stdio for a local MCP client, or over streamable HTTP as a hosted service.
 
 ## Tools
 
-| Tool | What it does |
-| --- | --- |
-| `cityparquet_docs_outline` | Lists the chapters of one or all three documentation corpora: `spec` (the normative specification and its design decisions), `duckdb-cityjson` and `duckdb-3d` (the DuckDB extension function references). Call this first to see what can be read. |
-| `cityparquet_docs_search` | Searches the documentation for a term and returns matching sections with snippets — faster than reading whole chapters when looking for a specific column, function or rule. |
-| `cityparquet_docs_read` | Reads one chapter, or one section of a chapter. Takes chapter ids from `cityparquet_docs_outline` or `cityparquet_docs_search`. |
-| `cityparquet_describe` | Describes a CityParquet dataset from a package directory or a single `.parquet` file — an `http(s)` URL, or a local path or `file://` URL when the engine is not sandboxed: its module tables, row counts, LoDs, geometry columns and CRS, per table and for the package. Call this before querying an unfamiliar dataset. |
-| `cityparquet_query` | Runs one or more SQL statements against DuckDB with the `cityjson` and `three_d` extensions loaded. Results are capped by row count and cell size; BLOB and oversized values are elided, so `SELECT *` on an object table is a poor idea — select the columns you need. |
+| Tool                       | What it does                                                                                                                                                                                                                                                                                                               |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cityparquet_docs_outline` | Lists the chapters of one or all three documentation corpora: `spec` (the normative specification and its design decisions), `duckdb-cityjson` and `duckdb-3d` (the DuckDB extension function references). Call this first to see what can be read.                                                                        |
+| `cityparquet_docs_search`  | Searches the documentation for a term and returns matching sections with snippets — faster than reading whole chapters when looking for a specific column, function or rule.                                                                                                                                               |
+| `cityparquet_docs_read`    | Reads one chapter, or one section of a chapter. Takes chapter ids from `cityparquet_docs_outline` or `cityparquet_docs_search`.                                                                                                                                                                                            |
+| `cityparquet_describe`     | Describes a CityParquet dataset from a package directory or a single `.parquet` file — an `http(s)` URL, or a local path or `file://` URL when the engine is not sandboxed: its module tables, row counts, LoDs, geometry columns and CRS, per table and for the package. Call this before querying an unfamiliar dataset. |
+| `cityparquet_query`        | Runs one or more SQL statements against DuckDB with the `cityjson` and `three_d` extensions loaded. Results are capped by row count and cell size; BLOB and oversized values are elided, so `SELECT *` on an object table is a poor idea — select the columns you need.                                                    |
 
 The `cityparquet_` prefix is provisional: it may be replaced by one neutral
 prefix shared with a sibling CityJSON MCP server, should the two later merge.
@@ -34,12 +34,36 @@ committed precisely so the server builds and runs without them.
 
 ## Running as a stdio MCP server
 
-Point a client at the built entry point:
+The server is published to npm as
+[`@cityjson/cityparquet-mcp`](https://www.npmjs.com/package/@cityjson/cityparquet-mcp)
+and needs Node 24 or later:
+
+```sh
+claude mcp add cityparquet -- npx -y @cityjson/cityparquet-mcp
+```
+
+Any other MCP client takes the same command:
 
 ```json
 {
   "mcpServers": {
-    "cityparquet": { "command": "node", "args": ["/absolute/path/to/ai/mcp/dist/stdio.js"] }
+    "cityparquet": {
+      "command": "npx",
+      "args": ["-y", "@cityjson/cityparquet-mcp"]
+    }
+  }
+}
+```
+
+From a checkout, point a client at the built entry point instead:
+
+```json
+{
+  "mcpServers": {
+    "cityparquet": {
+      "command": "node",
+      "args": ["/absolute/path/to/ai/mcp/dist/stdio.js"]
+    }
   }
 }
 ```
@@ -106,27 +130,27 @@ Then let the deploy reach them:
 
 ## Environment variables
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `CITYPARQUET_MCP_SANDBOX` | off (`sandbox: false`) | Set to `1` to lock the DuckDB engine down: no local filesystem, no installing further extensions, resource limits that cannot be raised again. Off by default for the stdio entry point, because a local client's own machine is already the trust boundary; a hosted deployment should set it. |
-| `CITYPARQUET_MCP_EXTENSION_DIR` | `~/.cityparquet-mcp/extensions` | Where DuckDB installs and loads its extensions from. Always explicit, never DuckDB's own default — a shared default directory can hold artefacts built for a different DuckDB version, and the failure is an opaque error at `LOAD` time. |
-| `CITYPARQUET_MCP_EXTENSIONS` | `httpfs,cityjson,three_d,spatial` | Comma-separated list overriding the default extension set. Blank entries are ignored, and an empty value means the default. |
-| `CITYPARQUET_MCP_MEMORY_LIMIT` | DuckDB's own default; `1GB` over HTTP | DuckDB's `memory_limit` setting, e.g. `2GB`, per engine. Worth raising under the sandbox, since a sandboxed engine cannot spill a large query to disk. |
+| Variable                        | Default                               | Meaning                                                                                                                                                                                                                                                                                         |
+| ------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CITYPARQUET_MCP_SANDBOX`       | off (`sandbox: false`)                | Set to `1` to lock the DuckDB engine down: no local filesystem, no installing further extensions, resource limits that cannot be raised again. Off by default for the stdio entry point, because a local client's own machine is already the trust boundary; a hosted deployment should set it. |
+| `CITYPARQUET_MCP_EXTENSION_DIR` | `~/.cityparquet-mcp/extensions`       | Where DuckDB installs and loads its extensions from. Always explicit, never DuckDB's own default — a shared default directory can hold artefacts built for a different DuckDB version, and the failure is an opaque error at `LOAD` time.                                                       |
+| `CITYPARQUET_MCP_EXTENSIONS`    | `httpfs,cityjson,three_d,spatial`     | Comma-separated list overriding the default extension set. Blank entries are ignored, and an empty value means the default.                                                                                                                                                                     |
+| `CITYPARQUET_MCP_MEMORY_LIMIT`  | DuckDB's own default; `1GB` over HTTP | DuckDB's `memory_limit` setting, e.g. `2GB`, per engine. Worth raising under the sandbox, since a sandboxed engine cannot spill a large query to disk.                                                                                                                                          |
 
 The HTTP entry point also reads these; `CITYPARQUET_MCP_SANDBOX` does not
 apply to it, since it is always sandboxed:
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `PORT` | `8080` | The port to listen on. |
-| `CITYPARQUET_MCP_POOL_SIZE` | `2` | Engines at once, and so requests running SQL at once. |
-| `CITYPARQUET_MCP_MAX_WAITING` | `8` | Requests allowed to queue for an engine; beyond it the answer is 503. |
-| `CITYPARQUET_MCP_MAX_WAIT_MS` | `30000` | How long a queued request waits before a 503. |
-| `CITYPARQUET_MCP_THREADS` | `1` | DuckDB `threads` per engine. |
-| `CITYPARQUET_MCP_MAX_ROWS` | `1000` | The most rows one `cityparquet_query` statement may return, whatever it asks for. |
-| `CITYPARQUET_MCP_MAX_TIMEOUT_MS` | `60000` | The longest deadline a statement may ask for. |
-| `CITYPARQUET_MCP_MAX_BODY_BYTES` | `262144` | Larger request bodies are refused with 413. |
-| `CITYPARQUET_MCP_EGRESS_HOSTS` | the three `open3d.city` data hosts | Comma-separated hostnames a query may read, over HTTPS only. |
+| Variable                         | Default                            | Meaning                                                                           |
+| -------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------- |
+| `PORT`                           | `8080`                             | The port to listen on.                                                            |
+| `CITYPARQUET_MCP_POOL_SIZE`      | `2`                                | Engines at once, and so requests running SQL at once.                             |
+| `CITYPARQUET_MCP_MAX_WAITING`    | `8`                                | Requests allowed to queue for an engine; beyond it the answer is 503.             |
+| `CITYPARQUET_MCP_MAX_WAIT_MS`    | `30000`                            | How long a queued request waits before a 503.                                     |
+| `CITYPARQUET_MCP_THREADS`        | `1`                                | DuckDB `threads` per engine.                                                      |
+| `CITYPARQUET_MCP_MAX_ROWS`       | `1000`                             | The most rows one `cityparquet_query` statement may return, whatever it asks for. |
+| `CITYPARQUET_MCP_MAX_TIMEOUT_MS` | `60000`                            | The longest deadline a statement may ask for.                                     |
+| `CITYPARQUET_MCP_MAX_BODY_BYTES` | `262144`                           | Larger request bodies are refused with 413.                                       |
+| `CITYPARQUET_MCP_EGRESS_HOSTS`   | the three `open3d.city` data hosts | Comma-separated hostnames a query may read, over HTTPS only.                      |
 
 ## `spatial` and `three_d` together
 
@@ -137,11 +161,11 @@ the solids: its WKB reader rejects `PolyhedralSurface Z`, so LoD1 and above
 go through `three_d`. (At DuckDB v1.5.4 the two could not be loaded into one
 connection, which is why older notes say `spatial` is unavailable.)
 
-| Task | LoD0 footprint (`GEOMETRY`) | Solid (`BLOB`) |
-| --- | --- | --- |
-| Area | `ST_Area(geometry_lod0_0)` | `ST_3DFootprintArea(ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2))` |
-| Reproject | `ST_Transform(geometry_lod0_0, 'EPSG:7415', 'EPSG:4326', always_xy := true)` | `ST_3DTransform(solid, 'EPSG:7415', 'EPSG:4326')` |
-| Volume | — | `ST_3DVolume(solid)`, gated on validity |
+| Task      | LoD0 footprint (`GEOMETRY`)                                                  | Solid (`BLOB`)                                                                     |
+| --------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Area      | `ST_Area(geometry_lod0_0)`                                                   | `ST_3DFootprintArea(ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2))` |
+| Reproject | `ST_Transform(geometry_lod0_0, 'EPSG:7415', 'EPSG:4326', always_xy := true)` | `ST_3DTransform(solid, 'EPSG:7415', 'EPSG:4326')`                                  |
+| Volume    | —                                                                            | `ST_3DVolume(solid)`, gated on validity                                            |
 
 Without `always_xy := true`, `spatial`'s `ST_Transform` returns EPSG:4326 in
 the authority's (lat, lon) order; `ST_3DTransform` always returns (lon, lat).

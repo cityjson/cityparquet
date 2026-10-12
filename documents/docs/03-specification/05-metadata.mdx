@@ -158,7 +158,7 @@ solid-only 3DBAG tile with no footprints.
 :::note[Why no `covering`]
 GeoParquet's Bounding Box Columns rule is strict: *"A row MUST contain a bounding box value if and only if the row contains a geometry value… the repetition of a bounding box column MUST match the geometry column's repetition."* CityParquet's [`bbox`](/specification/geometry-semantics) is deliberately **neither** per-column nor null-aligned: it is one column per row, unioned across every stored LoD *and* across the object's descendants, so it is populated precisely where GeoParquet forbids it. It is a hierarchy-aware pruning aid, not a per-geometry covering, and declaring it as one would be a false claim, so `covering` is **not** written.
 
-A conformant per-LoD covering would need separate `bbox_lod*` columns null-aligned with each `geometry_lod*`, at ~48 bytes per row per LoD. They are not defined, and no longer need to be: GeoParquet 2.0 drops `covering` in favour of Parquet-native geospatial statistics, and every column carrying the `GEOMETRY` logical type gets a `GeospatialStatistics` bounding box — with `zmin`/`zmax` — written by the Parquet writer itself, per column chunk, at no cost in row width. A solid column, being unannotated, gets none; its pruning aid remains the row-level `bbox` column. [Revisited in Open questions](/open-questions).
+A conformant per-LoD covering would need separate `bbox_lod*` columns null-aligned with each `geometry_lod*`, at ~48 bytes per row per LoD. They are not defined, and no longer need to be: GeoParquet 2.0 drops `covering` in favour of Parquet-native geospatial statistics, and every column carrying the `GEOMETRY` logical type gets a `GeospatialStatistics` bounding box — with `zmin`/`zmax` — written by the Parquet writer itself, per column chunk, at no cost in row width. A solid column, being unannotated, gets none; its pruning aid remains the row-level `bbox` column. [Revisited in Open questions](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md).
 :::
 
 ### CRS rules
@@ -169,6 +169,58 @@ A conformant per-LoD covering would need separate `bbox_lod*` columns null-align
 - **The key is tri-state, exactly as in GeoParquet: object, `null`, or absent.** Per GeoParquet, an **absent** `crs` is assumed to be **OGC:CRS84** (WGS 84 lon/lat), and an explicit **`null`** means the CRS is unknown or unspecified. CityParquet adopts both readings for `city.crs`, so the `city` and `geo` objects carry one shared convention. The CRS84 default speaks to **interpreting coordinates**: in a conforming file the key is absent only when there are no CRS-bearing coordinates, so the default has nothing to apply to and such a file exports with no reference system. Only a *foreign* file that carries coordinates **and** an absent key — conforming GeoParquet, nonconforming CityParquet — is read as CRS84.
 - **A writer never relies on the absent-CRS default.** Because city models are almost always in a projected national CRS (e.g. EPSG:28992 / EPSG:7415), a file whose coordinates really were CRS84 would still declare it explicitly: whenever the file holds any CRS-bearing coordinate, a writer **MUST** write the key — as a PROJJSON object or as `null` — never omit it. Absence is legitimate only for files with no CRS-bearing coordinates at all.
 - **An unresolvable CRS is declared, not fatal.** A source that carries CRS-bearing coordinates (geometry, `bbox`, address `location`, implicit-geometry reference `point`) but declares no CRS the writer can resolve to PROJJSON is encoded with an explicit `city.crs: null`. A writer **MUST NOT** guess a CRS and **MUST NOT** omit the key in this situation (absence would assert CRS84, silently mis-georeferencing the data), and **SHOULD** surface a conversion diagnostic. A reader treats such a file's coordinates as bare Cartesian values with no georeference; on export the reconstructed model carries no reference system — matching the source. Any `geo` mirror uses the same `null`, which is GeoParquet-legal. *(This amends an earlier draft in which an unresolvable CRS was a hard conversion error.)*
+
+### Example
+
+The footer of the `building.parquet` of the Delft package
+(`https://cityparquet.open3d.city/data/delft/building.parquet`), read with DuckDB's
+`parquet_kv_metadata` and abridged. `city` registers all four geometry columns,
+including the `PolyhedralSurface Z` solids; `geo` declares only the footprint, the one
+GeoParquet-legal column, and makes it the GeoParquet primary while `city` names the
+LoD 2.2 solid.
+
+```jsonc
+// key "city"
+{
+  "version": "0.1.0-draft",
+  "source_format": "CityJSONSeq",
+  "source_version": "2.0",
+  "crs": { "type": "CompoundCRS",
+           "name": "Amersfoort / RD New + NAP height", /* … */ },
+  "primary_column": "geometry_lod2_2",
+  "columns": [
+    { "name": "geometry_lod0_0", "encoding": "WKB",
+      "geometry_types": ["MultiPolygon Z"], "orientation_3d": "right-handed" },
+    { "name": "geometry_lod1_2", "encoding": "WKB",
+      "geometry_types": ["PolyhedralSurface Z"], "orientation_3d": "right-handed" },
+    { "name": "geometry_lod1_3", "encoding": "WKB",
+      "geometry_types": ["PolyhedralSurface Z"], "orientation_3d": "right-handed" },
+    { "name": "geometry_lod2_2", "encoding": "WKB",
+      "geometry_types": ["PolyhedralSurface Z"], "orientation_3d": "right-handed" }
+  ],
+  "attributes": ["b3_bag_bag_overlap", "b3_bouwlagen", "b3_dak_type", /* … */],
+  "other": {
+    "transform": { "scale": [0.001, 0.001, 0.001],
+                   "translate": [85088.390625, 446394.25, 45.64800262451172] },
+    "source_metadata": { "title": "3DBAG",
+                         "referenceSystem": "https://www.opengis.net/def/crs/EPSG/0/7415",
+                         /* … */ }
+  }
+}
+
+// key "geo"
+{
+  "version": "1.1.0",
+  "primary_column": "geometry_lod0_0",
+  "columns": {
+    "geometry_lod0_0": { "encoding": "WKB", "geometry_types": ["MultiPolygon Z"],
+                         "crs": { /* the same PROJJSON */ }, "edges": "planar" }
+  }
+}
+```
+
+The source's quantisation `transform` and its metadata header survive in `city.other`,
+informationally: the coordinates are already world doubles, so decoding needs neither.
 
 ## metadata.json — STAC Item
 
@@ -189,6 +241,44 @@ The package-level `metadata.json` **MUST** be a valid **STAC Item** describing t
 - **No per-asset row count is written.** Earlier drafts also called for a "Statistics" extension; no registered STAC extension by that name defines a row count, and the one that does — **Table** (`table:row_count`) — would restate at asset level what [`city3d:city_objects`](https://github.com/cityjson/stac-city3d) already carries for the package. A writer **SHOULD NOT** declare the Table extension merely to publish a row count. (Counting rows and counting city objects coincide here: the object tables hold [one row per city object](/specification/object-table-schema).)
 - **Dataset-level `collection.json`.** A dataset spanning multiple CityParquet packages (e.g. tiles) **SHOULD** be curated by a STAC **Collection** (`collection.json`) that aggregates the individual Items.
 - **Precedence:** where the STAC Item and the Parquet footer disagree, the **footer is authoritative** for decoding; the STAC Item and Collection are the discovery mirror.
+
+**Example.** The STAC Item of the 3DBAG package
+(`https://cityparquet.open3d.city/data/3dbag/metadata.json`), abridged: one object
+table, so one asset with the `cityparquet-objects` role.
+
+```jsonc
+{
+  "type": "Feature",
+  "stac_version": "1.1.0",
+  "stac_extensions": [
+    "https://cityjson.github.io/stac-city3d/v0.2.0/schema.json",
+    "https://stac-extensions.github.io/projection/v2.0.0/schema.json",
+    "https://stac-extensions.github.io/file/v2.1.0/schema.json"
+  ],
+  "id": "3dbag",
+  "geometry": { "type": "Polygon", "coordinates": [ /* … */ ] },
+  "properties": {
+    "city3d:version": "2.0",
+    "city3d:city_objects": 21555522,
+    "city3d:lods": ["0.0", "1.2", "1.3", "2.2"],
+    "city3d:co_types": ["Building", "BuildingPart"],
+    "city3d:semantic_surfaces": true,
+    "city3d:textures": false,
+    "city3d:materials": false,
+    "city3d:attributes": [ { "name": "b3_dak_type", "type": "String" }, /* … */ ],
+    "proj:code": "EPSG:7415"
+  },
+  "assets": {
+    "building.parquet": {
+      "href": "./building.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": ["data", "cityparquet-objects"],
+      "file:size": 16400304209
+    }
+  },
+  "links": [ { "rel": "collection", "href": "./collection.json" }, /* … */ ]
+}
+```
 
 ## Recommended writer defaults (informative)
 

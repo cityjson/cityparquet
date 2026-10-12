@@ -1,0 +1,209 @@
+name: Publish MCP
+
+# Publishes the MCP server under ai/mcp to npm as @cityjson/cityparquet-mcp.
+# Its version is its own, independent of the Rust crates, and so is its tag:
+# `mcp-vX.Y.Z`, beside the crates' bare `vX.Y.Z`.
+#
+# Run it from main (Actions → Publish MCP → Run workflow) and choose the bump.
+# It runs the MCP gate (typecheck, tests, corpus freshness), bumps
+# ai/mcp/package.json, packs the tarball, publishes that exact tarball with
+# provenance, then pushes a `release: mcp-vX.Y.Z` commit and `mcp-vX.Y.Z` tag to
+# main and merges the commit back into develop. On success the Release workflow
+# creates the GitHub release for `mcp-vX.Y.Z`, with the same tarball attached.
+#
+# A dry run packs and runs `npm publish --dry-run`; it uploads and pushes
+# nothing, and may run from any branch. A real publish runs only from main.
+#
+# Needs the NPM_TOKEN secret: an npm automation or granular token that may
+# publish under the @cityjson scope.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (none publishes the version already in package.json, e.g. the first 0.1.0)"
+        type: choice
+        options: [patch, minor, major, none]
+        default: patch
+      dry_run:
+        description: "Dry run: gate, bump and pack; upload and push nothing"
+        type: boolean
+        default: true
+
+run-name: Publish MCP (${{ inputs.bump }}${{ inputs.dry_run && ', dry run' || '' }})
+
+# One publish at a time across the crates and the MCP server: both push to main.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: ${{ inputs.dry_run && 'npm publish --dry-run' || 'npm publish' }}
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write # push the release commit and tag
+      id-token: write # npm provenance
+    defaults:
+      run:
+        working-directory: ai/mcp
+    steps:
+      - name: Refuse a real publish off main
+        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        working-directory: .
+        run: |
+          echo "::error::a real publish runs from main; this run is on ${GITHUB_REF_NAME}. Dry runs may use any branch."
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the tags, and the release commit is merged into develop
+          # One level, not recursive: the corpus check reads each extension's
+          # docs/FUNCTIONS.md, as in mcp.yml.
+          submodules: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: ai/mcp/pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org
+
+      - name: Test the bump script
+        working-directory: .
+        run: python3 -m unittest discover -s .github/scripts
+
+      # The same gate as mcp.yml: nothing reaches npm that would not pass it.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - name: Corpus is fresh
+        run: pnpm corpus:check
+
+      - name: Bump the version
+        id: version
+        working-directory: .
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: echo "version=$(python3 .github/scripts/bump-version.py mcp "$BUMP")" >> "$GITHUB_OUTPUT"
+
+      - name: Check mcp-v${{ steps.version.outputs.version }} is free
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/mcp-v${VERSION}" > /dev/null; then
+            echo "::error::tag mcp-v${VERSION} already exists"
+            exit 1
+          fi
+          if npm view "@cityjson/cityparquet-mcp@${VERSION}" version > /dev/null 2>&1; then
+            echo "::error::@cityjson/cityparquet-mcp@${VERSION} is already on npm"
+            exit 1
+          fi
+          echo "Version: **mcp-v${VERSION}** (${{ inputs.bump }})" >> "$GITHUB_STEP_SUMMARY"
+
+      # The licences live at the repository root; the tarball carries copies.
+      # They are untracked, so the release commit below does not pick them up.
+      - name: Build and pack
+        id: pack
+        run: |
+          set -euo pipefail
+          cp ../../LICENSE-MIT ../../LICENSE-APACHE .
+          pnpm build
+          mkdir -p "${RUNNER_TEMP}/pack"
+          pnpm pack --pack-destination "${RUNNER_TEMP}/pack"
+          tarball="$(ls "${RUNNER_TEMP}"/pack/*.tgz)"
+          tar -tzf "${tarball}" | sort
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and tag mcp-v${{ steps.version.outputs.version }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -am "release: mcp-v${VERSION}"
+          git tag -a "mcp-v${VERSION}" -m "mcp-v${VERSION}"
+
+      # The tarball packed above, so npm serves exactly what the GitHub release
+      # attaches.
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN}" = "true" ]; then
+            npm publish "${TARBALL}" --access public --dry-run
+          else
+            if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+              echo "::error::NPM_TOKEN is not set"
+              exit 1
+            fi
+            npm publish "${TARBALL}" --access public --provenance
+          fi
+
+      - name: Push the release commit and tag
+        if: ${{ !inputs.dry_run }}
+        working-directory: .
+        run: bash .github/scripts/push-release.sh "mcp-v${{ steps.version.outputs.version }}"
+
+      # What the Release workflow reads. Uploaded only by a real publish, so a
+      # dry run leaves it nothing to release. `latest` is false so the crates'
+      # release stays the repository's Latest.
+      - name: Describe the release
+        if: ${{ !inputs.dry_run }}
+        working-directory: .
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-meta release-asset
+          cp "${TARBALL}" release-asset/
+          echo "mcp-v${VERSION}" > release-meta/tag
+          echo "MCP server v${VERSION}" > release-meta/title
+          echo "false" > release-meta/latest
+          cat > release-meta/notes.md <<EOF
+          Published to npm: [\`@cityjson/cityparquet-mcp@${VERSION}\`](https://www.npmjs.com/package/@cityjson/cityparquet-mcp/v/${VERSION})
+
+          Run it as a local stdio MCP server:
+
+          \`\`\`sh
+          claude mcp add cityparquet -- npx -y @cityjson/cityparquet-mcp@${VERSION}
+          \`\`\`
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.dry_run }}
+        with:
+          name: release-meta
+          path: release-meta/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.dry_run }}
+        with:
+          name: release-asset-npm
+          path: release-asset/
+          if-no-files-found: error
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "Dry run: @cityjson/cityparquet-mcp@${VERSION} was gated and packed. Nothing was published or pushed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Published @cityjson/cityparquet-mcp@${VERSION}; tagged mcp-v${VERSION}." >> "$GITHUB_STEP_SUMMARY"
+          fi
