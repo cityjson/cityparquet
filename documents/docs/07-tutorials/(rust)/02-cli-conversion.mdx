@@ -25,6 +25,13 @@ cityparquet --help
 Cargo installs the `cityparquet` executable in its bin directory, normally
 `~/.cargo/bin`; ensure that directory is on your `PATH`.
 
+Without Rust, download a prebuilt binary from the repository's
+[releases](https://github.com/cityjson/cityparquet/releases) instead. Each release
+of the crates attaches one archive per platform, `cityparquet-vX.Y.Z-<target>`:
+`.tar.gz` for Linux (`x86_64` and `aarch64-unknown-linux-gnu`) and macOS
+(`aarch64` and `x86_64-apple-darwin`), `.zip` for Windows
+(`x86_64-pc-windows-msvc`). Unpack it and put `cityparquet` on your `PATH`.
+
 ## Convert CityJSONSeq to CityParquet
 
 Download the Delft example into a working directory:
