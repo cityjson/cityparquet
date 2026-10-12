@@ -61,11 +61,11 @@ Catalogue driver (`scripts/catalog2cityparquet`; all but `catalog-test` need the
 and none of them is part of `just check`):
 
 ```bash
-just catalog-tools                       # build the two binaries the driver shells out to
+just catalog-tools                       # build `cityparquet`, install the released `city3dstac`
 just catalog-convert [OUT] [ARGS...]     # whole catalogue -> CityParquet mirror (hours; resumable)
 just catalog-convert-collection ID [OUT] # one collection, the way to prove a change on real data
 just catalog-aggregate [OUT]             # rebuild the mirror's root catalog.json, no downloads
-just catalog-test                        # the driver's own suite (261 tests, no network)
+just catalog-test                        # the driver's own suite (no network)
 ```
 
 CLI (add `--release` for realistic timing):
