@@ -5,10 +5,9 @@
 //! boundary arrays, not decoded WKB); callers that need a CityJSON-shaped
 //! `geometry` array own that re-encoding themselves (export, M4+).
 //!
-//! `cjseq::CityObject` cannot be constructed field-by-field (its `other`
-//! field, `#[serde(flatten)]`, is private), so every object is assembled as a
-//! JSON value and built via `serde_json::from_value` — the one supported
-//! construction path.
+//! Every object is assembled as a JSON value and built via
+//! `serde_json::from_value`, so cjseq checks it as it would a parsed file:
+//! members `other` restores land in the object's `other` map.
 
 use arrow_array::{
     Array, ArrayAccessor, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float64Array,
@@ -470,6 +469,7 @@ fn attribute_value(col: &AttributeColumn<'_>, row: usize) -> Result<Option<Value
 /// the returned `cjseq::CityObject`.
 pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<DecodedObject>> {
     let schema = batch.schema();
+    let naming = cityparquet_schema::ExtensionNaming::new(meta.extensions.as_ref());
 
     // Plain `Utf8` or `Dictionary<Int32, Utf8>`: a writer's physical choice
     // (spec "Physical encoding and conformance").
@@ -548,13 +548,13 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         // `object_type` stores the CityGML 3.0 class name (spec
         // "object_table-schema" — "object_type vocabulary"); export must
         // restore the CityJSON spelling for the 4 classes that differ.
-        // Every other core class, and every extension class (no taxonomy
-        // entry), has an identical or unmapped spelling, so the reverse
-        // lookup is a no-op for them.
+        // Every other core class has an identical spelling. An extension
+        // class keeps its namespace prefix in the package and takes CityJSON's
+        // `+` marker back here (spec "Extensions").
         let stored_object_type = object_type_view.value(row);
         let object_type = cityparquet_schema::cityjson_type_for_citygml_class(stored_object_type)
             .map(str::to_string)
-            .unwrap_or_else(|| stored_object_type.to_string());
+            .unwrap_or_else(|| naming.decode_name(stored_object_type));
         let parents = string_list_value(parents_col, row)?;
         let children = string_list_value(children_col, row)?;
 
@@ -582,9 +582,6 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
                 Value::Array(children.into_iter().map(Value::String).collect()),
             );
         }
-        // `children_roles` has no typed cjseq field; placing it in the JSON
-        // that builds the CityObject lets it survive in the struct's private
-        // `#[serde(flatten)]` member and re-serialise on export (§5.1, G5).
         if let Some(children_roles) = string_list_value(children_roles_col, row)? {
             json.insert(
                 "children_roles".to_string(),

@@ -58,8 +58,8 @@ use cityparquet_schema::extensions::cityjson_extensions_member;
 use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
 use cityparquet_schema::{CityMetadata, CityParquetError, ExtensionNaming, Result};
 use cjseq::{
-    Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType, Material,
-    Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
+    Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType,
+    Metadata as CjMetadata, ReferenceSystem, TemplateIndex, Transform, VertexIndex,
 };
 
 use crate::appearance_columns::{read_material_cell, read_texture_cell};
@@ -163,19 +163,19 @@ fn quantise(c: [f64; 3], scale: [f64; 3], translate: [f64; 3]) -> [i64; 3] {
 #[derive(Default)]
 struct VertexInterner {
     index: HashMap<[i64; 3], usize>,
-    vertices: Vec<Vec<i64>>,
+    vertices: Vec<[i64; 3]>,
 }
 
 impl VertexInterner {
     fn intern(&mut self, c: [i64; 3]) -> usize {
         *self.index.entry(c).or_insert_with(|| {
             let idx = self.vertices.len();
-            self.vertices.push(vec![c[0], c[1], c[2]]);
+            self.vertices.push(c);
             idx
         })
     }
 
-    fn finish(self) -> Vec<Vec<i64>> {
+    fn finish(self) -> Vec<[i64; 3]> {
         self.vertices
     }
 }
@@ -189,7 +189,7 @@ impl VertexInterner {
 #[derive(Default)]
 struct RawVertexInterner {
     index: HashMap<[u64; 3], usize>,
-    vertices: Vec<Vec<f64>>,
+    vertices: Vec<[f64; 3]>,
 }
 
 impl RawVertexInterner {
@@ -197,12 +197,12 @@ impl RawVertexInterner {
         let key = [c[0].to_bits(), c[1].to_bits(), c[2].to_bits()];
         *self.index.entry(key).or_insert_with(|| {
             let idx = self.vertices.len();
-            self.vertices.push(vec![c[0], c[1], c[2]]);
+            self.vertices.push(c);
             idx
         })
     }
 
-    fn finish(self) -> Vec<Vec<f64>> {
+    fn finish(self) -> Vec<[f64; 3]> {
         self.vertices
     }
 }
@@ -783,13 +783,10 @@ fn synthesize_transform(meta: &CityMetadata, tables: &PackageTables) -> Result<T
     let translate = match crate::stac::package_bbox(tables)? {
         // The `bbox` column is stored in WKB order like the geometry, while a
         // CityJSON `transform` is in the dataset's own order.
-        Some(bbox) => axis_order.apply([bbox.xmin, bbox.ymin, bbox.zmin]).to_vec(),
-        None => vec![0.0, 0.0, 0.0],
+        Some(bbox) => axis_order.apply([bbox.xmin, bbox.ymin, bbox.zmin]),
+        None => [0.0, 0.0, 0.0],
     };
-    Ok(Transform {
-        scale: scale.to_vec(),
-        translate,
-    })
+    Ok(Transform { scale, translate })
 }
 
 /// The axis order the package's geometry is stored in, from its own `city.crs`.
@@ -803,8 +800,7 @@ fn export_axis_order(meta: &CityMetadata) -> AxisOrder {
 /// the package's `CityMetadata` plus its own on-disk data (`tables`), which
 /// [`synthesize_transform`] reads back rather than depending on `other`.
 fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON> {
-    let mut header = CityJSON::new();
-    header.version = "2.0".to_string();
+    let mut header = CityJSON::new(); // version 2.0
     header.transform = synthesize_transform(meta, tables)?;
     if let Some(source_metadata) = source_metadata_from_other(meta) {
         // The stored source metadata already carries referenceSystem (and
@@ -820,11 +816,16 @@ fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON>
             reference_date: None,
             reference_system: Some(reference_system),
             title: None,
+            other: serde_json::Map::new(),
         });
     }
     // The CityJSON `extensions` member, rebuilt from the `city.extensions`
     // references (spec "Extensions": `name` → key, `url`, `version`).
-    header.extensions = meta.extensions.as_ref().map(cityjson_extensions_member);
+    header.extensions = meta
+        .extensions
+        .as_ref()
+        .map(|e| serde_json::from_value(cityjson_extensions_member(e)))
+        .transpose()?;
     Ok(header)
 }
 
@@ -1019,7 +1020,7 @@ struct LocalAppearance<'a> {
     material_ids: HashMap<usize, usize>,
     local_textures: Vec<Value>,
     texture_ids: HashMap<usize, usize>,
-    local_uvs: Vec<Vec<f64>>,
+    local_uvs: Vec<[f64; 2]>,
     uv_ids: HashMap<(u64, u64), usize>,
 }
 
@@ -1094,7 +1095,7 @@ impl<'a> LocalAppearance<'a> {
             return id;
         }
         let id = self.local_uvs.len();
-        self.local_uvs.push(vec![uv[0], uv[1]]);
+        self.local_uvs.push(uv);
         self.uv_ids.insert(key, id);
         id
     }
@@ -1268,13 +1269,13 @@ impl<'a> LocalAppearance<'a> {
     /// check, such a feature would drop its whole `appearance` block here
     /// while its geometry still emits `vertices-texture` indices into
     /// that now-nonexistent block — dangling references, invalid CityJSON.
-    fn into_appearance(self, defaults: Option<&Value>) -> Option<Appearance> {
+    fn into_appearance(self, defaults: Option<&Value>) -> Result<Option<Appearance>> {
         if self.local_materials.is_empty()
             && self.local_textures.is_empty()
             && self.local_uvs.is_empty()
             && defaults.is_none()
         {
-            return None;
+            return Ok(None);
         }
         let default_theme_material = defaults
             .and_then(|d| d.get("default-theme-material"))
@@ -1284,13 +1285,23 @@ impl<'a> LocalAppearance<'a> {
             .and_then(|d| d.get("default-theme-texture"))
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        Some(Appearance {
-            materials: (!self.local_materials.is_empty()).then_some(self.local_materials),
-            textures: (!self.local_textures.is_empty()).then_some(self.local_textures),
+        fn typed<T: serde::de::DeserializeOwned>(defs: Vec<Value>) -> Result<Option<Vec<T>>> {
+            if defs.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(
+                defs.into_iter()
+                    .map(serde_json::from_value)
+                    .collect::<std::result::Result<_, _>>()?,
+            ))
+        }
+        Ok(Some(Appearance {
+            materials: typed(self.local_materials)?,
+            textures: typed(self.local_textures)?,
             vertices_texture: (!self.local_uvs.is_empty()).then_some(self.local_uvs),
             default_theme_texture,
             default_theme_material,
-        })
+        }))
     }
 }
 
@@ -1301,9 +1312,36 @@ impl<'a> LocalAppearance<'a> {
 /// `templates`/the exported `GeometryInstance.template` index.
 struct RebuiltTemplates {
     templates: Vec<Geometry>,
-    vertices_templates: Value,
+    vertices_templates: Vec<[f64; 3]>,
     appearance: Option<Appearance>,
     id_to_pos: HashMap<i64, usize>,
+}
+
+/// One CityJSON geometry from its rebuilt members, checked against the shape
+/// its type requires.
+fn assemble_geometry(
+    gtype: &GeometryType,
+    lod: &str,
+    boundaries: Value,
+    semantics: Option<Value>,
+    material: Option<Value>,
+    texture: Option<Value>,
+) -> Result<Geometry> {
+    let mut json = serde_json::Map::new();
+    json.insert("type".to_string(), serde_json::to_value(gtype)?);
+    json.insert("lod".to_string(), Value::String(lod.to_string()));
+    json.insert("boundaries".to_string(), boundaries);
+    for (key, member) in [
+        ("semantics", semantics),
+        ("material", material),
+        ("texture", texture),
+    ] {
+        if let Some(member) = member {
+            json.insert(key.to_string(), member);
+        }
+    }
+    Geometry::from_json_value(Value::Object(json))
+        .map_err(|e| err(format!("cannot rebuild a {gtype:?} geometry: {e}")))
 }
 
 /// Rebuilds the header's `geometry-templates` from `implicit_geometries.parquet`
@@ -1349,7 +1387,7 @@ fn rebuild_templates(
         // docs), so it's just re-stringified here the same way the main
         // object-table export path does (`Lod::to_string`'s canonical
         // `major.minor` form, e.g. `"2.0"` for a source `"2"`).
-        let lod = Some(row.lod.to_string());
+        let lod = row.lod.to_string();
         let boundaries = reconstruct_boundaries(&decoded.kind, &gtype, props, &vmap)?;
         let semantics = rebuild_semantics(props, &gtype, naming)?;
 
@@ -1368,9 +1406,7 @@ fn rebuild_templates(
                 err(format!(
                     "relative geometry {pos}: cannot restore material appearance: {e}"
                 ))
-            })?
-            .map(serde_json::from_value)
-            .transpose()?;
+            })?;
         let texture = row
             .texture
             .as_ref()
@@ -1383,28 +1419,20 @@ fn rebuild_templates(
                 err(format!(
                     "relative geometry {pos}: cannot restore texture appearance: {e}"
                 ))
-            })?
-            .map(serde_json::from_value)
-            .transpose()?;
+            })?;
 
-        templates.push(Geometry {
-            thetype: gtype,
-            lod,
-            boundaries,
-            semantics,
-            material,
-            texture,
-            template: None,
-            transformation_matrix: None,
-        });
+        templates.push(
+            assemble_geometry(&gtype, &lod, boundaries, semantics, material, texture)
+                .map_err(|e| err(format!("relative geometry {pos}: {e}")))?,
+        );
     }
 
-    let vertices_templates = serde_json::to_value(interner.finish())?;
+    let vertices_templates = interner.finish();
     // No dataset-wide default-theme-material/texture at header/template
     // scope: those already get attached per-feature (see
     // `LocalAppearance::into_appearance`'s call site below), and a geometry
     // template itself never carries a default theme of its own.
-    let appearance = local_appearance.into_appearance(None);
+    let appearance = local_appearance.into_appearance(None)?;
 
     Ok(RebuiltTemplates {
         templates,
@@ -1632,24 +1660,18 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         for (obj, material, texture) in entries {
             let mut co = obj.object;
             // Extension names carry their namespace prefix in the package;
-            // CityJSON marks them with `+` (spec "Extensions").
-            co.thetype = naming.decode_name(&co.thetype);
-            co.attributes = co.attributes.take().map(|attributes| match attributes {
-                Value::Object(attributes) => Value::Object(
-                    attributes
-                        .into_iter()
-                        .map(|(name, value)| (naming.decode_name(&name), value))
-                        .collect(),
-                ),
-                other => other,
+            // CityJSON marks them with `+` (spec "Extensions"). The type is
+            // restored by `decode_batch`, which needs it to build the object.
+            co.attributes = co.attributes.take().map(|attributes| {
+                attributes
+                    .into_iter()
+                    .map(|(name, value)| (naming.decode_name(&name), value))
+                    .collect()
             });
             // `bbox` is stored in WKB order and decoded verbatim; a CityJSON
             // `geographicalExtent` is in the dataset's own order.
-            if let Some(extent) = co.geographical_extent.as_ref()
-                && let Ok(extent) = <[f64; 6]>::try_from(extent.as_slice())
-            {
-                co.geographical_extent =
-                    Some(crate::encode::reorder_extent(extent, axis_order).to_vec());
+            if let Some(extent) = co.geographical_extent {
+                co.geographical_extent = Some(crate::encode::reorder_extent(extent, axis_order));
             }
             let mut geoms = Vec::with_capacity(obj.geometries.len());
             for (lod, decoded, props) in &obj.geometries {
@@ -1675,8 +1697,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 // — the raw-vs-canonical mismatch the single-column layout had
                 // to detect (G20) is gone with the per-LoD columns.
                 let lod_key = lod.map(|l| l.to_string()).unwrap_or_default();
-                let mut geom_material: Option<HashMap<String, Material>> = None;
-                let mut geom_texture: Option<HashMap<String, Texture>> = None;
+                let mut geom_material: Option<Value> = None;
+                let mut geom_texture: Option<Value> = None;
                 match local_appearance.as_mut() {
                     Some(local) => {
                         let material_hit = material.as_ref().and_then(|m| m.get(lod_key.as_str()));
@@ -1694,7 +1716,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                                         obj.id
                                     ))
                                 })?;
-                            geom_material = Some(serde_json::from_value(localised)?);
+                            geom_material = Some(localised);
                         }
                         if let Some(t) = texture_hit {
                             let localised = nest_by_shells(t, props.as_ref(), &gtype)
@@ -1705,7 +1727,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                                         obj.id
                                     ))
                                 })?;
-                            geom_texture = Some(serde_json::from_value(localised)?);
+                            geom_texture = Some(localised);
                         }
                     }
                     None => {
@@ -1723,16 +1745,20 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 if let Some(l) = lod.filter(|l| l.major() == 4) {
                     *lod4_geometries.entry(l.to_string()).or_default() += 1;
                 }
-                geoms.push(Geometry {
-                    thetype: gtype,
-                    lod: lod.map(|l| l.to_string()),
-                    boundaries,
-                    semantics,
-                    material: geom_material,
-                    texture: geom_texture,
-                    template: None,
-                    transformation_matrix: None,
-                });
+                let lod = lod.ok_or_else(|| {
+                    err(format!("object {}: a stored geometry has no LoD", obj.id))
+                })?;
+                geoms.push(
+                    assemble_geometry(
+                        &gtype,
+                        &lod.to_string(),
+                        boundaries,
+                        semantics,
+                        geom_material,
+                        geom_texture,
+                    )
+                    .map_err(|e| err(format!("object {}: {e}", obj.id)))?,
+                );
             }
             if let Some(tpl) = &obj.implicit_geometry {
                 if implicit_geometry_rows.is_empty() {
@@ -1749,40 +1775,48 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     })?;
                     let point_idx =
                         interner.intern(quantise(axis_order.apply(tpl.point), scale, translate));
-                    geoms.push(Geometry {
-                        thetype: GeometryType::GeometryInstance,
-                        lod: None,
-                        boundaries: serde_json::to_value(vec![point_idx])?,
-                        semantics: None,
-                        material: None,
-                        texture: None,
-                        template: Some(pos),
-                        transformation_matrix: tpl.transformation_matrix.clone(),
+                    let matrix: [f64; 16] = tpl
+                        .transformation_matrix
+                        .clone()
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|e| {
+                            err(format!(
+                                "object {}: implicit_geometry.transformationMatrix is not 16 \
+                                 numbers: {e}",
+                                obj.id
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            err(format!(
+                                "object {}: implicit_geometry has no transformationMatrix",
+                                obj.id
+                            ))
+                        })?;
+                    geoms.push(Geometry::GeometryInstance {
+                        boundaries: [VertexIndex(point_idx)],
+                        template: TemplateIndex(pos),
+                        transformation_matrix: matrix,
                     });
                 }
             }
             co.geometry = if geoms.is_empty() { None } else { Some(geoms) };
             // `address` has no typed cjseq field (CityJSON prescribes no
-            // member set for it), so — like `children_roles` above — it is
-            // injected via a serialize/mutate/deserialize round trip rather
-            // than a direct field assignment (spec "Addresses", gap 10).
-            // Absent entirely when the row's `address` cell was null; a
-            // present (even empty) list always gets a real `"address"` key.
+            // member set for it), so it goes in `other` (spec "Addresses",
+            // gap 10). Absent entirely when the row's `address` cell was
+            // null; a present (even empty) list always gets a real
+            // `"address"` key.
             if let Some(entries) = &obj.address {
                 let address_value =
                     build_address_value(entries, &mut interner, scale, translate, axis_order)?;
-                let mut co_value = serde_json::to_value(&co)?;
-                if let Value::Object(map) = &mut co_value {
-                    map.insert("address".to_string(), address_value);
-                }
-                co = serde_json::from_value(co_value)?;
+                co.other.insert("address".to_string(), address_value);
             }
             feature.add_co(obj.id, co);
         }
 
         feature.vertices = interner.finish();
         feature.appearance = match local_appearance {
-            Some(local) => local.into_appearance(meta.appearance_defaults.as_ref()),
+            Some(local) => local.into_appearance(meta.appearance_defaults.as_ref())?,
             // No appearance-definition sidecars restored for this package
             // (the Core profile, or a Compatibility one with no
             // materials/textures at all): there is no per-feature slicer to
@@ -1793,10 +1827,11 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             // own emptiness/defaults rule rather than duplicating it: with
             // both global slices empty it can only ever produce a
             // defaults-only block (or `None` when there are no defaults).
-            None => meta.appearance_defaults.as_ref().and_then(|defaults| {
-                LocalAppearance::new(&HashMap::new(), &HashMap::new())
-                    .into_appearance(Some(defaults))
-            }),
+            None => match meta.appearance_defaults.as_ref() {
+                Some(defaults) => LocalAppearance::new(&HashMap::new(), &HashMap::new())
+                    .into_appearance(Some(defaults))?,
+                None => None,
+            },
         };
         features.push(feature);
     }
@@ -1851,7 +1886,11 @@ fn write_output(
             }
         }
         OutputFormat::Doc => {
-            let doc = cjseq::cjseq_to_cj(header, features);
+            let doc = cjseq::cjseq_to_cj(header, features).map_err(|e| {
+                err(format!(
+                    "cannot collect the features into one document: {e}"
+                ))
+            })?;
             write!(file, "{}", serde_json::to_string(&doc)?)
                 .map_err(|e| CityParquetError::io_source("write error", e))?;
         }
@@ -1941,29 +1980,22 @@ mod tests {
     /// reconstructed boundary tree comparable to the source verbatim.
     #[test]
     fn multisolid_reconstruction_round_trips_through_wkb() {
-        let vertices: Vec<Vec<i64>> = vec![
-            vec![0, 0, 0],
-            vec![1000, 0, 0],
-            vec![1000, 1000, 0],
-            vec![0, 1000, 0],
-            vec![0, 0, 1000],
+        let vertices: Vec<[i64; 3]> = vec![
+            [0, 0, 0],
+            [1000, 0, 0],
+            [1000, 1000, 0],
+            [0, 1000, 0],
+            [0, 0, 1000],
         ];
         let transform = Transform {
-            scale: vec![1.0; 3],
-            translate: vec![0.0; 3],
+            scale: [1.0; 3],
+            translate: [0.0; 3],
         };
         let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
         let boundaries = serde_json::json!([[[[[0, 1, 2, 3]]], [[[0, 1, 4]]]], [[[[1, 2, 4]]]]]);
-        let geom = Geometry {
-            thetype: GeometryType::MultiSolid,
-            lod: Some("2".into()),
-            boundaries: boundaries.clone(),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(serde_json::json!({
+            "type": "MultiSolid", "lod": "2", "boundaries": boundaries
+        }));
         let bytes = geometry_to_wkb(&geom, &pool).unwrap().unwrap().bytes;
         let decoded = wkb_to_geometry(&bytes).unwrap();
 
@@ -2107,10 +2139,11 @@ mod tests {
 
         let appearance = local
             .into_appearance(None)
+            .unwrap()
             .expect("local_uvs alone must be enough to keep the appearance block");
         assert_eq!(
             appearance.vertices_texture,
-            Some(vec![vec![0.1, 0.2], vec![0.3, 0.4]])
+            Some(vec![[0.1, 0.2], [0.3, 0.4]])
         );
         assert!(appearance.materials.is_none());
         assert!(appearance.textures.is_none());
@@ -2131,6 +2164,7 @@ mod tests {
         });
         let appearance = local
             .into_appearance(Some(&defaults))
+            .unwrap()
             .expect("defaults alone must be enough to keep the appearance block");
         assert!(appearance.materials.is_none());
         assert!(appearance.textures.is_none());
@@ -2149,7 +2183,7 @@ mod tests {
     fn into_appearance_with_an_empty_slicer_and_no_defaults_is_none() {
         let empty = HashMap::new();
         let local = LocalAppearance::new(&empty, &empty);
-        assert!(local.into_appearance(None).is_none());
+        assert!(local.into_appearance(None).unwrap().is_none());
     }
 
     /// The appearance columns store one entry per WKB face, exactly as

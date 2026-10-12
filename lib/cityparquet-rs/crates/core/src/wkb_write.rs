@@ -3,7 +3,7 @@
 
 use cityparquet_schema::crs::AxisOrder;
 use cityparquet_schema::{CityParquetError, Result};
-use cjseq::{Geometry, GeometryType, Transform};
+use cjseq::{Geometry, Shell, Surface, Transform, VertexIndex};
 
 const POINT_Z: u32 = 1001;
 const LINESTRING_Z: u32 = 1002;
@@ -32,12 +32,12 @@ const MAX_SAFE: f64 = MAX_QUANTISED as f64;
 /// NOT subject to the dataset transform, so they are looked up verbatim).
 enum VertexStorage<'a> {
     Quantised {
-        vertices: &'a [Vec<i64>],
+        vertices: &'a [[i64; 3]],
         scale: [f64; 3],
         translate: [f64; 3],
     },
     Raw {
-        vertices: &'a [Vec<f64>],
+        vertices: &'a [[f64; 3]],
     },
 }
 
@@ -53,19 +53,12 @@ pub struct VertexPool<'a> {
 }
 
 impl<'a> VertexPool<'a> {
-    pub fn new(vertices: &'a [Vec<i64>], transform: &Transform, axis_order: AxisOrder) -> Self {
-        let take3 = |v: &[f64], d: f64| {
-            [
-                *v.first().unwrap_or(&d),
-                *v.get(1).unwrap_or(&d),
-                *v.get(2).unwrap_or(&d),
-            ]
-        };
+    pub fn new(vertices: &'a [[i64; 3]], transform: &Transform, axis_order: AxisOrder) -> Self {
         Self {
             storage: VertexStorage::Quantised {
                 vertices,
-                scale: take3(&transform.scale, 1.0),
-                translate: take3(&transform.translate, 0.0),
+                scale: transform.scale,
+                translate: transform.translate,
             },
             axis_order,
         }
@@ -78,7 +71,7 @@ impl<'a> VertexPool<'a> {
     /// too-large `f64` loses precision regardless of where it came from);
     /// the quantised-*component* guard from [`Self::new`] does not apply
     /// here, since there is no quantised integer component to check.
-    pub fn raw(vertices: &'a [Vec<f64>], axis_order: AxisOrder) -> VertexPool<'a> {
+    pub fn raw(vertices: &'a [[f64; 3]], axis_order: AxisOrder) -> VertexPool<'a> {
         VertexPool {
             storage: VertexStorage::Raw { vertices },
             axis_order,
@@ -107,12 +100,6 @@ impl<'a> VertexPool<'a> {
                         vertices.len()
                     ))
                 })?;
-                if v.len() < 3 {
-                    return Err(CityParquetError::Geometry(format!(
-                        "vertex {idx} has {} components",
-                        v.len()
-                    )));
-                }
 
                 // Guard quantised components: no component can exceed 2^53 in
                 // magnitude or it loses precision when converted to f64.
@@ -154,13 +141,7 @@ impl<'a> VertexPool<'a> {
                         vertices.len()
                     ))
                 })?;
-                if v.len() < 3 {
-                    return Err(CityParquetError::Geometry(format!(
-                        "vertex {idx} has {} components",
-                        v.len()
-                    )));
-                }
-                let coords = [v[0], v[1], v[2]];
+                let coords = *v;
 
                 // Guard final coordinates: same 2^53 ceiling and `>` operator
                 // as the quantised path (see MAX_SAFE's docs), applied
@@ -227,18 +208,6 @@ fn coord(buf: &mut Vec<u8>, c: [f64; 3], bbox: &mut Bbox) {
     bbox.add(c);
 }
 
-pub(crate) fn boundaries<T: serde::de::DeserializeOwned>(geom: &Geometry) -> Result<T> {
-    // Deserialize BY REFERENCE (`impl Deserializer for &Value`): the old
-    // `from_value(geom.boundaries.clone())` deep-cloned the whole boundary
-    // tree per geometry only to consume the clone immediately (review P5a).
-    T::deserialize(&geom.boundaries).map_err(|e| {
-        CityParquetError::Geometry(format!(
-            "boundaries do not match {:?} shape: {e}",
-            geom.thetype
-        ))
-    })
-}
-
 /// Structural drops performed while normalising one geometry's rings.
 #[derive(Debug, Default)]
 pub(crate) struct Drops {
@@ -274,7 +243,7 @@ pub(crate) struct Drops {
 /// as a structurally valid zero-area ring (a→b→a). The narrow policy only
 /// drops rings that cannot form a structural WKB ring at all;
 /// coordinate-level degeneracy is data quality, out of scope.
-pub(crate) fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
+pub(crate) fn normalise_ring(ring: &[VertexIndex]) -> Option<&[VertexIndex]> {
     distinct_ring_len(ring).map(|len| &ring[..len])
 }
 
@@ -284,7 +253,7 @@ pub(crate) fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
 /// (plus the closing repeat WKB adds), and the appearance flattening inlines
 /// exactly this many `[u, v]` pairs, so the two can never disagree about a
 /// ring's vertex count.
-pub(crate) fn distinct_ring_len(ring: &[usize]) -> Option<usize> {
+pub(crate) fn distinct_ring_len<T: PartialEq>(ring: &[T]) -> Option<usize> {
     let mut len = ring.len();
     // Strip while MORE than 3 vertices remain, not to a `>= 2` fixpoint:
     // that bound lets a doubly-baked closure ([0,1,0,0]) still converge to
@@ -307,10 +276,10 @@ pub(crate) fn distinct_ring_len(ring: &[usize]) -> Option<usize> {
 /// geometry, recorded so the encoder can realign per-surface
 /// semantics/material/texture arrays.
 pub(crate) fn normalise_surface<'r>(
-    rings: &'r [Vec<usize>],
+    rings: &'r Surface,
     pos: usize,
     drops: &mut Drops,
-) -> Option<Vec<&'r [usize]>> {
+) -> Option<Vec<&'r [VertexIndex]>> {
     if rings.is_empty() {
         // A surface with no rings at all cannot form a WKB polygon.
         drops.surfaces.push(pos);
@@ -340,7 +309,7 @@ pub(crate) fn normalise_surface<'r>(
 /// closed by repeating its first coordinate).
 fn write_polygon(
     buf: &mut Vec<u8>,
-    rings: &[&[usize]],
+    rings: &[&[VertexIndex]],
     pool: &VertexPool,
     bbox: &mut Bbox,
 ) -> Result<()> {
@@ -349,9 +318,9 @@ fn write_polygon(
     for ring in rings {
         u32le(buf, ring.len() + 1);
         for &idx in *ring {
-            coord(buf, pool.coord(idx)?, bbox);
+            coord(buf, pool.coord(idx.0)?, bbox);
         }
-        coord(buf, pool.coord(ring[0])?, bbox);
+        coord(buf, pool.coord(ring[0].0)?, bbox);
     }
     Ok(())
 }
@@ -360,7 +329,7 @@ fn write_polygon(
 /// preserved in geometry_properties, not in WKB).
 fn write_polyhedral(
     buf: &mut Vec<u8>,
-    faces: &[Vec<&[usize]>],
+    faces: &[Vec<&[VertexIndex]>],
     pool: &VertexPool,
     bbox: &mut Bbox,
 ) -> Result<()> {
@@ -376,10 +345,10 @@ fn write_polyhedral(
 /// (the flat face position within the whole geometry) across every source
 /// face — dropped or kept — so recorded drop positions stay original.
 pub(crate) fn normalise_shells<'r>(
-    shells: &'r [Vec<Vec<Vec<usize>>>],
+    shells: &'r [Shell],
     pos: &mut usize,
     drops: &mut Drops,
-) -> Vec<Vec<&'r [usize]>> {
+) -> Vec<Vec<&'r [VertexIndex]>> {
     let mut kept = Vec::new();
     for shell in shells {
         for surface in shell {
@@ -424,32 +393,30 @@ pub fn geometry_to_wkb(geom: &Geometry, pool: &VertexPool) -> Result<Option<WkbO
     let mut buf = Vec::new();
     let mut bbox = Bbox::new();
     let mut drops = Drops::default();
-    match geom.thetype {
-        GeometryType::GeometryInstance => return Ok(None),
-        GeometryType::MultiPoint => {
-            let idxs: Vec<usize> = boundaries(geom)?;
+    match geom {
+        Geometry::GeometryInstance { .. } => return Ok(None),
+        Geometry::MultiPoint { boundaries, .. } => {
             header(&mut buf, MULTIPOINT_Z);
-            u32le(&mut buf, idxs.len());
-            for idx in idxs {
+            u32le(&mut buf, boundaries.len());
+            for idx in boundaries {
                 header(&mut buf, POINT_Z);
-                coord(&mut buf, pool.coord(idx)?, &mut bbox);
+                coord(&mut buf, pool.coord(idx.0)?, &mut bbox);
             }
         }
-        GeometryType::MultiLineString => {
-            let lines: Vec<Vec<usize>> = boundaries(geom)?;
+        Geometry::MultiLineString { boundaries, .. } => {
             header(&mut buf, MULTILINESTRING_Z);
-            u32le(&mut buf, lines.len());
-            for line in lines {
+            u32le(&mut buf, boundaries.len());
+            for line in boundaries {
                 header(&mut buf, LINESTRING_Z);
                 u32le(&mut buf, line.len());
                 for idx in line {
-                    coord(&mut buf, pool.coord(idx)?, &mut bbox);
+                    coord(&mut buf, pool.coord(idx.0)?, &mut bbox);
                 }
             }
         }
-        GeometryType::MultiSurface | GeometryType::CompositeSurface => {
-            let surfaces: Vec<Vec<Vec<usize>>> = boundaries(geom)?;
-            let kept: Vec<Vec<&[usize]>> = surfaces
+        Geometry::MultiSurface { boundaries, .. }
+        | Geometry::CompositeSurface { boundaries, .. } => {
+            let kept: Vec<Vec<&[VertexIndex]>> = boundaries
                 .iter()
                 .enumerate()
                 .filter_map(|(pos, surface)| normalise_surface(surface, pos, &mut drops))
@@ -460,18 +427,16 @@ pub fn geometry_to_wkb(geom: &Geometry, pool: &VertexPool) -> Result<Option<WkbO
                 write_polygon(&mut buf, surface, pool, &mut bbox)?;
             }
         }
-        GeometryType::Solid => {
-            let shells: Vec<Vec<Vec<Vec<usize>>>> = boundaries(geom)?;
+        Geometry::Solid { boundaries, .. } => {
             let mut pos = 0;
-            let kept = normalise_shells(&shells, &mut pos, &mut drops);
+            let kept = normalise_shells(boundaries, &mut pos, &mut drops);
             write_polyhedral(&mut buf, &kept, pool, &mut bbox)?;
         }
-        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
-            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> = boundaries(geom)?;
+        Geometry::MultiSolid { boundaries, .. } | Geometry::CompositeSolid { boundaries, .. } => {
             header(&mut buf, GEOMETRYCOLLECTION_Z);
-            u32le(&mut buf, solids.len());
+            u32le(&mut buf, boundaries.len());
             let mut pos = 0;
-            for solid in &solids {
+            for solid in boundaries {
                 let kept = normalise_shells(solid, &mut pos, &mut drops);
                 write_polyhedral(&mut buf, &kept, pool, &mut bbox)?;
             }
@@ -497,18 +462,17 @@ pub fn geometry_to_wkb(geom: &Geometry, pool: &VertexPool) -> Result<Option<WkbO
 /// the walker's mirror of [`write_polygon`], minus the byte writing. The
 /// closing coordinate `write_polygon` re-emits is `ring[0]` again, so it
 /// can never change the bbox and is deliberately not re-added here.
-fn walk_polygon(rings: &[&[usize]], pool: &VertexPool, bbox: &mut Bbox) -> Result<()> {
+fn walk_polygon(rings: &[&[VertexIndex]], pool: &VertexPool, bbox: &mut Bbox) -> Result<()> {
     for ring in rings {
         for &idx in *ring {
-            bbox.add(pool.coord(idx)?);
+            bbox.add(pool.coord(idx.0)?);
         }
     }
     Ok(())
 }
 
 /// Bbox-and-validation-only walker: the exact coordinate walk
-/// [`geometry_to_wkb`] performs — the same [`boundaries`] shape checks, the
-/// same [`normalise_surface`]/[`normalise_shells`] structural drops, the
+/// [`geometry_to_wkb`] performs — the same [`normalise_surface`]/[`normalise_shells`] structural drops, the
 /// same [`VertexPool::coord`] index-range and 2^53 guards — without ever
 /// materialising WKB bytes. Same `Ok(None)` cases (`GeometryInstance`;
 /// nothing kept after drops/empty boundaries), same errors, and its bbox is
@@ -521,41 +485,35 @@ fn walk_polygon(rings: &[&[usize]], pool: &VertexPool, bbox: &mut Bbox) -> Resul
 pub fn geometry_bbox(geom: &Geometry, pool: &VertexPool) -> Result<Option<[f64; 6]>> {
     let mut bbox = Bbox::new();
     let mut drops = Drops::default();
-    match geom.thetype {
-        GeometryType::GeometryInstance => return Ok(None),
-        GeometryType::MultiPoint => {
-            let idxs: Vec<usize> = boundaries(geom)?;
-            for idx in idxs {
-                bbox.add(pool.coord(idx)?);
+    match geom {
+        Geometry::GeometryInstance { .. } => return Ok(None),
+        Geometry::MultiPoint { boundaries, .. } => {
+            for idx in boundaries {
+                bbox.add(pool.coord(idx.0)?);
             }
         }
-        GeometryType::MultiLineString => {
-            let lines: Vec<Vec<usize>> = boundaries(geom)?;
-            for line in lines {
-                for idx in line {
-                    bbox.add(pool.coord(idx)?);
-                }
+        Geometry::MultiLineString { boundaries, .. } => {
+            for idx in boundaries.iter().flatten() {
+                bbox.add(pool.coord(idx.0)?);
             }
         }
-        GeometryType::MultiSurface | GeometryType::CompositeSurface => {
-            let surfaces: Vec<Vec<Vec<usize>>> = boundaries(geom)?;
-            for (pos, surface) in surfaces.iter().enumerate() {
+        Geometry::MultiSurface { boundaries, .. }
+        | Geometry::CompositeSurface { boundaries, .. } => {
+            for (pos, surface) in boundaries.iter().enumerate() {
                 if let Some(kept) = normalise_surface(surface, pos, &mut drops) {
                     walk_polygon(&kept, pool, &mut bbox)?;
                 }
             }
         }
-        GeometryType::Solid => {
-            let shells: Vec<Vec<Vec<Vec<usize>>>> = boundaries(geom)?;
+        Geometry::Solid { boundaries, .. } => {
             let mut pos = 0;
-            for face in normalise_shells(&shells, &mut pos, &mut drops) {
+            for face in normalise_shells(boundaries, &mut pos, &mut drops) {
                 walk_polygon(&face, pool, &mut bbox)?;
             }
         }
-        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
-            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> = boundaries(geom)?;
+        Geometry::MultiSolid { boundaries, .. } | Geometry::CompositeSolid { boundaries, .. } => {
             let mut pos = 0;
-            for solid in &solids {
+            for solid in boundaries {
                 for face in normalise_shells(solid, &mut pos, &mut drops) {
                     walk_polygon(&face, pool, &mut bbox)?;
                 }
@@ -575,18 +533,18 @@ mod tests {
     use super::*;
     use geo_traits::GeometryTrait;
 
-    fn pool_and(transform_scale: f64) -> (Vec<Vec<i64>>, cjseq::Transform) {
+    fn pool_and(transform_scale: f64) -> (Vec<[i64; 3]>, cjseq::Transform) {
         (
             vec![
-                vec![0, 0, 0],
-                vec![1000, 0, 0],
-                vec![1000, 1000, 0],
-                vec![0, 1000, 0],
-                vec![0, 0, 1000],
+                [0, 0, 0],
+                [1000, 0, 0],
+                [1000, 1000, 0],
+                [0, 1000, 0],
+                [0, 0, 1000],
             ],
             cjseq::Transform {
-                scale: vec![transform_scale; 3],
-                translate: vec![10.0, 20.0, 30.0],
+                scale: [transform_scale; 3],
+                translate: [10.0, 20.0, 30.0],
             },
         )
     }
@@ -607,16 +565,9 @@ mod tests {
     fn multisurface_becomes_multipolygon_z_with_closed_rings() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::MultiSurface,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([[[0, 1, 2, 3]]]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "MultiSurface", "lod": "2", "boundaries": [[[0, 1, 2, 3]]]}),
+        );
         let outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
         let (bytes, bbox) = (outcome.bytes, outcome.bbox);
         assert_eq!(bytes[0], 0x01);
@@ -639,16 +590,9 @@ mod tests {
         // only surface's exterior ring, so nothing is left to write.
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::MultiSurface,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([[[0, 1]]]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "MultiSurface", "lod": "2", "boundaries": [[[0, 1]]]}),
+        );
         assert!(
             geometry_to_wkb(&geom, &pool).unwrap().is_none(),
             "a geometry reduced to nothing must emit no WKB, not an error"
@@ -662,16 +606,9 @@ mod tests {
         // closing point on top of it.
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::MultiSurface,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([[[0, 1, 2, 0]]]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "MultiSurface", "lod": "2", "boundaries": [[[0, 1, 2, 0]]]}),
+        );
         let outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
         let bytes = outcome.bytes;
         let num_points = u32::from_le_bytes(bytes[18..22].try_into().unwrap());
@@ -695,16 +632,9 @@ mod tests {
     fn solid_becomes_polyhedral_surface_z() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::Solid,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([[[[0, 1, 2, 3]], [[0, 1, 4]]]]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "Solid", "lod": "2", "boundaries": [[[[0, 1, 2, 3]], [[0, 1, 4]]]]}),
+        );
         let bytes = geometry_to_wkb(&geom, &pool).unwrap().unwrap().bytes;
         assert_eq!(u32::from_le_bytes(bytes[1..5].try_into().unwrap()), 1015); // PolyhedralSurfaceZ
         assert_eq!(u32::from_le_bytes(bytes[5..9].try_into().unwrap()), 2); // faces across shells
@@ -715,16 +645,9 @@ mod tests {
     fn empty_multipoint_boundaries_yield_no_wkb() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::MultiPoint,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "MultiPoint", "lod": "2", "boundaries": []}),
+        );
         assert!(
             geometry_to_wkb(&geom, &pool).unwrap().is_none(),
             "an empty MultiPoint must not emit an infinite-bbox WKB payload"
@@ -735,16 +658,9 @@ mod tests {
     fn empty_multisurface_boundaries_yield_no_wkb() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::MultiSurface,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "MultiSurface", "lod": "2", "boundaries": []}),
+        );
         assert!(
             geometry_to_wkb(&geom, &pool).unwrap().is_none(),
             "an empty MultiSurface must not emit an infinite-bbox WKB payload"
@@ -755,16 +671,9 @@ mod tests {
     fn geometry_instance_is_none() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::GeometryInstance,
-            lod: None,
-            boundaries: serde_json::json!([0]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: Some(0),
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "GeometryInstance", "boundaries": [0], "template": 0, "transformationMatrix": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]}),
+        );
         assert!(geometry_to_wkb(&geom, &pool).unwrap().is_none());
     }
 
@@ -776,16 +685,9 @@ mod tests {
         // must survive as the ONLY polygon.
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::MultiSurface,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([[[0, 1]], [[0, 1, 2, 3]]]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "MultiSurface", "lod": "2", "boundaries": [[[0, 1]], [[0, 1, 2, 3]]]}),
+        );
         let outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
         assert_eq!(outcome.dropped_rings, 1);
         assert_eq!(outcome.dropped_surfaces, vec![0]);
@@ -809,16 +711,9 @@ mod tests {
 
         // Counter precision: a dropped surface's interior too-short rings
         // are still counted in dropped_rings (surface drop unchanged).
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::MultiSurface,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([[[0, 1], [2, 3]], [[0, 1, 2, 3]]]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "MultiSurface", "lod": "2", "boundaries": [[[0, 1], [2, 3]], [[0, 1, 2, 3]]]}),
+        );
         let outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
         assert_eq!(
             outcome.dropped_rings, 2,
@@ -840,16 +735,9 @@ mod tests {
         // not the format's business.
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::MultiSurface,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([[[0, 1, 2]]]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "MultiSurface", "lod": "2", "boundaries": [[[0, 1, 2]]]}),
+        );
         let outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
         assert_eq!(outcome.dropped_rings, 0);
         assert!(outcome.dropped_surfaces.is_empty());
@@ -866,46 +754,51 @@ mod tests {
         // corner (there is no WKB value to attach it to).
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::MultiSurface,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([[[0, 1]]]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "MultiSurface", "lod": "2", "boundaries": [[[0, 1]]]}),
+        );
         assert!(geometry_to_wkb(&geom, &pool).unwrap().is_none());
     }
 
     #[test]
     fn normalise_ring_strips_baked_closures_but_never_below_3_vertices() {
+        let ring = |v: &[usize]| v.iter().copied().map(VertexIndex).collect::<Vec<_>>();
         // The exact Codex ring: [0, 1, 0, 0]. One strip leaves [0, 1, 0], which
         // still closes (first == last) but is already down to 3 vertices, so
         // the `> 3` bound stops the strip there instead of continuing to drop
         // it — the doubly-baked closure converges to its real 3-vertex shape.
-        assert_eq!(normalise_ring(&[0, 1, 0, 0]), Some(&[0usize, 1, 0][..]));
+        assert_eq!(
+            normalise_ring(&ring(&[0, 1, 0, 0])),
+            Some(&ring(&[0, 1, 0])[..])
+        );
         // A single pre-baked closure, and a ring that was never closed at
         // all, both pass through with their 3-vertex body untouched.
-        assert_eq!(normalise_ring(&[0, 1, 2, 0]), Some(&[0usize, 1, 2][..]));
-        assert_eq!(normalise_ring(&[0, 1, 2]), Some(&[0usize, 1, 2][..]));
+        assert_eq!(
+            normalise_ring(&ring(&[0, 1, 2, 0])),
+            Some(&ring(&[0, 1, 2])[..])
+        );
+        assert_eq!(
+            normalise_ring(&ring(&[0, 1, 2])),
+            Some(&ring(&[0, 1, 2])[..])
+        );
         // A genuine [a, b, a] sliver (index-repeat, not a baked closure) is
         // already at 3 vertices, so the `> 3` bound never even enters the
         // strip loop: it passes through unchanged rather than being reduced
         // to 2 and dropped.
-        assert_eq!(normalise_ring(&[87, 71, 87]), Some(&[87usize, 71, 87][..]));
+        assert_eq!(
+            normalise_ring(&ring(&[87, 71, 87])),
+            Some(&ring(&[87, 71, 87])[..])
+        );
         // A ring with fewer than 3 vertices to begin with is dropped —
         // stripping cannot create this condition, only a too-short source
         // ring can.
-        assert_eq!(normalise_ring(&[0, 1]), None);
+        assert_eq!(normalise_ring(&ring(&[0, 1])), None);
     }
 
     #[test]
     fn zero_ring_surface_is_dropped_and_counted() {
         let mut drops = Drops::default();
-        let empty: [Vec<usize>; 0] = [];
-        assert_eq!(normalise_surface(&empty, 4, &mut drops), None);
+        assert_eq!(normalise_surface(&Vec::new(), 4, &mut drops), None);
         assert_eq!(drops.surfaces, vec![4]);
         assert_eq!(drops.rings, 0); // no ring existed to count
     }
@@ -914,7 +807,7 @@ mod tests {
     fn vertex_beyond_2_53_is_rejected() {
         // Quantised component 2^53 + 1 is not representable in f64: silent
         // precision loss, so the writer must refuse it.
-        let vertices = vec![vec![9_007_199_254_740_993_i64, 0, 0]];
+        let vertices = [[9_007_199_254_740_993_i64, 0, 0]];
         let transform: Transform = serde_json::from_value(serde_json::json!({
             "scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]
         }))
@@ -933,7 +826,7 @@ mod tests {
     #[test]
     fn vertex_at_exactly_2_53_is_accepted_by_both_guards() {
         const MAX: i64 = 1i64 << 53; // 2^53, exactly representable in f64
-        let vertices = vec![vec![MAX, 0, 0]];
+        let vertices = [[MAX, 0, 0]];
         let transform: Transform = serde_json::from_value(serde_json::json!({
             "scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]
         }))
@@ -945,7 +838,7 @@ mod tests {
         assert_eq!(coord[0], MAX as f64);
 
         // Raw (template) path: same boundary, no scale/translate involved.
-        let raw_verts = vec![vec![MAX as f64, 0.0, 0.0]];
+        let raw_verts = [[MAX as f64, 0.0, 0.0]];
         let raw_pool = VertexPool::raw(&raw_verts, AxisOrder::LonLat);
         let raw_coord = raw_pool
             .coord(0)
@@ -959,7 +852,7 @@ mod tests {
         // translate cancels it back into small-magnitude territory — the final
         // coordinate looks harmless but is wrong. The guard must fire on the
         // quantised component, not only on the final value.
-        let vertices = vec![vec![-9_007_199_254_741_000_i64, 0, 0]];
+        let vertices = [[-9_007_199_254_741_000_i64, 0, 0]];
         let transform: Transform = serde_json::from_value(serde_json::json!({
             "scale": [1.0, 1.0, 1.0], "translate": [9_007_199_254_741_000.0, 0.0, 0.0]
         }))
@@ -982,21 +875,20 @@ mod tests {
             "missing fixture lod3_railway.city.json; run `just fixtures`"
         );
         let raw_text = std::fs::read_to_string(&fixture_path).unwrap();
-        let doc = cjseq::CityJSON::from_str(&raw_text).unwrap();
+        let doc: cjseq::CityJSON = raw_text.parse().unwrap();
         let templates = doc
             .geometry_templates
             .as_ref()
             .expect("railway has geometry-templates");
-        let verts: Vec<Vec<f64>> =
-            serde_json::from_value(templates.vertices_templates.clone()).unwrap();
+        let verts = &templates.vertices_templates;
         assert_eq!(verts.len(), 338, "railway has 338 template vertices");
         assert_eq!(
             verts[0],
-            vec![0.112, 0.121, 0.502],
+            [0.112, 0.121, 0.502],
             "first template vertex, straight from the fixture"
         );
 
-        let pool = VertexPool::raw(&verts, AxisOrder::LonLat);
+        let pool = VertexPool::raw(verts, AxisOrder::LonLat);
         assert_eq!(
             pool.coord(0).unwrap(),
             [0.112, 0.121, 0.502],
@@ -1030,52 +922,37 @@ mod tests {
     fn geometry_bbox_matches_wkb_bbox_for_representative_geometries() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let cases: Vec<(cjseq::GeometryType, serde_json::Value)> = vec![
+        let cases: Vec<(&str, serde_json::Value)> = vec![
             // MultiSurface with an interior ring (hole) AND a too-short-ring
             // surface that geometry_to_wkb drops — the walker must drop it
             // identically.
             (
-                cjseq::GeometryType::MultiSurface,
+                "MultiSurface",
                 serde_json::json!([[[0, 1, 2, 3], [0, 1, 4]], [[0, 1]]]),
             ),
+            ("Solid", serde_json::json!([[[[0, 1, 2, 3]], [[0, 1, 4]]]])),
             (
-                cjseq::GeometryType::Solid,
-                serde_json::json!([[[[0, 1, 2, 3]], [[0, 1, 4]]]]),
-            ),
-            (
-                cjseq::GeometryType::MultiSolid,
+                "MultiSolid",
                 serde_json::json!([[[[[0, 1, 2]]]], [[[[1, 2, 4]]]]]),
             ),
-            (cjseq::GeometryType::MultiPoint, serde_json::json!([0, 4])),
-            (
-                cjseq::GeometryType::MultiLineString,
-                serde_json::json!([[0, 1], [2, 3]]),
-            ),
+            ("MultiPoint", serde_json::json!([0, 4])),
+            ("MultiLineString", serde_json::json!([[0, 1], [2, 3]])),
             // Everything degenerate: both paths must agree on None.
-            (
-                cjseq::GeometryType::MultiSurface,
-                serde_json::json!([[[0, 1]]]),
-            ),
+            ("MultiSurface", serde_json::json!([[[0, 1]]])),
             // Empty boundaries: both paths must agree on None.
-            (cjseq::GeometryType::MultiPoint, serde_json::json!([])),
+            ("MultiPoint", serde_json::json!([])),
         ];
         for (thetype, boundaries) in cases {
-            let geom = cjseq::Geometry {
-                thetype,
-                lod: Some("2".into()),
-                boundaries,
-                semantics: None,
-                material: None,
-                texture: None,
-                template: None,
-                transformation_matrix: None,
-            };
+            let geom = crate::faces::geometry(serde_json::json!({
+                "type": thetype, "lod": "2", "boundaries": boundaries
+            }));
             let via_wkb = geometry_to_wkb(&geom, &pool).unwrap().map(|o| o.bbox);
             let via_walker = geometry_bbox(&geom, &pool).unwrap();
             assert_eq!(
-                via_walker, via_wkb,
+                via_walker,
+                via_wkb,
                 "walker/WKB bbox mismatch for {:?}",
-                geom.thetype
+                geom.geometry_type()
             );
         }
     }
@@ -1086,16 +963,9 @@ mod tests {
     fn geometry_bbox_errors_where_the_encoder_errors() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
-        let geom = cjseq::Geometry {
-            thetype: cjseq::GeometryType::MultiPoint,
-            lod: Some("1".into()),
-            boundaries: serde_json::json!([99]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(
+            serde_json::json!({"type": "MultiPoint", "lod": "1", "boundaries": [99]}),
+        );
         assert!(geometry_to_wkb(&geom, &pool).is_err());
         assert!(matches!(
             geometry_bbox(&geom, &pool),

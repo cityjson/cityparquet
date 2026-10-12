@@ -8,9 +8,10 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use cityparquet_schema::{CityParquetError, Result};
-use cjseq::{Appearance, CityJSON, CityJSONFeature, SortingStrategy};
+use cjseq::{Appearance, CityJSON, CityJSONFeature};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceFormat {
@@ -139,11 +140,12 @@ impl Source {
             let text = fs::read_to_string(path).map_err(|e| {
                 CityParquetError::io_source(format!("cannot read {}", path.display()), e)
             })?;
-            let mut doc =
+            let doc =
                 CityJSON::from_str(&text).map_err(|e| err(format!("invalid CityJSON: {e}")))?;
             validate_document_hierarchy(&doc)?;
-            doc.sort_cjfeatures(SortingStrategy::Lexicographical);
-            let header = doc.get_metadata();
+            let header = doc
+                .header()
+                .map_err(|e| err(format!("invalid CityJSON header: {e}")))?;
             Ok(Self {
                 path: path.to_path_buf(),
                 format: SourceFormat::CityJson,
@@ -240,6 +242,7 @@ impl Source {
             reference_date: None,
             reference_system: None,
             title: None,
+            other: serde_json::Map::new(),
         });
         if metadata.reference_system.is_some() {
             return false;
@@ -262,7 +265,7 @@ impl Source {
             && let Ok(projjson) = cityparquet_schema::crs::resolve_to_projjson(&rs)
             && let Ok(scale) = cityparquet_schema::crs::axis_scale(&projjson)
         {
-            self.header.transform.scale = scale.to_vec();
+            self.header.transform.scale = scale;
         }
         true
     }
@@ -291,37 +294,17 @@ impl Source {
         self
     }
 
-    /// The RAW (unsliced) appearance array that this source's
-    /// `header().geometry_templates`' template `material`/`texture` maps
-    /// actually index into.
-    ///
-    /// For a whole-document CityJSON source, `header()` is `doc.get_metadata()`:
-    /// it slices `appearance` down to only the entries referenced by
-    /// templates, renumbered to a local 0.. sequence — but it does so
-    /// against a SEPARATE clone of the templates it builds internally and
-    /// discards; `header().geometry_templates` itself is a bare clone of the
-    /// document's original templates, whose `material`/`texture` maps still
-    /// carry the document's GLOBAL indices (see `cjseq::CityJSON::get_metadata`:
-    /// it mutates `gts2` — a clone — to compute the renumbering, while the
-    /// header's own `geometry_templates` field is `self.geometry_templates.clone()`,
-    /// untouched). So the only appearance array the header's template maps
-    /// resolve against is the raw document's own `appearance`, never
-    /// `header().appearance`.
-    ///
-    /// For a CityJSONSeq source there is no separate "raw document" — the
-    /// header IS the stream's first line, and whatever produced the file is
-    /// responsible for keeping that line's `appearance` and
-    /// `geometry-templates` mutually consistent (sliced/remapped together,
-    /// if at all). `header().appearance` is therefore already the right defs
-    /// array in that case.
+    /// The appearance array that this source's `header().geometry_templates`'
+    /// template `material`/`texture` maps index into: the header's own,
+    /// which for a whole CityJSON document is the document's appearance cut
+    /// down to what the templates use and renumbered with them, and for a
+    /// CityJSONSeq is the stream's first line. An in-memory source carries
+    /// its own.
     pub fn doc_appearance(&self) -> Option<&cjseq::Appearance> {
         if let Some(buffered) = &self.buffered {
             return buffered.doc_appearance.as_ref();
         }
-        match &self.doc {
-            Some(doc) => doc.appearance.as_ref(),
-            None => self.header.appearance.as_ref(),
-        }
+        self.header.appearance.as_ref()
     }
 
     /// [`Source::features`], with a CityJSONSeq file's lines parsed a batch
@@ -356,10 +339,13 @@ impl Source {
                 lines.next(); // skip header line
                 Ok(FeatureIter::Seq(lines))
             }
-            SourceFormat::CityJson => Ok(FeatureIter::Doc {
-                doc: self.doc.as_ref().expect("doc set"),
-                i: 0,
-            }),
+            SourceFormat::CityJson => {
+                let doc = self.doc.as_ref().expect("doc set");
+                Ok(FeatureIter::Doc {
+                    doc,
+                    ids: feature_ids(doc).into_iter(),
+                })
+            }
             SourceFormat::CityGml => Ok(FeatureIter::CityGml(Box::new(
                 crate::citygml::FeatureReader::open(&self.path, &self.header.transform)?,
             ))),
@@ -398,7 +384,10 @@ impl Source {
                         ready: Vec::new().into_iter(),
                     }
                 }
-                SourceFormat::CityJson => Access::Doc(self.doc.as_ref().expect("doc set")),
+                SourceFormat::CityJson => {
+                    let doc = self.doc.as_ref().expect("doc set");
+                    Access::Doc(doc, feature_ids(doc))
+                }
                 SourceFormat::CityGml | SourceFormat::FlatCityBuf => {
                     return Ok(OrderedFeatures::parsed(
                         self.features()?.collect::<Result<Vec<_>>>()?,
@@ -486,7 +475,8 @@ enum Access<'a> {
         spans: Vec<(u64, usize)>,
         ready: std::vec::IntoIter<Result<CityJSONFeature>>,
     },
-    Doc(&'a CityJSON),
+    /// The document and its feature ids, in [`Source::features`] order.
+    Doc(&'a CityJSON, Vec<&'a str>),
     Buffered(&'a [CityJSONFeature]),
     /// Taken out as they are handed over, so each is moved, never cloned.
     Parsed(Vec<Option<CityJSONFeature>>),
@@ -531,7 +521,10 @@ impl Iterator for OrderedFeatures<'_> {
         let missing = || err(format!("feature {i} is not in the source"));
         Some(match &mut self.access {
             Access::Lines { .. } => unreachable!("handled above"),
-            Access::Doc(doc) => doc.get_cjfeature(i).ok_or_else(missing),
+            Access::Doc(doc, ids) => match ids.get(i) {
+                Some(id) => doc_feature(doc, id),
+                None => Err(missing()),
+            },
             Access::Buffered(features) => features.get(i).cloned().ok_or_else(missing),
             Access::Parsed(features) => features
                 .get_mut(i)
@@ -622,54 +615,57 @@ fn name_a_few(ids: &BTreeSet<&str>) -> String {
     }
 }
 
-/// Refuse a CityJSON document whose hierarchy [`FeatureIter::Doc`] cannot
-/// stream without losing objects.
+/// A CityJSON document's feature ids — its top-level objects — sorted, so
+/// the features come out in the same order whatever order the document lists
+/// its objects in.
+fn feature_ids(doc: &CityJSON) -> Vec<&str> {
+    let mut ids: Vec<&str> = doc
+        .city_objects
+        .iter()
+        .filter(|(_, co)| is_toplevel(co))
+        .map(|(id, _)| id.as_str())
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// The feature rooted at top-level object `id`: it and all its descendants.
+fn doc_feature(doc: &CityJSON, id: &str) -> Result<CityJSONFeature> {
+    doc.feature(id)
+        .map_err(|e| err(format!("cannot cut feature {id} from the document: {e}")))?
+        .ok_or_else(|| err(format!("feature {id} is not in the document")))
+}
+
+/// Refuse a CityJSON document that [`FeatureIter::Doc`] cannot stream without
+/// losing objects.
 ///
-/// cjseq 0.4.1 builds the feature stream from two rules: one feature per
-/// TOP-LEVEL object, carrying that object plus **exactly one level** of its
-/// `children` — `CityJSON::get_cjfeature` carries its own
-/// `//-- TODO: to fix: children-of-children?`. An object that is neither
-/// top-level nor the child of a top-level object is therefore emitted by
-/// nobody and vanishes without a word. Nothing downstream notices: `convert` →
-/// `export` → `compare` reads the source through this same iterator on both
-/// sides, so both sides drop it and the round-trip reports equality.
-///
-/// This reproduces those two rules verbatim rather than approximating them
-/// with a depth limit, and errors when any object falls outside the emitted
-/// set. It also catches the dangling child key that would otherwise panic
-/// inside `get_cjfeature` (`self.city_objects.get(&childkey).unwrap()`),
-/// taking the process down with no diagnostic at all.
+/// A feature is a top-level object and every object below it through
+/// `children`. An object no top-level object reaches — its `parents` name an
+/// object that is not there, or a parent/child cycle has no top-level object
+/// above it — is emitted by nobody and would vanish without a word, and
+/// nothing downstream would notice: `convert` → `export` → `compare` reads
+/// the source through this same iterator on both sides. A child id that names
+/// no object is refused here too, with the ids, before any feature is cut.
 ///
 /// Only the whole-document path needs this. CityJSONSeq features arrive
 /// already-formed, and [`crate::citygml`]'s reader descends recursively
-/// (`emit_into`), so both carry arbitrarily deep hierarchies safely.
-///
-/// It guards [`Source`], which is every read path the CLI drives — convert,
-/// export and compare all go through it. The read benchmark
-/// (`cityparquet-readbench`'s `formats::cityjson`) deliberately does not: it
-/// parses the document itself to measure parsing, and routing it through this
-/// check would put validation work inside the timed section. A >2-level
-/// document would still lose objects there; the benchmark corpus is
-/// two-level.
-///
-/// Delete this the day cjseq descends transitively — the canary test
-/// `cjseq_still_drops_grandchildren_so_this_guard_is_still_needed` fails on
-/// that day and says so. Note the workspace depends on `cjseq = "0.4"`, not a
-/// pinned patch, so the day can arrive without anyone editing this repo.
+/// (`emit_into`).
 fn validate_document_hierarchy(doc: &CityJSON) -> Result<()> {
     let mut emitted: HashSet<&str> = HashSet::new();
     let mut missing: BTreeSet<&str> = BTreeSet::new();
-
-    for (id, co) in &doc.city_objects {
-        if !is_toplevel(co) {
+    let mut pending: Vec<&str> = doc
+        .city_objects
+        .iter()
+        .filter(|(_, co)| is_toplevel(co))
+        .map(|(id, _)| id.as_str())
+        .collect();
+    while let Some(id) = pending.pop() {
+        if !emitted.insert(id) {
             continue;
         }
-        emitted.insert(id.as_str());
-        for child in co.children.iter().flatten() {
+        for child in doc.city_objects[id].children.iter().flatten() {
             match doc.city_objects.get_key_value(child) {
-                Some((child_id, _)) => {
-                    emitted.insert(child_id.as_str());
-                }
+                Some((child_id, _)) => pending.push(child_id.as_str()),
                 None => {
                     missing.insert(child.as_str());
                 }
@@ -693,9 +689,8 @@ fn validate_document_hierarchy(doc: &CityJSON) -> Result<()> {
         .collect();
     if !dropped.is_empty() {
         return Err(err(format!(
-            "CityJSON document nests city objects more than two levels deep: {} object(s) are \
-             neither top-level nor the child of a top-level object and would be dropped \
-             silently: {}. Convert the document to CityJSONSeq first, or flatten the hierarchy.",
+            "CityJSON document has {} object(s) no top-level object reaches through \
+             `children`, which would be dropped silently: {}",
             dropped.len(),
             name_a_few(&dropped)
         )));
@@ -710,7 +705,7 @@ pub enum FeatureIter<'a> {
     SeqBatched(SeqFeatures),
     Doc {
         doc: &'a CityJSON,
-        i: usize,
+        ids: std::vec::IntoIter<&'a str>,
     },
     CityGml(Box<crate::citygml::FeatureReader>),
     #[cfg(feature = "fcb")]
@@ -739,11 +734,7 @@ impl Iterator for FeatureIter<'_> {
                 }
             },
             FeatureIter::SeqBatched(features) => features.next(),
-            FeatureIter::Doc { doc, i } => {
-                let f = doc.get_cjfeature(*i)?;
-                *i += 1;
-                Some(Ok(f))
-            }
+            FeatureIter::Doc { doc, ids } => ids.next().map(|id| doc_feature(doc, id)),
             FeatureIter::CityGml(reader) => reader.next(),
             #[cfg(feature = "fcb")]
             FeatureIter::FlatCityBuf(reader) => reader.next(),

@@ -84,8 +84,8 @@ jobs:
     uses: ./.github/workflows/rust.yml
 
   # The `cityparquet` CLI binary, for people who want the tool without a Rust
-  # toolchain. Nothing here needs a submodule: vendor/cjseq is an in-tree
-  # vendored copy, and the city3d-stac crates come from crates.io.
+  # toolchain. Nothing here needs a submodule: cjseq is a git dependency,
+  # and the city3d-stac crates come from crates.io.
   binaries:
     name: ${{ matrix.target }}
     needs: gate

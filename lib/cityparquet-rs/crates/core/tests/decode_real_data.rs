@@ -101,7 +101,9 @@ fn delft_decodes_every_object_with_correct_types_and_attributes() {
     let mut total_geometries = 0usize;
     for obj in &objects {
         assert!(!obj.id.is_empty(), "every id must be non-empty");
-        *type_counts.entry(obj.object.thetype.clone()).or_default() += 1;
+        *type_counts
+            .entry(String::from(obj.object.thetype.clone()))
+            .or_default() += 1;
 
         for (lod, _decoded, _props) in &obj.geometries {
             let lod = lod.as_ref().unwrap_or_else(|| {
@@ -179,7 +181,7 @@ fn delft_decodes_every_object_with_correct_types_and_attributes() {
     let mut int_checked = 0usize;
     let mut float_checked = 0usize;
     for obj in &objects {
-        let Some(attrs) = obj.object.attributes.as_ref().and_then(|v| v.as_object()) else {
+        let Some(attrs) = obj.object.attributes.as_ref() else {
             continue;
         };
         if let Some(v) = attrs.get("begingeldigheid") {

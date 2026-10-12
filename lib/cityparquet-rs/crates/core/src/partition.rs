@@ -535,7 +535,7 @@ mod tests {
         let parent_id = f
             .city_objects
             .iter()
-            .find(|(_, co)| co.thetype == "Building")
+            .find(|(_, co)| co.thetype == cjseq::CityObjectType::Building)
             .map(|(id, _)| id.clone())
             .expect("delft features are Building + BuildingPart");
         let child_id = f

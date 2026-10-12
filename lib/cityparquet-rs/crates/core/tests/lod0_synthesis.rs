@@ -58,7 +58,7 @@ fn delft_solids_synthesise_valid_multipolygon_footprints() {
             };
             for geom in geoms {
                 if !matches!(
-                    geom.thetype,
+                    geom.geometry_type(),
                     GeometryType::Solid
                         | GeometryType::MultiSolid
                         | GeometryType::CompositeSolid

@@ -65,7 +65,7 @@ fn crs_key(header: &CityJSON) -> Result<Option<serde_json::Value>> {
 /// `v' = round(v·(srcScale/mergedScale) + (srcTranslate − mergedTranslate)/mergedScale)`
 /// — the two ratios are precomputed per axis so a clean integral ratio
 /// (`merged` finer by an integer factor, same translate) round-trips exactly.
-fn requantise_vertices(vertices: &mut [Vec<i64>], src: &Transform, merged: &Transform) {
+fn requantise_vertices(vertices: &mut [[i64; 3]], src: &Transform, merged: &Transform) {
     let mut ratio = [0f64; 3];
     let mut offset = [0f64; 3];
     for i in 0..3 {
@@ -73,7 +73,7 @@ fn requantise_vertices(vertices: &mut [Vec<i64>], src: &Transform, merged: &Tran
         offset[i] = (src.translate[i] - merged.translate[i]) / merged.scale[i];
     }
     for v in vertices.iter_mut() {
-        for (i, c) in v.iter_mut().enumerate().take(3) {
+        for (i, c) in v.iter_mut().enumerate() {
             *c = (*c as f64 * ratio[i] + offset[i]).round() as i64;
         }
     }
@@ -103,20 +103,15 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
     }
 
     // Validate every transform up front so the min/requantise arithmetic below
-    // can index [0..3] and divide by scale without panicking or producing NaN.
+    // can divide by scale without producing NaN.
     for s in sources {
         let t = &s.header().transform;
-        if t.scale.len() < 3 || t.translate.len() < 3 {
-            return Err(err(
-                "CityJSON transform scale/translate must have 3 components".to_string(),
-            ));
-        }
-        if t.scale.iter().take(3).any(|&x| !x.is_finite() || x <= 0.0) {
+        if t.scale.iter().any(|&x| !x.is_finite() || x <= 0.0) {
             return Err(err(
                 "CityJSON transform scale must be finite and positive".to_string()
             ));
         }
-        if t.translate.iter().take(3).any(|&x| !x.is_finite()) {
+        if t.translate.iter().any(|&x| !x.is_finite()) {
             return Err(err(
                 "CityJSON transform translate must be finite".to_string()
             ));
@@ -130,8 +125,8 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
     let merged_transform = if all_equal {
         transforms[0].clone()
     } else {
-        let mut scale = transforms[0].scale.clone();
-        let mut translate = transforms[0].translate.clone();
+        let mut scale = transforms[0].scale;
+        let mut translate = transforms[0].translate;
         for t in &transforms[1..] {
             for i in 0..3 {
                 scale[i] = scale[i].min(t.scale[i]);

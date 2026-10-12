@@ -5,12 +5,14 @@ pub mod appearance;
 pub mod appearance_columns;
 mod arrow_compat;
 pub mod citygml;
+mod cjtypes;
 pub mod compare;
 #[cfg(feature = "object-store")]
 pub mod counting_store;
 pub mod decode;
 pub mod encode;
 pub mod export;
+mod faces;
 pub mod fcb;
 mod geometry_encoding;
 mod geometry_properties;

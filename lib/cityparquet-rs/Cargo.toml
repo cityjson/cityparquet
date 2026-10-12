@@ -9,9 +9,6 @@ members = ["crates/schema", "crates/core", "crates/cli"]
 # the rest of the benchmark under ../../benchmark/readbench, and it is its own
 # workspace there (see the migration note's D6 — independent workspaces are the
 # established pattern in this tree).
-# vendor/ holds a patched copy of cjseq, consumed through [patch.crates-io]
-# below; it is its own Cargo project and must not be pulled into this workspace.
-exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -43,7 +40,10 @@ serde = { version = "1", features = ["derive"] }
 # lookup parses only the entry it asked for (D-RS-15).
 serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 thiserror = "2"
-cjseq = "0.4"
+# cjseq 0.5 is not on crates.io yet, so it comes from git, pinned to a commit
+# on the fork's `main`; crates.io refuses a crate with a git dependency, which
+# is what keeps `cityparquet` unpublished.
+cjseq = { git = "https://github.com/HideBa/cjseq", rev = "2b635a12196d1c5264f7125f22165fdac8f68e96" }
 quick-xml = "0.39"
 chrono = "0.4"
 flate2 = "1"
@@ -79,9 +79,3 @@ memchr = "2.7"
 # FlatCityBuf input (the `fcb` feature). The exact pin the read benchmark
 # (`benchmark/readbench`) carries, so the two resolve to one version.
 fcb_core = "=0.7.6"
-
-# vendor/cjseq carries a patched 0.4.1: upstream's `add_cjfeature`/
-# `update_texture` mis-base merged texture UV-vertex indices, corrupting
-# `.city.json` (Doc-format) export. See vendor/cjseq/PATCHES.md.
-[patch.crates-io]
-cjseq = { path = "vendor/cjseq" }

@@ -88,13 +88,16 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use chrono::{DateTime, NaiveDate};
-use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 use cityparquet_schema::crs::AxisOrder;
-use cityparquet_schema::{CityParquetError, Lod, Result};
-use cjseq::{CityJSON, Geometry, GeometryType, Transform};
+use cityparquet_schema::{CityParquetError, Result};
+use cjseq::{
+    CityJSON, CityObjectType, Geometry, GeometryType, MaterialIndex, MaterialObject, Ring, Shell,
+    Surface, TemplateIndex, TextureIndex, TextureObject, TexturedRing, UvIndex, VertexIndex,
+};
 
+use crate::faces::{Faces, MaterialTheme};
 use crate::source::Source;
 use crate::wkb_write::VertexPool;
 
@@ -168,10 +171,10 @@ fn node_matches(a: &Node, b: &Node, tol: [f64; 3]) -> bool {
     }
 }
 
-fn points_node(pool: &VertexPool, idxs: &[usize]) -> Result<Node> {
+fn points_node(pool: &VertexPool, idxs: &[VertexIndex]) -> Result<Node> {
     Ok(Node::List(
         idxs.iter()
-            .map(|&i| Ok(Node::Point(pool.coord(i)?)))
+            .map(|&VertexIndex(i)| Ok(Node::Point(pool.coord(i)?)))
             .collect::<Result<Vec<_>>>()?,
     ))
 }
@@ -198,7 +201,7 @@ fn address_location_node(location: &Value, pool: &VertexPool) -> Option<Node> {
     if obj.get("type").and_then(Value::as_str) != Some("MultiPoint") {
         return None;
     }
-    let idxs: Vec<usize> = serde_json::from_value(obj.get("boundaries")?.clone()).ok()?;
+    let idxs: Vec<VertexIndex> = serde_json::from_value(obj.get("boundaries")?.clone()).ok()?;
     if idxs.is_empty() {
         return None;
     }
@@ -230,7 +233,7 @@ fn address_comparables(co: &cjseq::CityObject, pool: &VertexPool) -> Result<Vec<
         .collect())
 }
 
-fn ring_list_node(pool: &VertexPool, rings: &[Vec<usize>]) -> Result<Node> {
+fn ring_list_node(pool: &VertexPool, rings: &[Ring]) -> Result<Node> {
     Ok(Node::List(
         rings
             .iter()
@@ -239,7 +242,7 @@ fn ring_list_node(pool: &VertexPool, rings: &[Vec<usize>]) -> Result<Node> {
     ))
 }
 
-fn surface_list_node(pool: &VertexPool, surfaces: &[Vec<Vec<usize>>]) -> Result<Node> {
+fn surface_list_node(pool: &VertexPool, surfaces: &[Surface]) -> Result<Node> {
     Ok(Node::List(
         surfaces
             .iter()
@@ -312,8 +315,8 @@ fn surface_list_node(pool: &VertexPool, surfaces: &[Vec<Vec<usize>>]) -> Result<
 /// all cannot form a real ring either. `pool` is the SAME side's own
 /// `VertexPool` the ring's indices belong to (source or exported — this
 /// function does not know or care which).
-fn normalise_ring(ring: &[usize], pool: &VertexPool) -> Result<Option<Vec<usize>>> {
-    let coord_bits = |idx: usize| -> Result<[u64; 3]> {
+fn normalise_ring(ring: &[VertexIndex], pool: &VertexPool) -> Result<Option<Ring>> {
+    let coord_bits = |VertexIndex(idx): VertexIndex| -> Result<[u64; 3]> {
         let c = pool.coord(idx)?;
         Ok([c[0].to_bits(), c[1].to_bits(), c[2].to_bits()])
     };
@@ -342,9 +345,9 @@ fn normalise_ring(ring: &[usize], pool: &VertexPool) -> Result<Option<Vec<usize>
 /// bitwise comparison on the dequantised value is exactly as exact as (and
 /// cheaper than plumbing through) a direct comparison of the underlying
 /// quantised i64 triples.
-fn distinct_coord_count(ring: &[usize], pool: &VertexPool) -> Result<usize> {
+fn distinct_coord_count(ring: &[VertexIndex], pool: &VertexPool) -> Result<usize> {
     let mut seen: HashSet<[u64; 3]> = HashSet::with_capacity(ring.len());
-    for &idx in ring {
+    for &VertexIndex(idx) in ring {
         let c = pool.coord(idx)?;
         seen.insert([c[0].to_bits(), c[1].to_bits(), c[2].to_bits()]);
     }
@@ -356,10 +359,10 @@ fn distinct_coord_count(ring: &[usize], pool: &VertexPool) -> Result<usize> {
 /// when the EXTERIOR ring (index 0) was dropped — interior rings cannot
 /// stand without it.
 fn normalise_surface(
-    rings: &[Vec<usize>],
+    rings: &[Ring],
     pool: &VertexPool,
     dropped_rings: &mut usize,
-) -> Result<Option<Vec<Vec<usize>>>> {
+) -> Result<Option<Surface>> {
     let mut kept = Vec::with_capacity(rings.len());
     let mut exterior_dropped = false;
     for (i, ring) in rings.iter().enumerate() {
@@ -390,47 +393,28 @@ struct NormalisedGeometry {
     dropped_surfaces: usize,
 }
 
-fn parse_boundaries<T: DeserializeOwned>(geom: &Geometry) -> Result<T> {
-    serde_json::from_value(geom.boundaries.clone()).map_err(|e| {
-        err(format!(
-            "boundaries do not match the expected shape for {:?}: {e}",
-            geom.thetype
-        ))
-    })
-}
-
-/// Canonicalise a source geometry's `semantics` to `{surfaces, face_semantics}`
-/// — the flat, face-aligned form the stored column uses (§8) — so BOTH sides of
-/// a comparison are reduced to the same representation. This flattens the
-/// nested CityJSON `values` (expanding the null shorthand via `boundaries`) and
-/// removes the writer-dropped face positions, so a source that used the null
-/// shorthand (`values: [null]`) compares EQUAL to the exporter's expanded
-/// per-face form (spec §17's up-to-canonicalisation round-trip). Reuses the
-/// exact flatten the encoder uses, so the two never diverge.
-fn canonical_semantics(
-    semantics: &Option<Value>,
-    boundaries: &Value,
-    thetype: &GeometryType,
-    dropped: &[usize],
-) -> Option<Value> {
-    let semantics = semantics.as_ref()?;
-    let surfaces = semantics.get("surfaces")?.clone();
-    let depth = crate::encode::values_nesting_depth(thetype);
-    let mut flat = Vec::new();
-    if let Some(values) = semantics.get("values") {
-        crate::encode::flatten_values(values, boundaries, depth, &mut flat);
-    }
-    flat.resize(
-        crate::encode::count_boundary_faces(boundaries, depth),
-        Value::Null,
-    );
-    let drop_set: std::collections::HashSet<usize> = dropped.iter().copied().collect();
+/// Canonicalise a geometry's `semantics` to `{surfaces, face_semantics}` —
+/// the flat, face-aligned form the stored column uses (§8) — so BOTH sides of
+/// a comparison are reduced to the same representation. The values are
+/// flattened by [`crate::faces`], the walk the encoder uses, so a source that
+/// used the null shorthand (`values: [null]`) compares EQUAL to the
+/// exporter's expanded per-face form (spec §17's up-to-canonicalisation
+/// round-trip); `dropped` are the face positions the writer removes.
+fn canonical_semantics(geom: &Geometry, dropped: &[usize]) -> Result<Option<Value>> {
+    let Some((surfaces, flat)) = crate::faces::semantics(geom) else {
+        return Ok(None);
+    };
+    let drop_set: HashSet<usize> = dropped.iter().copied().collect();
     let face_semantics: Vec<Value> = flat
         .into_iter()
         .enumerate()
-        .filter_map(|(i, v)| (!drop_set.contains(&i)).then_some(v))
+        .filter(|(i, _)| !drop_set.contains(i))
+        .map(|(_, v)| v.map_or(Value::Null, |s| Value::from(s.0)))
         .collect();
-    Some(serde_json::json!({ "surfaces": surfaces, "face_semantics": face_semantics }))
+    Ok(Some(serde_json::json!({
+        "surfaces": serde_json::to_value(surfaces)?,
+        "face_semantics": face_semantics,
+    })))
 }
 
 /// Feature-scoped `material`/`texture`/`vertices-texture` DEFINITIONS a
@@ -441,7 +425,7 @@ fn canonical_semantics(
 /// `appearance` block at all.
 ///
 /// Dereferencing through this (rather than comparing the raw index numbers
-/// `geom.material`/`geom.texture` carry) is required because feature-local
+/// a geometry's `material`/`texture` carry) is required because feature-local
 /// index NUMBERING is an implementation detail of whatever produced the
 /// file, not part of a CityJSON's semantics — the same reason boundary
 /// vertex INDICES are dereferenced through `VertexPool` into real
@@ -452,25 +436,18 @@ fn canonical_semantics(
 /// plain JSON through `values_equal` — i.e. under its generic 1e-9
 /// RELATIVE float tolerance, not any quantisation-derived one (UVs are
 /// stored unquantised on both sides, so there is no scale to derive a
-/// tolerance from). Two independently-produced
-/// packages routinely disagree on numbering for two INDEPENDENT reasons that
-/// this module's own M4 task 11 round-trip gate against a real Compatibility
-/// package exposed: (1) `crate::encode`'s `BatchIter` sorts a feature's
-/// CityObject ids alphabetically before writing rows, while `cjseq`'s own
-/// `get_cjfeature` walks parent-then-children in the file's own `children`
-/// list order — different row/local-index assignment order for the exact
-/// same feature; (2) `crate::export::LocalAppearance::local_uv_id` dedupes
-/// inlined `[u, v]` pairs BY VALUE, while `cjseq::update_texture` maps by
-/// REFERENCED GLOBAL INDEX identity (no value-dedup) — so two different
-/// source UV entries that happen to hold the same coordinate pair get ONE
-/// local id after a round trip but TWO in the original file. Neither
-/// disagreement is a data-loss bug; a byte-exact-index comparator cannot
-/// tell that apart from one, which is exactly why it does not compare index
-/// numbers at all.
+/// tolerance from). Two independently-produced packages routinely disagree
+/// on numbering: `crate::encode`'s `BatchIter` writes a feature's CityObjects
+/// in id order, while a source file lists them in its own order; and
+/// `crate::export::LocalAppearance::local_uv_id` dedupes inlined `[u, v]`
+/// pairs BY VALUE, while a source may hold two UV entries with the same
+/// coordinate pair. Neither disagreement is a data-loss bug; a
+/// byte-exact-index comparator cannot tell that apart from one, which is
+/// exactly why it does not compare index numbers at all.
 struct AppearanceDefs<'a> {
-    materials: &'a [Value],
-    textures: &'a [Value],
-    vertices_texture: &'a [Vec<f64>],
+    materials: &'a [MaterialObject],
+    textures: &'a [TextureObject],
+    vertices_texture: &'a [[f64; 2]],
 }
 
 impl AppearanceDefs<'_> {
@@ -498,112 +475,39 @@ impl AppearanceDefs<'_> {
         Self::from_appearance(feature.appearance.as_ref())
     }
 
-    /// The RAW DOCUMENT appearance arrays that a `GeometryInstance` TEMPLATE's
-    /// `material`/`texture` indices actually reference — used in
-    /// [`resolve_instance`], mirroring `crate::package::build_implicit_geometry_rows`'s
-    /// write-side counterpart (which dereferences template appearance against
-    /// the exact same array when building `implicit_geometries.parquet`).
-    ///
-    /// Deliberately NOT `header.appearance`: see
-    /// [`crate::source::Source::doc_appearance`]'s doc comment — for a
-    /// whole-document CityJSON source, `Source::header()` is `cjseq`'s
-    /// `get_metadata()`, which SLICES `appearance` down to only the entries
-    /// referenced by templates and renumbers them, but does so against a
-    /// separate clone; the header's own `geometry_templates.material`/
-    /// `texture` maps it hands back still carry the ORIGINAL document's
-    /// global indices. Resolving those against the sliced-and-renumbered
-    /// `header.appearance` would therefore go out of range (or silently
-    /// dereference the wrong definition) for any `.city.json` source with
-    /// more appearance definitions than its templates alone reference — the
-    /// M4 Codex-review Finding 3 fix must use `Source::doc_appearance()`
-    /// instead, never a per-feature `AppearanceDefs` like
-    /// [`Self::from_feature`].
+    /// The appearance arrays a `GeometryInstance` TEMPLATE's
+    /// `material`/`texture` indices reference — used in
+    /// [`resolve_instance`], mirroring
+    /// `crate::package::build_implicit_geometry_rows`'s write-side
+    /// counterpart. See [`crate::source::Source::doc_appearance`]; never a
+    /// per-feature `AppearanceDefs` like [`Self::from_feature`].
     fn from_doc_appearance(source: &Source) -> AppearanceDefs<'_> {
         Self::from_appearance(source.doc_appearance())
     }
 }
 
-/// One material index -> its actual definition in `defs.materials`.
-/// `defs.materials.is_empty()` (no `appearance.materials` array to resolve
-/// against at all — e.g. a hand-built geometry in this module's own unit
-/// tests, or a real feature whose material index is a leftover reference
-/// with nothing behind it) passes the raw index number through UNCHANGED
-/// rather than erroring: comparing the bare number is still strictly better
-/// than refusing to compare at all, and every REAL round-tripped package
-/// this module compares carries the array whenever it carries any material
-/// index reference in the first place.
-fn resolve_material_index(v: &Value, defs: &AppearanceDefs) -> Result<Value> {
-    match v {
-        Value::Null => Ok(Value::Null),
-        Value::Number(n) => {
-            if defs.materials.is_empty() {
-                return Ok(Value::Number(n.clone()));
-            }
-            let idx = n
-                .as_u64()
-                .ok_or_else(|| err(format!("material index is not a non-negative integer: {n}")))?
-                as usize;
-            defs.materials.get(idx).cloned().ok_or_else(|| {
-                err(format!(
-                    "material index {idx} out of range (have {} definitions)",
-                    defs.materials.len()
-                ))
-            })
-        }
-        other => Err(err(format!(
-            "material index must be an integer or null, got {other}"
-        ))),
+/// One material index -> its actual definition in `defs.materials`, as
+/// JSON. `defs.materials.is_empty()` (no `appearance.materials` array to
+/// resolve against at all — e.g. a real feature whose material index is a
+/// leftover reference with nothing behind it) passes the raw index number
+/// through UNCHANGED rather than erroring: comparing the bare number is still
+/// strictly better than refusing to compare at all, and every REAL
+/// round-tripped package this module compares carries the array whenever it
+/// carries any material index reference in the first place.
+fn resolve_material_index(idx: Option<MaterialIndex>, defs: &AppearanceDefs) -> Result<Value> {
+    let Some(MaterialIndex(idx)) = idx else {
+        return Ok(Value::Null);
+    };
+    if defs.materials.is_empty() {
+        return Ok(Value::from(idx));
     }
-}
-
-/// Walks a material theme's `values` list — the canonical flat form, one
-/// entry per stored WKB face (see [`canonical_material`]) — resolving each
-/// leaf index.
-fn resolve_material_tree(v: &Value, defs: &AppearanceDefs) -> Result<Value> {
-    match v {
-        Value::Array(items) => Ok(Value::Array(
-            items
-                .iter()
-                .map(|x| resolve_material_tree(x, defs))
-                .collect::<Result<Vec<_>>>()?,
-        )),
-        _ => resolve_material_index(v, defs),
-    }
-}
-
-/// One geometry's whole `material` map with every index resolved to its
-/// actual definition. Called on the canonical flat form only (see
-/// [`canonical_material`]), which is why there is no `value` branch: the
-/// broadcast is expanded to one entry per stored face before resolution, so
-/// every theme here carries `values`.
-fn resolve_material_map(map: &Value, defs: &AppearanceDefs) -> Result<Value> {
-    let obj = map.as_object().ok_or_else(|| {
-        err("material map must be a JSON object of theme -> {values}".to_string())
+    let def = defs.materials.get(idx).ok_or_else(|| {
+        err(format!(
+            "material index {idx} out of range (have {} definitions)",
+            defs.materials.len()
+        ))
     })?;
-    let mut out = Map::with_capacity(obj.len());
-    for (theme, inner) in obj {
-        let inner_obj = inner
-            .as_object()
-            .ok_or_else(|| err(format!("material theme '{theme}' must be an object")))?;
-        let values = inner_obj
-            .get("values")
-            .ok_or_else(|| err(format!("material theme '{theme}' is missing 'values'")))?;
-        let mut new_inner = Map::with_capacity(1);
-        new_inner.insert("values".to_string(), resolve_material_tree(values, defs)?);
-        out.insert(theme.clone(), Value::Object(new_inner));
-    }
-    Ok(Value::Object(out))
-}
-
-/// A *ring* is the innermost texture-map array: `[textureIdx|null, uvIdx0,
-/// uvIdx1, ...]` (standard CityJSON index form — never the CityParquet-
-/// internal inlined `[u, v]` form, which exists only inside a package's own
-/// stored columns and is always undone back to this index form by
-/// `crate::export` before a file reaches this comparator). Recognised the
-/// same way `crate::export::is_localised_texture_ring` recognises it: first
-/// element a number or `null`.
-fn is_texture_ring(items: &[Value]) -> bool {
-    !items.is_empty() && matches!(items[0], Value::Number(_) | Value::Null)
+    Ok(serde_json::to_value(def)?)
 }
 
 /// One texture ring with its texture-definition index and every
@@ -613,62 +517,32 @@ fn is_texture_ring(items: &[Value]) -> bool {
 /// texture id and the UV indices independently (a feature could in
 /// principle carry `textures` but no `vertices-texture`, or vice versa,
 /// though never in practice for a real package).
-fn resolve_texture_ring(items: &[Value], defs: &AppearanceDefs) -> Result<Value> {
-    if items.len() == 1 && items[0].is_null() {
-        return Ok(Value::Array(vec![Value::Null]));
-    }
-    let mut out = Vec::with_capacity(items.len());
-    out.push(match &items[0] {
-        Value::Null => Value::Null,
-        Value::Number(n) => {
-            if defs.textures.is_empty() {
-                Value::Number(n.clone())
-            } else {
-                let idx = n.as_u64().ok_or_else(|| {
-                    err(format!("texture index is not a non-negative integer: {n}"))
-                })? as usize;
-                defs.textures.get(idx).cloned().ok_or_else(|| {
-                    err(format!(
-                        "texture index {idx} out of range (have {} definitions)",
-                        defs.textures.len()
-                    ))
-                })?
-            }
-        }
-        other => {
-            return Err(err(format!(
-                "texture index must be an integer or null, got {other}"
-            )));
-        }
+fn resolve_texture_ring(
+    TextureIndex(texture): TextureIndex,
+    uvs: &[UvIndex],
+    defs: &AppearanceDefs,
+) -> Result<Value> {
+    let mut out = Vec::with_capacity(uvs.len() + 1);
+    out.push(if defs.textures.is_empty() {
+        Value::from(texture)
+    } else {
+        let def = defs.textures.get(texture).ok_or_else(|| {
+            err(format!(
+                "texture index {texture} out of range (have {} definitions)",
+                defs.textures.len()
+            ))
+        })?;
+        serde_json::to_value(def)?
     });
-    for uv in &items[1..] {
+    for &UvIndex(idx) in uvs {
         if defs.vertices_texture.is_empty() {
-            out.push(uv.clone());
+            out.push(Value::from(idx));
             continue;
         }
-        let idx = uv.as_u64().ok_or_else(|| {
-            err(format!(
-                "vertex-texture index is not a non-negative integer: {uv}"
-            ))
-        })? as usize;
-        let pair = defs.vertices_texture.get(idx).ok_or_else(|| {
+        let [u, v] = defs.vertices_texture.get(idx).ok_or_else(|| {
             err(format!(
                 "vertex-texture index {idx} out of range (have {} entries)",
                 defs.vertices_texture.len()
-            ))
-        })?;
-        // A malformed (hand-edited/third-party) file can carry a
-        // vertices-texture entry with fewer than 2 coordinates — an error
-        // naming the entry, never an index-out-of-bounds panic.
-        let u = pair.first().ok_or_else(|| {
-            err(format!(
-                "vertex-texture entry {idx} is malformed: expected [u, v], got an empty entry"
-            ))
-        })?;
-        let v = pair.get(1).ok_or_else(|| {
-            err(format!(
-                "vertex-texture entry {idx} is malformed: expected [u, v], got {} coordinate(s)",
-                pair.len()
             ))
         })?;
         out.push(serde_json::json!([u, v]));
@@ -676,128 +550,59 @@ fn resolve_texture_ring(items: &[Value], defs: &AppearanceDefs) -> Result<Value>
     Ok(Value::Array(out))
 }
 
-/// Walks a texture theme's `values` tree down to the innermost rings,
-/// resolving each one.
-fn resolve_texture_tree(v: &Value, defs: &AppearanceDefs) -> Result<Value> {
-    match v {
-        Value::Array(items) => {
-            if is_texture_ring(items) {
-                resolve_texture_ring(items, defs)
-            } else {
-                Ok(Value::Array(
-                    items
-                        .iter()
-                        .map(|x| resolve_texture_tree(x, defs))
-                        .collect::<Result<Vec<_>>>()?,
-                ))
-            }
-        }
-        other => Err(err(format!(
-            "unexpected non-array node in texture tree: {other}"
-        ))),
-    }
-}
-
-/// One geometry's whole `texture` map with every ring resolved to its actual
-/// texture definition and real `[u, v]` pairs. Called on the canonical flat
-/// form only (see [`canonical_texture`]), so every theme here carries
-/// `values`.
-fn resolve_texture_map(map: &Value, defs: &AppearanceDefs) -> Result<Value> {
-    let obj = map
-        .as_object()
-        .ok_or_else(|| err("texture map must be a JSON object of theme -> {values}".to_string()))?;
-    let mut out = Map::with_capacity(obj.len());
-    for (theme, inner) in obj {
-        let inner_obj = inner
-            .as_object()
-            .ok_or_else(|| err(format!("texture theme '{theme}' must be an object")))?;
-        let values = inner_obj
-            .get("values")
-            .ok_or_else(|| err(format!("texture theme '{theme}' is missing 'values'")))?;
-        let resolved = resolve_texture_tree(values, defs)?;
-        let mut new_inner = Map::with_capacity(1);
-        new_inner.insert("values".to_string(), resolved);
-        out.insert(theme.clone(), Value::Object(new_inner));
-    }
-    Ok(Value::Object(out))
-}
-
-/// A source geometry's `material` map reduced to the STORED form — flat per
-/// WKB face, the whole-geometry `value` broadcast expanded, the
-/// writer-dropped positions removed, every index dereferenced to its
-/// definition through `defs` — so a source `{"value": n}` compares EQUAL to
-/// the exporter's expanded per-face `values` (spec "Round trip": the second
-/// deliberate canonicalisation). BOTH sides of a comparison come through
-/// here, so equal data reduces to identical JSON whichever form its file
-/// spells it in.
+/// A geometry's `material` map reduced to the STORED form — flat per WKB
+/// face, the whole-geometry `value` broadcast expanded, the writer-dropped
+/// positions removed, every index dereferenced to its definition through
+/// `defs` — so a source `{"value": n}` compares EQUAL to the exporter's
+/// expanded per-face `values` (spec "Round trip": the second deliberate
+/// canonicalisation). BOTH sides of a comparison come through here, so equal
+/// data reduces to identical JSON whichever form its file spells it in.
 ///
-/// The walk is the encoder's own (`crate::encode`'s `values_nesting_depth` /
-/// `flatten_values` / `count_boundary_faces`), exactly as
-/// [`canonical_semantics`] reuses it: face `i` here is the WKB face `i` the
-/// column stores, and the two can never drift apart on what a `null`
-/// standing for a whole shell or solid expands to. `dropped` are the
-/// ORIGINAL flat face positions this side's own degenerate normalisation
-/// removed; they are filtered AFTER flattening and BEFORE resolution,
-/// mirroring `crate::encode`'s pipeline order — a dangling or out-of-range
-/// index sitting only at a to-be-dropped position is valid writer output and
-/// must never be resolved (M5 debt item 1).
+/// The flattening is [`crate::faces`]', the encoder's own, exactly as
+/// [`canonical_semantics`] uses it: face `i` here is the WKB face `i` the
+/// column stores. `dropped` are the ORIGINAL flat face positions this side's
+/// own degenerate normalisation removed; they are filtered BEFORE
+/// resolution, mirroring `crate::encode`'s pipeline order — a dangling or
+/// out-of-range index sitting only at a to-be-dropped position is valid
+/// writer output and must never be resolved.
 ///
 /// `defs == None` means `exclusions.appearance` already decided this
 /// geometry's appearance is skipped: nothing is resolved, or even validated,
 /// that the caller is about to discard.
-///
-/// A theme with neither `values` nor `value` (below) is not a shape the
-/// comparator can represent at all, so it aborts the whole comparison with an
-/// error; a texture ring with too few UV references
-/// ([`canonical_texture_ring`]), by contrast, is a well-formed but
-/// differently-shaped ring the comparator CAN still represent — it is passed
-/// through as-is and simply compares unequal against the other side, a
-/// reported difference rather than a hard failure.
 fn canonical_material(
-    map: &Option<HashMap<String, cjseq::Material>>,
-    boundaries: &Value,
-    thetype: &GeometryType,
+    geom: &Geometry,
     dropped: &[usize],
     defs: Option<&AppearanceDefs>,
 ) -> Result<Option<Value>> {
-    let (Some(map), Some(defs)) = (map, defs) else {
+    let (Some(themes), Some(defs)) = (crate::faces::material_themes(geom), defs) else {
         return Ok(None);
     };
-    let raw = serde_json::to_value(map)?;
-    let obj = raw.as_object().ok_or_else(|| {
-        err("material map must be a JSON object of theme -> {value|values}".to_string())
-    })?;
-    let depth = crate::encode::values_nesting_depth(thetype);
-    let faces = crate::encode::count_boundary_faces(boundaries, depth);
+    let faces = Faces::of(geom).count();
     let drop_set: HashSet<usize> = dropped.iter().copied().collect();
     let stored = (0..faces).filter(|i| !drop_set.contains(i)).count();
 
-    let mut flat_map = Map::with_capacity(obj.len());
-    for (theme, inner) in obj {
-        let inner_obj = inner
-            .as_object()
-            .ok_or_else(|| err(format!("material theme '{theme}' must be an object")))?;
-        let entries: Vec<Value> = if let Some(values) = inner_obj.get("values") {
-            let mut flat = Vec::with_capacity(faces);
-            crate::encode::flatten_values(values, boundaries, depth, &mut flat);
-            // Exactly one entry per ORIGINAL face — pad a short source
-            // `values` with null, ignore a longer one's overflow — so the
-            // drop filter below lands on the right positions.
-            flat.resize(faces, Value::Null);
-            flat.into_iter()
+    let mut flat_map = Map::with_capacity(themes.len());
+    for (theme, material) in themes {
+        let entries: Vec<Option<MaterialIndex>> = match material {
+            MaterialTheme::PerFace(flat) => flat
+                .into_iter()
                 .enumerate()
                 .filter_map(|(i, v)| (!drop_set.contains(&i)).then_some(v))
-                .collect()
-        } else if let Some(value) = inner_obj.get("value") {
-            vec![value.clone(); stored]
-        } else {
-            return Err(err(format!(
-                "material theme '{theme}' has neither 'values' nor 'value'"
-            )));
+                .collect(),
+            MaterialTheme::Whole(value) => vec![Some(value); stored],
+            MaterialTheme::Missing => {
+                return Err(err(format!(
+                    "material theme '{theme}' has neither 'values' nor 'value'"
+                )));
+            }
         };
-        flat_map.insert(theme.clone(), serde_json::json!({ "values": entries }));
+        let resolved = entries
+            .into_iter()
+            .map(|idx| resolve_material_index(idx, defs))
+            .collect::<Result<Vec<_>>>()?;
+        flat_map.insert(theme.to_string(), serde_json::json!({ "values": resolved }));
     }
-    resolve_material_map(&Value::Object(flat_map), defs).map(Some)
+    Ok(Some(Value::Object(flat_map)))
 }
 
 /// The [`canonical_material`] counterpart for `texture`: flat per WKB face,
@@ -805,62 +610,42 @@ fn canonical_material(
 /// texture definition and real `[u, v]` pairs.
 ///
 /// Within a face the source rings are matched positionally against the
-/// boundary's own — [`crate::encode::face_ring_vertex_counts`], the
-/// encoder's rule — so a ring the WKB writer drops consumes its texture
-/// entry and emits nothing, and a source face with a degenerate middle hole
-/// reduces to the exporter's two-ring face. A face given as `null` (or one
-/// whose ring list stops short) leaves the remaining stored rings
-/// untextured, one `[null]` each — the shape the exporter writes.
+/// boundary's own — [`Faces::ring_vertex_counts`], the encoder's rule — so
+/// a ring the WKB writer drops consumes its texture entry and emits nothing,
+/// and a source face with a degenerate middle hole reduces to the exporter's
+/// two-ring face. A face with no entry (or one whose ring list stops short)
+/// leaves the remaining stored rings untextured, one `[null]` each — the
+/// shape the exporter writes.
 fn canonical_texture(
-    map: &Option<HashMap<String, cjseq::Texture>>,
-    boundaries: &Value,
-    thetype: &GeometryType,
+    geom: &Geometry,
     dropped: &[usize],
     defs: Option<&AppearanceDefs>,
 ) -> Result<Option<Value>> {
-    let (Some(map), Some(defs)) = (map, defs) else {
+    let (Some(themes), Some(defs)) = (crate::faces::texture_themes(geom), defs) else {
         return Ok(None);
     };
-    let raw = serde_json::to_value(map)?;
-    let obj = raw
-        .as_object()
-        .ok_or_else(|| err("texture map must be a JSON object of theme -> {values}".to_string()))?;
-    let depth = crate::encode::values_nesting_depth(thetype);
-    let faces = crate::encode::count_boundary_faces(boundaries, depth);
-    let rings_per_face = crate::encode::face_ring_vertex_counts(boundaries, depth);
+    let rings_per_face = Faces::of(geom).ring_vertex_counts();
     let drop_set: HashSet<usize> = dropped.iter().copied().collect();
 
-    let mut flat_map = Map::with_capacity(obj.len());
-    for (theme, inner) in obj {
-        let inner_obj = inner
-            .as_object()
-            .ok_or_else(|| err(format!("texture theme '{theme}' must be an object")))?;
-        let values = inner_obj
-            .get("values")
-            .ok_or_else(|| err(format!("texture theme '{theme}' is missing 'values'")))?;
-        let mut flat = Vec::with_capacity(faces);
-        crate::encode::flatten_values(values, boundaries, depth, &mut flat);
-        flat.resize(faces, Value::Null);
-
-        let mut per_face = Vec::with_capacity(faces);
-        for (face, entry) in flat.iter().enumerate() {
+    let mut flat_map = Map::with_capacity(themes.len());
+    for (theme, per_face) in themes {
+        let per_face =
+            per_face.ok_or_else(|| err(format!("texture theme '{theme}' is missing 'values'")))?;
+        let mut faces = Vec::with_capacity(per_face.len());
+        for (face, rings) in per_face.into_iter().enumerate() {
             if drop_set.contains(&face) {
                 continue;
             }
             let ring_lens = rings_per_face.get(face).map_or(&[][..], Vec::as_slice);
-            // Faces and rings are named by their STORED (WKB) position, the
-            // one the column's own errors name.
-            let stored_face = per_face.len();
-            per_face.push(canonical_texture_face(
-                entry,
+            faces.push(canonical_texture_face(
+                rings.unwrap_or_default(),
                 ring_lens,
-                theme,
-                stored_face,
+                defs,
             )?);
         }
-        flat_map.insert(theme.clone(), serde_json::json!({ "values": per_face }));
+        flat_map.insert(theme.to_string(), serde_json::json!({ "values": faces }));
     }
-    resolve_texture_map(&Value::Object(flat_map), defs).map(Some)
+    Ok(Some(Value::Object(flat_map)))
 }
 
 /// One face's rings reduced to the stored form (see [`canonical_texture`]).
@@ -868,76 +653,68 @@ fn canonical_texture(
 /// `None` marks a ring the writer drops, which still CONSUMES its source
 /// texture entry — the entries behind it belong to the rings behind it.
 fn canonical_texture_face(
-    entry: &Value,
+    source: &[TexturedRing],
     ring_lens: &[Option<usize>],
-    theme: &str,
-    face: usize,
+    defs: &AppearanceDefs,
 ) -> Result<Value> {
-    let source: &[Value] = match entry {
-        // No texture for this face — either the source said so, or the walk
-        // expanded a `null` standing for a whole shell or solid.
-        Value::Null => &[],
-        Value::Array(rings) => rings,
-        other => {
-            return Err(err(format!(
-                "texture theme '{theme}' face {face} must be an array of rings or null, \
-                 got {other}"
-            )));
-        }
-    };
     let mut out = Vec::with_capacity(ring_lens.len());
     let mut source = source.iter();
     for len in ring_lens {
         let entry = source.next();
         let Some(len) = len else { continue };
-        let ring = out.len();
-        out.push(canonical_texture_ring(entry, *len, theme, face, ring)?);
+        out.push(canonical_texture_ring(entry, *len, defs)?);
     }
     Ok(Value::Array(out))
 }
 
-/// One stored ring's source entry reduced to `[textureIdx, uv0, uv1, ...]`
-/// or CityJSON's untextured sentinel `[null]` — still an INDEX form, which
-/// [`resolve_texture_ring`] then dereferences.
+/// One stored ring's source entry reduced to `[<texture>, [u, v], ...]` or
+/// CityJSON's untextured sentinel `[null]`.
 ///
-/// A missing entry (the face's ring list stopped short), a `null` entry, an
-/// empty one, or one whose texture index is `null` is untextured, and takes
-/// any UV references behind it with it: they mean nothing without a texture,
-/// and the stored cell keeps `id` and `uv` null together
-/// (`crate::appearance`). Anything past the ring's distinct vertex count is
-/// the closing repeat the source ring carried, which the WKB ring's own
-/// closing point replaces — dropped here, so a closed source ring reduces to
-/// the exporter's open one. A ring carrying FEWER UV references than that is
+/// A missing entry (the face's ring list stopped short) or an untextured one
+/// is `[null]`. UV references past the ring's distinct vertex count are the
+/// closing repeat the source ring carried, which the WKB ring's own closing
+/// point replaces — dropped here, so a closed source ring reduces to the
+/// exporter's open one. A ring carrying FEWER UV references than that is
 /// passed through as it stands: the encoder refuses such input on convert,
 /// so the two sides simply compare unequal rather than the comparison
 /// erroring on a file it was only asked to read.
 fn canonical_texture_ring(
-    entry: Option<&Value>,
+    entry: Option<&TexturedRing>,
     vertices: usize,
-    theme: &str,
-    face: usize,
-    ring: usize,
+    defs: &AppearanceDefs,
 ) -> Result<Value> {
-    let untextured = || Value::Array(vec![Value::Null]);
-    let items = match entry {
-        None | Some(Value::Null) => return Ok(untextured()),
-        Some(Value::Array(items)) => items,
-        Some(other) => {
-            return Err(err(format!(
-                "texture theme '{theme}' face {face} ring {ring} must be an array, got {other}"
-            )));
+    match entry {
+        None | Some(TexturedRing::Untextured) => Ok(Value::Array(vec![Value::Null])),
+        Some(TexturedRing::Textured { texture, uvs }) => {
+            resolve_texture_ring(*texture, &uvs[..uvs.len().min(vertices)], defs)
         }
-    };
-    match items.first() {
-        None | Some(Value::Null) => Ok(untextured()),
-        Some(Value::Number(_)) => {
-            let end = items.len().min(vertices + 1);
-            Ok(Value::Array(items[..end].to_vec()))
-        }
-        Some(other) => Err(err(format!(
-            "texture index in theme '{theme}' must be an integer or null, got {other}"
-        ))),
     }
+}
+
+/// Normalise every surface of one shell list, recording dropped face
+/// positions against the running depth-first counter `pos` — which matches
+/// `wkb_write::normalise_shells`'s, NOT reset between solids, so these line
+/// up with the writer-dropped positions the encoder realigns against.
+fn normalise_shells(
+    shells: &[Shell],
+    pool: &VertexPool,
+    pos: &mut usize,
+    dropped_rings: &mut usize,
+    dropped_positions: &mut Vec<usize>,
+) -> Result<Node> {
+    let mut kept_shells = Vec::with_capacity(shells.len());
+    for shell in shells {
+        let mut kept_faces = Vec::with_capacity(shell.len());
+        for face in shell {
+            match normalise_surface(face, pool, dropped_rings)? {
+                Some(f) => kept_faces.push(f),
+                None => dropped_positions.push(*pos),
+            }
+            *pos += 1;
+        }
+        kept_shells.push(surface_list_node(pool, &kept_faces)?);
+    }
+    Ok(Node::List(kept_shells))
 }
 
 /// Normalises and dequantises one non-instance geometry against `pool`,
@@ -947,220 +724,60 @@ fn normalise_geometry(
     pool: &VertexPool,
     defs: Option<&AppearanceDefs>,
 ) -> Result<NormalisedGeometry> {
-    match geom.thetype {
-        GeometryType::GeometryInstance => Err(err(
-            "normalise_geometry must not be called on a GeometryInstance",
-        )),
-        GeometryType::MultiPoint => {
-            let idxs: Vec<usize> = parse_boundaries(geom)?;
-            Ok(NormalisedGeometry {
-                tree: points_node(pool, &idxs)?,
-                semantics: canonical_semantics(
-                    &geom.semantics,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &[],
-                ),
-                material: canonical_material(
-                    &geom.material,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &[],
-                    defs,
-                )?,
-                texture: canonical_texture(
-                    &geom.texture,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &[],
-                    defs,
-                )?,
-                dropped_rings: 0,
-                dropped_surfaces: 0,
-            })
+    let mut dropped_rings = 0usize;
+    let mut dropped_positions = Vec::new();
+    let tree = match geom {
+        Geometry::GeometryInstance { .. } => {
+            return Err(err(
+                "normalise_geometry must not be called on a GeometryInstance",
+            ));
         }
-        GeometryType::MultiLineString => {
-            let lines: Vec<Vec<usize>> = parse_boundaries(geom)?;
-            Ok(NormalisedGeometry {
-                tree: ring_list_node(pool, &lines)?,
-                semantics: canonical_semantics(
-                    &geom.semantics,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &[],
-                ),
-                material: canonical_material(
-                    &geom.material,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &[],
-                    defs,
-                )?,
-                texture: canonical_texture(
-                    &geom.texture,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &[],
-                    defs,
-                )?,
-                dropped_rings: 0,
-                dropped_surfaces: 0,
-            })
-        }
-        GeometryType::MultiSurface | GeometryType::CompositeSurface => {
-            let surfaces: Vec<Vec<Vec<usize>>> = parse_boundaries(geom)?;
-            let mut dropped_rings = 0usize;
-            let mut dropped_positions = Vec::new();
-            let mut kept = Vec::with_capacity(surfaces.len());
-            for (pos, surface) in surfaces.iter().enumerate() {
+        Geometry::MultiPoint { boundaries, .. } => points_node(pool, boundaries)?,
+        Geometry::MultiLineString { boundaries, .. } => ring_list_node(pool, boundaries)?,
+        Geometry::MultiSurface { boundaries, .. }
+        | Geometry::CompositeSurface { boundaries, .. } => {
+            let mut kept = Vec::with_capacity(boundaries.len());
+            for (pos, surface) in boundaries.iter().enumerate() {
                 match normalise_surface(surface, pool, &mut dropped_rings)? {
                     Some(s) => kept.push(s),
                     None => dropped_positions.push(pos),
                 }
             }
-            Ok(NormalisedGeometry {
-                tree: surface_list_node(pool, &kept)?,
-                semantics: canonical_semantics(
-                    &geom.semantics,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &dropped_positions,
-                ),
-                material: canonical_material(
-                    &geom.material,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &dropped_positions,
-                    defs,
-                )?,
-                texture: canonical_texture(
-                    &geom.texture,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &dropped_positions,
-                    defs,
-                )?,
-                dropped_rings,
-                dropped_surfaces: dropped_positions.len(),
-            })
+            surface_list_node(pool, &kept)?
         }
-        GeometryType::Solid => {
-            let shells: Vec<Vec<Vec<Vec<usize>>>> = parse_boundaries(geom)?;
-            let mut dropped_rings = 0usize;
-            // Flat face positions, counted depth-first across shells —
-            // matches `wkb_write::normalise_shells`'s `pos` counter, so
-            // these line up with the writer-dropped positions the encoder
-            // realigns against.
-            let mut dropped_positions = Vec::new();
+        Geometry::Solid { boundaries, .. } => normalise_shells(
+            boundaries,
+            pool,
+            &mut 0,
+            &mut dropped_rings,
+            &mut dropped_positions,
+        )?,
+        Geometry::MultiSolid { boundaries, .. } | Geometry::CompositeSolid { boundaries, .. } => {
             let mut pos = 0usize;
-            let mut kept_shells = Vec::with_capacity(shells.len());
-            for shell in &shells {
-                let mut kept_faces = Vec::with_capacity(shell.len());
-                for face in shell {
-                    match normalise_surface(face, pool, &mut dropped_rings)? {
-                        Some(f) => kept_faces.push(f),
-                        None => dropped_positions.push(pos),
-                    }
-                    pos += 1;
-                }
-                kept_shells.push(kept_faces);
-            }
-            let tree = Node::List(
-                kept_shells
-                    .iter()
-                    .map(|faces| surface_list_node(pool, faces))
-                    .collect::<Result<Vec<_>>>()?,
-            );
-            Ok(NormalisedGeometry {
-                tree,
-                semantics: canonical_semantics(
-                    &geom.semantics,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &dropped_positions,
-                ),
-                material: canonical_material(
-                    &geom.material,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &dropped_positions,
-                    defs,
-                )?,
-                texture: canonical_texture(
-                    &geom.texture,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &dropped_positions,
-                    defs,
-                )?,
-                dropped_rings,
-                dropped_surfaces: dropped_positions.len(),
-            })
-        }
-        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
-            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> = parse_boundaries(geom)?;
-            let mut dropped_rings = 0usize;
-            // Flat face positions, counted depth-first across solids AND
-            // shells — matches `wkb_write::normalise_shells`'s `pos`
-            // counter, which is NOT reset between solids.
-            let mut dropped_positions = Vec::new();
-            let mut pos = 0usize;
-            let mut kept_solids = Vec::with_capacity(solids.len());
-            for shells in &solids {
-                let mut kept_shells = Vec::with_capacity(shells.len());
-                for shell in shells {
-                    let mut kept_faces = Vec::with_capacity(shell.len());
-                    for face in shell {
-                        match normalise_surface(face, pool, &mut dropped_rings)? {
-                            Some(f) => kept_faces.push(f),
-                            None => dropped_positions.push(pos),
-                        }
-                        pos += 1;
-                    }
-                    kept_shells.push(kept_faces);
-                }
-                kept_solids.push(kept_shells);
-            }
-            let tree = Node::List(
-                kept_solids
+            Node::List(
+                boundaries
                     .iter()
                     .map(|shells| {
-                        Ok(Node::List(
-                            shells
-                                .iter()
-                                .map(|faces| surface_list_node(pool, faces))
-                                .collect::<Result<Vec<_>>>()?,
-                        ))
+                        normalise_shells(
+                            shells,
+                            pool,
+                            &mut pos,
+                            &mut dropped_rings,
+                            &mut dropped_positions,
+                        )
                     })
                     .collect::<Result<Vec<_>>>()?,
-            );
-            Ok(NormalisedGeometry {
-                tree,
-                semantics: canonical_semantics(
-                    &geom.semantics,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &dropped_positions,
-                ),
-                material: canonical_material(
-                    &geom.material,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &dropped_positions,
-                    defs,
-                )?,
-                texture: canonical_texture(
-                    &geom.texture,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    &dropped_positions,
-                    defs,
-                )?,
-                dropped_rings,
-                dropped_surfaces: dropped_positions.len(),
-            })
+            )
         }
-    }
+    };
+    Ok(NormalisedGeometry {
+        tree,
+        semantics: canonical_semantics(geom, &dropped_positions)?,
+        material: canonical_material(geom, &dropped_positions, defs)?,
+        texture: canonical_texture(geom, &dropped_positions, defs)?,
+        dropped_rings,
+        dropped_surfaces: dropped_positions.len(),
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -1249,8 +866,8 @@ fn node_to_value(n: &Node) -> Value {
 /// [`AppearanceDefs::from_doc_appearance`] — since a template's
 /// `material`/`texture` indices reference the raw document's arrays
 /// directly, never `header.appearance` nor a feature-local pool), producing
-/// its comparable [`InstanceContent`]. A missing `template`
-/// index or an index out of range of `templates` is a `Schema` error naming
+/// its comparable [`InstanceContent`]. A `template`
+/// index out of range of `templates` is a `Schema` error naming
 /// the object — matching this module's existing style for malformed-side
 /// handling (e.g. [`resolve_material_index`]'s out-of-range error), not a
 /// silently-skipped comparison: a wrong template join is exactly the bug
@@ -1263,11 +880,18 @@ fn resolve_instance(
     label: &str,
     id: &str,
 ) -> Result<InstanceContent> {
-    let idx = geom.template.ok_or_else(|| {
-        err(format!(
-            "{label}: object {id}: GeometryInstance has no 'template' index"
-        ))
-    })?;
+    let Geometry::GeometryInstance {
+        template: TemplateIndex(idx),
+        transformation_matrix,
+        ..
+    } = geom
+    else {
+        return Err(err(format!(
+            "{label}: object {id}: resolve_instance called on a {:?}",
+            geom.geometry_type()
+        )));
+    };
+    let idx = *idx;
     let template = templates.get(idx).ok_or_else(|| {
         err(format!(
             "{label}: object {id}: GeometryInstance template index {idx} out of range \
@@ -1282,21 +906,10 @@ fn resolve_instance(
     // left the comparator blind to a corrupted template semantics/appearance
     // (M4 Codex-review Finding 3).
     let normalised = normalise_geometry(template, template_pool, Some(defs))?;
-    let matrix: Vec<f64> = match &geom.transformation_matrix {
-        Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
-            err(format!(
-                "{label}: object {id}: GeometryInstance transformationMatrix malformed: {e}"
-            ))
-        })?,
-        None => {
-            return Err(err(format!(
-                "{label}: object {id}: GeometryInstance has no transformationMatrix"
-            )));
-        }
-    };
+    let matrix = transformation_matrix.to_vec();
     Ok(InstanceContent {
-        template_type: template.thetype.clone(),
-        template_lod: template.lod.clone(),
+        template_type: template.geometry_type(),
+        template_lod: canonical_lod_key(template),
         template_tree: normalised.tree,
         matrix,
         semantics: normalised.semantics,
@@ -1330,29 +943,20 @@ struct ObjectData {
 
 /// Extract a CityObject's `children_roles` paired with its `children` as a
 /// `child id -> role` map (order-independent, like the `children` set).
-/// `children_roles` lives only on `CityObjectGroup` (CityJSON 2.0.1 §2.5) and,
-/// like everything in cjseq's private `#[serde(flatten)]`, is read through a
-/// serialize round-trip — mirroring `crate::encode`.
+/// `children_roles` lives only on `CityObjectGroup` (CityJSON 2.0.1 §2.5).
 ///
 /// This must not normalise malformation away, or a corrupt export could
 /// false-pass against a valid source: it pairs over `max(children, roles)`, so
-/// a surplus/missing role or a non-string entry yields a distinguishing
+/// a surplus/missing role or a `null` entry yields a distinguishing
 /// sentinel key/value rather than being silently truncated. For well-formed,
 /// equal-length, aligned input it is a pure `child -> role` map, so an aligned
 /// reorder compares equal.
 fn children_roles_map(co: &cjseq::CityObject) -> HashMap<String, String> {
-    if co.thetype != "CityObjectGroup" {
+    if co.thetype != CityObjectType::CityObjectGroup {
         return HashMap::new();
     }
-    let children = co.children.clone().unwrap_or_default();
-    let roles = serde_json::to_value(co)
-        .ok()
-        .and_then(|v| v.get("children_roles").cloned())
-        .and_then(|v| match v {
-            Value::Array(roles) => Some(roles),
-            _ => None,
-        })
-        .unwrap_or_default();
+    let children = co.children.as_deref().unwrap_or_default();
+    let roles = co.children_roles.as_deref().unwrap_or_default();
     (0..children.len().max(roles.len()))
         .map(|i| {
             let key = children
@@ -1361,9 +965,9 @@ fn children_roles_map(co: &cjseq::CityObject) -> HashMap<String, String> {
                 .unwrap_or_else(|| format!("\u{0}surplus_role_{i}"));
             let value = roles
                 .get(i)
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("\u{0}missing_or_nonstring_{i}"));
+                .cloned()
+                .flatten()
+                .unwrap_or_else(|| format!("\u{0}missing_or_null_{i}"));
             (key, value)
         })
         .collect()
@@ -1384,12 +988,8 @@ fn strip_nulls(v: Value) -> Value {
     }
 }
 
-fn canonicalise_attrs(v: Option<&Value>) -> Value {
-    let base = match v {
-        None | Some(Value::Null) => Value::Object(Map::new()),
-        Some(other) => other.clone(),
-    };
-    strip_nulls(base)
+fn canonicalise_attrs(v: Option<&Map<String, Value>>) -> Value {
+    strip_nulls(Value::Object(v.cloned().unwrap_or_default()))
 }
 
 /// JSON-value equality after normalisation: strings that both parse as
@@ -1457,21 +1057,14 @@ fn strings_equal(sa: &str, sb: &str) -> bool {
     sa == sb
 }
 
-/// Canonicalise a raw source `geom.lod` string for use as a comparison key:
-/// a source `"1"` and a source `"1.0"` are the same LoD (spec "Levels of
-/// detail" — a canonicalisation of the LoD string, not its value), so an
-/// original CityJSON's bare-major LoD must compare equal to the same LoD
-/// re-exported in its canonical `"{major}.{minor}"` spelling. Falls back to
-/// the raw string, unchanged, when it does not parse as a `Lod` — comparison
-/// then simply falls back to exact string equality for that malformed value,
-/// same as before this canonicalisation existed. `None` (a `GeometryInstance`
-/// or a genuinely lod-less geometry) passes through unchanged.
-fn canonical_lod_key(lod: &Option<String>) -> Option<String> {
-    lod.as_ref().map(|s| {
-        Lod::parse(s)
-            .map(|l| l.to_string())
-            .unwrap_or_else(|_| s.clone())
-    })
+/// A geometry's LoD as a comparison key, canonicalised: a source `"1"` and a
+/// source `"1.0"` are the same LoD (spec "Levels of detail" — a
+/// canonicalisation of the LoD string, not its value), so an original
+/// CityJSON's bare-major LoD compares equal to the same LoD re-exported in
+/// its canonical `"{major}.{minor}"` spelling. `None` for a
+/// `GeometryInstance`, which has no LoD of its own.
+fn canonical_lod_key(geom: &Geometry) -> Option<String> {
+    crate::cjtypes::geometry_lod(geom).map(|l| l.to_string())
 }
 
 fn claim_or_log(
@@ -1518,20 +1111,18 @@ fn build_geometries(
 ) -> Result<HashMap<Option<String>, NormGeometry>> {
     let mut geometries = HashMap::new();
     for geom in geoms {
-        if geom.thetype == GeometryType::GeometryInstance {
+        if let Geometry::GeometryInstance {
+            boundaries: [VertexIndex(point)],
+            ..
+        } = geom
+        {
             if opts.exclusions.geometry_instances {
                 excluded.push(format!(
-                    "{label}: object {id}: GeometryInstance at lod {:?} excluded (exclusions.geometry_instances)",
-                    geom.lod
+                    "{label}: object {id}: GeometryInstance excluded (exclusions.geometry_instances)"
                 ));
                 continue;
             }
-            let idxs: Vec<usize> =
-                serde_json::from_value(geom.boundaries.clone()).unwrap_or_default();
-            let tree = match idxs.first() {
-                Some(&i) => Node::Point(pool.coord(i)?),
-                None => Node::List(vec![]),
-            };
+            let tree = Node::Point(pool.coord(*point)?);
             // The instance's CONTENT (its resolved template, dereferenced
             // through this side's own `geometry-templates`, plus its
             // `transformationMatrix`) — not just the reference point above —
@@ -1547,9 +1138,9 @@ fn build_geometries(
             )?);
             claim_or_log(
                 &mut geometries,
-                canonical_lod_key(&geom.lod),
+                canonical_lod_key(geom),
                 NormGeometry {
-                    gtype: geom.thetype.clone(),
+                    gtype: GeometryType::GeometryInstance,
                     tree,
                     semantics: None,
                     material: None,
@@ -1563,12 +1154,13 @@ fn build_geometries(
             continue;
         }
 
-        let skip_appearance =
-            opts.exclusions.appearance && (geom.material.is_some() || geom.texture.is_some());
+        let lod = canonical_lod_key(geom);
+        let skip_appearance = opts.exclusions.appearance
+            && (crate::faces::material_themes(geom).is_some()
+                || crate::faces::texture_themes(geom).is_some());
         if skip_appearance {
             excluded.push(format!(
-                "{label}: object {id}: material/texture at lod {:?} excluded (exclusions.appearance)",
-                geom.lod
+                "{label}: object {id}: material/texture at lod {lod:?} excluded (exclusions.appearance)"
             ));
         }
 
@@ -1579,23 +1171,22 @@ fn build_geometries(
         let normalised = normalise_geometry(geom, pool, (!skip_appearance).then_some(defs))?;
         if normalised.dropped_rings > 0 || normalised.dropped_surfaces > 0 {
             excluded.push(format!(
-                "{label}: object {id}: geometry at lod {:?}: normalised away {} degenerate ring(s), {} surface(s)",
-                geom.lod, normalised.dropped_rings, normalised.dropped_surfaces
+                "{label}: object {id}: geometry at lod {lod:?}: normalised away {} degenerate ring(s), {} surface(s)",
+                normalised.dropped_rings, normalised.dropped_surfaces
             ));
         }
         if node_is_empty(&normalised.tree) {
             excluded.push(format!(
-                "{label}: object {id}: geometry at lod {:?} fully degenerate, dropped entirely",
-                geom.lod
+                "{label}: object {id}: geometry at lod {lod:?} fully degenerate, dropped entirely"
             ));
             continue;
         }
 
         claim_or_log(
             &mut geometries,
-            canonical_lod_key(&geom.lod),
+            lod,
             NormGeometry {
-                gtype: geom.thetype.clone(),
+                gtype: geom.geometry_type(),
                 tree: normalised.tree,
                 semantics: normalised.semantics,
                 // Already `None` when `skip_appearance` (see the
@@ -1636,23 +1227,15 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
     // rather than the dataset's quantised `VertexPool::new`. Empty when the
     // header carries no templates at all: any `GeometryInstance` encountered
     // in that case is then, correctly, a `Schema` error from `resolve_instance`.
-    let (templates, template_vertices): (&[Geometry], Vec<Vec<f64>>) =
+    let (templates, template_vertices): (&[Geometry], &[[f64; 3]]) =
         match &header.geometry_templates {
-            Some(gt) => {
-                let verts: Vec<Vec<f64>> = serde_json::from_value(gt.vertices_templates.clone())
-                    .map_err(|e| {
-                        err(format!(
-                            "{label}: header geometry-templates 'vertices-templates' malformed: {e}"
-                        ))
-                    })?;
-                (gt.templates.as_slice(), verts)
-            }
-            None => (&[], Vec::new()),
+            Some(gt) => (&gt.templates, &gt.vertices_templates),
+            None => (&[], &[]),
         };
     // The comparator works in each side's own DATASET coordinates — no WKB is
     // written or read here — so no axis reordering applies, and `LonLat` (the
     // identity) is used identically on both sides.
-    let template_pool = VertexPool::raw(&template_vertices, AxisOrder::LonLat);
+    let template_pool = VertexPool::raw(template_vertices, AxisOrder::LonLat);
     // This side's own RAW DOCUMENT appearance arrays: a template's
     // `material`/`texture` indices reference these directly (never
     // `header.appearance`, and never a feature-local pool — see
@@ -1694,7 +1277,7 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
             objects.insert(
                 id.clone(),
                 ObjectData {
-                    thetype: co.thetype.clone(),
+                    thetype: crate::cjtypes::object_type_name(&co.thetype),
                     attributes,
                     parents,
                     children,
@@ -1711,17 +1294,6 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
         objects,
         excluded,
     })
-}
-
-fn transform_axes(t: &Transform) -> [f64; 3] {
-    let take = |v: &[f64]| {
-        [
-            *v.first().unwrap_or(&1.0),
-            *v.get(1).unwrap_or(&1.0),
-            *v.get(2).unwrap_or(&1.0),
-        ]
-    };
-    take(&t.scale)
 }
 
 fn reference_system_url(header: &CityJSON) -> Option<String> {
@@ -1741,9 +1313,9 @@ fn reference_system_url(header: &CityJSON) -> Option<String> {
 /// of silently never appearing in `excluded` (M5 debt item 4 — drift-proofing
 /// against exactly the kind of member the hand-picked 5-entry array used to
 /// hard-code).
-fn metadata_member_flags(m: Option<&cjseq::Metadata>) -> [bool; 5] {
+fn metadata_member_flags(m: Option<&cjseq::Metadata>) -> [bool; 6] {
     let Some(m) = m else {
-        return [false; 5];
+        return [false; 6];
     };
     let cjseq::Metadata {
         geographical_extent,
@@ -1752,6 +1324,7 @@ fn metadata_member_flags(m: Option<&cjseq::Metadata>) -> [bool; 5] {
         reference_date,
         reference_system: _,
         title,
+        other,
     } = m;
     [
         title.is_some(),
@@ -1759,6 +1332,7 @@ fn metadata_member_flags(m: Option<&cjseq::Metadata>) -> [bool; 5] {
         identifier.is_some(),
         point_of_contact.is_some(),
         reference_date.is_some(),
+        !other.is_empty(),
     ]
 }
 
@@ -1767,7 +1341,7 @@ fn metadata_member_flags(m: Option<&cjseq::Metadata>) -> [bool; 5] {
 /// `header.metadata` has that member set. These are documented exclusions
 /// (M4-codex-5) — logged in `excluded`, never compared, never silently
 /// dropped.
-fn header_metadata_members(a: &CityJSON, b: &CityJSON) -> [(&'static str, bool); 5] {
+fn header_metadata_members(a: &CityJSON, b: &CityJSON) -> [(&'static str, bool); 6] {
     let fa = metadata_member_flags(a.metadata.as_ref());
     let fb = metadata_member_flags(b.metadata.as_ref());
     [
@@ -1776,6 +1350,7 @@ fn header_metadata_members(a: &CityJSON, b: &CityJSON) -> [(&'static str, bool);
         ("identifier", fa[2] || fb[2]),
         ("pointOfContact", fa[3] || fb[3]),
         ("referenceDate", fa[4] || fb[4]),
+        ("any non-standard member", fa[5] || fb[5]),
     ]
 }
 
@@ -1905,8 +1480,8 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
                         ia.template_type, ib.template_type
                     ));
                 }
-                // Canonicalised, not literal, comparison — same reasoning as
-                // `canonical_lod_key`: a template is a single geometry at a
+                // Canonicalised, not literal, comparison (`template_lod` is a
+                // `canonical_lod_key`): a template is a single geometry at a
                 // single LoD (spec "implicit_geometries.parquet"), and since
                 // spec-alignment M6 that LoD is carried by the sidecar's
                 // per-LoD column NAME (`geometry_lod3_0`, canonical
@@ -1915,7 +1490,7 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
                 // — the same normalisation a regular (non-instance)
                 // geometry's `lod` already undergoes, just not hidden behind
                 // a map key here.
-                if canonical_lod_key(&ia.template_lod) != canonical_lod_key(&ib.template_lod) {
+                if ia.template_lod != ib.template_lod {
                     out.push(format!(
                         "object {id}: geometry at lod {lod:?}: instance template lod differs: {:?} vs {:?}",
                         ia.template_lod, ib.template_lod
@@ -2036,12 +1611,12 @@ pub fn compare_datasets(a: &Path, b: &Path, opts: &CompareOptions) -> Result<Com
 
     if side_a.header.version != side_b.header.version {
         differences.push(format!(
-            "header: version differs: {} vs {}",
+            "header: version differs: {:?} vs {:?}",
             side_a.header.version, side_b.header.version
         ));
     }
-    let ea = side_a.header.extensions.clone().unwrap_or(Value::Null);
-    let eb = side_b.header.extensions.clone().unwrap_or(Value::Null);
+    let ea = serde_json::to_value(&side_a.header.extensions)?;
+    let eb = serde_json::to_value(&side_b.header.extensions)?;
     if !values_equal(&ea, &eb) {
         differences.push(format!("header: extensions differ: {ea} vs {eb}"));
     }
@@ -2057,8 +1632,8 @@ pub fn compare_datasets(a: &Path, b: &Path, opts: &CompareOptions) -> Result<Com
 
     excluded.push("geographicalExtent (derived from bbox)".to_string());
 
-    let scale_a = transform_axes(&side_a.header.transform);
-    let scale_b = transform_axes(&side_b.header.transform);
+    let scale_a = side_a.header.transform.scale;
+    let scale_b = side_b.header.transform.scale;
     let mut tol = [0.0; 3];
     for i in 0..3 {
         tol[i] = if opts.coord_tolerance[i] > 0.0 {
@@ -2865,21 +2440,16 @@ mod tests {
                 ]
             ],
             "semantics": {
-                "surfaces": [{"type": "A"}],
+                "surfaces": [{"type": "WallSurface"}],
                 "values": [[[10, 11], [12]], [[13, 14]]]
             },
             "material": {"visual": {"values": [[[1, 2], [3]], [[4, 5]]]}}
         }))
         .unwrap();
-        let vertices: Vec<Vec<i64>> = vec![
-            vec![0, 0, 0],
-            vec![1000, 0, 0],
-            vec![1000, 1000, 0],
-            vec![0, 1000, 0],
-        ];
-        let transform = Transform {
-            scale: vec![1.0; 3],
-            translate: vec![0.0; 3],
+        let vertices = [[0, 0, 0], [1000, 0, 0], [1000, 1000, 0], [0, 1000, 0]];
+        let transform = cjseq::Transform {
+            scale: [1.0; 3],
+            translate: [0.0; 3],
         };
         let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
@@ -3015,10 +2585,10 @@ mod tests {
         }))
         .unwrap();
 
-        let vertices: Vec<Vec<i64>> = (0..12).map(|i| vec![i * 1000, i * 7, 0]).collect();
-        let transform = Transform {
-            scale: vec![1.0; 3],
-            translate: vec![0.0; 3],
+        let vertices: Vec<[i64; 3]> = (0..12).map(|i| [i * 1000, i * 7, 0]).collect();
+        let transform = cjseq::Transform {
+            scale: [1.0; 3],
+            translate: [0.0; 3],
         };
         let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
@@ -3061,10 +2631,10 @@ mod tests {
         }))
         .unwrap();
 
-        let vertices: Vec<Vec<i64>> = (0..3).map(|i| vec![i * 1000, i * 7, 0]).collect();
-        let transform = Transform {
-            scale: vec![1.0; 3],
-            translate: vec![0.0; 3],
+        let vertices: Vec<[i64; 3]> = (0..3).map(|i| [i * 1000, i * 7, 0]).collect();
+        let transform = cjseq::Transform {
+            scale: [1.0; 3],
+            translate: [0.0; 3],
         };
         let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
@@ -3076,85 +2646,6 @@ mod tests {
              padded out to match it — padding would hide the very writer bug this \
              passthrough exists to surface"
         );
-    }
-
-    /// Reviewer follow-up (M4 task 11): a malformed `vertices-texture`
-    /// entry with fewer than 2 coordinates — something only a hand-edited
-    /// or third-party file can carry, never this crate's own writer — must
-    /// surface as a `Schema` error naming the entry, not an
-    /// index-out-of-bounds panic in `resolve_texture_ring`. Derived from a
-    /// real railway feature's appearance (sanctioned modification): the
-    /// entry referenced by the first UV index of the first texture ring is
-    /// truncated to a single element.
-    #[test]
-    fn malformed_vertices_texture_entry_is_an_error_not_a_panic() {
-        let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
-        let header = source.header().clone();
-
-        // Innermost-ring walk: the first ring's first UV index, if any.
-        fn first_uv_index(v: &Value) -> Option<usize> {
-            let items = v.as_array()?;
-            if is_texture_ring(items) {
-                items.get(1)?.as_u64().map(|n| n as usize)
-            } else {
-                items.iter().find_map(first_uv_index)
-            }
-        }
-
-        for feature in source.features().unwrap() {
-            let feature = feature.unwrap();
-            let Some(appearance) = &feature.appearance else {
-                continue;
-            };
-            let Some(vertices_texture) = &appearance.vertices_texture else {
-                continue;
-            };
-            let pool = VertexPool::new(&feature.vertices, &header.transform, AxisOrder::LonLat);
-            for co in feature.city_objects.values() {
-                let Some(geoms) = &co.geometry else { continue };
-                for geom in geoms {
-                    let Some(texture) = &geom.texture else {
-                        continue;
-                    };
-                    let raw = serde_json::to_value(texture).unwrap();
-                    let Some(uv_idx) = raw
-                        .as_object()
-                        .and_then(|themes| themes.values().find_map(|t| t.get("values")))
-                        .and_then(first_uv_index)
-                    else {
-                        continue;
-                    };
-
-                    // Derived modification: the referenced entry loses its
-                    // second coordinate.
-                    let mut corrupted = vertices_texture.clone();
-                    corrupted[uv_idx].truncate(1);
-
-                    let defs = AppearanceDefs {
-                        materials: appearance.materials.as_deref().unwrap_or(&[]),
-                        textures: appearance.textures.as_deref().unwrap_or(&[]),
-                        vertices_texture: &corrupted,
-                    };
-                    let err = match normalise_geometry(geom, &pool, Some(&defs)) {
-                        Ok(_) => panic!(
-                            "expected an error for the malformed vertex-texture entry {uv_idx}"
-                        ),
-                        Err(e) => e,
-                    };
-                    assert!(
-                        matches!(err, CityParquetError::Schema(_)),
-                        "expected a Schema error, got {err:?}"
-                    );
-                    let msg = err.to_string();
-                    assert!(
-                        msg.contains(&format!("vertex-texture entry {uv_idx}")),
-                        "the error must name the malformed entry {uv_idx}, got: {msg}"
-                    );
-                    return;
-                }
-            }
-        }
-        panic!("railway must contain at least one textured geometry with vertices-texture");
     }
 
     /// M4 final-review Fix 1: before this fix, a kept `GeometryInstance`

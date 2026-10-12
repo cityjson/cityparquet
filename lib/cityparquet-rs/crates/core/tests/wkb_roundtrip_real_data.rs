@@ -108,12 +108,17 @@ fn assert_kind_matches_source(
     geom: &Geometry,
     pool: &VertexPool,
 ) {
-    match geom.thetype {
+    match geom.geometry_type() {
         GeometryType::GeometryInstance => unreachable!("filtered out by caller"),
         GeometryType::MultiPoint => {
-            let idxs: Vec<usize> = serde_json::from_value(geom.boundaries.clone()).unwrap();
+            let idxs: Vec<usize> =
+                serde_json::from_value(serde_json::to_value(geom).unwrap()["boundaries"].clone())
+                    .unwrap();
             let DecodedKind::MultiPoint(decoded_idxs) = kind else {
-                panic!("expected MultiPoint for {:?}, got {kind:?}", geom.thetype);
+                panic!(
+                    "expected MultiPoint for {:?}, got {kind:?}",
+                    geom.geometry_type()
+                );
             };
             assert_eq!(decoded_idxs.len(), idxs.len());
             for (i, &src_idx) in idxs.iter().enumerate() {
@@ -121,11 +126,13 @@ fn assert_kind_matches_source(
             }
         }
         GeometryType::MultiLineString => {
-            let lines: Vec<Vec<usize>> = serde_json::from_value(geom.boundaries.clone()).unwrap();
+            let lines: Vec<Vec<usize>> =
+                serde_json::from_value(serde_json::to_value(geom).unwrap()["boundaries"].clone())
+                    .unwrap();
             let DecodedKind::MultiLineString(decoded_lines) = kind else {
                 panic!(
                     "expected MultiLineString for {:?}, got {kind:?}",
-                    geom.thetype
+                    geom.geometry_type()
                 );
             };
             assert_eq!(decoded_lines.len(), lines.len());
@@ -139,20 +146,25 @@ fn assert_kind_matches_source(
         }
         GeometryType::MultiSurface | GeometryType::CompositeSurface => {
             let surfaces: Vec<Vec<Vec<usize>>> =
-                serde_json::from_value(geom.boundaries.clone()).unwrap();
+                serde_json::from_value(serde_json::to_value(geom).unwrap()["boundaries"].clone())
+                    .unwrap();
             let DecodedKind::MultiPolygon(decoded_surfaces) = kind else {
-                panic!("expected MultiPolygon for {:?}, got {kind:?}", geom.thetype);
+                panic!(
+                    "expected MultiPolygon for {:?}, got {kind:?}",
+                    geom.geometry_type()
+                );
             };
             let expected = normalise_expected_surfaces(&surfaces);
             assert_polygon_list_matches(decoded_surfaces, &expected, coords, pool);
         }
         GeometryType::Solid => {
             let shells: Vec<Vec<Vec<Vec<usize>>>> =
-                serde_json::from_value(geom.boundaries.clone()).unwrap();
+                serde_json::from_value(serde_json::to_value(geom).unwrap()["boundaries"].clone())
+                    .unwrap();
             let DecodedKind::PolyhedralSurface(decoded_faces) = kind else {
                 panic!(
                     "expected PolyhedralSurface for {:?}, got {kind:?}",
-                    geom.thetype
+                    geom.geometry_type()
                 );
             };
             let flat_faces: Vec<Vec<Vec<usize>>> = shells.into_iter().flatten().collect();
@@ -161,11 +173,12 @@ fn assert_kind_matches_source(
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
             let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
-                serde_json::from_value(geom.boundaries.clone()).unwrap();
+                serde_json::from_value(serde_json::to_value(geom).unwrap()["boundaries"].clone())
+                    .unwrap();
             let DecodedKind::GeometryCollection(members) = kind else {
                 panic!(
                     "expected GeometryCollection for {:?}, got {kind:?}",
-                    geom.thetype
+                    geom.geometry_type()
                 );
             };
             assert_eq!(members.len(), solids.len());
@@ -216,7 +229,7 @@ fn process_all(path: &Path) -> Totals {
                 continue;
             };
             for geom in geoms {
-                if geom.thetype == GeometryType::GeometryInstance {
+                if geom.geometry_type() == GeometryType::GeometryInstance {
                     assert!(
                         geometry_to_wkb(geom, &pool).unwrap().is_none(),
                         "GeometryInstance must map to None"
@@ -344,7 +357,7 @@ fn delft_derived_double_baked_closure_ring_converges_to_3_vertices_and_round_tri
         .as_ref()
         .and_then(|geoms| geoms.get(mutated_geom_index))
         .expect("mutated geometry index must still be present");
-    assert_eq!(geom.thetype, GeometryType::Solid);
+    assert_eq!(geom.geometry_type(), GeometryType::Solid);
 
     let outcome = geometry_to_wkb(geom, &pool)
         .unwrap()

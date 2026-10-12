@@ -21,8 +21,8 @@ cargo new rust-cityparquet-example
 cd rust-cityparquet-example
 ```
 
-Replace `Cargo.toml` with the following. These path dependencies use the checked-out
-implementation, including its patched CityJSON reader. Keep Arrow and Parquet on
+Replace `Cargo.toml` with the following. The path dependency uses the checked-out
+implementation, which brings its CityJSON reader with it. Keep Arrow and Parquet on
 the same major version as the library (58 in this checkout).
 
 ```toml
@@ -34,13 +34,7 @@ edition = "2024"
 [dependencies]
 cityparquet = { path = "../cityparquet/lib/cityparquet-rs/crates/core" }
 parquet = { version = "58", features = ["arrow", "zstd", "geospatial"] }
-
-[patch.crates-io]
-cjseq = { path = "../cityparquet/lib/cityparquet-rs/vendor/cjseq" }
 ```
-
-The patch belongs in your application's manifest: Cargo does not inherit patches
-from a dependency's workspace.
 
 ## Write a package and read a file
 

@@ -45,7 +45,7 @@ fn a_per_object_envelope_does_not_become_the_dataset_extent() {
     let header = parse_header(&freiburg()).expect("header must parse");
     assert_eq!(
         header.transform.translate,
-        vec![0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
         "no preamble envelope means a zero translate, not a per-object corner"
     );
     let extent = header.metadata.and_then(|m| m.geographical_extent);
@@ -101,7 +101,7 @@ fn corners_seen_while_hunting_for_a_late_srs_name_are_ignored() {
     );
     assert_eq!(
         header.transform.translate,
-        vec![0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
         "a per-object corner must not become the quantisation origin"
     );
     assert!(

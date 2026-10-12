@@ -38,11 +38,11 @@ fn prepare(input: &Path, base: &str, prepared: &Path) {
     std::fs::copy(input, prepared.join(format!("{base}.city.jsonl"))).unwrap();
     let text = std::fs::read_to_string(input).unwrap();
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
-    let header = CityJSON::from_str(lines.next().unwrap()).unwrap();
+    let header = lines.next().unwrap().parse::<CityJSON>().unwrap();
     let features: Vec<CityJSONFeature> = lines
-        .map(|line| CityJSONFeature::from_str(line).unwrap())
+        .map(|line| line.parse::<CityJSONFeature>().unwrap())
         .collect();
-    let doc = cjseq_to_cj(header, features);
+    let doc = cjseq_to_cj(header, features).unwrap();
     std::fs::write(
         prepared.join(format!("{base}.city.json")),
         serde_json::to_string(&doc).unwrap(),

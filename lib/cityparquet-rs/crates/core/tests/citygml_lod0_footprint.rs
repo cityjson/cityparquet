@@ -43,11 +43,13 @@ fn a_lod0_footprint_is_read_as_lod0_geometry() {
         let feature = feature.unwrap();
         for co in feature.city_objects.values() {
             for geom in co.geometry.iter().flatten() {
-                if geom.lod.as_deref() != Some("0") {
+                if geom.lod().map(|l| l.to_string()).as_deref() != Some("0") {
                     continue;
                 }
-                let boundaries: Vec<Vec<Vec<usize>>> =
-                    serde_json::from_value(geom.boundaries.clone()).expect("MultiSurface shape");
+                let boundaries: Vec<Vec<Vec<usize>>> = serde_json::from_value(
+                    serde_json::to_value(geom).unwrap()["boundaries"].clone(),
+                )
+                .expect("MultiSurface shape");
                 for surface in boundaries {
                     for ring in surface {
                         lod0_rings.push(

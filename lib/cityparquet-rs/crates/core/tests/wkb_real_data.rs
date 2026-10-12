@@ -37,7 +37,7 @@ fn process_all(path: &Path) -> usize {
             for geom in geoms {
                 let result = geometry_to_wkb(geom, &pool).unwrap();
 
-                if geom.thetype == GeometryType::GeometryInstance {
+                if geom.geometry_type() == GeometryType::GeometryInstance {
                     assert!(result.is_none(), "GeometryInstance must map to None");
                     continue;
                 }
@@ -62,9 +62,11 @@ fn process_all(path: &Path) -> usize {
                     );
                 }
 
-                if geom.thetype == GeometryType::MultiSurface {
-                    let surfaces: Vec<Vec<Vec<usize>>> =
-                        serde_json::from_value(geom.boundaries.clone()).unwrap();
+                if geom.geometry_type() == GeometryType::MultiSurface {
+                    let surfaces: Vec<Vec<Vec<usize>>> = serde_json::from_value(
+                        serde_json::to_value(geom).unwrap()["boundaries"].clone(),
+                    )
+                    .unwrap();
                     let parsed = wkb::reader::read_wkb(&bytes)
                         .expect("wkb crate oracle must parse our own MultiPolygonZ output");
                     match parsed.as_type() {
@@ -122,13 +124,13 @@ fn assert_walker_agrees(geom: &cjseq::Geometry, pool: &VertexPool<'_>, what: &st
             bits(&walker),
             bits(&encoder),
             "{what}: walker bbox {walker:?} is not bitwise-equal to the encoder's {encoder:?} ({:?})",
-            geom.thetype
+            geom.geometry_type()
         ),
         (walker, encoder) => assert!(
             walker.is_none() && encoder.is_none(),
             "{what}: walker/encoder disagree on whether {:?} yields a bbox \
              (walker: {walker:?}, encoder: {encoder:?})",
-            geom.thetype
+            geom.geometry_type()
         ),
     }
 }
@@ -145,9 +147,8 @@ fn compare_walker_against_encoder(path: &Path) -> usize {
     // Geometry templates first: they resolve through `VertexPool::raw`, the
     // walker's other vertex-storage path.
     if let Some(templates) = header.geometry_templates.as_ref() {
-        let verts: Vec<Vec<f64>> =
-            serde_json::from_value(templates.vertices_templates.clone()).unwrap();
-        let pool = VertexPool::raw(&verts, AxisOrder::LonLat);
+        let verts = &templates.vertices_templates;
+        let pool = VertexPool::raw(verts, AxisOrder::LonLat);
         for (i, tpl) in templates.templates.iter().enumerate() {
             assert_walker_agrees(tpl, &pool, &format!("template {i}"));
             compared += 1;
@@ -218,7 +219,7 @@ fn scan_dataset_bbox_is_bitwise_the_wkb_encoder_union() {
                 continue;
             };
             for geom in geoms {
-                if geom.lod.is_none() {
+                if geom.lod().is_none() {
                     continue;
                 }
                 let Some(outcome) = geometry_to_wkb(geom, &pool).unwrap() else {

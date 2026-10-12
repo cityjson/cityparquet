@@ -995,8 +995,6 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use cjseq::CityJSON;
-
     fn fixture(name: &str) -> PathBuf {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures")
@@ -1052,11 +1050,8 @@ mod tests {
     /// encode-side test, this is the sidecar codec on its own).
     #[test]
     fn railway_materials_and_textures_round_trip() {
-        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-        let doc = CityJSON::from_str(&raw_text).unwrap();
-        let appearance = doc.appearance.as_ref().expect("railway has appearance");
-        let materials = appearance.materials.clone().unwrap_or_default();
-        let textures = appearance.textures.clone().unwrap_or_default();
+        let materials = railway_appearance("materials");
+        let textures = railway_appearance("textures");
         assert_eq!(materials.len(), 85);
         assert_eq!(textures.len(), 34);
 
@@ -1226,28 +1221,25 @@ mod tests {
         assert!(matches!(err, CityParquetError::Schema(_)));
     }
 
+    /// The railway fixture's `appearance.<member>` definitions, as the JSON
+    /// the sidecars store.
+    fn railway_appearance(member: &str) -> Vec<Value> {
+        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+        let doc: Value = serde_json::from_str(&raw_text).unwrap();
+        serde_json::from_value(doc["appearance"][member].clone())
+            .unwrap_or_else(|e| panic!("railway has appearance.{member}: {e}"))
+    }
+
     /// One real railway material definition, for the gap-11 validator tests
     /// below to mutate a single field of.
     fn a_railway_material() -> Value {
-        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-        let doc = CityJSON::from_str(&raw_text).unwrap();
-        doc.appearance
-            .as_ref()
-            .and_then(|a| a.materials.clone())
-            .expect("railway has materials")[0]
-            .clone()
+        railway_appearance("materials").swap_remove(0)
     }
 
     /// One real railway texture definition, for the gap-11 validator tests
     /// below to mutate a single field of.
     fn a_railway_texture() -> Value {
-        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-        let doc = CityJSON::from_str(&raw_text).unwrap();
-        doc.appearance
-            .as_ref()
-            .and_then(|a| a.textures.clone())
-            .expect("railway has textures")[0]
-            .clone()
+        railway_appearance("textures").swap_remove(0)
     }
 
     /// Gap 11: a colour column (`diffuseColor`/`specularColor`/
@@ -1386,13 +1378,7 @@ mod tests {
     /// +1 the old test used to corrupt them with.
     #[test]
     fn read_materials_accepts_offset_shifted_ids() {
-        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-        let doc = CityJSON::from_str(&raw_text).unwrap();
-        let materials = doc
-            .appearance
-            .as_ref()
-            .and_then(|a| a.materials.clone())
-            .expect("railway has materials");
+        let materials = railway_appearance("materials");
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("materials.parquet");
@@ -1422,13 +1408,7 @@ mod tests {
     /// `read_textures`.
     #[test]
     fn read_textures_accepts_offset_shifted_ids() {
-        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-        let doc = CityJSON::from_str(&raw_text).unwrap();
-        let textures = doc
-            .appearance
-            .as_ref()
-            .and_then(|a| a.textures.clone())
-            .expect("railway has textures");
+        let textures = railway_appearance("textures");
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("textures.parquet");
@@ -1450,13 +1430,7 @@ mod tests {
     /// Derived from real railway materials by forcing row 1's id to row 0's.
     #[test]
     fn read_materials_rejects_a_duplicate_id() {
-        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-        let doc = CityJSON::from_str(&raw_text).unwrap();
-        let materials = doc
-            .appearance
-            .as_ref()
-            .and_then(|a| a.materials.clone())
-            .expect("railway has materials");
+        let materials = railway_appearance("materials");
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("materials.parquet");
@@ -1488,13 +1462,7 @@ mod tests {
     /// material def, set `"shininess": 1` as a bare integer, round-trip.
     #[test]
     fn material_numeric_columns_are_value_exact_not_literal_exact() {
-        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-        let doc = CityJSON::from_str(&raw_text).unwrap();
-        let materials = doc
-            .appearance
-            .as_ref()
-            .and_then(|a| a.materials.clone())
-            .expect("railway has materials");
+        let materials = railway_appearance("materials");
 
         let mut def = materials[0].clone();
         def.as_object_mut()
@@ -1577,11 +1545,8 @@ mod tests {
                 props.get("lod").is_none(),
                 "template {i}: geometry_properties must carry no lod field"
             );
-            let expected_lod = tpl
-                .lod
-                .as_deref()
-                .and_then(|s| Lod::parse(s).ok())
-                .unwrap_or_else(|| panic!("template {i}: source lod must be a valid Lod"));
+            let expected_lod = crate::cjtypes::geometry_lod(tpl)
+                .unwrap_or_else(|| panic!("template {i}: a template has a LoD"));
             assert_eq!(
                 row.lod, expected_lod,
                 "template {i}: row.lod must carry the source lod"

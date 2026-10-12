@@ -12,13 +12,10 @@ name: Publish crates
 # `city3d-stac-gen`) by crates.io version, so the registry no longer refuses
 # them. One blocker remains:
 #
-#   `[patch.crates-io] cjseq = { path = "vendor/cjseq" }` applies to THIS
-#   workspace only. Registry consumers get upstream cjseq 0.4.x, whose
-#   `add_cjfeature`/`update_texture` mis-base merged texture UV-vertex
-#   indices — the exact bug vendor/cjseq/PATCHES.md documents patching.
-#   A published `cityparquet` would silently corrupt Doc-format export, and
-#   `cityparquet-cli` depends on `cityparquet`, so it inherits the block.
-#   Unblocking means upstreaming that fix and depending on the release.
+#   `cityparquet` depends on `cjseq` 0.5 by git, and crates.io refuses a
+#   crate with a git dependency. `cityparquet-cli` depends on `cityparquet`,
+#   so it inherits the block. Unblocking means cjseq 0.5 on crates.io and
+#   depending on it by version.
 #
 # Until it clears, dispatch with `packages: cityparquet-schema` — it does not
 # depend on cjseq and publishes cleanly today. The default input publishes all

@@ -14,7 +14,7 @@ fn fixture(name: &str) -> PathBuf {
 fn delft_seq_streams_features() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     assert_eq!(src.format(), SourceFormat::CityJsonSeq);
-    assert_eq!(src.header().version, "2.0");
+    assert_eq!(src.header().version, cjseq::CityJSONVersion::V2_0);
     let n1 = src.features().unwrap().count();
     let n2 = src.features().unwrap().count(); // restartable
     assert!(n1 > 100, "expected many features, got {n1}");
@@ -98,66 +98,33 @@ fn railway_with_a_three_level_hierarchy() -> (tempfile::TempDir, PathBuf, String
     (dir, path, grandchild)
 }
 
-/// RED (c): a CityJSON document nested more than two levels deep used to lose
-/// every object below the second level WITHOUT a word — cjseq 0.4.1's
-/// `get_cjfeature` descends exactly one level of children, and a grandchild is
-/// not `is_toplevel()` either, so it becomes nobody's feature. The 121-object
-/// railway document silently converted to 120.
+/// A CityJSON document nested more than two levels deep streams every object:
+/// a feature is a top-level object with ALL of its descendants, so the
+/// deepened railway document's grandchild arrives exactly once, in its
+/// grandparent's feature, and none of the 121 objects is lost.
 ///
-/// The round-trip suite is structurally blind to this: `convert` → `export` →
-/// `compare` reads the source through the SAME iterator on both sides, so both
-/// drop the grandchild and report equality. Only an absolute object count
-/// catches it — hence the assertion on the error rather than on a comparison.
+/// The round-trip suite is structurally blind to a lost object: `convert` →
+/// `export` → `compare` reads the source through the SAME iterator on both
+/// sides, so both would drop it and report equality. Only an absolute object
+/// count catches it — hence the count here rather than a comparison.
 #[test]
-fn a_three_level_document_is_refused_rather_than_silently_truncated() {
+fn a_three_level_document_streams_every_object() {
     let (_dir, path, grandchild) = railway_with_a_three_level_hierarchy();
-    let err = Source::open(&path)
-        .err()
-        .expect("a >2-level document cannot be read without losing objects");
-    let msg = err.to_string();
-    assert!(
-        msg.contains(&grandchild),
-        "the error must name the object that would be lost, got: {msg}"
-    );
-}
-
-/// Canary for the guard above. `validate_document_hierarchy` reproduces
-/// behaviour that lives in cjseq's PRIVATE internals, and the workspace
-/// depends on `cjseq = "0.4"` — not a pinned patch — so a point release could
-/// fix the `children-of-children` TODO and turn our guard into a refusal of
-/// documents that had become perfectly readable.
-///
-/// This asserts the loss is still real, straight against cjseq rather than
-/// through `Source`. When it fails, cjseq has been fixed: delete
-/// `validate_document_hierarchy`'s depth branch and this test with it.
-#[test]
-fn cjseq_still_drops_grandchildren_so_this_guard_is_still_needed() {
-    use cjseq::CityJSON;
-
-    let (_dir, path, grandchild) = railway_with_a_three_level_hierarchy();
-    let doc = CityJSON::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-
-    let mut emitted = 0usize;
-    let mut saw_grandchild = false;
-    let mut i = 0usize;
-    while let Some(f) = doc.get_cjfeature(i) {
-        emitted += f.city_objects.len();
-        saw_grandchild |= f.city_objects.contains_key(&grandchild);
-        i += 1;
-    }
-
-    assert!(
-        !saw_grandchild,
-        "cjseq now emits grandchildren — delete validate_document_hierarchy's depth check"
-    );
+    let src = Source::open(&path).unwrap();
+    let features: Vec<_> = src.features().unwrap().map(|f| f.unwrap()).collect();
+    let objects: usize = features.iter().map(|f| f.city_objects.len()).sum();
+    assert_eq!(objects, 121, "every object of the deepened document");
     assert_eq!(
-        emitted, 120,
-        "the deepened railway document has 121 objects and cjseq emits all but the grandchild"
+        features
+            .iter()
+            .filter(|f| f.city_objects.contains_key(&grandchild))
+            .count(),
+        1,
+        "the grandchild arrives in exactly one feature"
     );
 }
 
-/// The two-level fixture the deepened one was derived from must keep working —
-/// the guard rejects depth, not hierarchy.
+/// The two-level fixture the deepened one was derived from.
 #[test]
 fn a_two_level_document_still_reads_every_object() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
@@ -169,9 +136,8 @@ fn a_two_level_document_still_reads_every_object() {
     assert_eq!(objects, 121);
 }
 
-/// A document whose child reference names an object it does not contain used
-/// to panic inside cjseq (`city_objects.get(&childkey).unwrap()`), aborting
-/// the process with no diagnostic. It must be a normal error instead.
+/// A document whose child reference names an object it does not contain is an
+/// error naming the missing id, not a panic.
 #[test]
 fn a_document_with_a_dangling_child_reference_errors_rather_than_panicking() {
     let mut doc: serde_json::Value =

@@ -147,7 +147,7 @@ pub(super) fn matches_predicate(value: Option<&serde_json::Value>, pred: &AttrPr
 /// identically.
 pub(super) fn column_value(co: &CityObject, column: &str) -> Option<serde_json::Value> {
     if column == "object_type" {
-        return Some(serde_json::Value::String(co.thetype.clone()));
+        return Some(serde_json::Value::String(String::from(co.thetype.clone())));
     }
     co.attributes
         .as_ref()?
@@ -391,7 +391,9 @@ fn id_lookup_streamed(base_url: &str, key: &str, params: &QueryParams) -> Result
              pointed at CityGML"
         );
     }
-    let header = CityJSON::from_str(line.trim_end())
+    let header = line
+        .trim_end()
+        .parse::<CityJSON>()
         .map_err(|e| anyhow!("invalid CityJSONSeq header in {key}: {e}"))?;
     let transform = header.transform;
     let mut totals = ComparableTotals::default();
@@ -408,7 +410,9 @@ fn id_lookup_streamed(base_url: &str, key: &str, params: &QueryParams) -> Result
         if line.trim().is_empty() {
             continue;
         }
-        let feature = CityJSONFeature::from_str(line.trim_end())
+        let feature = line
+            .trim_end()
+            .parse::<CityJSONFeature>()
             .map_err(|e| anyhow!("invalid CityJSONFeature line in {key}: {e}"))?;
         if let Some(co) = feature.city_objects.get(id) {
             let verts = Vertices {

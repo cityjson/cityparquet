@@ -12,7 +12,7 @@
 //! the core is a pure, deterministic, heavily unit-tested function decoupled
 //! from CityJSON/WKB; thin adapters bridge `cjseq::Geometry` at the edges.
 
-use cjseq::{Geometry, GeometryType};
+use cjseq::{Geometry, SemanticSurfaceType, Surface, VertexIndex};
 
 use crate::wkb_write::VertexPool;
 
@@ -525,24 +525,17 @@ fn flip_faces(faces: &[Face]) -> Vec<Face> {
 
 /// A per-face `GroundSurface` mask from a geometry's semantics, aligned to the
 /// flattened face order; `None` when there are no ground-labelled faces. Uses
-/// the encoder's boundary-aware [`crate::encode::flatten_values`] so a `null`
-/// shorthand for a whole shell/solid expands to one entry per face beneath it —
-/// a naive leaf-collect would shift later labels onto the wrong faces.
+/// the boundary-aware [`crate::faces::semantics`] so a `null` shorthand for a
+/// whole shell/solid expands to one entry per face beneath it — a naive
+/// leaf-collect would shift later labels onto the wrong faces.
 fn ground_mask(geom: &Geometry, face_count: usize) -> Option<Vec<bool>> {
-    let sem = geom.semantics.as_ref()?;
-    let surfaces = sem.get("surfaces")?.as_array()?;
-    let values = sem.get("values")?;
-    let depth = crate::encode::values_nesting_depth(&geom.thetype);
-    let mut flat = Vec::new();
-    crate::encode::flatten_values(values, &geom.boundaries, depth, &mut flat);
+    let (surfaces, flat) = crate::faces::semantics(geom)?;
     let mut mask = vec![false; face_count];
     for (k, v) in flat.iter().enumerate().take(face_count) {
-        if let Some(si) = v.as_u64()
+        if let Some(si) = v
             && surfaces
-                .get(si as usize)
-                .and_then(|s| s.get("type"))
-                .and_then(|t| t.as_str())
-                == Some("GroundSurface")
+                .get(si.0)
+                .is_some_and(|s| s.thetype == SemanticSurfaceType::GroundSurface)
         {
             mask[k] = true;
         }
@@ -564,37 +557,30 @@ pub fn faces_from_geometry(
     // oriented INDEPENDENTLY — a MultiSolid mixing outward- and inward-wound
     // members must not be flipped by one combined-volume decision. A
     // MultiSurface is one non-solid group (orientation is meaningless there).
-    let (solids, is_solid): (Vec<Vec<Vec<Vec<usize>>>>, bool) = match geom.thetype {
-        GeometryType::MultiSurface | GeometryType::CompositeSurface => (
-            vec![serde_json::from_value(geom.boundaries.clone())?],
-            false,
+    let (solids, is_solid): (Vec<Vec<&Surface>>, bool) = match geom {
+        Geometry::MultiSurface { boundaries, .. }
+        | Geometry::CompositeSurface { boundaries, .. } => {
+            (vec![boundaries.iter().collect()], false)
+        }
+        Geometry::Solid { boundaries, .. } => (vec![boundaries.iter().flatten().collect()], true),
+        Geometry::MultiSolid { boundaries, .. } | Geometry::CompositeSolid { boundaries, .. } => (
+            boundaries
+                .iter()
+                .map(|s| s.iter().flatten().collect())
+                .collect(),
+            true,
         ),
-        GeometryType::Solid => {
-            let shells: Vec<Vec<Vec<Vec<usize>>>> =
-                serde_json::from_value(geom.boundaries.clone())?;
-            (vec![shells.into_iter().flatten().collect()], true)
-        }
-        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
-            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
-                serde_json::from_value(geom.boundaries.clone())?;
-            (
-                solids
-                    .into_iter()
-                    .map(|s| s.into_iter().flatten().collect())
-                    .collect(),
-                true,
-            )
-        }
         _ => return Ok((Vec::new(), None)),
     };
 
     let mut faces = Vec::new();
     for surfs in &solids {
         let mut group = Vec::with_capacity(surfs.len());
-        for surf in surfs {
+        for &surf in surfs {
             let mut rings = Vec::with_capacity(surf.len());
             for ring in surf {
-                let pts: crate::Result<Vec<Point>> = ring.iter().map(|&i| pool.coord(i)).collect();
+                let pts: crate::Result<Vec<Point>> =
+                    ring.iter().map(|&i| pool.coord(i.0)).collect();
                 rings.push(pts?);
             }
             group.push(Face { rings });
@@ -615,9 +601,9 @@ pub fn faces_from_geometry(
 /// `MultiSurface` `cjseq::Geometry` (LoD `"0"`) indexing it — ready to feed the
 /// existing WKB writer via [`VertexPool::raw`]. Vertices are de-duplicated on a
 /// 1 mm grid.
-pub fn footprint_to_geometry(fp: &Footprint) -> (Vec<Vec<f64>>, Geometry) {
+pub fn footprint_to_geometry(fp: &Footprint) -> (Vec<[f64; 3]>, Geometry) {
     use std::collections::HashMap;
-    let mut verts: Vec<Vec<f64>> = Vec::new();
+    let mut verts: Vec<[f64; 3]> = Vec::new();
     let mut index_of: HashMap<(i64, i64, i64), usize> = HashMap::new();
     let mut push = |p: Point| -> usize {
         let key = (
@@ -626,7 +612,7 @@ pub fn footprint_to_geometry(fp: &Footprint) -> (Vec<Vec<f64>>, Geometry) {
             (p[2] * 1000.0).round() as i64,
         );
         *index_of.entry(key).or_insert_with(|| {
-            verts.push(vec![p[0], p[1], p[2]]);
+            verts.push([p[0], p[1], p[2]]);
             verts.len() - 1
         })
     };
@@ -635,13 +621,13 @@ pub fn footprint_to_geometry(fp: &Footprint) -> (Vec<Vec<f64>>, Geometry) {
     // ring left with < 3 vertices and a face left with no exterior ring, so the
     // emitted geometry never carries a degenerate ring (an interior ring that
     // collapses is simply dropped; a collapsed exterior drops the whole face).
-    let mut surfaces: Vec<Vec<Vec<usize>>> = Vec::with_capacity(fp.surfaces.len());
+    let mut surfaces: Vec<Surface> = Vec::with_capacity(fp.surfaces.len());
     for face in &fp.surfaces {
-        let mut rings: Vec<Vec<usize>> = Vec::with_capacity(face.rings.len());
+        let mut rings: Surface = Vec::with_capacity(face.rings.len());
         for ring in &face.rings {
-            let mut idx: Vec<usize> = Vec::with_capacity(ring.len());
+            let mut idx: Vec<VertexIndex> = Vec::with_capacity(ring.len());
             for &p in ring {
-                let i = push(p);
+                let i = VertexIndex(push(p));
                 if idx.last() != Some(&i) {
                     idx.push(i);
                 }
@@ -660,15 +646,12 @@ pub fn footprint_to_geometry(fp: &Footprint) -> (Vec<Vec<f64>>, Geometry) {
             surfaces.push(rings);
         }
     }
-    let geom = Geometry {
-        thetype: GeometryType::MultiSurface,
-        lod: Some("0".to_string()),
-        boundaries: serde_json::to_value(surfaces).expect("index arrays serialise"),
+    let geom = Geometry::MultiSurface {
+        lod: cjseq::Lod::new(0, None).expect("0 is a valid LoD"),
+        boundaries: surfaces,
         semantics: None,
         material: None,
         texture: None,
-        template: None,
-        transformation_matrix: None,
     };
     (verts, geom)
 }
@@ -904,16 +887,16 @@ mod tests {
     // ---- sol-review regression tests ----
 
     /// A box's 8 corners scaled by `s`, offset by `ox` in X (bottom 0..3, top 4..7).
-    fn box_verts(ox: f64, s: f64) -> Vec<Vec<f64>> {
+    fn box_verts(ox: f64, s: f64) -> Vec<[f64; 3]> {
         vec![
-            vec![ox, 0., 0.],
-            vec![ox + s, 0., 0.],
-            vec![ox + s, s, 0.],
-            vec![ox, s, 0.],
-            vec![ox, 0., s],
-            vec![ox + s, 0., s],
-            vec![ox + s, s, s],
-            vec![ox, s, s],
+            [ox, 0., 0.],
+            [ox + s, 0., 0.],
+            [ox + s, s, 0.],
+            [ox, s, 0.],
+            [ox, 0., s],
+            [ox + s, 0., s],
+            [ox + s, s, s],
+            [ox, s, s],
         ]
     }
 
@@ -951,16 +934,9 @@ mod tests {
             [box_faces(0, false)], // solid 0: outward unit cube (one shell)
             [box_faces(8, true)],  // solid 1: inward 2x2x2 cube
         ]);
-        let geom = Geometry {
-            thetype: GeometryType::MultiSolid,
-            lod: Some("2".to_string()),
-            boundaries,
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+        let geom = crate::faces::geometry(serde_json::json!({
+            "type": "MultiSolid", "lod": "2", "boundaries": boundaries
+        }));
         let pool = VertexPool::raw(&verts, cityparquet_schema::crs::AxisOrder::LonLat);
         let (faces, _mask) = faces_from_geometry(&geom, &pool).unwrap();
         assert_eq!(faces.len(), 12);
@@ -981,26 +957,20 @@ mod tests {
         // sol finding 1: a Solid with two shells; shell 0 (2 faces) has null
         // semantics, shell 1 (1 face) is GroundSurface via values [0]. The null
         // must expand to 2 entries, so ONLY the third face is ground.
-        let verts: Vec<Vec<f64>> = (0..12)
-            .map(|i| vec![i as f64, 0., (i / 4) as f64])
-            .collect();
+        let verts: Vec<[f64; 3]> = (0..12).map(|i| [i as f64, 0., (i / 4) as f64]).collect();
         let boundaries = serde_json::json!([
             [[[0, 1, 2, 3]], [[4, 5, 6, 7]]], // shell 0: two faces
             [[[8, 9, 10, 11]]],               // shell 1: one face
         ]);
-        let geom = Geometry {
-            thetype: GeometryType::Solid,
-            lod: Some("2".to_string()),
-            boundaries,
-            semantics: Some(serde_json::json!({
+        let geom = crate::faces::geometry(serde_json::json!({
+            "type": "Solid",
+            "lod": "2",
+            "boundaries": boundaries,
+            "semantics": {
                 "surfaces": [{"type": "GroundSurface"}],
                 "values": [null, [0]],
-            })),
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+            },
+        }));
         let pool = VertexPool::raw(&verts, cityparquet_schema::crs::AxisOrder::LonLat);
         let (_faces, mask) = faces_from_geometry(&geom, &pool).unwrap();
         assert_eq!(mask, Some(vec![false, false, true]));
@@ -1080,8 +1050,10 @@ mod tests {
             source: Lod0Source::Geometric,
         };
         let (_v, geom) = footprint_to_geometry(&fp);
-        let b: Vec<Vec<Vec<usize>>> = serde_json::from_value(geom.boundaries).unwrap();
-        for surf in &b {
+        let Geometry::MultiSurface { boundaries, .. } = geom else {
+            panic!("a footprint is a MultiSurface");
+        };
+        for surf in &boundaries {
             for ring in surf {
                 assert!(ring.len() >= 3, "no degenerate ring");
                 for i in 0..ring.len() {

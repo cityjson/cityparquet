@@ -270,10 +270,8 @@ fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
 /// geographicalExtent, etc.) is captured verbatim into the package's KV
 /// metadata (`city.other.source_metadata` — spec-alignment M3 folded
 /// `source_metadata` into `other`, informational only) and restored into the
-/// exported header. `fullMetadataUrl` is a documented exception — cjseq's
-/// `Metadata` struct has no passthrough for unknown members, so it never
-/// survives even the initial parse of the source header, let alone the round
-/// trip.
+/// exported header, non-standard members such as 3DBAG's `fullMetadataUrl`
+/// included.
 #[test]
 fn delft_source_metadata_reaches_kv_metadata_and_the_exported_header() {
     let package_dir = tempfile::tempdir().unwrap();
@@ -300,9 +298,10 @@ fn delft_source_metadata_reaches_kv_metadata_and_the_exported_header() {
         source_metadata.get("geographicalExtent").is_some(),
         "expected geographicalExtent in {source_metadata}"
     );
-    assert!(
-        source_metadata.get("fullMetadataUrl").is_none(),
-        "fullMetadataUrl is not part of cjseq::Metadata and cannot survive"
+    assert_eq!(
+        source_metadata["fullMetadataUrl"],
+        serde_json::json!("https://data.3dbag.nl/metadata/v20240420/metadata.json"),
+        "a non-standard metadata member must be preserved"
     );
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -337,6 +336,17 @@ fn delft_source_metadata_reaches_kv_metadata_and_the_exported_header() {
         source_header["metadata"]["geographicalExtent"],
         "exported header geographicalExtent must match the source"
     );
+    assert_eq!(
+        exported_header["metadata"]["fullMetadataUrl"],
+        source_header["metadata"]["fullMetadataUrl"],
+        "exported header fullMetadataUrl must match the source"
+    );
+}
+
+/// Whether a geometry carries a `material` or `texture` member.
+fn has_appearance(g: &cjseq::Geometry) -> bool {
+    let gj = serde_json::to_value(g).unwrap();
+    gj.get("material").is_some() || gj.get("texture").is_some()
 }
 
 /// Recursively asserts every integer in a *localised* material tree (the
@@ -442,30 +452,32 @@ fn railway_compatibility_export_restores_appearance_feature_local() {
         for co in feature.city_objects.values() {
             let Some(geoms) = &co.geometry else { continue };
             for g in geoms {
+                let gj = serde_json::to_value(g).unwrap();
                 // (b)
-                if let Some(material) = &g.material {
+                if let Some(material) = gj.get("material").and_then(Value::as_object) {
                     assert!(
                         !material.is_empty(),
                         "a geometry carrying a material member must not be empty"
                     );
                     for m in material.values() {
-                        if let Some(idx) = m.value {
+                        if let Some(idx) = m.get("value").and_then(Value::as_u64) {
+                            let idx = idx as usize;
                             assert!(
                                 idx < n_materials,
                                 "material index {idx} must be < feature-local materials len {n_materials}"
                             );
                             found_material = true;
                         }
-                        if let Some(values) = &m.values {
+                        if let Some(values) = m.get("values") {
                             assert_material_indices_below(values, n_materials);
                             found_material = true;
                         }
                     }
                 }
                 // (c)
-                if let Some(texture) = &g.texture {
+                if let Some(texture) = gj.get("texture").and_then(Value::as_object) {
                     for t in texture.values() {
-                        if let Some(values) = &t.values {
+                        if let Some(values) = t.get("values") {
                             assert_texture_rings_are_index_form(values, n_textures, n_uvs);
                             found_texture = true;
                         }
@@ -484,18 +496,15 @@ fn railway_compatibility_export_restores_appearance_feature_local() {
     );
 }
 
-/// G20 regression: a non-canonical source `lod` string must NOT lose its
-/// appearance on round-trip. Under the old single-column layout the encoder
-/// keyed the per-object appearance map by the raw `lod` (`"03"`) while export
-/// looked it up by the canonical `"3"`, so the texture was silently dropped
-/// (the old `appearance_lod_misses` counter existed only to notice this).
-/// With per-LoD `texture_lod*` columns the appearance is paired to its
-/// geometry by the shared `lod3` column suffix, so `"03"` restores exactly.
-/// Derived from the railway fixture: object
+/// G20 regression: a source `lod` spelled differently from its neighbours
+/// must NOT lose its appearance on round-trip. The appearance is paired to
+/// its geometry by the shared per-LoD column suffix (`geometry_lod3_0` /
+/// `texture_lod3_0`), never by the raw `lod` string, so `"3.0"` and `"3"`
+/// restore alike. Derived from the railway fixture: object
 /// `UUID_bd865e62-18de-40ff-85da-883709a86f0f`'s only (non-instance)
 /// geometry — a `lod: "3"` `MultiSurface` carrying a `texture` block — has
-/// its `lod` rewritten to `"03"` (same canonical LoD 3, so still the
-/// `geometry_lod3` / `texture_lod3` columns). The derived document must
+/// its `lod` rewritten to `"3.0"` (the same canonical LoD 3.0, so still the
+/// `geometry_lod3_0` / `texture_lod3_0` columns). The derived document must
 /// round-trip losslessly.
 #[test]
 fn railway_export_restores_appearance_under_a_non_canonical_lod() {
@@ -527,7 +536,7 @@ fn railway_export_restores_appearance_under_a_non_canonical_lod() {
                 obj.contains_key("texture"),
                 "precondition: target geometry must carry a texture block"
             );
-            obj.insert("lod".to_string(), serde_json::json!("03"));
+            obj.insert("lod".to_string(), serde_json::json!("3.0"));
             rewritten = true;
         }
     }
@@ -569,9 +578,8 @@ fn railway_export_restores_appearance_under_a_non_canonical_lod() {
     .unwrap();
 
     // Global count: the derived export carries the SAME number of texture
-    // blocks as pristine railway. Under the old single-column layout this
-    // geometry's texture was silently dropped (raw "03" key vs canonical "3"
-    // lookup), so the count would be one lower.
+    // blocks as pristine railway; a texture lost to the respelled lod would
+    // make it one lower.
     let (_, derived_textures) = count_geometry_appearance_keys(&export_path);
     assert_eq!(
         derived_textures, pristine_textures,
@@ -1187,9 +1195,7 @@ fn railway_compatibility_export_attaches_appearance_only_to_referencing_features
             .as_ref()
             .expect("precondition: object must carry geometry");
         assert!(
-            geoms
-                .iter()
-                .all(|g| g.material.is_none() && g.texture.is_none()),
+            geoms.iter().all(|g| !has_appearance(g)),
             "precondition: {NON_APPEARANCE_OBJECT_ID} must reference no material/texture"
         );
         confirmed_precondition = true;
@@ -1226,7 +1232,7 @@ fn railway_compatibility_export_attaches_appearance_only_to_referencing_features
             feature.appearance
         );
         for g in co.geometry.as_ref().unwrap() {
-            assert!(g.material.is_none() && g.texture.is_none());
+            assert!(!has_appearance(g));
         }
         checked = true;
     }
@@ -1351,18 +1357,19 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
     );
 
     let text = std::fs::read_to_string(&output).unwrap();
-    let doc = cjseq::CityJSON::from_str(&text).expect("cjseq must parse the exported .city.json");
+    let doc = <cityparquet::cjseq::CityJSON as std::str::FromStr>::from_str(&text)
+        .expect("cjseq must parse the exported .city.json");
 
     // Read the SOURCE's own geometry-templates straight from the fixture —
     // types/lods are asserted against this, never hardcoded.
     let source_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-    let source_doc = cjseq::CityJSON::from_str(&source_text).unwrap();
+    let source_doc =
+        <cityparquet::cjseq::CityJSON as std::str::FromStr>::from_str(&source_text).unwrap();
     let source_templates = source_doc
         .geometry_templates
         .as_ref()
         .expect("railway fixture has geometry-templates");
-    let source_verts: Vec<Vec<f64>> =
-        serde_json::from_value(source_templates.vertices_templates.clone()).unwrap();
+    let source_verts = &source_templates.vertices_templates;
 
     let rebuilt_templates = doc
         .geometry_templates
@@ -1382,7 +1389,8 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
         .enumerate()
     {
         assert_eq!(
-            rebuilt.thetype, source.thetype,
+            rebuilt.geometry_type(),
+            source.geometry_type(),
             "template {i}: type must match the source"
         );
         // Canonicalised, not literal, comparison (spec-alignment M6): a
@@ -1390,13 +1398,13 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
         // (`geometry_lod3_0`, canonical `major.minor` form), so the source's
         // bare-major `"3"` re-exports as `"3.0"` — the same normalisation a
         // regular (non-instance) geometry's `lod` already undergoes.
-        let canon = |s: &Option<String>| {
-            s.as_deref()
-                .and_then(|s| cityparquet_schema::Lod::parse(s).ok())
+        let canon = |g: &cjseq::Geometry| {
+            g.lod()
+                .and_then(|l| cityparquet_schema::Lod::parse(&l.to_string()).ok())
         };
         assert_eq!(
-            canon(&rebuilt.lod),
-            canon(&source.lod),
+            canon(rebuilt),
+            canon(source),
             "template {i}: lod must match the source"
         );
     }
@@ -1413,16 +1421,14 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
     for (id, co) in &source_doc.city_objects {
         let Some(geoms) = &co.geometry else { continue };
         for g in geoms {
-            if g.thetype != cjseq::GeometryType::GeometryInstance {
+            let cjseq::Geometry::GeometryInstance {
+                transformation_matrix,
+                ..
+            } = g
+            else {
                 continue;
-            }
-            let matrix: Vec<f64> = serde_json::from_value(
-                g.transformation_matrix
-                    .clone()
-                    .expect("source GeometryInstance must carry a transformationMatrix"),
-            )
-            .expect("source transformationMatrix must be an array of numbers");
-            source_matrix_by_object.insert(id.clone(), matrix);
+            };
+            source_matrix_by_object.insert(id.clone(), transformation_matrix.to_vec());
         }
     }
 
@@ -1441,36 +1447,18 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
     for (id, co) in &doc.city_objects {
         let Some(geoms) = &co.geometry else { continue };
         for g in geoms {
-            if g.thetype != cjseq::GeometryType::GeometryInstance {
+            let cjseq::Geometry::GeometryInstance {
+                template,
+                transformation_matrix,
+                ..
+            } = g
+            else {
                 continue;
-            }
+            };
             instance_count += 1;
-            let template_idx = g
-                .template
-                .expect("a GeometryInstance geometry must carry a template index");
-            *instances_per_template.entry(template_idx).or_insert(0) += 1;
-            let matrix = g
-                .transformation_matrix
-                .as_ref()
-                .expect("GeometryInstance must carry a transformationMatrix")
-                .as_array()
-                .expect("transformationMatrix must be a JSON array");
-            assert_eq!(
-                matrix.len(),
-                16,
-                "transformationMatrix must have 16 elements"
-            );
-            let boundaries: Vec<usize> = serde_json::from_value(g.boundaries.clone())
-                .expect("GeometryInstance boundaries must be a flat array of vertex indices");
-            assert_eq!(
-                boundaries.len(),
-                1,
-                "GeometryInstance boundaries must reference exactly one vertex"
-            );
+            *instances_per_template.entry(template.0).or_insert(0) += 1;
 
-            let exported_matrix: Vec<f64> =
-                serde_json::from_value(serde_json::Value::Array(matrix.clone()))
-                    .expect("transformationMatrix must be an array of numbers");
+            let exported_matrix = transformation_matrix.to_vec();
             let source_matrix = source_matrix_by_object.get(id).unwrap_or_else(|| {
                 panic!("exported object {id} has no matching source GeometryInstance object")
             });
@@ -1498,16 +1486,18 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
     // template 0 only (the controller's M4 task 10 review) so a bug
     // isolated to template 1 or 2's own coordinate rewrite can't hide behind
     // template 0 happening to round-trip correctly.
-    let rebuilt_verts: Vec<Vec<f64>> =
-        serde_json::from_value(rebuilt_templates.vertices_templates.clone()).unwrap();
+    let rebuilt_verts = &rebuilt_templates.vertices_templates;
     for t in 0..source_templates.templates.len() {
-        let rebuilt_boundaries: Vec<Vec<Vec<usize>>> =
-            serde_json::from_value(rebuilt_templates.templates[t].boundaries.clone())
-                .unwrap_or_else(|e| {
-                    panic!("template {t} must be a MultiSurface-shaped boundary tree: {e}")
-                });
-        let source_boundaries: Vec<Vec<Vec<usize>>> =
-            serde_json::from_value(source_templates.templates[t].boundaries.clone()).unwrap();
+        let rebuilt_boundaries: Vec<Vec<Vec<usize>>> = serde_json::from_value(
+            serde_json::to_value(&rebuilt_templates.templates[t]).unwrap()["boundaries"].clone(),
+        )
+        .unwrap_or_else(|e| {
+            panic!("template {t} must be a MultiSurface-shaped boundary tree: {e}")
+        });
+        let source_boundaries: Vec<Vec<Vec<usize>>> = serde_json::from_value(
+            serde_json::to_value(&source_templates.templates[t]).unwrap()["boundaries"].clone(),
+        )
+        .unwrap();
         let rebuilt_ring0 = &rebuilt_boundaries[0][0];
         let source_ring0 = &source_boundaries[0][0];
         assert_eq!(
@@ -1689,9 +1679,9 @@ fn delft_also_exports_as_a_single_whole_city_json_document() {
     assert_eq!(report.feature_count, 1115);
 
     let text = std::fs::read_to_string(&output).unwrap();
-    let doc = cjseq::CityJSON::from_str(&text).expect("cjseq must parse the exported .city.json");
-    assert_eq!(doc.thetype, "CityJSON");
-    assert_eq!(doc.version, "2.0");
+    let doc = <cityparquet::cjseq::CityJSON as std::str::FromStr>::from_str(&text)
+        .expect("cjseq must parse the exported .city.json");
+    assert_eq!(doc.version, cityparquet::cjseq::CityJSONVersion::V2_0);
     assert_eq!(doc.number_of_city_objects(), 1115, "top-level objects only");
 }
 

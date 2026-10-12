@@ -72,10 +72,9 @@ scripts and renderers it belongs to. `lib/citylake` is a third. Consequences:
   — the library's own gate, `benchmark/readbench`'s own gate, the two harness
   suites (`plot-test` for `benchmark/plot`, `scripts-test` for
   `benchmark/scripts`) and `citylake-check` — plus the MCP server's gate.
-- `benchmark/readbench` path-depends on `../../lib/cityparquet-rs/crates/core`
-  and **must repeat the `[patch.crates-io] cjseq` line** — `[patch]` is honoured
-  only in the workspace root being built, and without it the benchmark would
-  silently resolve the unpatched upstream.
+- `benchmark/readbench` path-depends on `../../lib/cityparquet-rs/crates/core`,
+  and through it on the same git `cjseq` the library pins; it declares no
+  `cjseq` of its own.
 - Its `fcb_core`/`cjseq2` pins are **exact** (`=0.7.6`, `=0.1.0`). They are a
   measured format's reader; a caret range would let a later release change what
   the published figures mean.
@@ -149,8 +148,8 @@ the spec rather than through each other's internals.
 `lib/cityparquet-rs` and `lib/citylake` are _not_ submodules: they live in this
 tree and are edited here.
 
-`lib/cityparquet-rs/vendor/cjseq` is a **patched vendored copy**, not a
-submodule, and the only thing vendored under `vendor/`.
+`cjseq` is a **git dependency** of `lib/cityparquet-rs` (the workspace
+`Cargo.toml`), not vendored and not a submodule.
 
 ## Conventions
 

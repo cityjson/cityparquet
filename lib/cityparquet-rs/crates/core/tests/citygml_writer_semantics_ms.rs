@@ -48,6 +48,7 @@ fn source_with_crs(path: &Path) -> Source {
             reference_date: None,
             reference_system: None,
             title: None,
+            other: Default::default(),
         })
         .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
     let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
@@ -99,7 +100,7 @@ fn multisurface(pkg: &Path) -> (FaceStruct, SemanticsMap) {
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {
-                if obj.object.thetype != "Building" {
+                if String::from(obj.object.thetype.clone()) != "Building" {
                     continue;
                 }
                 for (lod, decoded, props) in &obj.geometries {
