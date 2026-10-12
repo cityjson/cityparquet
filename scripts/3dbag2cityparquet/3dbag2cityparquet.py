@@ -1,4 +1,12 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   # The verify stage's independent Parquet reader; the same release the
+#   # database benchmark pins (benchmark/databases/pyproject.toml).
+#   "duckdb==1.5.5",
+# ]
+# ///
 """Encode the whole of 3DBAG as ONE CityParquet package.
 
 `cityparquet convert a.json b.json ...` already merges many inputs into one

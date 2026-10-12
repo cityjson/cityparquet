@@ -118,12 +118,20 @@ and in `vendor/cjseq`, which parses and re-serialises the same numbers.
 ## Running it
 
 ```sh
-python3 3dbag2cityparquet.py all \
+uv run scripts/3dbag2cityparquet/3dbag2cityparquet.py all \
   --manifest /path/to/3dbag_urls.txt \
   --work    /scratch/3dbag-work \
   --dest    ../cityparquet_data/3dbag \
   --jobs    64
 ```
+
+The script declares its one Python dependency inline (PEP 723), so `uv run`
+resolves it in an ephemeral environment and nothing has to be installed first.
+It needs [`uv`](https://docs.astral.sh/uv/) and both binaries built:
+`lib/cityparquet-rs/target/release/cityparquet` and
+`lib/cityparquet-rs/vendor/cjseq/target/release/cjseq`. (Plain `python3` runs it
+too, given `duckdb` on the interpreter's path; only the `verify` stage imports
+it.)
 
 `--ordering hilbert|source` chooses the row order the `convert` stage passes to
 `cityparquet convert`. It defaults to `hilbert`, the writer's own default and
@@ -134,10 +142,6 @@ flag, not a `--convert-arg`: the writer rejects a repeated `--ordering`. Further
 writer flags go through `--convert-arg`, one word each; the `=` spelling
 (`--convert-arg=--row-group-size`) is what lets a value that starts with `--`
 through.
-
-Needs `duckdb` (the `verify` stage only) and both binaries built:
-`lib/cityparquet-rs/target/release/cityparquet` and
-`vendor/cjseq/target/release/cjseq`.
 
 | Stage     | What it does                                                  |
 | --------- | ------------------------------------------------------------- |
