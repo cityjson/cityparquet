@@ -128,8 +128,8 @@ pub(crate) fn feature_centre(vertices: &[[i64; 3]], transform: &Transform) -> Op
 
 /// The Hilbert-ordering key of a feature with this [`feature_centre`]: the
 /// curve index of the centre, normalised against `dataset_bbox`. A feature
-/// with no vertices gets key `0`; the sort is stable, so such features keep
-/// their relative order, grouped at the front.
+/// with no vertices gets key `0`, so such features sort first, in source
+/// order (`crate::sort` breaks ties by row ordinal).
 pub(crate) fn centre_hilbert_key(
     centre: Option<[f64; 2]>,
     dataset_bbox: &[f64; 6],
@@ -145,19 +145,6 @@ pub(crate) fn centre_hilbert_key(
     // silently turning a Hilbert ordering back into source order.
     let centroid = axis_order.apply([x, y, 0.0]);
     hilbert_index(centroid[0], centroid[1], dataset_bbox)
-}
-
-/// The order that sorts features by [`centre_hilbert_key`] of their
-/// centres: indices into `centres`, stable, so features with equal keys keep
-/// their source order.
-pub(crate) fn hilbert_order(
-    centres: &[Option<[f64; 2]>],
-    dataset_bbox: &[f64; 6],
-    axis_order: AxisOrder,
-) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..centres.len()).collect();
-    order.sort_by_cached_key(|&i| centre_hilbert_key(centres[i], dataset_bbox, axis_order));
-    order
 }
 
 #[cfg(test)]

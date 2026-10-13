@@ -31,6 +31,8 @@ use crate::decode::decode_batch;
 use crate::export::{
     AppearanceKind, appearance_columns, read_lod_keyed_appearance, table_display_name,
 };
+use crate::family::{Families, FamilyRow};
+use crate::id_hash::id_hash;
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{read_materials, read_textures};
 use crate::stac::properties::PackageTables;
@@ -39,7 +41,7 @@ use crate::wkb_read::{DecodedGeometry, DecodedKind};
 /// Options for one CityParquet package -> CityGML 2.0 `.gml` conversion.
 pub struct WriteOptions {
     pub package_dir: PathBuf,
-    /// The `.gml` file to write (truncated if it exists, matching `export`).
+    /// The `.gml` file to write (replaced if it exists, matching `export`).
     pub output: PathBuf,
 }
 
@@ -208,16 +210,35 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
         .transpose()?
         .map(|defs| defs.into_iter().collect());
 
-    let mut report = WriteReport::default();
-    let mut bounds = Bounds::new();
-    let mut seen_ids: HashSet<String> = HashSet::new();
-    let mut members = Writer::new(Vec::new());
-    // First pass collects every Building/BuildingPart object so parts can be
-    // nested under their parent (in the parent's stored `children` order).
-    let mut content_by_id: HashMap<String, BuildingSolids> = HashMap::new();
-    let mut children_by_id: HashMap<String, Vec<String>> = HashMap::new();
-    let mut type_by_id: HashMap<String, String> = HashMap::new();
-    let mut root_ids: Vec<String> = Vec::new();
+    // Members are spilled to a sibling file as each family is rendered: the
+    // document's envelope precedes them but is known only at the end.
+    let name = opts
+        .output
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let spill = TempFile(
+        opts.output
+            .with_file_name(format!(".{name}.members.partial")),
+    );
+    let spill_file = fs::File::create(&spill.0).map_err(|e| {
+        CityParquetError::io_source(format!("cannot create {}", spill.0.display()), e)
+    })?;
+    let mut render = FamilyRenderer {
+        members: Writer::new(std::io::BufWriter::new(spill_file)),
+        bounds: Bounds::new(),
+        report: WriteReport::default(),
+        next_feature_index: 0,
+        types: &attr_types,
+        materials: global_materials.as_ref(),
+        textures: global_textures.as_ref(),
+        strays: HashMap::new(),
+    };
+    // Counts made while reading rows, before any family is rendered.
+    let mut read = WriteReport::default();
+    let mut ids: HashSet<u128> = HashSet::new();
+    let mut families = Families::<GmlRow>::default();
+    let mut emit = |_: String, rows: Vec<GmlRow>| render.family(rows);
 
     let mut first_builder = Some(first_builder);
     for (idx, path) in tables.tables.iter().enumerate() {
@@ -275,136 +296,282 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                 }
             }
             for (row, obj) in objects.into_iter().enumerate() {
-                let ty = crate::cjtypes::object_type_name(&obj.object.thetype);
-                // Only Building and BuildingPart are handled; other CityObject
-                // types are out of scope (BuildingPart no longer counts here).
-                if ty != "Building" && ty != "BuildingPart" {
-                    report.non_building_skipped += 1;
-                    continue;
-                }
-                // This row's appearance, rebuilt from the per-LoD
-                // `material_lod*` / `texture_lod*` columns into a
-                // `{"<canonical-lod>": {...}}` map and keyed out per geometry
-                // below. `decode_batch` excludes these columns.
-                let material_col = read_lod_keyed_appearance(
-                    &batch,
-                    &material_cols,
-                    row,
-                    AppearanceKind::Material,
-                )?;
-                let texture_col =
-                    read_lod_keyed_appearance(&batch, &texture_cols, row, AppearanceKind::Texture)?;
-                let mut solids = Vec::new();
-                for (lod, decoded, props) in obj.geometries {
-                    // Real semantics on a geometry we are about to skip are
-                    // dropped; count them (computed before `props` is moved).
-                    let sem_count = semantics::droppable_surface_count(props.as_ref());
-                    let lod_key = lod.map(|l| l.to_string()).unwrap_or_default();
-                    let material = material_col.as_ref().and_then(|m| m.get(&lod_key)).cloned();
-                    let texture = texture_col.as_ref().and_then(|t| t.get(&lod_key)).cloned();
-                    match route_geometry(lod, decoded, props) {
-                        GeomRoute::Emit(lod, decoded, props) => {
-                            solids.push((lod, decoded, props, material, texture))
-                        }
-                        // No CityGML 2.0 Building slot for a MultiSolid.
-                        GeomRoute::MultiSolid => {
-                            report.multi_solids_skipped += 1;
-                            report.semantic_surfaces_dropped += sem_count;
-                        }
-                        // A lodless geometry cannot be a lod<n>Solid.
-                        GeomRoute::Lodless => {
-                            report.lod_columns_skipped += 1;
-                            report.semantic_surfaces_dropped += sem_count;
-                        }
-                    }
-                }
-                let attributes = obj.object.attributes.clone().unwrap_or_default();
-                let id = obj.id;
-                // A duplicate CityObject id would silently overwrite the earlier
-                // row (and evade the emit-time `seen_ids` check) — reject it.
-                if type_by_id.contains_key(&id) {
+                // A duplicate CityObject id would make two objects share a
+                // `gml:id`; reject it.
+                if !ids.insert(id_hash(&obj.id)) {
                     return Err(CityParquetError::Metadata(format!(
-                        "duplicate CityObject id {id:?} in the package"
+                        "duplicate CityObject id {:?} in the package",
+                        obj.id
                     )));
                 }
+                let ty = crate::cjtypes::object_type_name(&obj.object.thetype);
                 let children = obj.object.children.clone().unwrap_or_default();
-                if ty == "Building" {
-                    root_ids.push(id.clone());
+                // Only Building and BuildingPart are written; other CityObject
+                // types still pass through the family assembler, which needs
+                // them to know when a family is complete.
+                let content = if ty == "Building" || ty == "BuildingPart" {
+                    Some(building_solids(
+                        obj.id.clone(),
+                        obj.object.attributes.clone(),
+                        obj.geometries,
+                        &batch,
+                        &material_cols,
+                        &texture_cols,
+                        row,
+                        &mut read,
+                    )?)
+                } else {
+                    read.non_building_skipped += 1;
+                    None
+                };
+                let gml_row = GmlRow {
+                    id: obj.id,
+                    feature_id: obj.feature_id,
+                    ty,
+                    children,
+                    content,
+                };
+                families.push(path, gml_row, &mut emit)?;
+            }
+        }
+        families.end_table(&mut emit)?;
+    }
+    families.finish(&mut emit)?;
+
+    let FamilyRenderer {
+        members,
+        bounds,
+        mut report,
+        strays,
+        ..
+    } = render;
+    // Parts no family claimed: their geometry has no home.
+    report.building_parts_orphaned += strays
+        .values()
+        .filter(|row| row.ty == "BuildingPart")
+        .count();
+    members
+        .into_inner()
+        .into_inner()
+        .map_err(|e| CityParquetError::io_source("write error", e.into_error()))?;
+    report.non_building_skipped += read.non_building_skipped;
+    report.multi_solids_skipped += read.multi_solids_skipped;
+    report.lod_columns_skipped += read.lod_columns_skipped;
+    report.semantic_surfaces_dropped += read.semantic_surfaces_dropped;
+
+    // Assemble the document: xml decl + CityModel(open + envelope) + the
+    // spilled members + CityModel close. It is written beside the output
+    // and renamed into place, so a failure leaves any earlier output whole.
+    let partial = TempFile(opts.output.with_file_name(format!(".{name}.partial")));
+    let file = fs::File::create(&partial.0).map_err(|e| {
+        CityParquetError::io_source(format!("cannot create {}", partial.0.display()), e)
+    })?;
+    let mut doc = Writer::new(std::io::BufWriter::new(file));
+    doc.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
+    write_city_model_open(&mut doc, srs_name.as_deref(), &bounds)?;
+    let mut spilled = fs::File::open(&spill.0).map_err(|e| {
+        CityParquetError::io_source(format!("cannot open {}", spill.0.display()), e)
+    })?;
+    std::io::copy(&mut spilled, doc.get_mut())?;
+    write_city_model_close(&mut doc)?;
+    doc.into_inner()
+        .into_inner()
+        .map_err(|e| CityParquetError::io_source("write error", e.into_error()))?;
+    fs::rename(&partial.0, &opts.output).map_err(|e| {
+        CityParquetError::io_source(format!("cannot write {}", opts.output.display()), e)
+    })?;
+    Ok(report)
+}
+
+/// One row the writer holds until its feature family is complete. `content`
+/// is `None` for an object type the writer does not emit.
+struct GmlRow {
+    id: String,
+    feature_id: Option<String>,
+    ty: String,
+    children: Vec<String>,
+    content: Option<BuildingSolids>,
+}
+
+impl FamilyRow for GmlRow {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn feature_id(&self) -> Option<&str> {
+        self.feature_id.as_deref()
+    }
+    fn children(&self) -> &[String] {
+        &self.children
+    }
+}
+
+/// A Building or BuildingPart row's emittable solids, with this row's
+/// appearance keyed out per geometry. Skipped geometries are counted in
+/// `report`.
+#[allow(clippy::too_many_arguments)]
+fn building_solids(
+    id: String,
+    attributes: Option<serde_json::Map<String, serde_json::Value>>,
+    geometries: Vec<(Option<Lod>, DecodedGeometry, Option<serde_json::Value>)>,
+    batch: &arrow_array::RecordBatch,
+    material_cols: &[(usize, String)],
+    texture_cols: &[(usize, String)],
+    row: usize,
+    report: &mut WriteReport,
+) -> Result<BuildingSolids> {
+    // This row's appearance, rebuilt from the per-LoD `material_lod*` /
+    // `texture_lod*` columns into a `{"<canonical-lod>": {...}}` map and
+    // keyed out per geometry below. `decode_batch` excludes these columns.
+    let material_col =
+        read_lod_keyed_appearance(batch, material_cols, row, AppearanceKind::Material)?;
+    let texture_col = read_lod_keyed_appearance(batch, texture_cols, row, AppearanceKind::Texture)?;
+    let mut solids = Vec::new();
+    for (lod, decoded, props) in geometries {
+        // Real semantics on a geometry we are about to skip are dropped;
+        // count them (computed before `props` is moved).
+        let sem_count = semantics::droppable_surface_count(props.as_ref());
+        let lod_key = lod.map(|l| l.to_string()).unwrap_or_default();
+        let material = material_col.as_ref().and_then(|m| m.get(&lod_key)).cloned();
+        let texture = texture_col.as_ref().and_then(|t| t.get(&lod_key)).cloned();
+        match route_geometry(lod, decoded, props) {
+            GeomRoute::Emit(lod, decoded, props) => {
+                solids.push((lod, decoded, props, material, texture))
+            }
+            // No CityGML 2.0 Building slot for a MultiSolid.
+            GeomRoute::MultiSolid => {
+                report.multi_solids_skipped += 1;
+                report.semantic_surfaces_dropped += sem_count;
+            }
+            // A lodless geometry cannot be a lod<n>Solid.
+            GeomRoute::Lodless => {
+                report.lod_columns_skipped += 1;
+                report.semantic_surfaces_dropped += sem_count;
+            }
+        }
+    }
+    Ok(BuildingSolids {
+        id,
+        attributes: attributes.unwrap_or_default(),
+        solids,
+    })
+}
+
+/// Renders each complete feature family's Buildings, with their parts
+/// nested, into the spilled member stream.
+struct FamilyRenderer<'a> {
+    members: Writer<std::io::BufWriter<fs::File>>,
+    bounds: Bounds,
+    report: WriteReport,
+    /// Namespaces each emitted object's polygon ids.
+    next_feature_index: usize,
+    types: &'a HashMap<String, cityparquet_schema::AttributeType>,
+    materials: Option<&'a HashMap<i64, serde_json::Value>>,
+    textures: Option<&'a HashMap<i64, serde_json::Value>>,
+    /// Parts no Building of their own family reached, held for a later
+    /// family that names them as children. A conforming package has none: a
+    /// part's `feature_id` is its Building's root (spec 02 "feature_id
+    /// rule"). A package that gives a part a family of its own still nests
+    /// it, because the Building's family, naming a child it lacks, is parked
+    /// until the end of the package.
+    strays: HashMap<String, GmlRow>,
+}
+
+impl FamilyRenderer<'_> {
+    /// Emit each Building of one family with its parts (bottom-up; parts in
+    /// `children` order), drawing on [`Self::strays`] for children the
+    /// family lacks.
+    fn family(&mut self, rows: Vec<GmlRow>) -> Result<()> {
+        let mut content_by_id: HashMap<String, BuildingSolids> = HashMap::new();
+        let mut children_by_id: HashMap<String, Vec<String>> = HashMap::new();
+        let mut type_by_id: HashMap<String, String> = HashMap::new();
+        let mut root_ids: Vec<String> = Vec::new();
+        let mut pending: Vec<GmlRow> = rows;
+        while let Some(row) = pending.pop() {
+            let Some(content) = row.content else {
+                continue;
+            };
+            for child in &row.children {
+                if !content_by_id.contains_key(child)
+                    && let Some(stray) = self.strays.remove(child)
+                {
+                    pending.push(stray);
                 }
-                type_by_id.insert(id.clone(), ty);
-                children_by_id.insert(id.clone(), children);
-                content_by_id.insert(
+            }
+            if row.ty == "Building" {
+                root_ids.push(row.id.clone());
+            }
+            type_by_id.insert(row.id.clone(), row.ty);
+            children_by_id.insert(row.id.clone(), row.children);
+            content_by_id.insert(row.id, content);
+        }
+        // Buildings in row order, whatever order the strays joined in.
+        root_ids.reverse();
+        let tree = BuildingTree {
+            content_by_id: &content_by_id,
+            children_by_id: &children_by_id,
+            type_by_id: &type_by_id,
+            types: self.types,
+            materials: self.materials,
+            textures: self.textures,
+        };
+        let mut seen_ids: HashSet<String> = HashSet::new();
+        let mut reached_parts: HashSet<String> = HashSet::new();
+        for root_id in &root_ids {
+            let mut visited: HashSet<String> = HashSet::new();
+            let (inner, non_empty) = render_abstract_object(
+                root_id,
+                &tree,
+                0,
+                &mut self.next_feature_index,
+                &mut self.bounds,
+                &mut self.report,
+                &mut visited,
+                &mut seen_ids,
+                &mut reached_parts,
+            )?;
+            if non_empty {
+                let members = &mut self.members;
+                members.write_event(Event::Start(BytesStart::new("cityObjectMember")))?;
+                let mut bldg = BytesStart::new("bldg:Building");
+                bldg.push_attribute(("gml:id", root_id.as_str()));
+                members.write_event(Event::Start(bldg))?;
+                members.get_mut().write_all(&inner)?;
+                members.write_event(Event::End(BytesEnd::new("bldg:Building")))?;
+                members.write_event(Event::End(BytesEnd::new("cityObjectMember")))?;
+                self.report.buildings_written += 1;
+            } else {
+                self.report.buildings_without_solid_skipped += 1;
+            }
+        }
+        // A BuildingPart no Building reached waits as a stray; one no family
+        // ever claims is orphaned when the package ends.
+        for (id, ty) in type_by_id {
+            if ty == "BuildingPart" && !reached_parts.contains(&id) {
+                let content = content_by_id.remove(&id);
+                let children = children_by_id.remove(&id).unwrap_or_default();
+                self.strays.insert(
                     id.clone(),
-                    BuildingSolids {
+                    GmlRow {
                         id,
-                        attributes,
-                        solids,
+                        feature_id: None,
+                        ty,
+                        children,
+                        content,
                     },
                 );
             }
         }
+        Ok(())
     }
+}
 
-    // Emit each root Building with its parts (bottom-up; parts in `children`
-    // order). `next_feature_index` namespaces each emitted object's polygon ids;
-    // `reached_parts` collects every BuildingPart nested under some Building.
-    let tree = BuildingTree {
-        content_by_id: &content_by_id,
-        children_by_id: &children_by_id,
-        type_by_id: &type_by_id,
-        types: &attr_types,
-        materials: global_materials.as_ref(),
-        textures: global_textures.as_ref(),
-    };
-    let mut next_feature_index = 0usize;
-    let mut reached_parts: HashSet<String> = HashSet::new();
-    for root_id in &root_ids {
-        let mut visited: HashSet<String> = HashSet::new();
-        let (inner, non_empty) = render_abstract_object(
-            root_id,
-            &tree,
-            0,
-            &mut next_feature_index,
-            &mut bounds,
-            &mut report,
-            &mut visited,
-            &mut seen_ids,
-            &mut reached_parts,
-        )?;
-        if non_empty {
-            members.write_event(Event::Start(BytesStart::new("cityObjectMember")))?;
-            let mut bldg = BytesStart::new("bldg:Building");
-            bldg.push_attribute(("gml:id", root_id.as_str()));
-            members.write_event(Event::Start(bldg))?;
-            members.get_mut().write_all(&inner)?;
-            members.write_event(Event::End(BytesEnd::new("bldg:Building")))?;
-            members.write_event(Event::End(BytesEnd::new("cityObjectMember")))?;
-            report.buildings_written += 1;
-        } else {
-            report.buildings_without_solid_skipped += 1;
-        }
+/// A temporary file removed when dropped, on success and failure alike.
+struct TempFile(PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
     }
-
-    // A BuildingPart never nested under any Building (not reached via any
-    // parent's `children`) is orphaned — its geometry has no home.
-    for (id, ty) in &type_by_id {
-        if ty == "BuildingPart" && !reached_parts.contains(id) {
-            report.building_parts_orphaned += 1;
-        }
-    }
-
-    // Assemble the document: xml decl + CityModel(open + envelope) + buffered
-    // members + CityModel close. Envelope-before-members ordering is why the
-    // members are buffered first.
-    let file = fs::File::create(&opts.output).map_err(|e| {
-        CityParquetError::io_source(format!("cannot create {}", opts.output.display()), e)
-    })?;
-    let mut doc = Writer::new(file);
-    doc.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
-    write_city_model_open(&mut doc, srs_name.as_deref(), &bounds)?;
-    doc.get_mut().write_all(&members.into_inner())?;
-    write_city_model_close(&mut doc)?;
-    Ok(report)
 }
 
 #[cfg(test)]

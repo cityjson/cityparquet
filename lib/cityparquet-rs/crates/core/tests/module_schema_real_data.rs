@@ -74,12 +74,12 @@ fn write_delft_and_railway_merged(dst: &Path) {
         SourceFormat::CityJsonSeq,
     );
 
-    let merged = merge_sources(&[delft, railway]).unwrap();
+    let merged = merge_sources(vec![delft, railway]).unwrap();
 
-    let mut out = serde_json::to_string(&merged.header).unwrap();
+    let mut out = serde_json::to_string(merged.header()).unwrap();
     out.push('\n');
-    for f in &merged.features {
-        out.push_str(&serde_json::to_string(f).unwrap());
+    for f in merged.features().unwrap() {
+        out.push_str(&serde_json::to_string(&f.unwrap()).unwrap());
         out.push('\n');
     }
     fs::write(dst, out).unwrap();

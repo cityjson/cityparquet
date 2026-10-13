@@ -42,6 +42,41 @@ fn crs_less_fixture(dir: &Path) -> PathBuf {
     dest
 }
 
+/// Delft split into two disjoint halves, since object ids must be unique
+/// across merged inputs: the first half as published (declaring EPSG:7415)
+/// and the second without its `referenceSystem`.
+fn declared_and_crs_less_halves(dir: &Path) -> (PathBuf, PathBuf) {
+    let text = fs::read_to_string(delft()).expect("fixture must exist; run `just fixtures`");
+    let mut lines = text.lines();
+    let header_line = lines.next().unwrap();
+    let features: Vec<&str> = lines.filter(|l| !l.trim().is_empty()).collect();
+    let (first, second) = features.split_at(features.len() / 2);
+    let mut crs_less: serde_json::Value = serde_json::from_str(header_line).unwrap();
+    crs_less["metadata"]
+        .as_object_mut()
+        .expect("delft header has metadata")
+        .remove("referenceSystem");
+    let write = |name: &str, header: String, features: &[&str]| {
+        let dest = dir.join(name);
+        fs::write(
+            &dest,
+            [vec![header.as_str()], features.to_vec()]
+                .concat()
+                .join("\n"),
+        )
+        .unwrap();
+        dest
+    };
+    (
+        write("declared.city.jsonl", header_line.to_string(), first),
+        write(
+            "no_crs_half.city.jsonl",
+            serde_json::to_string(&crs_less).unwrap(),
+            second,
+        ),
+    )
+}
+
 /// RED (spec §metadata "CRS rules", as amended): a CRS-less source converts
 /// WITHOUT the override, writing an explicit `city.crs: null` plus a report
 /// diagnostic — it is no longer a hard conversion error.
@@ -435,10 +470,10 @@ fn the_provenance_survives_partitioning() {
 fn a_mixed_batch_of_partitions_is_not_stamped_operator_supplied() {
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("out");
-    // The real fixture declares EPSG:7415; its CRS-less twin is given the same
+    // One half declares EPSG:7415; the CRS-less other half is given the same
     // code by an operator, which is what lets the two merge at all.
-    let declared = Source::open(&delft()).expect("fixture must exist; run `just fixtures`");
-    let input = crs_less_fixture(tmp.path());
+    let (declared, input) = declared_and_crs_less_halves(tmp.path());
+    let declared = Source::open(&declared).unwrap();
     let mut supplied = Source::open(&input).unwrap();
     assert!(supplied.set_reference_system("EPSG:7415"));
 

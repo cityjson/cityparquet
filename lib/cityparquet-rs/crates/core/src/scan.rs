@@ -68,10 +68,6 @@ pub struct ScanResult {
     /// Union of every analysis geometry's bbox, `None` if none contributed one
     /// (`GeometryInstance`s produce no WKB, so they contribute nothing here).
     pub dataset_bbox: Option<[f64; 6]>,
-    /// Each feature's [`crate::order::feature_centre`], in
-    /// [`Source::features`] order: what the Hilbert row order sorts by,
-    /// kept so it needs no second pass over the features.
-    pub feature_centres: Vec<Option<[f64; 2]>>,
     /// The dataset's reference system as the raw OGC CRS URL string (from
     /// CityJSON header metadata), before PROJJSON resolution.
     pub crs_url: Option<String>,
@@ -233,17 +229,39 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 /// `+` name the declared extensions cannot attribute — or a core attribute
 /// or class carrying a declared namespace prefix — rejects the source before
 /// anything is written.
-pub fn scan(source: &Source) -> Result<ScanResult> {
-    scan_keeping(source, None)
+///
+/// The error for object `id`, met a second time in `feature`.
+///
+/// An object with several parents (a building in two `CityObjectGroup`s) is
+/// valid CityJSON, but a document's feature split puts it, or its
+/// descendant, in every parent's feature. Spec 02 ("feature_id rule") writes
+/// it once, under the root of its first parent's chain; this writer does not
+/// do that yet, and says so rather than blaming the input.
+fn repeated_id(id: &str, feature: &CityJSONFeature) -> CityParquetError {
+    let mut current = feature.city_objects.get(id);
+    // Bounded, so a cycle of parent links cannot loop.
+    for _ in 0..=feature.city_objects.len() {
+        let Some(parents) = current.and_then(|co| co.parents.as_deref()) else {
+            break;
+        };
+        if parents.len() > 1 {
+            return CityParquetError::Schema(format!(
+                "City Object `{id}` is reached through more than one parent, so the \
+                 feature split repeats it; writing such an object once, under its first \
+                 parent's root (spec 02 \"feature_id rule\"), is not supported yet"
+            ));
+        }
+        current = parents.first().and_then(|p| feature.city_objects.get(p));
+    }
+    CityParquetError::Schema(format!(
+        "City Object id `{id}` occurs more than once; object ids must be unique across the \
+         dataset"
+    ))
 }
 
-/// [`scan`], also moving every feature it reads into `keep` when given — so
-/// a source that can only be read front to back need not be read twice by a
-/// caller that wants the features afterwards.
-pub(crate) fn scan_keeping(
-    source: &Source,
-    mut keep: Option<&mut Vec<CityJSONFeature>>,
-) -> Result<ScanResult> {
+/// Object ids are unique across the dataset (spec 02 "Reserved columns"): a
+/// repeated id rejects the source.
+pub fn scan(source: &Source) -> Result<ScanResult> {
     let header = source.header();
     let extensions_json = header
         .extensions
@@ -317,27 +335,16 @@ pub(crate) fn scan_keeping(
         None => (AxisOrder::default(), false),
     };
 
-    let mut feature_centres = Vec::new();
+    let mut ids: std::collections::HashSet<u128> = std::collections::HashSet::new();
     for feature in source.features_batched()? {
-        let owned;
-        let feature: &CityJSONFeature = match keep.as_deref_mut() {
-            Some(kept) => {
-                kept.push(feature?);
-                kept.last().expect("just pushed")
-            }
-            None => {
-                owned = feature?;
-                &owned
-            }
-        };
-        feature_centres.push(crate::order::feature_centre(
-            &feature.vertices,
-            &header.transform,
-        ));
+        let feature: CityJSONFeature = feature?;
         let pool = VertexPool::new(&feature.vertices, &header.transform, axis_order);
 
         for (id, co) in &feature.city_objects {
             object_count += 1;
+            if !ids.insert(crate::id_hash::id_hash(id)) {
+                return Err(repeated_id(id, &feature));
+            }
             let thetype = crate::cjtypes::object_type_name(&co.thetype);
             naming.encode_name(&thetype, "city-object type")?;
             let module_key = resolver.resolve(&thetype)?;
@@ -584,7 +591,6 @@ pub(crate) fn scan_keeping(
         lods,
         object_count,
         dataset_bbox,
-        feature_centres,
         crs_url,
         axis_order,
         horizontal_is_angular,

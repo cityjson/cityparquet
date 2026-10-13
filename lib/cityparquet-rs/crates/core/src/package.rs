@@ -27,15 +27,15 @@ use cityparquet_schema::{
 };
 
 use crate::appearance::AppearanceInterner;
-use crate::encode::{LocalDefs, encode, encode_in_order, rewrite_geometry_appearance};
+use crate::encode::{LocalDefs, encode, rewrite_geometry_appearance};
 use crate::lod0::Lod0Options;
-use crate::order::hilbert_order;
 use crate::recipe::WriterRecipe;
-use crate::scan::{ScanResult, city_and_geo_for_file, scan_keeping};
+use crate::scan::{ScanResult, city_and_geo_for_file, scan};
 use crate::sidecar::{
     ImplicitGeometryRow, write_implicit_geometries, write_materials, write_textures,
 };
-use crate::source::{OrderedFeatures, Source};
+use crate::sort::ExternalSorter;
+use crate::source::Source;
 use crate::stac::properties::PackageTables;
 use crate::stac::{ItemOptions, build_item};
 use crate::wkb_write::{VertexPool, geometry_to_wkb};
@@ -77,19 +77,20 @@ const TMP_DIR_NAME: &str = ".cityparquet-tmp";
 /// spatially nearby features land in the same or adjacent row groups and
 /// bbox row-group pruning
 /// (`crate::reader::CityParquetReaderBuilder::with_bbox_row_groups`) skips
-/// more of the file on a spatially-selective query. The scan keeps each
-/// feature's centre, and the encode pass reads the features back in key
-/// order ([`Source::features_in_order`]): a CityJSONSeq line by its byte
-/// span and a CityJSON document feature by index, so memory holds one
-/// feature at a time beyond the source itself; a CityGML or FlatCityBuf
-/// source, readable only front to back, is held parsed in full. `Source`
-/// streams with no reordering at all.
+/// more of the file on a spatially-selective query. The encode pass runs in
+/// source order and tags each row with its feature's key; the rows are then
+/// sorted by `(key, row ordinal)` with an external merge sort that spills
+/// sorted runs to disk once [`ConvertOptions::memory_budget`] is reached
+/// (`crate::sort`). `Source` streams with no reordering at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RowOrder {
     Source,
     #[default]
     Hilbert,
 }
+
+/// [`ConvertOptions::memory_budget`]'s default: 2 GiB.
+pub const DEFAULT_MEMORY_BUDGET: usize = 2 << 30;
 
 /// Options controlling one end-to-end CityJSON/CityJSONSeq -> CityParquet
 /// package conversion.
@@ -101,6 +102,15 @@ pub struct ConvertOptions {
     pub batch_size: usize,
     pub recipe: WriterRecipe,
     pub ordering: RowOrder,
+    /// Bytes of encoded rows the Hilbert sort holds in memory before it
+    /// spills a sorted run to disk (2 GiB by default). Unused under
+    /// [`RowOrder::Source`].
+    pub memory_budget: usize,
+    /// The directory the Hilbert sort spills its runs in; `None` (the
+    /// default) is the package's scratch directory. The runs go in a
+    /// directory of their own inside it, removed when the conversion ends;
+    /// nothing else in it is touched.
+    pub spill_dir: Option<PathBuf>,
     /// Synthesise an LoD0 footprint into the `geometry_lod0_0` column when an
     /// object has no source LoD0 (§9 "LoD0 synthesis"). A synthesised
     /// footprint is stored like any source LoD0 geometry — nothing in the
@@ -160,6 +170,8 @@ impl ConvertOptions {
             batch_size: 4096,
             recipe: WriterRecipe::default(),
             ordering: RowOrder::default(),
+            memory_budget: DEFAULT_MEMORY_BUDGET,
+            spill_dir: None,
             // Off: the package holds only what the source carries.
             generate_lod0: false,
             lod0: Lod0Options::default(),
@@ -216,6 +228,9 @@ pub struct ConvertReport {
     /// the object id and the colliding key. The CLI prints each as a
     /// `warning:` line, the same idiom as [`Self::crs_diagnostic`].
     pub dropped_colliding_member_diagnostics: Vec<String>,
+    /// Sorted runs the Hilbert sort spilled to disk; `0` when the rows fit
+    /// in [`ConvertOptions::memory_budget`] (and under [`RowOrder::Source`]).
+    pub sort_runs: usize,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -467,6 +482,7 @@ struct WrittenPackage {
     invalid_appearance_refs_dropped: usize,
     dropped_colliding_members: usize,
     dropped_colliding_member_diagnostics: Vec<String>,
+    sort_runs: usize,
 }
 
 /// The `<snake>.parquet` file name the by-module writer uses for a
@@ -990,14 +1006,13 @@ fn write_package(
     opts: &ConvertOptions,
     source: &Source,
     scan_result: &ScanResult,
-    kept_features: Option<Vec<cjseq::CityJSONFeature>>,
     arrow_schema: Arc<Schema>,
     props: WriterProperties,
     tmp_dir: &Path,
 ) -> Result<WrittenPackage> {
     let writers = TableWriters::new(
         tmp_dir,
-        arrow_schema,
+        Arc::clone(&arrow_schema),
         props,
         extension_registry(source),
         module_lods_by_file(&scan_result.module_lods),
@@ -1010,41 +1025,24 @@ fn write_package(
         false,
     )?;
 
-    // `RowOrder::Hilbert` sorts the feature INDICES by the centres the scan
-    // kept and reads the features back in that order — by seek for a
-    // CityJSONSeq, by index for a CityJSON document, parsed and held only for
-    // a source readable front to back — before `encode_in_order` (which
-    // shares `BatchIter`'s whole batching loop with the `RowOrder::Source`
-    // path below — see `crate::encode::FeatureStream`'s doc comment);
-    // `RowOrder::Source` keeps the plain streaming `encode` entry point,
-    // unchanged. `TableWriters`
-    // partitions strictly AFTER encode (see `TableWriters`'s doc comment), so
-    // this composes with either ordering unchanged.
-    let mut batches = match opts.ordering {
-        RowOrder::Source => encode(source, scan_result, opts.batch_size)?,
+    // Encoding always runs in source order. `RowOrder::Hilbert` tags each row
+    // with its feature's key and sends the rows through the external sort
+    // before they reach the writer; `RowOrder::Source` writes them as they
+    // come. `TableWriters` partitions strictly after encode (see its doc
+    // comment), so this composes with either ordering unchanged.
+    let mut batches = encode(source, scan_result, opts.batch_size)?;
+    let mut sorter = match opts.ordering {
+        RowOrder::Source => None,
         RowOrder::Hilbert => {
-            // Whole features (never one feature's objects apart) by the
-            // Hilbert index of each feature's vertex centre — kept by the
-            // scan — against the dataset bbox. A missing bbox (no geometry
-            // at all) keys every feature 0, and the stable sort keeps source
-            // order.
-            let order = hilbert_order(
-                &scan_result.feature_centres,
-                &scan_result.dataset_bbox.unwrap_or([0.0; 6]),
-                scan_result.axis_order,
-            );
-            // A source readable only front to back had its features kept
-            // by the scan rather than read a second time.
-            let features = match kept_features {
-                Some(kept) => OrderedFeatures::parsed(kept, order),
-                None => source.features_in_order(order)?,
-            };
-            encode_in_order(
-                features,
-                &source.header().transform,
-                scan_result,
+            batches = batches.with_hilbert_keys(scan_result);
+            Some(ExternalSorter::new(
+                arrow_schema,
+                opts.memory_budget,
+                opts.spill_dir
+                    .clone()
+                    .unwrap_or_else(|| tmp_dir.to_path_buf()),
                 opts.batch_size,
-            )?
+            ))
         }
     };
     // Set BEFORE either the main encode loop below or `build_implicit_geometry_rows`
@@ -1057,6 +1055,7 @@ fn write_package(
     // Encoding and writing overlap: the batches go, in order, to a thread
     // that writes them while the next ones are encoded. The first error on
     // either side ends both, and is the one returned.
+    let mut sort_runs = 0usize;
     let writers = std::thread::scope(|scope| -> Result<TableWriters> {
         let (sender, receiver) = std::sync::mpsc::sync_channel::<RecordBatch>(2);
         let writer = scope.spawn(move || -> Result<TableWriters> {
@@ -1066,23 +1065,39 @@ fn write_package(
             }
             Ok(writers)
         });
-        let mut encoded = Ok(());
-        for batch in batches.by_ref() {
-            match batch {
-                Ok(batch) => {
-                    if sender.send(batch).is_err() {
-                        break; // the writer failed; its error is returned below
+        let send = |batch: Result<RecordBatch>| -> Result<bool> {
+            // `false` when the writer failed; its error is returned below.
+            Ok(sender.send(batch?).is_ok())
+        };
+        let encoded = (|| -> Result<usize> {
+            match sorter.take() {
+                None => {
+                    for batch in batches.by_ref() {
+                        if !send(batch)? {
+                            break;
+                        }
                     }
+                    Ok(0)
                 }
-                Err(e) => {
-                    encoded = Err(e);
-                    break;
+                Some(mut sorter) => {
+                    while let Some(batch) = batches.next() {
+                        let batch = batch?;
+                        let keys = batches.take_batch_keys();
+                        sorter.push(batch, keys)?;
+                    }
+                    let (sorted, runs) = sorter.finish()?;
+                    for batch in sorted {
+                        if !send(batch)? {
+                            break;
+                        }
+                    }
+                    Ok(runs)
                 }
             }
-        }
+        })();
         drop(sender);
         let written = writer.join().expect("the writer thread does not panic");
-        encoded?;
+        sort_runs = encoded?;
         written
     })?;
     // `by_ref()` above means `batches` is still ours to read stats/appearance
@@ -1214,6 +1229,7 @@ fn write_package(
         invalid_appearance_refs_dropped,
         dropped_colliding_members: encode_stats.dropped_colliding_members,
         dropped_colliding_member_diagnostics: encode_stats.dropped_colliding_member_diagnostics,
+        sort_runs,
     })
 }
 
@@ -1358,11 +1374,7 @@ pub(crate) fn convert_source_impl(
         )));
     }
 
-    // A source readable only front to back, in Hilbert order, keeps its
-    // features from the scan instead of being read again to reorder them.
-    let mut kept_features =
-        (opts.ordering == RowOrder::Hilbert && source.reads_front_to_back()).then(Vec::new);
-    let mut scan_result = scan_keeping(source, kept_features.as_mut())?;
+    let mut scan_result = scan(source)?;
     if let Some(canon) = schema_override {
         scan_result.schema = canon.schema.clone();
         scan_result.lods = canon.lods.clone();
@@ -1444,15 +1456,7 @@ pub(crate) fn convert_source_impl(
         )
     })?;
 
-    let written = match write_package(
-        opts,
-        source,
-        &scan_result,
-        kept_features,
-        arrow_schema,
-        props,
-        &tmp_dir,
-    ) {
+    let written = match write_package(opts, source, &scan_result, arrow_schema, props, &tmp_dir) {
         Ok(written) => written,
         Err(e) => {
             // Nothing in `opts.output_dir` was ever touched: only the
@@ -1490,6 +1494,7 @@ pub(crate) fn convert_source_impl(
         invalid_appearance_refs_dropped: written.invalid_appearance_refs_dropped,
         dropped_colliding_members: written.dropped_colliding_members,
         dropped_colliding_member_diagnostics: written.dropped_colliding_member_diagnostics,
+        sort_runs: written.sort_runs,
     })
 }
 

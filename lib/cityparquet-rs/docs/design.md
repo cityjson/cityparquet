@@ -235,12 +235,15 @@ By default, rows are reordered along a **2D Hilbert curve** over the
 bbox centroid (`x`/`y` only — city models are height-thin, so `z` would waste
 curve resolution), clustering spatially-near features into the same or
 adjacent row groups. This improves bbox row-group pruning for windowed
-spatial reads. The scan keeps each feature's centre, and the encode pass
-reads the features back in key order: a CityJSONSeq line by its byte span, a
-CityJSON document feature by index. A CityGML or FlatCityBuf input can only
-be read front to back, so the scan keeps its features parsed and peak memory
-grows with the input; `--ordering source` (`RowOrder::Source`) streams
-features in source order instead, one at a time, for any input.
+spatial reads. Every row of a feature takes the feature's key, ties broken by
+source order, so a feature family's rows stay contiguous in each table (the
+specification requires it). The encode pass runs in source order and the rows
+go through an external merge sort that holds at most `--memory-budget` of
+them and spills sorted runs to temporary Arrow IPC files beyond it. Peak
+memory is then the budget plus, while merging, one run batch (at most 1,024
+rows or about 8 MiB) per run, and one 128-bit hash per object for the
+duplicate-id check; a `.city.json` input is held whole. `--ordering source`
+(`RowOrder::Source`) writes rows in source order with no sort.
 
 ### Appearance
 

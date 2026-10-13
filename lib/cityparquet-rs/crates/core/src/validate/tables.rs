@@ -311,6 +311,7 @@ pub(super) fn check_object_table(
         .collect();
     let mut has_coordinates = false;
     let mut type_cache: HashMap<String, Option<(&'static str, String)>> = HashMap::new();
+    let mut families = FamilyRuns::default();
     for_each_batch(file, r, |r, batch, offset| {
         check_object_values(
             r,
@@ -321,6 +322,7 @@ pub(super) fn check_object_table(
             &mut stats,
             &mut has_coordinates,
             &mut type_cache,
+            &mut families,
             hierarchy,
         );
     });
@@ -383,6 +385,7 @@ pub(super) fn check_object_values(
     stats: &mut BTreeMap<String, GeometryStats>,
     has_coordinates: &mut bool,
     type_cache: &mut HashMap<String, Option<(&'static str, String)>>,
+    families: &mut FamilyRuns,
     hierarchy: &mut HashMap<String, HierarchyRow>,
 ) {
     let name = file.name.as_str();
@@ -439,6 +442,29 @@ pub(super) fn check_object_values(
         let id_value = required(id, "id");
         let feature_value = required(feature_id, "feature_id");
         let type_value = required(object_type, "object_type");
+
+        // spec 02 "Feature families are contiguous": within one table, a
+        // `feature_id` that has given way to another never comes back.
+        if let Some(feature) = &feature_value {
+            match families.enter(feature, id_value.as_deref()) {
+                Some(Run::Reopened) => r.error(
+                    "value.feature-contiguity",
+                    OBJECT_TABLE,
+                    f,
+                    format!("row {row}: the rows of feature `{feature}` are not contiguous"),
+                ),
+                // The root row SHOULD open its family's run.
+                Some(Run::RootNotFirst) => r.warn(
+                    "value.feature-root-order",
+                    OBJECT_TABLE,
+                    f,
+                    format!(
+                        "row {row}: the root of feature `{feature}` is not the first row of its run"
+                    ),
+                ),
+                None => {}
+            }
+        }
 
         if let Some(t) = type_value {
             let verdict = type_cache
@@ -592,6 +618,20 @@ pub(super) fn check_object_values(
                     Some(values.iter().flatten().map(str::to_string).collect())
                 })
                 .unwrap_or_default();
+            // spec 02 "Reserved columns": `id` is unique across the
+            // package's object tables.
+            if let Some(first) = hierarchy.get(&id_value) {
+                r.error(
+                    "value.duplicate-id",
+                    OBJECT_TABLE,
+                    f,
+                    format!(
+                        "row {row}: `id` `{id_value}` is not unique (also in {})",
+                        first.file
+                    ),
+                );
+                continue;
+            }
             hierarchy.insert(
                 id_value,
                 HierarchyRow {
@@ -605,6 +645,38 @@ pub(super) fn check_object_values(
                 },
             );
         }
+    }
+}
+
+/// The `feature_id` runs of one object table, in row order.
+#[derive(Default)]
+pub(super) struct FamilyRuns {
+    current: Option<String>,
+    root_first: bool,
+    closed: HashSet<String>,
+    reported: HashSet<String>,
+}
+
+/// A row that breaks the run rules of [`FamilyRuns`].
+enum Run {
+    /// The family's run re-opened after another family's (reported once).
+    Reopened,
+    /// The family's root row is in its run, but not first.
+    RootNotFirst,
+}
+
+impl FamilyRuns {
+    fn enter(&mut self, feature: &str, id: Option<&str>) -> Option<Run> {
+        let is_root = id == Some(feature);
+        if self.current.as_deref() == Some(feature) {
+            return (is_root && !self.root_first).then_some(Run::RootNotFirst);
+        }
+        if let Some(previous) = self.current.replace(feature.to_string()) {
+            self.closed.insert(previous);
+        }
+        self.root_first = is_root;
+        (self.closed.contains(feature) && self.reported.insert(feature.to_string()))
+            .then_some(Run::Reopened)
     }
 }
 

@@ -54,20 +54,19 @@ fn convert_delft_to_tempdir_succeeds() {
     );
 }
 
-/// Multiple DISTINCT inputs (delft + a copy of it) merge into ONE package; the
-/// object count doubles (2231 * 2 = 4462). Two distinct paths are needed
-/// because `resolve_inputs` de-duplicates identical paths.
+/// Delft's features split across two inputs merge into ONE package holding
+/// all 2231 objects.
 #[test]
 fn convert_two_inputs_merges_into_one_package() {
     let out = tempfile::tempdir().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    let copy = tmp.path().join("delft_copy.city.jsonl");
-    std::fs::copy(fixture("delft.city.jsonl"), &copy).unwrap();
+    let a = delft_part(tmp.path(), "a.city.jsonl", Some(0), true);
+    let b = delft_part(tmp.path(), "b.city.jsonl", Some(1), true);
     let binary = env!("CARGO_BIN_EXE_cityparquet");
     let output = Command::new(binary)
         .arg("convert")
-        .arg(fixture("delft.city.jsonl"))
-        .arg(&copy)
+        .arg(&a)
+        .arg(&b)
         .arg("-o")
         .arg(out.path())
         .output()
@@ -80,8 +79,8 @@ fn convert_two_inputs_merges_into_one_package() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.split_whitespace().next() == Some("4462"),
-        "merged object count should be 2231*2=4462, got: {stdout}"
+        stdout.split_whitespace().next() == Some("2231"),
+        "the merged package holds every delft object, got: {stdout}"
     );
     // Both merged inputs are delft (same single 1st-level family), so
     // by-type conversion still writes exactly one main table.
@@ -775,18 +774,29 @@ fn convert_synthesises_lod0_only_with_the_lod0_flag() {
 /// Written under `dir` with the given `name` so two DISTINCT such inputs can
 /// be merged in one run.
 fn crs_less_delft(dir: &std::path::Path, name: &str) -> PathBuf {
+    delft_part(dir, name, None, false)
+}
+
+/// Delft's header and its features `half` of every two (0 or 1, all when
+/// `None`), with or without its `referenceSystem`. The two halves are inputs
+/// that merge without repeating an object id.
+fn delft_part(dir: &std::path::Path, name: &str, half: Option<usize>, keep_crs: bool) -> PathBuf {
     let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
     let mut lines = text.lines();
     let mut header: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    header
-        .get_mut("metadata")
-        .and_then(|m| m.as_object_mut())
-        .expect("delft header has metadata")
-        .remove("referenceSystem");
+    if !keep_crs {
+        header
+            .get_mut("metadata")
+            .and_then(|m| m.as_object_mut())
+            .expect("delft header has metadata")
+            .remove("referenceSystem");
+    }
     let mut out = serde_json::to_string(&header).unwrap();
-    for line in lines {
-        out.push('\n');
-        out.push_str(line);
+    for (i, line) in lines.enumerate() {
+        if half.is_none_or(|h| i % 2 == h) {
+            out.push('\n');
+            out.push_str(line);
+        }
     }
     let dest = dir.join(name);
     std::fs::write(&dest, out).unwrap();
@@ -1044,8 +1054,8 @@ fn convert_with_crs_flag_on_a_source_that_declares_one_stamps_nothing() {
 fn convert_with_crs_flag_keeps_the_provenance_across_a_merge() {
     let binary = env!("CARGO_BIN_EXE_cityparquet");
     let dir = tempfile::tempdir().unwrap();
-    let a = crs_less_delft(dir.path(), "a.city.jsonl");
-    let b = crs_less_delft(dir.path(), "b.city.jsonl");
+    let a = delft_part(dir.path(), "a.city.jsonl", Some(0), false);
+    let b = delft_part(dir.path(), "b.city.jsonl", Some(1), false);
     let out = dir.path().join("pkg");
     let output = Command::new(binary)
         .args(["convert".as_ref(), a.as_os_str(), b.as_os_str()])
@@ -1085,8 +1095,8 @@ fn a_mixed_batch_is_not_stamped_operator_supplied() {
     // One input declaring EPSG:7415 (the real fixture) beside one declaring
     // nothing, and a `--crs` that supplies the same code to the latter so the
     // merge's shared-CRS check passes.
-    let declared = fixture("delft.city.jsonl");
-    let silent = crs_less_delft(dir.path(), "no_crs.city.jsonl");
+    let declared = delft_part(dir.path(), "declared.city.jsonl", Some(0), true);
+    let silent = delft_part(dir.path(), "no_crs.city.jsonl", Some(1), false);
     let out = dir.path().join("pkg");
     let output = Command::new(binary)
         .args(["convert".as_ref(), declared.as_os_str(), silent.as_os_str()])

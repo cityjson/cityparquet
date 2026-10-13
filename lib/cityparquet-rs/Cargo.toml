@@ -25,6 +25,7 @@ arrow-array = "58"
 arrow-buffer = "58"
 arrow-select = "58"
 arrow-cast = "58"
+arrow-ipc = { version = "58", features = ["lz4"] }
 parquet = { version = "58", features = [
     "zstd",
     "geospatial",
