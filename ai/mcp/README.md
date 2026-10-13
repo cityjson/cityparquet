@@ -34,7 +34,25 @@ committed precisely so the server builds and runs without them.
 
 ## Running as a stdio MCP server
 
-Point a client at the built entry point:
+The server is published to npm as
+[`@cityjson/cityparquet-mcp`](https://www.npmjs.com/package/@cityjson/cityparquet-mcp)
+and needs Node 24 or later:
+
+```sh
+claude mcp add cityparquet -- npx -y @cityjson/cityparquet-mcp
+```
+
+Any other MCP client takes the same command:
+
+```json
+{
+  "mcpServers": {
+    "cityparquet": { "command": "npx", "args": ["-y", "@cityjson/cityparquet-mcp"] }
+  }
+}
+```
+
+From a checkout, point a client at the built entry point instead:
 
 ```json
 {

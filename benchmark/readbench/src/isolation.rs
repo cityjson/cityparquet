@@ -290,7 +290,17 @@ pub fn build_pinning(
         } else {
             format!("--physcpubind={child_cores}")
         };
-        vec!["numactl".into(), cpu, format!("--membind={id}")]
+        // `--all`: the coordinator has pinned itself to its own core
+        // (`pin_self`) by the time it spawns, and the children inherit that
+        // affinity. Without `--all`, libnuma checks the requested cores
+        // against the inherited set and rejects every core but the
+        // coordinator's as "out of range".
+        vec![
+            "numactl".into(),
+            "--all".into(),
+            cpu,
+            format!("--membind={id}"),
+        ]
     } else if tools.taskset {
         record.tool = Some("taskset".into());
         record.memory_binding = "not applied: numactl missing".into();
@@ -594,7 +604,12 @@ mod tests {
         let (p, r) = build_pinning(true, NumaRequest::Node(0), &epyc(), ALL);
         assert_eq!(
             p,
-            s(&["numactl", "--physcpubind=1-31,64-95", "--membind=0"])
+            s(&[
+                "numactl",
+                "--all",
+                "--physcpubind=1-31,64-95",
+                "--membind=0"
+            ])
         );
         assert_eq!(
             (r.node, r.coordinator_core, r.status.as_str()),
@@ -627,7 +642,10 @@ mod tests {
             mem_free_bytes: None,
         }];
         let (p, r) = build_pinning(true, NumaRequest::Auto, &one, ALL);
-        assert_eq!(p, s(&["numactl", "--cpunodebind=0", "--membind=0"]));
+        assert_eq!(
+            p,
+            s(&["numactl", "--all", "--cpunodebind=0", "--membind=0"])
+        );
         assert!(r.coordinator_note.is_some());
     }
 
@@ -650,6 +668,7 @@ mod tests {
                 "MemoryMax=8000000000",
                 "--",
                 "numactl",
+                "--all",
                 "--physcpubind=1-31,64-95",
                 "--membind=0",
                 "/bin/readbench",

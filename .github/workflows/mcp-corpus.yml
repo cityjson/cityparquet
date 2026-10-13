@@ -1,0 +1,93 @@
+name: MCP corpus
+
+# Keeps ai/mcp/corpus/corpus.json in step with what it is built from: the
+# specification pages under documents/docs/ and the two DuckDB extensions'
+# docs/FUNCTIONS.md (lib/duckdb-cityjson, lib/duckdb-3d).
+#
+# On every push to develop that touches one of them, it rebuilds the corpus
+# with `pnpm corpus` (ai/mcp/src/build-corpus.ts) and, when the content
+# changed, commits it back to develop as `chore(mcp): regenerate the corpus`.
+# Main only moves by merging develop, so it receives the corpus with the docs.
+#
+# "Changed" ignores the corpus's `generatedFrom` stamp, which differs on every
+# commit: the freshness check (`pnpm corpus:check`) decides, so a docs edit
+# that leaves the corpus's content alone commits nothing.
+#
+# The commit is pushed with the workflow's own token, which starts no further
+# workflow runs, so it cannot trigger itself.
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "documents/docs/**"
+      - "lib/duckdb-cityjson"
+      - "lib/duckdb-3d"
+      - "ai/mcp/src/build-corpus.ts"
+      - "ai/mcp/src/mdx.ts"
+      - ".github/workflows/mcp-corpus.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: mcp-corpus-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # commit the regenerated corpus
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai/mcp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # One level, not recursive: the corpus reads each extension's
+          # docs/FUNCTIONS.md, and recursing would pull their vendored duckdb/
+          # and extension-ci-tools/ checkouts.
+          submodules: true
+          # The corpus stamps itself with `git describe`, which needs history.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: ai/mcp/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Is the corpus stale?
+        id: fresh
+        run: |
+          if pnpm corpus:check; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "The corpus already matches documents/docs and both FUNCTIONS.md; nothing to commit." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Regenerate
+        if: steps.fresh.outputs.stale == 'true'
+        run: |
+          pnpm corpus
+          pnpm corpus:check
+
+      - name: Commit and push
+        if: steps.fresh.outputs.stale == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add corpus/corpus.json
+          git commit -m "chore(mcp): regenerate the corpus" \
+            -m "From documents/docs and both FUNCTIONS.md at ${GITHUB_SHA::7}, by the MCP corpus workflow."
+          # develop may have moved while this ran; replay the commit on top.
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "Committed the regenerated corpus to ${GITHUB_REF_NAME}." >> "$GITHUB_STEP_SUMMARY"

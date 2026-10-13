@@ -1,11 +1,10 @@
 ---
 title: MCP server
-description: Run the CityParquet MCP server locally from a clone or use the hosted endpoint, register it with Claude Code, Codex or any MCP client, and use its five tools.
-sidebar:
-  badge: WIP
+description: Run the CityParquet MCP server locally from npm or use the hosted endpoint, register it with Claude Code, Codex or any MCP client, and use its five tools.
 ---
 
-The server lives in the repository under
+The server is published on npm as
+[`@cityjson/cityparquet-mcp`](https://www.npmjs.com/package/@cityjson/cityparquet-mcp); its source is under
 [`ai/mcp`](https://github.com/cityjson/cityparquet/tree/main/ai/mcp). It runs
 in two ways:
 
@@ -16,50 +15,40 @@ in two ways:
 
 ## Install
 
-You need **Node.js 24** or newer and **pnpm**.
+You need **Node.js 24** or newer. Your client starts the server with `npx`, which
+downloads the package on first use, so there is nothing to clone or build.
 
 <Steps>
-  <Step title="Clone and build">
-    ```sh
-    git clone https://github.com/cityjson/cityparquet.git
-    cd cityparquet/ai/mcp
-    pnpm install
-    pnpm build
-    ```
-
-    The documentation the server serves is prebuilt and committed
-    (`corpus/corpus.json`), so the submodules are not needed.
-  </Step>
   <Step title="Register it with your client">
-    Use the absolute path to `dist/stdio.js`.
-
     **Claude Code**:
 
     ```sh
-    claude mcp add --scope user cityparquet -- node /absolute/path/to/cityparquet/ai/mcp/dist/stdio.js
+    claude mcp add --scope user cityparquet -- npx -y @cityjson/cityparquet-mcp
     ```
 
     **Codex**:
 
     ```sh
-    codex mcp add cityparquet -- node /absolute/path/to/cityparquet/ai/mcp/dist/stdio.js
+    codex mcp add cityparquet -- npx -y @cityjson/cityparquet-mcp
     ```
 
     **Clients configured with an `mcpServers` JSON file**: add the server to
     that file. Other clients have their own way to register a stdio server:
-    give it the command `node` and the argument
-    `/absolute/path/to/cityparquet/ai/mcp/dist/stdio.js`.
+    give it the command `npx` and the arguments `-y` and `@cityjson/cityparquet-mcp`.
 
     ```json
     {
       "mcpServers": {
         "cityparquet": {
-          "command": "node",
-          "args": ["/absolute/path/to/cityparquet/ai/mcp/dist/stdio.js"]
+          "command": "npx",
+          "args": ["-y", "@cityjson/cityparquet-mcp"]
         }
       }
     }
     ```
+
+    The package carries the documentation the server serves, so it needs no
+    other download.
   </Step>
   <Step title="Let the first start finish">
     On its first start the server installs `httpfs`, `cityjson`, `three_d`
@@ -144,7 +133,7 @@ To run the HTTP server yourself, see
 
 These apply to the local server. Set them as environment variables, for
 example with
-`claude mcp add … -e CITYPARQUET_MCP_MEMORY_LIMIT=4GB -- node …`.
+`claude mcp add … -e CITYPARQUET_MCP_MEMORY_LIMIT=4GB -- npx -y @cityjson/cityparquet-mcp`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -171,5 +160,5 @@ WKB reader rejects, so LoD1 and above go through `three_d`:
   closed, manifold and oriented, and real data has some. The
   [skills](/ai/skills) teach the gated pattern.
 
-For development of the server itself, see
+To build the server from a clone, or develop it, see
 [`ai/mcp/README.md`](https://github.com/cityjson/cityparquet/blob/main/ai/mcp/README.md).

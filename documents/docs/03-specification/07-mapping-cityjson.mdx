@@ -2,7 +2,6 @@
 title: Mapping from CityGML / CityJSON
 description: The reference mapping from CityGML and CityJSON / CityJSONSeq into CityParquet.
 sidebar:
-  badge: WIP
   label: Mapping reference
 ---
 
@@ -66,3 +65,53 @@ CityParquet borrows 3DCityDB's shape deliberately is the
 | `transform`                               | applied to the geometry at encode; not a structural key — MAY be carried informationally in `city.other` |
 | `extensions`                              | the [`city.extensions` metadata key](/specification/extensions#the-extension-declaration-cityextensions), keyed by the namespace derived from each member key (`"Energy"`→`energy`), with its `url` and `version`; the member key becomes `name` |
 | other object members                      | the object-table `other` column, restored into `attributes` on export (JSON; null when the object has none) |
+
+## Example: one feature, end to end
+
+**Constructed.** A `Building` with one `BuildingPart`. The part has an LoD 2.2 `Solid`
+of two faces, a roof and a wall, both of material `3`. The building carries a core
+attribute and an attribute of the Energy ADE, the one extension the source declares.
+Coordinates are elided, and the solid is cut to two faces to keep the rows short.
+
+```jsonc
+{ "type": "CityJSON", "version": "2.0", "transform": { /* … */ },
+  "extensions": { "Energy": { "url": "https://…/energy.ext.json", "version": "3.0" } },
+  "CityObjects": {}, "vertices": [] }
+
+{ "type": "CityJSONFeature", "id": "b-42",
+  "CityObjects": {
+    "b-42":   { "type": "Building", "children": ["b-42-0"],
+                "attributes": { "yearOfConstruction": 1998, "+heatCapacity": 120000.0 } },
+    "b-42-0": { "type": "BuildingPart", "parents": ["b-42"],
+                "geometry": [ { "type": "Solid", "lod": "2.2",
+                  "boundaries": [ [ [[0,1,2,3]], [[4,5,6,7]] ] ],
+                  "semantics": { "surfaces": [ {"type":"RoofSurface"}, {"type":"WallSurface"} ],
+                                 "values": [ [0, 1] ] },
+                  "material": { "": { "values": [ [3, 3] ] } } } ] } },
+  "vertices": [ /* … */ ] }
+```
+
+The two objects become two rows of `building.parquet`:
+
+| id | feature_id | object_type | parents | children | geometry_lod2_2 | geometry_properties_lod2_2 | material_lod2_2 | energy_heatCapacity | yearOfConstruction |
+|---|---|---|---|---|---|---|---|---|---|
+| `b-42` | `b-42` | `Building` | — | `[b-42-0]` | *null* | *null* | *null* | `120000.0` | `1998` |
+| `b-42-0` | `b-42` | `BuildingPart` | `[b-42]` | — | *WKB PolyhedralSurfaceZ (2 faces)* | `{type:"Solid", surfaces:[…], face_semantics:[0,1], shells:[[2]]}` | `{"": [3, 3]}` | *null* | *null* |
+
+What the mapping did, row by row of the tables above:
+
+- `b-42` is a root, so its `feature_id` is its own `id`, and the part inherits it.
+- The attributes stay on the `Building` row. `yearOfConstruction` is inferred
+  `BIGINT`; `+heatCapacity` becomes `energy_heatCapacity`, inferred `DOUBLE`, and the
+  header's `extensions` member becomes `city.extensions` keyed by `energy` (see the
+  [extensions example](/specification/extensions#example)).
+- The `boundaries` are resolved against `vertices` and the `transform` into
+  world-coordinate WKB, so the source quantisation is not kept. The solid's two faces
+  become a two-face `PolyhedralSurfaceZ`.
+- The per-shell `semantics.values` `[[0, 1]]` becomes the per-face `face_semantics`
+  `[0, 1]`, and the shell partition moves to `shells: [[2]]`. The LoD `2.2` lives only
+  in the column suffix.
+- The per-shell `material.values` `[[3, 3]]` becomes the per-face `[3, 3]` under the
+  unnamed theme `""`, and the feature-local index becomes a `materials.parquet` `id`.
+- The `Building` has no geometry of its own, so its `bbox` is its part's.
+

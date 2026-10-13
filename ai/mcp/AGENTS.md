@@ -92,9 +92,12 @@ loaded"; every extension that would need a disk read is blocked.
 
 It is built by `src/build-corpus.ts` from `documents/docs/03-specification`,
 `documents/docs/04-design-decisions`, and both extensions'
-`docs/FUNCTIONS.md`. Regenerate it with `just mcp-corpus` from the repository
-root (needs `lib/duckdb-cityjson` and `lib/duckdb-3d` checked out — `just
-setup`) and commit the result; do not edit `corpus/corpus.json` by hand. It is
+`docs/FUNCTIONS.md`. CI regenerates it: `.github/workflows/mcp-corpus.yml`
+runs on every push to `develop` that touches the docs, either submodule or
+the builder, and commits the corpus back when its content changed. To
+regenerate it by hand, run `just mcp-corpus` from the repository root (needs
+`lib/duckdb-cityjson` and `lib/duckdb-3d` checked out — `just setup`) and
+commit the result; do not edit `corpus/corpus.json` by hand. It is
 committed, not built at request time or at server startup, because the two
 extensions live in submodules a plain clone does not have, and because a
 container image built from this package alone must still serve all three
@@ -110,6 +113,9 @@ commit forever and could never distinguish a genuinely stale corpus from the
 ordinary case. The check builds its comparison in memory and never writes to
 `corpus/corpus.json`, so it leaves the working tree exactly as found whether
 it passes or fails — nobody has to remember not to commit a churned stamp.
+`mcp.yml` runs it on pushes to `main` only, since a branch that edits the docs
+carries a corpus one regeneration behind until it reaches `develop`; Publish MCP
+runs it before every publish.
 
 ## Check what the loaded build provides
 

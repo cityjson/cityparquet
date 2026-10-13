@@ -172,7 +172,7 @@ ai/            design notes; the record of decisions that shaped the above
 
 - **The specification** is in [`documents/docs/03-specification/`](documents/docs/03-specification/),
   with the reasoning in `04-design-decisions/` and the genuinely unsettled parts
-  in `05-open-questions/`. It is the authority on the format; the
+  in [`documents/open-questions.md`](documents/open-questions.md). It is the authority on the format; the
   implementations are catching up to it, and where they disagree with it, they
   are wrong. Rendered at **https://cityjson.github.io/cityparquet/**.
 - **The benchmarks** are in [`benchmark/`](benchmark/README.md). Read its README

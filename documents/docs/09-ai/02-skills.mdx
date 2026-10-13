@@ -1,8 +1,6 @@
 ---
 title: Skills
 description: Install the four CityParquet agent skills in Claude Code or Codex, and what each one teaches.
-sidebar:
-  badge: WIP
 ---
 
 A skill is a short Markdown file of instructions. The agent loads it when a
@@ -34,10 +32,9 @@ Claude Code and `.agents/skills/` for Codex.
 
 :::note[The plugin does not start the server]
 Installing the skills does not register the [MCP server](/ai/mcp-server).
-Claude Code copies a plugin into its own cache, so the plugin cannot reach a
-server built elsewhere in the repository, and the server is not published as
-a package yet. Register the server yourself. The skills also work without
-it, because they name the same SQL for the `duckdb` command line.
+Register it yourself, with one `npx -y @cityjson/cityparquet-mcp` line as that page shows. The
+skills also work without it, because they name the same SQL for the `duckdb`
+command line.
 :::
 
 ## The four skills

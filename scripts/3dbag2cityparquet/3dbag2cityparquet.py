@@ -1,4 +1,12 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   # The verify stage's independent Parquet reader; the same release the
+#   # database benchmark pins (benchmark/databases/pyproject.toml).
+#   "duckdb==1.5.5",
+# ]
+# ///
 """Encode the whole of 3DBAG as ONE CityParquet package.
 
 `cityparquet convert a.json b.json ...` already merges many inputs into one
@@ -6,12 +14,15 @@ package, but `merge_sources` materialises every input's features at once:
 measured at ~20x the input JSON's size, which for 3DBAG's ~53 GB is ~1.1 TB of
 resident memory. Too big.
 
-The CityJSONSeq path, by contrast, STREAMS -- `Source::features()` reopens the
-file and yields line by line, and the writer makes two such passes (scan, then
-encode) -- as long as it is told `--ordering source`; the writer's default,
-Hilbert ordering, buffers every feature to sort them. So the whole dataset can
-be handed to the reference writer as ONE CityJSONSeq file, and the writer
-computes the footer itself rather than us grafting one on.
+A single CityJSONSeq file, by contrast, never needs every feature parsed at
+once: the writer scans it line by line, then encodes it. In Hilbert order
+(`--ordering hilbert`, the writer's default) the scan keeps only each feature's
+centre; before encoding, the writer indexes every line's byte span in one
+sequential pass that parses nothing, then reads the lines back by seek in
+curve order. In source order (`--ordering source`) the encode pass streams the
+file front to back. So the whole dataset can be handed to the reference writer
+as ONE CityJSONSeq file, in either order, and the writer computes the footer
+itself rather than us grafting one on.
 
 Turning 8,941 separately-quantised tiles into one CityJSONSeq is exactly what
 `merge_sources` does in memory, so this reimplements ITS arithmetic:
@@ -38,7 +49,7 @@ Stages, each resumable -- rerunning skips what is already on disk:
     plan     read each tile's transform + CRS; derive the merged transform
     seq      gunzip | cjseq cat | shift  ->  one .jsonl per tile
     merge    synthetic header + every tile's feature lines -> one .city.jsonl
-    convert  cityparquet convert <that one file> -o <dest>
+    convert  cityparquet convert <that one file> -o <dest> --ordering <hilbert|source>
     verify   row count, id uniqueness, extent, against the plan
     all      every stage in order
 """
@@ -71,10 +82,10 @@ def tile_id(url: str) -> str:
 
 
 def tile_sort_key(tid: str) -> tuple:
-    """Quadtree order (z, x, y), so the one big file is spatially coherent and
-    the writer's row groups get tight bboxes for free. Hilbert ordering, the
-    writer's default, would do better but buffers every feature -- the 1.1 TB
-    this avoids, which is why the convert stage passes `--ordering source`."""
+    """Quadtree order (z, x, y), so the one big file is spatially coherent.
+    It is the row order `--ordering source` writes, which gives that run's row
+    groups reasonably tight bboxes; under `--ordering hilbert` the writer
+    reorders the rows along the curve whatever order the file is in."""
     parts = tid.split("-")
     try:
         return (0, tuple(int(p) for p in parts))
@@ -355,12 +366,15 @@ def stage_merge(plan: dict, work: Path) -> Path:
 # ---------------------------------------------------------------- convert
 
 
-def stage_convert(big: Path, dest: Path, extra: list[str]) -> None:
+def stage_convert(big: Path, dest: Path, ordering: str, extra: list[str]) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # Source order is what lets the one big CityJSONSeq stream; the writer's
-    # default (Hilbert) would buffer the whole dataset.
+    # Hilbert is the writer's default and the layout the benchmark measures:
+    # the scan keeps each feature's centre, a sequential pass indexes the line
+    # spans, and the encode pass reads the lines back by seek in curve order.
+    # `source` streams the merged file front to back instead, in tile quadtree
+    # order, for a host where those extra passes over it are not wanted.
     # `--lod0` synthesises a footprint for the BuildingParts 3DBAG ships without one.
-    cmd = [str(CITYPARQUET), "convert", str(big), "-o", str(dest), "--overwrite", "--ordering", "source", "--lod0", *extra]
+    cmd = [str(CITYPARQUET), "convert", str(big), "-o", str(dest), "--overwrite", "--ordering", ordering, "--lod0", *extra]
     log("convert: " + " ".join(cmd))
     t0 = time.time()
     rc = subprocess.run(cmd)
@@ -411,6 +425,14 @@ def main() -> None:
     ap.add_argument("--work", type=Path, required=True, help="scratch dir (holds ~110 GB)")
     ap.add_argument("--dest", type=Path, required=True, help="output CityParquet package dir")
     ap.add_argument("--jobs", type=int, default=min(32, os.cpu_count() or 8))
+    ap.add_argument(
+        "--ordering",
+        choices=["hilbert", "source"],
+        default="hilbert",
+        help="row order for `cityparquet convert`: hilbert (the writer's default) sorts "
+        "along the curve and reads the merged file back by seek; source streams it in "
+        "tile quadtree order (default: %(default)s)",
+    )
     ap.add_argument("--convert-arg", action="append", default=[], help="extra flag for `cityparquet convert`")
     args = ap.parse_args()
 
@@ -436,7 +458,7 @@ def main() -> None:
     if s in ("merge", "all"):
         stage_merge(plan_or_load(), args.work)
     if s in ("convert", "all"):
-        stage_convert(args.work / "3dbag.city.jsonl", args.dest, args.convert_arg)
+        stage_convert(args.work / "3dbag.city.jsonl", args.dest, args.ordering, args.convert_arg)
     if s in ("verify", "all"):
         stage_verify(args.dest, args.work)
 

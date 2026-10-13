@@ -13,34 +13,25 @@ batch reader.
 
 ## Create a project
 
-Clone the implementation and create a sibling application:
+The library is published on [crates.io](https://crates.io/crates/cityparquet) as
+`cityparquet`. Create an application and add it, with the Parquet crate it builds on:
 
 ```bash
-git clone --recurse-submodules https://github.com/cityjson/cityparquet.git
 cargo new rust-cityparquet-example
 cd rust-cityparquet-example
+cargo add cityparquet
+cargo add parquet@58 --features arrow,zstd,geospatial
 ```
 
-Replace `Cargo.toml` with the following. These path dependencies use the checked-out
-implementation, including its patched CityJSON reader. Keep Arrow and Parquet on
-the same major version as the library (58 in this checkout).
+Keep `parquet` on the same major version as the one `cityparquet` uses (58 for
+`cityparquet` 0.1); with two majors in one build, the types the two crates exchange do
+not match. Your `Cargo.toml` now holds:
 
 ```toml
-[package]
-name = "rust-cityparquet-example"
-version = "0.1.0"
-edition = "2024"
-
 [dependencies]
-cityparquet = { path = "../cityparquet/lib/cityparquet-rs/crates/core" }
+cityparquet = "0.1"
 parquet = { version = "58", features = ["arrow", "zstd", "geospatial"] }
-
-[patch.crates-io]
-cjseq = { path = "../cityparquet/lib/cityparquet-rs/vendor/cjseq" }
 ```
-
-The patch belongs in your application's manifest: Cargo does not inherit patches
-from a dependency's workspace.
 
 ## Write a package and read a file
 
@@ -131,4 +122,5 @@ The same `read` command works with another local CityParquet object table.
 The writer accepts the city-model inputs supported by the library; see
 [CLI conversion](/tutorials/cli-conversion) for format and export examples.
 For lower-level geometry decoding and query APIs, see the
+[API documentation](https://docs.rs/cityparquet) and the
 [Rust implementation](https://github.com/cityjson/cityparquet/tree/main/lib/cityparquet-rs).

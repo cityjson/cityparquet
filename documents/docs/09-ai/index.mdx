@@ -2,7 +2,6 @@
 title: AI and agents
 description: An MCP server and a set of skills that let an AI agent read the CityParquet specification, inspect a dataset and query it with DuckDB.
 sidebar:
-  badge: WIP
   label: Overview
 ---
 
@@ -10,7 +9,7 @@ A CityParquet package is static files queried with SQL, which an agent can
 work with unaided. What an agent lacks is knowledge. It does not know what
 the format guarantees. It does not know which DuckDB functions exist: without
 help it reaches for `ST_Volume` and `LOAD spatial`, and a query built from
-those fails. Two pieces close that gap. Both live in the
+those fails. Two pieces close that gap. Both are built in the
 [`cityjson/cityparquet`](https://github.com/cityjson/cityparquet) repository,
 under `ai/`.
 
@@ -48,8 +47,8 @@ the skills tell the agent which server tool to call and when.
 ## Status
 
 :::note[Local, or hosted and read-only]
-The server runs on your machine over **stdio**, from a clone of the
-repository, where it can read and write your own files. It also runs as a
+The server runs on your machine over **stdio**, installed from npm as
+`@cityjson/cityparquet-mcp`, where it can read and write your own files. It also runs as a
 **hosted, read-only endpoint** over streamable HTTP on Google Cloud Run,
 sandboxed and limited to the project's own data hosts;
 [MCP server](/ai/mcp-server) describes both. The skills install as a Claude Code plugin or through APM,

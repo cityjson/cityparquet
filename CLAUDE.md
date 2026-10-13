@@ -14,7 +14,8 @@ encoding (**CityParquet**) and a DuckDB/DuckLake lakehouse (**CityLake**).
 
 The **normative specification** lives in `documents/docs/03-specification/`,
 with the reasoning in `04-design-decisions/` and the genuinely unsettled parts in
-`05-open-questions/`. It is the authoritative _what_; the implementations under
+`documents/open-questions.md`, which is kept in the repository rather than on the
+site. It is the authoritative _what_; the implementations under
 `lib/` are catching up to it.
 
 Architectural decisions about the implementations — and the format decisions taken
@@ -25,7 +26,7 @@ decision-records skill for the index before making an architectural change.
 
 | Path                   | What                                                                                                                                               | Authoritative instructions                  |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `documents/`           | Blume docs site — the **normative CityParquet specification**, design decisions, open questions                                                    | `documents/blume.config.ts`; skill: `blume` |
+| `documents/`           | Blume docs site — the **normative CityParquet specification**, design decisions; `open-questions.md` beside it                                     | `documents/blume.config.ts`; skill: `blume` |
 | `lib/cityparquet-rs/`  | **Rust reference implementation** — the reader/writer that _owns_ the encoding; the `cityparquet` CLI                                              | its `CLAUDE.md`                             |
 | `lib/citylake/`        | Rust data-lake framework + web API; the lakehouse runtime. **Work in progress.** Its own Cargo workspace                                           | its `CLAUDE.md`                             |
 | `lib/duckdb-cityjson/` | DuckDB CityJSON extension — SQL-native CityJSON I/O and an executable prototype of the encoding. **Submodule**                                     | its `CLAUDE.md`                             |

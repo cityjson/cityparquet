@@ -1023,11 +1023,14 @@ fn write_package(
         false,
     )?;
 
-    // `RowOrder::Hilbert` buffers every feature and re-sorts it BEFORE
-    // handing it to `encode_buffered` (which shares `BatchIter`'s whole
-    // batching loop with the `RowOrder::Source` path below — see
-    // `crate::encode::FeatureStream`'s doc comment); `RowOrder::Source`
-    // keeps the plain streaming `encode` entry point, unchanged. `TableWriters`
+    // `RowOrder::Hilbert` sorts the feature INDICES by the centres the scan
+    // kept and reads the features back in that order — by seek for a
+    // CityJSONSeq, by index for a CityJSON document, parsed and held only for
+    // a source readable front to back — before `encode_in_order` (which
+    // shares `BatchIter`'s whole batching loop with the `RowOrder::Source`
+    // path below — see `crate::encode::FeatureStream`'s doc comment);
+    // `RowOrder::Source` keeps the plain streaming `encode` entry point,
+    // unchanged. `TableWriters`
     // partitions strictly AFTER encode (see `TableWriters`'s doc comment), so
     // this composes with either ordering unchanged.
     let mut batches = match opts.ordering {
