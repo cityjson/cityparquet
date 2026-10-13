@@ -275,7 +275,7 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                 }
             }
             for (row, obj) in objects.into_iter().enumerate() {
-                let ty = obj.object.thetype.clone();
+                let ty = crate::cjtypes::object_type_name(&obj.object.thetype);
                 // Only Building and BuildingPart are handled; other CityObject
                 // types are out of scope (BuildingPart no longer counts here).
                 if ty != "Building" && ty != "BuildingPart" {
@@ -318,13 +318,7 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                         }
                     }
                 }
-                let attributes = obj
-                    .object
-                    .attributes
-                    .as_ref()
-                    .and_then(serde_json::Value::as_object)
-                    .cloned()
-                    .unwrap_or_default();
+                let attributes = obj.object.attributes.clone().unwrap_or_default();
                 let id = obj.id;
                 // A duplicate CityObject id would silently overwrite the earlier
                 // row (and evade the emit-time `seen_ids` check) — reject it.

@@ -378,25 +378,16 @@ pub(crate) fn build_implicit_geometry_rows(
     interner: &mut AppearanceInterner,
     naming: &ExtensionNaming,
 ) -> Result<Vec<ImplicitGeometryRow>> {
-    let verts: Vec<Vec<f64>> = serde_json::from_value(templates.vertices_templates.clone())
-        .map_err(|e| {
-            err(format!(
-                "invalid geometry-templates vertices-templates: {e}"
-            ))
-        })?;
+    let verts = &templates.vertices_templates;
     // Relative geometries are in **local** coordinates and are exempt from the file CRS
     // (spec "Appearance & implicit geometries": `implicit_geometries.parquet` carries no
     // `city.crs` key at all). There is no axis order to reconcile, so no
     // reordering is applied — an instance's `transformationMatrix` and its
     // reference `point`, which IS in the file CRS, do the placing.
-    let pool = VertexPool::raw(&verts, AxisOrder::LonLat);
+    let pool = VertexPool::raw(verts, AxisOrder::LonLat);
 
-    // See `Source::doc_appearance`'s doc comment: the header's
-    // `geometry_templates` still carry the RAW DOCUMENT's global
-    // material/texture indices (cjseq's `get_metadata` slices/reindexes a
-    // separate clone to build the header's own `appearance`, never the
-    // templates it hands back) — so the raw document's own appearance, not
-    // `header().appearance`, is the correct local defs array here.
+    // The appearance the header's template `material`/`texture` maps index
+    // into (see `Source::doc_appearance`).
     let doc_appearance = source.doc_appearance();
     let local_materials = doc_appearance
         .and_then(|a| a.materials.clone())
@@ -433,15 +424,11 @@ pub(crate) fn build_implicit_geometry_rows(
         // per-LoD column set this row's data lands in — the sidecar's own
         // schema equivalent of the main table's `accumulate_geometry`
         // requiring a valid, parseable LoD for every stored geometry.
-        let lod = tpl
-            .lod
-            .as_deref()
-            .and_then(|s| Lod::parse(s).ok())
-            .ok_or_else(|| {
-                CityParquetError::Lod(format!(
-                    "relative geometry {i}: has no valid lod for a per-LoD sidecar column"
-                ))
-            })?;
+        let lod = crate::cjtypes::geometry_lod(tpl).ok_or_else(|| {
+            CityParquetError::Lod(format!(
+                "relative geometry {i}: has no valid lod for a per-LoD sidecar column"
+            ))
+        })?;
         rows.push(ImplicitGeometryRow {
             // Ordinal position. CityJSON references a template by its index
             // in `geometry-templates.templates`, so using that index as the

@@ -235,7 +235,15 @@ fn setup_isolation(opts: &IsolationOptions) -> (serde_json::Value, Gate) {
     } else {
         Vec::new()
     };
-    let (pin_prefix, pin) = isolation::build_pinning(is_linux, opts.numa_node, &nodes, tools);
+    // Read before `pin_self` below, which narrows this task's affinity to
+    // the coordinator's one core.
+    let allowed = if is_linux {
+        isolation::read_allowed_cpus()
+    } else {
+        None
+    };
+    let (pin_prefix, pin) =
+        isolation::build_pinning(is_linux, opts.numa_node, &nodes, tools, allowed.as_deref());
     let coordinator_pinning = match pin.coordinator_core {
         Some(core) => isolation::pin_self(is_linux, tools, core),
         None => pin.status.clone(),

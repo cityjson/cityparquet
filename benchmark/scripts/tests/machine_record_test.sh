@@ -22,7 +22,7 @@ case_sections() {
 case_every_fact_has_a_row() {
   local name="every isolation fact and tool has a row"
   local key
-  for key in "numactl" "taskset" "NUMA node" "Pinning command" "Memory limit" \
+  for key in "numactl" "taskset" "Allowed CPUs" "NUMA node" "Pinning command" "Memory limit" \
     "cgroup delegation" "CPU governor" "SMT" "Kernel" "Other users' CPU" \
     "MemTotal" "MemAvailable" "cityparquet-rs" "cjseq" "fcb CLI" "fcb_core" \
     "citygml-tools" "DuckDB" "PostgreSQL/PostGIS" "3DCityDB" "cjdb"; do
@@ -43,10 +43,11 @@ case_degrades_explicitly_off_linux() {
   if [[ "$(uname -s)" == "Linux" ]]; then pass "$name (skipped on Linux)"; return; fi
   if grep -q "| CPU governor | not readable" <<<"$out" \
     && grep -q "| NUMA node | not applied: not Linux" <<<"$out" \
+    && grep -q "| Allowed CPUs | not readable" <<<"$out" \
     && grep -q "| cgroup delegation | not readable" <<<"$out"; then
     pass "$name"
   else
-    fail "$name" "$(grep -E 'governor|NUMA node|delegation' <<<"$out")"
+    fail "$name" "$(grep -E 'governor|NUMA node|Allowed CPUs|delegation' <<<"$out")"
   fi
 }
 

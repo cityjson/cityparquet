@@ -90,39 +90,18 @@ fn rotate(x: &mut u32, y: &mut u32, rx: u32, ry: u32) {
     }
 }
 
-/// `(scale, translate)` as fixed-size arrays, missing components defaulting
-/// like [`crate::wkb_write::VertexPool`]'s and `crate::export`'s identical
-/// helpers (kept local here rather than shared, per those modules' own
-/// comments — it is three lines, not worth a shared dependency edge).
-fn transform_axes(transform: &Transform) -> ([f64; 3], [f64; 3]) {
-    let take3 = |v: &[f64], d: f64| {
-        [
-            *v.first().unwrap_or(&d),
-            *v.get(1).unwrap_or(&d),
-            *v.get(2).unwrap_or(&d),
-        ]
-    };
-    (
-        take3(&transform.scale, 1.0),
-        take3(&transform.translate, 0.0),
-    )
-}
-
 /// The min/max corners (world coordinates, dequantised via `transform`) of
 /// every vertex in `vertices`, or `None` if `vertices` is empty (a feature
 /// with no vertices at all — no geometry whatsoever).
 pub(crate) fn vertices_minmax(
-    vertices: &[Vec<i64>],
+    vertices: &[[i64; 3]],
     transform: &Transform,
 ) -> Option<([f64; 3], [f64; 3])> {
-    let (scale, translate) = transform_axes(transform);
+    let Transform { scale, translate } = transform;
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     let mut any = false;
     for v in vertices {
-        if v.len() < 3 {
-            continue;
-        }
         any = true;
         for i in 0..3 {
             let coord = v[i] as f64 * scale[i] + translate[i];
@@ -142,7 +121,7 @@ pub(crate) fn vertices_minmax(
 /// is self-contained (its vertex pool holds exactly the vertices its own
 /// geometries index into), so this is the cheapest correct source for a
 /// per-feature centre: no need to walk objects/geometries first.
-pub(crate) fn feature_centre(vertices: &[Vec<i64>], transform: &Transform) -> Option<[f64; 2]> {
+pub(crate) fn feature_centre(vertices: &[[i64; 3]], transform: &Transform) -> Option<[f64; 2]> {
     let (min, max) = vertices_minmax(vertices, transform)?;
     Some([(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0])
 }
@@ -257,8 +236,8 @@ mod tests {
     #[test]
     fn feature_with_no_vertices_gets_key_zero() {
         let transform = Transform {
-            scale: vec![1.0, 1.0, 1.0],
-            translate: vec![0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            translate: [0.0, 0.0, 0.0],
         };
         let bbox: [f64; 6] = [0.0, 0.0, 0.0, 10.0, 10.0, 10.0];
         assert_eq!(
@@ -270,12 +249,12 @@ mod tests {
     #[test]
     fn feature_key_uses_the_vertex_pool_centroid_after_dequantisation() {
         let transform = Transform {
-            scale: vec![0.001, 0.001, 0.001],
-            translate: vec![0.0, 0.0, 0.0],
+            scale: [0.001, 0.001, 0.001],
+            translate: [0.0, 0.0, 0.0],
         };
         // Quantised vertices spanning [0, 10000] on x and y -> world [0, 10]
         // after the 0.001 scale; centroid (5, 5).
-        let vertices = vec![vec![0, 0, 0], vec![10_000, 10_000, 0]];
+        let vertices = [[0, 0, 0], [10_000, 10_000, 0]];
         let bbox: [f64; 6] = [0.0, 0.0, 0.0, 10.0, 10.0, 10.0];
         let key = centre_hilbert_key(
             feature_centre(&vertices, &transform),

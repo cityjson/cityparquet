@@ -37,6 +37,7 @@ fn source_with_crs(path: &std::path::Path) -> Source {
             reference_date: None,
             reference_system: None,
             title: None,
+            other: Default::default(),
         })
         .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
     let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
@@ -75,7 +76,10 @@ fn dequantise(v: &[i64], tr: &cityparquet::cjseq::Transform) -> [f64; 3] {
 fn citygml2_solid_building_streams_one_feature() {
     let src = Source::open(&fixture("b1_lod2_s.gml")).unwrap();
     assert_eq!(src.format(), SourceFormat::CityGml);
-    assert_eq!(src.header().version, "2.0");
+    assert_eq!(
+        src.header().version,
+        cityparquet::cjseq::CityJSONVersion::V2_0
+    );
     // No `srsName` in the fixture -> no reference system advertised.
     assert!(
         src.header()
@@ -96,16 +100,16 @@ fn citygml2_solid_building_streams_one_feature() {
     let f = &feats[0];
     assert_eq!(f.city_objects.len(), 1);
     let co = f.city_objects.values().next().unwrap();
-    assert_eq!(co.thetype.as_str(), "Building");
+    assert_eq!(String::from(co.thetype.clone()), "Building");
 
     let geoms = co.geometry.as_ref().expect("building has geometry");
     assert_eq!(geoms.len(), 1);
     let g = &geoms[0];
-    assert_eq!(g.lod.as_deref(), Some("2"));
+    assert_eq!(g.lod().map(|l| l.to_string()).as_deref(), Some("2"));
 
     // Solid boundaries: exactly one exterior shell of 9 surfaces.
-    let shells = g
-        .boundaries
+    let gj = serde_json::to_value(g).unwrap();
+    let shells = gj["boundaries"]
         .as_array()
         .expect("solid boundaries are an array");
     assert_eq!(shells.len(), 1, "one exterior shell");
@@ -194,7 +198,7 @@ fn citygml2_composite_solid_with_semantics_and_xlinks() {
     assert_eq!(feats.len(), 1);
     let f = &feats[0];
     let co = f.city_objects.values().next().unwrap();
-    assert_eq!(co.thetype.as_str(), "Building");
+    assert_eq!(String::from(co.thetype.clone()), "Building");
 
     // Exactly one LoD2 geometry: the CompositeSolid (the standalone ceiling
     // MultiSurface and the boundedBy surfaces must NOT leak as extra geometry).
@@ -202,15 +206,19 @@ fn citygml2_composite_solid_with_semantics_and_xlinks() {
     assert_eq!(geoms.len(), 1, "one geometry (no leaked MultiSurface)");
     let g = &geoms[0];
     assert!(
-        matches!(g.thetype, cityparquet::cjseq::GeometryType::CompositeSolid),
+        matches!(
+            g.geometry_type(),
+            cityparquet::cjseq::GeometryType::CompositeSolid
+        ),
         "expected CompositeSolid, got {:?}",
-        g.thetype
+        g.geometry_type()
     );
-    assert_eq!(g.lod.as_deref(), Some("2"));
+    assert_eq!(g.lod().map(|l| l.to_string()).as_deref(), Some("2"));
 
     // Boundaries: [solid][shell][surface][ring][idx]. Two solids, one shell
     // each, face counts 6 and 5, one ring per face.
-    let solids = g.boundaries.as_array().unwrap();
+    let gj = serde_json::to_value(g).unwrap();
+    let solids = gj["boundaries"].as_array().unwrap();
     assert_eq!(solids.len(), 2, "CompositeSolid of 2 solids");
     let shells: Vec<&Vec<serde_json::Value>> =
         solids.iter().map(|s| s.as_array().unwrap()).collect();
@@ -266,7 +274,7 @@ fn citygml2_composite_solid_with_semantics_and_xlinks() {
 
     // Semantics: surfaces histogram + null ceiling positions, checked by TYPE
     // lookup (robust to intern order), with a geometric cross-check.
-    let sem = g.semantics.as_ref().expect("semantics");
+    let sem = gj.get("semantics").expect("semantics");
     let surfaces = sem["surfaces"].as_array().unwrap();
     assert_eq!(surfaces.len(), 9, "9 boundedBy semantic surfaces");
     let mut hist = std::collections::BTreeMap::new();
@@ -389,11 +397,7 @@ fn citygml2_real_building_attributes_and_crs() {
         .find(|(id, _)| id.as_str() == "DEBY_LOD2_51985910")
         .map(|(_, co)| co)
         .expect("building DEBY_LOD2_51985910");
-    let attrs = co
-        .attributes
-        .as_ref()
-        .and_then(|v| v.as_object())
-        .expect("building attributes");
+    let attrs = co.attributes.as_ref().expect("building attributes");
 
     // bldg: typed attributes: measuredHeight is numeric, roofType a codelist string.
     assert_eq!(
@@ -466,7 +470,7 @@ fn citygml2_boundedby_multisurface_building_no_solid() {
     let bldg = feats
         .iter()
         .flat_map(|f| f.city_objects.values())
-        .find(|co| co.thetype == "Building")
+        .find(|co| String::from(co.thetype.clone()) == "Building")
         .expect("a Building feature");
 
     let geoms = bldg.geometry.as_ref().expect("building has geometry");
@@ -563,7 +567,7 @@ fn citygml2_reads_building_parts() {
     assert_eq!(f.city_objects.len(), 3, "parent + 2 parts as CityObjects");
 
     let parent = &f.city_objects["B"];
-    assert_eq!(parent.thetype, "Building");
+    assert_eq!(String::from(parent.thetype.clone()), "Building");
     let children = parent.children.as_ref().expect("parent has children");
     assert_eq!(
         children,
@@ -576,14 +580,14 @@ fn citygml2_reads_building_parts() {
     );
 
     let p1 = &f.city_objects["B_p1"];
-    assert_eq!(p1.thetype, "BuildingPart");
+    assert_eq!(String::from(p1.thetype.clone()), "BuildingPart");
     assert_eq!(p1.parents.as_ref().unwrap(), &vec!["B".to_string()]);
     let g1 = serde_json::to_value(&p1.geometry.as_ref().unwrap()[0]).unwrap();
     assert_eq!(g1["type"], "Solid");
     assert_eq!(g1["lod"], "2");
 
     let p2 = &f.city_objects["B_p2"];
-    assert_eq!(p2.thetype, "BuildingPart");
+    assert_eq!(String::from(p2.thetype.clone()), "BuildingPart");
     assert_eq!(p2.parents.as_ref().unwrap(), &vec!["B".to_string()]);
     let g2 = serde_json::to_value(&p2.geometry.as_ref().unwrap()[0]).unwrap();
     assert_eq!(g2["type"], "MultiSurface", "boundedBy-only part");
@@ -611,7 +615,8 @@ fn citygml2_reads_x3d_materials() {
     // Feature-local material table: red, green and the target-less blue are all
     // interned (blue distinct so the theme-blind interner keeps it separate).
     let app = f.appearance.as_ref().expect("feature appearance");
-    let mats = app.materials.as_ref().expect("materials table");
+    let mats = serde_json::to_value(app.materials.as_ref().expect("materials table")).unwrap();
+    let mats = mats.as_array().unwrap();
     assert_eq!(mats.len(), 3, "red, green, blue interned");
     let by_name = |n: &str| {
         mats.iter()
@@ -634,9 +639,10 @@ fn citygml2_reads_x3d_materials() {
     // Per-face material in theme "visual": [[red, red, green, null]] (Solid ->
     // [shell][face]). Dereference indices so the assertion is index-permutation
     // independent.
-    let mat = g.material.as_ref().expect("geometry material");
+    let gj = serde_json::to_value(g).unwrap();
+    let mat = gj.get("material").expect("geometry material");
     let visual = mat.get("visual").expect("visual theme");
-    let values = visual.values.as_ref().expect("values").as_array().unwrap();
+    let values = visual.get("values").expect("values").as_array().unwrap();
     assert_eq!(values.len(), 1, "one shell");
     let faces = values[0].as_array().unwrap();
     assert_eq!(faces.len(), 4, "four faces");
@@ -674,7 +680,7 @@ fn citygml2_reads_parameterized_texture() {
     // One texture def, mapped from CityGML.
     let texs = app.textures.as_ref().expect("textures table");
     assert_eq!(texs.len(), 1, "one ParameterizedTexture");
-    let tex = &texs[0];
+    let tex = &serde_json::to_value(&texs[0]).unwrap();
     assert_eq!(tex["type"], serde_json::json!("JPG"), "mimeType -> type");
     assert_eq!(tex["image"], serde_json::json!("textures/wall.jpg"));
     assert_eq!(tex["wrapMode"], serde_json::json!("wrap"));
@@ -687,9 +693,10 @@ fn citygml2_reads_parameterized_texture() {
 
     // texture.visual.values = [[ [tex, uv0, uv1, uv2], [null], [null], [null] ]]
     // (Solid -> [shell][face][ring][tex, uv…]).
-    let t = g.texture.as_ref().expect("geometry texture");
+    let gj = serde_json::to_value(g).unwrap();
+    let t = gj.get("texture").expect("geometry texture");
     let visual = t.get("visual").expect("visual theme");
-    let values = visual.values.as_ref().expect("values").as_array().unwrap();
+    let values = visual.get("values").expect("values").as_array().unwrap();
     let faces = values[0].as_array().unwrap();
     assert_eq!(faces.len(), 4, "four faces");
     // Face 0, ring 0: [texIdx, uv0, uv1, uv2] — dereference the UVs.
@@ -697,7 +704,7 @@ fn citygml2_reads_parameterized_texture() {
     assert_eq!(ring0.len(), 4, "texIdx + 3 UV indices");
     let uv_at = |k: usize| -> Vec<f64> {
         let idx = ring0[k].as_u64().unwrap() as usize;
-        uvs[idx].clone()
+        uvs[idx].to_vec()
     };
     assert_eq!(uv_at(1), vec![0.0, 0.0]);
     assert_eq!(uv_at(2), vec![1.0, 0.0]);
@@ -726,12 +733,13 @@ fn citygml2_resolves_xlinked_boundedby_semantics() {
     let co = f.city_objects.get("BX").expect("Building BX");
     let g = &co.geometry.as_ref().expect("geometry")[0];
     assert!(
-        matches!(g.thetype, cityparquet::cjseq::GeometryType::Solid),
+        matches!(g.geometry_type(), cityparquet::cjseq::GeometryType::Solid),
         "expected Solid, got {:?}",
-        g.thetype
+        g.geometry_type()
     );
 
-    let sem = g.semantics.as_ref().expect("solid semantics");
+    let gj = serde_json::to_value(g).unwrap();
+    let sem = gj.get("semantics").expect("solid semantics");
     let surfaces = sem["surfaces"].as_array().unwrap();
     // Solid values nesting: [shell][face]; expect [Ground, Wall, Wall, Roof].
     let shell = sem["values"].as_array().unwrap()[0].as_array().unwrap();
@@ -791,12 +799,12 @@ fn citygml2_reverses_uvs_for_reversed_orientable_surface() {
         .as_ref()
         .expect("vertices-texture");
 
-    let t = g.texture.as_ref().expect("geometry texture");
+    let gj = serde_json::to_value(g).unwrap();
+    let t = gj.get("texture").expect("geometry texture");
     let values = t
         .get("visual")
         .expect("visual theme")
-        .values
-        .as_ref()
+        .get("values")
         .expect("values")
         .as_array()
         .unwrap();
@@ -806,7 +814,7 @@ fn citygml2_reverses_uvs_for_reversed_orientable_surface() {
         let ring0 = faces[i].as_array().unwrap()[0].as_array().unwrap();
         ring0[1..]
             .iter()
-            .map(|k| uvs[k.as_u64().unwrap() as usize].clone())
+            .map(|k| uvs[k.as_u64().unwrap() as usize].to_vec())
             .collect()
     };
     // p0 (face 0) went through a reversed OrientableSurface -> UVs reversed.
@@ -844,17 +852,19 @@ fn citygml2_reads_citymodel_level_appearance() {
         .appearance
         .as_ref()
         .expect("feature appearance from CityModel level");
-    let mats = app.materials.as_ref().expect("materials table");
+    let mats = serde_json::to_value(app.materials.as_ref().expect("materials table")).unwrap();
     let red = mats
+        .as_array()
+        .unwrap()
         .iter()
         .position(|m| m["diffuseColor"] == serde_json::json!([1.0, 0.0, 0.0]))
         .expect("red material interned");
-    let mat = g.material.as_ref().expect("geometry material");
+    let gj = serde_json::to_value(g).unwrap();
+    let mat = gj.get("material").expect("geometry material");
     let mvals = mat
         .get("visual")
         .unwrap()
-        .values
-        .as_ref()
+        .get("values")
         .unwrap()
         .as_array()
         .unwrap();
@@ -863,12 +873,11 @@ fn citygml2_reads_citymodel_level_appearance() {
     assert!(mshell[1].is_null(), "p1 has no material");
 
     // Texture from the CityModel-level appearance tags face 1's ring (p1_r0).
-    let tex = g.texture.as_ref().expect("geometry texture");
+    let tex = gj.get("texture").expect("geometry texture");
     let tvals = tex
         .get("visual")
         .unwrap()
-        .values
-        .as_ref()
+        .get("values")
         .unwrap()
         .as_array()
         .unwrap();
@@ -899,13 +908,13 @@ fn citygml2_reads_non_building_city_objects() {
         .find(|(id, _)| id.as_str() == "W1")
         .map(|(_, co)| co)
         .expect("WaterBody W1");
-    assert_eq!(water.thetype.as_str(), "WaterBody");
+    assert_eq!(String::from(water.thetype.clone()), "WaterBody");
     let wg = &water.geometry.as_ref().expect("water geometry")[0];
     assert!(matches!(
-        wg.thetype,
+        wg.geometry_type(),
         cityparquet::cjseq::GeometryType::Solid
     ));
-    assert_eq!(wg.lod.as_deref(), Some("2"));
+    assert_eq!(wg.lod().map(|l| l.to_string()).as_deref(), Some("2"));
     let wattrs = water.attributes.as_ref().unwrap();
     assert_eq!(wattrs["usage"], serde_json::json!("leisure"));
     // A typed module property (wtr:class) is captured as a string attribute.
@@ -917,14 +926,21 @@ fn citygml2_reads_non_building_city_objects() {
         .find(|(id, _)| id.as_str() == "L1")
         .map(|(_, co)| co)
         .expect("LandUse L1");
-    assert_eq!(land.thetype.as_str(), "LandUse");
+    assert_eq!(String::from(land.thetype.clone()), "LandUse");
     let lg = &land.geometry.as_ref().expect("land geometry")[0];
     assert!(matches!(
-        lg.thetype,
+        lg.geometry_type(),
         cityparquet::cjseq::GeometryType::MultiSurface
     ));
-    assert_eq!(lg.lod.as_deref(), Some("1"));
-    assert_eq!(lg.boundaries.as_array().unwrap().len(), 2, "two surfaces");
+    assert_eq!(lg.lod().map(|l| l.to_string()).as_deref(), Some("1"));
+    assert_eq!(
+        serde_json::to_value(lg).unwrap()["boundaries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "two surfaces"
+    );
 }
 
 /// CG-5: a Building's outerBuildingInstallation is read as a 2nd-level
@@ -941,7 +957,7 @@ fn citygml2_reads_building_installation_child() {
     let f = &feats[0];
 
     let bi = f.city_objects.get("BI").expect("Building BI");
-    assert_eq!(bi.thetype.as_str(), "Building");
+    assert_eq!(String::from(bi.thetype.clone()), "Building");
     let children = bi.children.as_ref().unwrap();
     assert!(
         children.contains(&"inst1".to_string()),
@@ -958,18 +974,18 @@ fn citygml2_reads_building_installation_child() {
         .city_objects
         .get("inst2")
         .expect("interior installation inst2");
-    assert_eq!(inst2.thetype.as_str(), "BuildingInstallation");
+    assert_eq!(String::from(inst2.thetype.clone()), "BuildingInstallation");
     assert_eq!(inst2.parents.as_ref().unwrap(), &vec!["BI".to_string()]);
 
     let inst = f.city_objects.get("inst1").expect("installation inst1");
-    assert_eq!(inst.thetype.as_str(), "BuildingInstallation");
+    assert_eq!(String::from(inst.thetype.clone()), "BuildingInstallation");
     assert_eq!(inst.parents.as_ref().unwrap(), &vec!["BI".to_string()]);
     let ig = &inst.geometry.as_ref().expect("installation geometry")[0];
     assert!(matches!(
-        ig.thetype,
+        ig.geometry_type(),
         cityparquet::cjseq::GeometryType::MultiSurface
     ));
-    assert_eq!(ig.lod.as_deref(), Some("2"));
+    assert_eq!(ig.lod().map(|l| l.to_string()).as_deref(), Some("2"));
     assert_eq!(
         inst.attributes.as_ref().unwrap()["function"],
         serde_json::json!("balcony")

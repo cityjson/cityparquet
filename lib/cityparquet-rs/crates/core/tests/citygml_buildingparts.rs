@@ -46,6 +46,7 @@ fn convert_with_crs(input: PathBuf, out: PathBuf) {
             reference_date: None,
             reference_system: None,
             title: None,
+            other: Default::default(),
         })
         .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
     let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
@@ -128,7 +129,6 @@ fn objects(pkg: &Path) -> BTreeMap<String, ObjInfo> {
                     .object
                     .attributes
                     .as_ref()
-                    .and_then(serde_json::Value::as_object)
                     .map(|m| {
                         let mut v: Vec<(String, String)> = m
                             .iter()
@@ -178,7 +178,7 @@ fn objects(pkg: &Path) -> BTreeMap<String, ObjInfo> {
                 map.insert(
                     obj.id.clone(),
                     ObjInfo {
-                        thetype: obj.object.thetype.clone(),
+                        thetype: String::from(obj.object.thetype.clone()),
                         parents,
                         children,
                         attributes,

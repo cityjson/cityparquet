@@ -822,20 +822,19 @@ fn bump_first_number(v: &mut serde_json::Value, new_value: i64) -> bool {
 /// cjseq's own doc->seq slicing, rather than by mutating the whole-document
 /// `.city.json` directly).
 fn dangling_material_variant() -> (tempfile::TempDir, PathBuf) {
-    use cjseq::CityJSON;
+    use cjseq::{CityJSON, SortingStrategy};
 
     let text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-    let doc = CityJSON::from_str(&text).unwrap();
+    let doc: CityJSON = text.parse().unwrap();
 
-    let mut header: serde_json::Value = serde_json::to_value(doc.get_metadata()).unwrap();
+    let mut header: serde_json::Value = serde_json::to_value(doc.header().unwrap()).unwrap();
     header["geometry-templates"] = serde_json::Value::Null;
     header["appearance"] = serde_json::Value::Null;
 
     let mut lines = vec![serde_json::to_string(&header).unwrap()];
     let mut mutated = false;
-    let mut i = 0usize;
-    while let Some(f) = doc.get_cjfeature(i) {
-        i += 1;
+    for f in doc.features(SortingStrategy::AsIs) {
+        let f = f.unwrap();
         let mut fv: serde_json::Value = serde_json::to_value(&f).unwrap();
         if !mutated {
             let materials_len = fv["appearance"]["materials"]

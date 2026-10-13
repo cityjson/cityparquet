@@ -124,13 +124,10 @@ workspace entirely, in `benchmark/readbench`: it is evidence, and only means
 anything next to the corpora under `benchmark/`. CityLake is not published.
 
 **`cityparquet` cannot be published yet**, and `cityparquet-cli` depends on
-it. It builds against `vendor/cjseq`, a patched copy of cjseq 0.4.1 consumed
-through `[patch.crates-io]`, which applies to this workspace only. The
-packaged crate is verified against upstream cjseq 0.4.1, which lacks
-`CityObject::other_members` and so fails to compile, and which would carry the
-texture UV-index bug `vendor/cjseq/PATCHES.md` documents. A real publish stops
-at that verification, before anything is uploaded. It clears once cjseq
-publishes a release carrying the patches and the workspace depends on it.
+it. It depends on `cjseq` 0.5 by git, and crates.io refuses a crate with a git
+dependency, so a real publish stops when Cargo packages it, before anything is
+uploaded. It clears once cjseq 0.5 is on crates.io and the workspace depends on
+it by version.
 
 ## Measurements
 

@@ -36,26 +36,28 @@ fn a_roads_traffic_areas_become_its_semantic_surfaces() {
         "the areas are not objects of their own"
     );
     let road = feature.city_objects.values().next().unwrap();
-    assert_eq!(road.thetype, "Road");
+    assert_eq!(String::from(road.thetype.clone()), "Road");
     let geoms = road.geometry.as_ref().expect("geometry");
 
     // LoD1 is untouched: the one standalone polygon, no semantics.
     let lod1: Vec<_> = geoms
         .iter()
-        .filter(|g| g.lod.as_deref() == Some("1"))
+        .filter(|g| g.lod().map(|l| l.to_string()).as_deref() == Some("1"))
         .collect();
     assert_eq!(lod1.len(), 1);
     let lod1_faces: Vec<Vec<Vec<usize>>> =
-        serde_json::from_value(lod1[0].boundaries.clone()).unwrap();
+        serde_json::from_value(serde_json::to_value(lod1[0]).unwrap()["boundaries"].clone())
+            .unwrap();
     assert_eq!(lod1_faces.len(), 1);
 
     // LoD3 is the traffic areas: 19 + 4 faces, each typed.
     let lod3: Vec<_> = geoms
         .iter()
-        .filter(|g| g.lod.as_deref() == Some("3"))
+        .filter(|g| g.lod().map(|l| l.to_string()).as_deref() == Some("3"))
         .collect();
     assert_eq!(lod3.len(), 1, "one geometry per LoD");
-    let semantics = lod3[0].semantics.as_ref().expect("typed faces");
+    let lod3 = serde_json::to_value(lod3[0]).unwrap();
+    let semantics = lod3.get("semantics").expect("typed faces");
     let types: Vec<&str> = semantics["surfaces"]
         .as_array()
         .unwrap()
@@ -92,13 +94,14 @@ fn a_standalone_face_no_traffic_area_covers_is_kept_untyped() {
         .as_ref()
         .unwrap()
         .iter()
-        .filter(|g| g.lod.as_deref() == Some("3"))
+        .filter(|g| g.lod().map(|l| l.to_string()).as_deref() == Some("3"))
         .collect();
     assert_eq!(lod3.len(), 1, "one geometry per LoD");
 
-    let faces: Vec<Vec<Vec<usize>>> = serde_json::from_value(lod3[0].boundaries.clone()).unwrap();
+    let lod3 = serde_json::to_value(lod3[0]).unwrap();
+    let faces: Vec<Vec<Vec<usize>>> = serde_json::from_value(lod3["boundaries"].clone()).unwrap();
     assert_eq!(faces.len(), 2, "A once, and B");
-    let semantics = lod3[0].semantics.as_ref().unwrap();
+    let semantics = lod3.get("semantics").unwrap();
     let values = semantics["values"].as_array().unwrap();
     let typed = values.iter().filter(|v| !v.is_null()).count();
     assert_eq!((typed, values.len() - typed), (1, 1), "A typed, B untyped");

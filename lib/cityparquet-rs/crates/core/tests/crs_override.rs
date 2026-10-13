@@ -276,7 +276,7 @@ fn an_override_never_relabels_a_source_that_declares_its_own_crs() {
         .as_ref()
         .and_then(|m| m.reference_system.clone())
         .expect("delft declares a CRS");
-    assert_eq!(rs.code, "7415", "the source's own CRS must survive");
+    assert_eq!(rs.code(), Some("7415"), "the source's own CRS must survive");
 }
 
 #[test]

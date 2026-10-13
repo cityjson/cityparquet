@@ -44,7 +44,7 @@ fn a_solid_resolves_xlinks_into_its_own_bounded_by_surfaces() {
         .values()
         .next()
         .expect("one city object");
-    assert_eq!(co.thetype, "Bridge");
+    assert_eq!(String::from(co.thetype.clone()), "Bridge");
 
     let geometries = co.geometry.as_ref().expect("the Bridge's lod2Solid");
     // ONE geometry: the solid. The boundary polygons are its faces, not a
@@ -55,17 +55,18 @@ fn a_solid_resolves_xlinks_into_its_own_bounded_by_surfaces() {
         "expected only the solid, got {:?}",
         geometries
             .iter()
-            .map(|g| (g.thetype.clone(), g.lod.clone()))
+            .map(|g| (g.geometry_type(), g.lod()))
             .collect::<Vec<_>>()
     );
     let solid = &geometries[0];
-    assert_eq!(solid.lod.as_deref(), Some("2"));
+    assert_eq!(solid.lod().map(|l| l.to_string()).as_deref(), Some("2"));
 
     // The fixture's solid names exactly 21 `surfaceMember`s, hand-counted from
     // the source, and every one is defined inside the member's own
     // `brid:boundedBy`.
+    let solid = serde_json::to_value(solid).unwrap();
     let shells: Vec<Vec<Vec<Vec<usize>>>> =
-        serde_json::from_value(solid.boundaries.clone()).expect("Solid shape");
+        serde_json::from_value(solid["boundaries"].clone()).expect("Solid shape");
     let faces: usize = shells.iter().map(Vec::len).sum();
     assert_eq!(faces, 21, "every boundary polygon must reach the solid");
 
@@ -73,8 +74,7 @@ fn a_solid_resolves_xlinks_into_its_own_bounded_by_surfaces() {
     // from. Counted from the fixture by hand: 11 WallSurface, 6
     // OuterFloorSurface, 3 OuterCeilingSurface, 1 GroundSurface.
     let semantics = solid
-        .semantics
-        .as_ref()
+        .get("semantics")
         .expect("the solid's faces carry their boundedBy types");
     let types: Vec<String> = semantics["surfaces"]
         .as_array()
@@ -137,14 +137,15 @@ fn a_bridge_emits_its_construction_elements_as_child_objects() {
     let mut reader = FeatureReader::open(&path, &header.transform).unwrap();
     let feature = reader.next().expect("one member").expect("it must read");
 
-    let mut by_type: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let mut by_type: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for co in feature.city_objects.values() {
-        *by_type.entry(co.thetype.as_str()).or_default() += 1;
+        *by_type.entry(String::from(co.thetype.clone())).or_default() += 1;
     }
     assert_eq!(
         by_type,
         [("Bridge", 1), ("BridgeConstructiveElement", 3)]
             .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
             .collect(),
         "the fixture's Bridge has three construction elements"
     );
@@ -154,13 +155,16 @@ fn a_bridge_emits_its_construction_elements_as_child_objects() {
     let (parent_id, parent) = feature
         .city_objects
         .iter()
-        .find(|(_, co)| co.thetype == "Bridge")
+        .find(|(_, co)| String::from(co.thetype.clone()) == "Bridge")
         .expect("the Bridge");
     let children = parent.children.as_ref().expect("the Bridge lists children");
     assert_eq!(children.len(), 3);
     for child_id in children {
         let child = &feature.city_objects[child_id];
-        assert_eq!(child.thetype, "BridgeConstructiveElement");
+        assert_eq!(
+            String::from(child.thetype.clone()),
+            "BridgeConstructiveElement"
+        );
         assert_eq!(
             child.parents.as_deref(),
             Some(std::slice::from_ref(parent_id)),
@@ -187,25 +191,25 @@ fn a_parent_solid_resolves_a_face_defined_inside_a_child() {
     let bridge = feature
         .city_objects
         .values()
-        .find(|co| co.thetype == "Bridge")
+        .find(|co| String::from(co.thetype.clone()) == "Bridge")
         .expect("the Bridge");
     let solid = bridge
         .geometry
         .as_ref()
         .and_then(|g| {
             g.iter()
-                .find(|g| g.thetype == cityparquet::cjseq::GeometryType::Solid)
+                .find(|g| g.geometry_type() == cityparquet::cjseq::GeometryType::Solid)
         })
         .expect("its lod2Solid");
     let shells: Vec<Vec<Vec<Vec<usize>>>> =
-        serde_json::from_value(solid.boundaries.clone()).unwrap();
+        serde_json::from_value(serde_json::to_value(solid).unwrap()["boundaries"].clone()).unwrap();
     assert_eq!(shells.iter().map(Vec::len).sum::<usize>(), 1);
 
     // The child keeps its own geometry; the shared face is not moved.
     let child = feature
         .city_objects
         .values()
-        .find(|co| co.thetype == "BridgeConstructiveElement")
+        .find(|co| String::from(co.thetype.clone()) == "BridgeConstructiveElement")
         .expect("the construction element");
     assert!(
         child.geometry.as_ref().is_some_and(|g| !g.is_empty()),
@@ -262,11 +266,14 @@ fn one_lod_yields_one_geometry_and_it_is_the_semantic_one() {
 
     let lod2: Vec<_> = geoms
         .iter()
-        .filter(|g| g.lod.as_deref() == Some("2"))
+        .filter(|g| g.lod().map(|l| l.to_string()).as_deref() == Some("2"))
         .collect();
     assert_eq!(lod2.len(), 1, "one geometry per LoD");
     assert!(
-        lod2[0].semantics.is_some(),
+        serde_json::to_value(lod2[0])
+            .unwrap()
+            .get("semantics")
+            .is_some(),
         "and it is the one carrying the boundedBy types"
     );
 }

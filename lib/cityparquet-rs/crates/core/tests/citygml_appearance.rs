@@ -47,6 +47,7 @@ fn compat_with_crs(input: PathBuf, out: PathBuf) {
             reference_date: None,
             reference_system: None,
             title: None,
+            other: Default::default(),
         })
         .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
     let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();

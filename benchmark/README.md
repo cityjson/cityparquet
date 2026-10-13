@@ -373,12 +373,27 @@ or "not applied: <reason>" in each CSV's `.params.json` (`isolation`) and in
 the results directory's `MACHINE.md`. Off Linux nothing is applied and the
 records say why.
 
-| Setting        | Flag / recipe parameter                                | Default                                                                     | Applied by                                                                                                                                           |
-| -------------- | ------------------------------------------------------ | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| NUMA node      | `--numa-node`, `NUMA_NODE` (env `BENCH_NUMA_NODE`)     | `auto`: the node with the most free memory at start                         | `numactl --physcpubind=<node cores minus the first> --membind=N`; else `taskset -c` (CPU only); the coordinator pins itself to the node's first core |
-| Memory ceiling | `--memory-max`, `MEMORY_MAX` (decimal bytes, or `off`) | 64,000,000,000 (64 GB) under `full`, `quick` and `short`; off under `smoke` | `systemd-run --user --scope -p MemoryMax=`, probed once; a refusal is recorded, never fatal                                                          |
-| Load gate      | `--max-load`, `MAX_LOAD`                               | `auto`: half the pinned node's cores                                        | before every sample, `load1 * node_cores / total_cores` above the threshold waits in 10 s steps                                                      |
-| Longest wait   | `--max-load-wait-s`, `MAX_LOAD_WAIT_S`                 | 600                                                                         | a cell that proceeds while still contended is tagged `busy` in `notes`                                                                               |
+| Setting        | Flag / recipe parameter                                | Default                                                                     | Applied by                                                                                                                            |
+| -------------- | ------------------------------------------------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| NUMA node      | `--numa-node`, `NUMA_NODE` (env `BENCH_NUMA_NODE`)     | `auto`: the node with the most free memory at start                         | `numactl --all --physcpubind=<cores> --membind=N`; else `taskset -c` (CPU only); the coordinator pins itself to the first usable core |
+| Memory ceiling | `--memory-max`, `MEMORY_MAX` (decimal bytes, or `off`) | 64,000,000,000 (64 GB) under `full`, `quick` and `short`; off under `smoke` | `systemd-run --user --scope -p MemoryMax=`, probed once; a refusal is recorded, never fatal                                           |
+| Load gate      | `--max-load`, `MAX_LOAD`                               | `auto`: half the pinned node's cores                                        | before every sample, `load1 * node_cores / total_cores` above the threshold waits in 10 s steps                                       |
+| Longest wait   | `--max-load-wait-s`, `MAX_LOAD_WAIT_S`                 | 600                                                                         | a cell that proceeds while still contended is tagged `busy` in `notes`                                                                |
+
+A node's usable cores are those within the task's allowed CPUs
+(`Cpus_allowed_list`), and `<cores>` stands for the usable cores minus the
+coordinator's. `auto` picks among nodes with at least one usable core, and an
+explicitly requested node without one is recorded as not applied. The
+isolation record keeps the allowed set (`allowed_cpus`) and says when it
+trimmed the node (`cores_note`). Two narrowings need two remedies. The
+coordinator pins itself to its core before it spawns, so every child inherits
+a one-core affinity, and `numactl` would reject every other requested core as
+out of range: `--all` skips that check, and the kernel then widens the plain
+process affinity. A session confined by a cgroup cpuset is different: the
+kernel trims any affinity to the cpuset and refuses one wholly outside it, so
+with `--all` alone `numactl`'s own `sched_setaffinity` would fail or run the
+children on fewer cores than recorded. The intersection keeps the requested
+and recorded cores inside the set.
 
 One node rather than the whole machine keeps memory local and leaves the other
 node to co-tenants. The load threshold is half the node because our own child

@@ -41,12 +41,10 @@ fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-/// `cjseq` 0.4.1's `CityJSON::add_cjfeature` mis-bases the UV-vertex offset
-/// (`t_offset`) it uses to re-home each feature's local
-/// `vertices-texture`/texture-ring indices into the merged document's
-/// accumulated pool (see `vendor/cjseq/PATCHES.md`). The Seq export path
-/// never calls that merge, so it cannot catch this; only the Doc
-/// (`.city.json`) path can. This is the M4/M5 railway round-trip gate's Doc
+/// The Doc (`.city.json`) export collects features into one document, which
+/// re-homes each feature's local `vertices-texture`/texture-ring indices into
+/// the merged document's accumulated pool. The Seq export path never merges,
+/// so it cannot catch a mis-based UV offset; only the Doc path can. This is the M4/M5 railway round-trip gate's Doc
 /// analogue: same fixture, same CRS injection, same lossless expectation,
 /// different output format.
 #[test]
