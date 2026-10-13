@@ -272,7 +272,7 @@ class PrepModeTest(unittest.TestCase):
         self.manifest = {"datasets": {"rotterdam": {"role": "corpus", "source": "rotterdam_delfshaven.city.json"}}}
         self.calls = []
 
-    def run_prep(self, mode, force=False, families=("formats",)):
+    def run_prep(self, mode, force=False, families=("formats",), datasets=("rotterdam",), sources_present=True):
         mock = self.mock
         bucket = bench_suite.corpus_bucket
         hosted = {"schema": 1, "chain_version": 7, "datasets": {"rotterdam_delfshaven": {"source": {"url": "u", "sha256": "s"}, "artefacts": {}}}}
@@ -292,8 +292,10 @@ class PrepModeTest(unittest.TestCase):
              mock.patch.object(bucket, "publish_manifest", lambda cfg, chain, entries: self.calls.append(("publish", sorted(entries)))), \
              mock.patch.object(bench_suite, "source", lambda entry, locations: self.root / entry["source"]), \
              mock.patch.object(bench_suite, "fetched_source", lambda entry, path: {"url": "published", "sha256": "x"}):
-            (self.root / "rotterdam_delfshaven.city.json").write_text("{}")
-            bench_suite.prepare(self.manifest, self.locations, list(families), ["rotterdam"], "full", mode=mode, force_upload=force)
+            if sources_present:
+                for key in datasets:
+                    (self.root / self.manifest["datasets"][key]["source"]).write_text("{}")
+            bench_suite.prepare(self.manifest, self.locations, list(families), list(datasets), "full", mode=mode, force_upload=force)
 
     def provenance(self):
         import json
@@ -317,6 +319,34 @@ class PrepModeTest(unittest.TestCase):
         stamp = self.locations["prepared"] / ".readbench-chain" / "rotterdam_delfshaven"
         self.assertEqual(stamp.read_text().strip(), str(bench_suite.chain_version()))
 
+    def test_download_fetches_missing_corpus_sources_once_after_the_download(self):
+        # The run reads each dataset's raw source (require_prepared, stage,
+        # the run manifest's sha256), which no hosted artefact replaces.
+        self.manifest["datasets"]["vienna"] = {"role": "corpus", "source": "vienna_102081.city.json"}
+        self.run_prep("download", datasets=("rotterdam", "vienna"), sources_present=False)
+        fetches = [i for i, c in enumerate(self.calls) if c[:2] == ("just", "fetch-data")]
+        self.assertEqual(len(fetches), 1)
+        self.assertEqual(self.calls[fetches[0]], ("just", "fetch-data", str(self.locations["corpus"])))
+        downloads = [i for i, c in enumerate(self.calls) if c[0] == "download"]
+        self.assertLess(max(downloads), fetches[0])
+
+    def test_download_with_every_source_present_fetches_no_source(self):
+        self.run_prep("download")
+        self.assertNotIn("fetch-data", [c[1] for c in self.calls if c[0] == "just"])
+
+    def test_no_cache_fetches_missing_corpus_sources(self):
+        self.run_prep("no-cache", sources_present=False)
+        self.assertEqual([c for c in self.calls if c[:2] == ("just", "fetch-data")], [("just", "fetch-data", str(self.locations["corpus"]))])
+
+    def test_download_with_the_slice_source_missing_names_fetch_3dbag(self):
+        self.manifest["datasets"]["3dbag_n1000000"] = {"role": "slice", "source": "3dbag_n1000000.city.jsonl"}
+        with self.assertRaises(SystemExit) as raised:
+            self.run_prep("download", datasets=("3dbag_n1000000",), sources_present=False)
+        message = str(raised.exception)
+        self.assertIn("just fetch-3dbag " + str(self.locations["3dbag"]), message)
+        self.assertNotIn("fetch-3dbag", [c[1] for c in self.calls if c[0] == "just"])
+        self.assertIn("download", [c[0] for c in self.calls])
+
     def test_no_cache_downloads_the_sources_builds_the_rest_and_uploads(self):
         self.run_prep("no-cache", force=True)
         self.assertEqual(self.calls[0], ("download", "rotterdam_delfshaven", ("cityjson", "citygml")))
@@ -338,6 +368,49 @@ class PrepModeTest(unittest.TestCase):
         self.run_prep("local")
         self.assertFalse([c for c in self.calls if c[0] in ("download", "upload", "publish")])
         self.assertEqual(self.provenance(), {"origin": "local"})
+
+
+class RequirePreparedTest(unittest.TestCase):
+    """`bench-run`'s refusal names the command that supplies what is missing."""
+
+    def setUp(self):
+        import tempfile
+        self.locations = bench_suite.paths(Path(tempfile.mkdtemp()))
+        self.corpus = self.locations["corpus"] / "tokyo.city.json"
+        self.slice = self.locations["3dbag"] / "3dbag_n1000000.city.jsonl"
+
+    def refusal(self, inputs):
+        with self.assertRaises(SystemExit) as raised:
+            bench_suite.require_prepared(inputs, self.locations)
+        return str(raised.exception)
+
+    def test_a_missing_prepared_directory_names_bench_prep(self):
+        # Checked before the sources: bench-prep also fetches them.
+        message = self.refusal([self.corpus])
+        self.assertIn("just bench-prep", message)
+        self.assertIn(str(self.locations["prepared"]), message)
+        self.assertNotIn("fetch-data", message)
+
+    def test_a_missing_corpus_source_names_fetch_data(self):
+        self.locations["prepared"].mkdir(parents=True)
+        message = self.refusal([self.corpus])
+        self.assertIn("just fetch-data " + str(self.locations["corpus"]), message)
+        self.assertIn(str(self.corpus), message)
+        self.assertNotIn("bench-prep first", message)
+
+    def test_a_missing_slice_source_names_fetch_3dbag(self):
+        self.locations["prepared"].mkdir(parents=True)
+        message = self.refusal([self.slice])
+        self.assertIn("just fetch-3dbag " + str(self.locations["3dbag"]), message)
+        self.assertIn(str(self.slice), message)
+        self.assertNotIn("fetch-data", message)
+
+    def test_present_sources_and_prepared_directory_pass(self):
+        for path in (self.corpus, self.slice):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}")
+        self.locations["prepared"].mkdir(parents=True)
+        bench_suite.require_prepared([self.corpus, self.slice], self.locations)
 
 
 class PublishedSourceTest(unittest.TestCase):

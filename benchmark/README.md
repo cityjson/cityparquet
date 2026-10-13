@@ -70,9 +70,14 @@ file against the manifest (bytes and sha256), resumes an interrupted download
 with a range request, skips a file that already matches, and refuses, naming
 `--no-cache` and `--rebuild-sources`, when the bucket holds no `v<chain>/`
 for the code's chain version, when the manifest lacks a selected dataset or
-artefact, or when a hash does not match. Only the two uploading modes need
-credentials: an `rclone` remote with write access to the bucket. The token
-cannot list the bucket root, so every call passes `--s3-no-check-bucket`.
+artefact, or when a hash does not match. The default and `--no-cache` modes
+also fetch any missing published corpus source (`fetch-data`), because the
+run stages it as its input and records its sha256, so a fresh host needs
+nothing else for the six corpus datasets; a missing 3DBAG slice source stops
+the preparation, naming `just fetch-3dbag`, which cuts it. Only the two
+uploading modes need credentials: an `rclone` remote with write access to the
+bucket. The token cannot list the bucket root, so every call passes
+`--s3-no-check-bucket`.
 
 An upload never silently replaces: identical content is skipped, and a key
 that exists with different content stops the upload before anything is sent,
@@ -278,10 +283,10 @@ just bench-run --datasets 3dbag --families formats
 just bench-summary --data-root benchmark/runs
 ```
 
-The family names are `sizes`, `formats`, `bloom` and `databases`. With no
-selection, the suite includes all four. Use each command's `--help` for its
-selection and output options. Smoke runs validate the pipeline with small
-inputs and fewer repetitions; their results are not publication runs.
+The family names are `sizes`, `formats`, `bloom`, `databases` and `network`.
+With no selection, the suite includes all five. Use each command's `--help`
+for its selection and output options. Smoke runs validate the pipeline with
+small inputs and fewer repetitions; their results are not publication runs.
 
 The bloom family's attribute lookups probe the text columns listed as
 `bloom_attributes` under the slice's entry in `manifest.toml`; `just bench-run
