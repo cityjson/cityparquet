@@ -36,6 +36,14 @@ echo "| --- | --- |"
 row() { echo "| $1 | $2 |"; }
 row numactl "$(command -v numactl >/dev/null 2>&1 && echo found || echo "not found")"
 row taskset "$(command -v taskset >/dev/null 2>&1 && echo found || echo "not found")"
+# The CPUs this session may run on (scheduler affinity and cgroup cpuset):
+# readbench pins only to the node's cores inside this set.
+allowed="$(awk -F'\t' '$1 == "Cpus_allowed_list:" {print $2}' /proc/self/status 2>/dev/null || true)"
+if [[ -n "$allowed" ]]; then
+  row "Allowed CPUs" "$allowed (Cpus_allowed_list of /proc/self/status)"
+else
+  row "Allowed CPUs" "not readable: no Cpus_allowed_list in /proc/self/status"
+fi
 nodes=/sys/devices/system/node
 if [[ "$(uname -s)" != "Linux" ]]; then
   row "NUMA node" "not applied: not Linux"
@@ -58,11 +66,11 @@ else
     row "Pinning command" "not applied: --numa-node off"
   else
     cores="$(cat "$nodes/node$node/cpulist" 2>/dev/null || echo "not readable")"
-    row "NUMA node" "$node (cores $cores; coordinator on the first, children on the rest)"
+    row "NUMA node" "$node (cores $cores; those in the allowed CPUs are usable: coordinator on the first, children on the rest)"
     if command -v numactl >/dev/null 2>&1; then
-      row "Pinning command" "numactl --physcpubind=<node $node cores minus the first> --membind=$node"
+      row "Pinning command" "numactl --all --physcpubind=<usable node $node cores minus the first> --membind=$node"
     elif command -v taskset >/dev/null 2>&1; then
-      row "Pinning command" "taskset -c <node $node cores minus the first> (memory binding not applied: numactl missing)"
+      row "Pinning command" "taskset -c <usable node $node cores minus the first> (memory binding not applied: numactl missing)"
     else
       row "Pinning command" "not applied: neither numactl nor taskset found"
     fi
