@@ -6,6 +6,8 @@
 //! at the model time minus the documented burst, an upper bound well above the
 //! model) so a busy CI machine cannot fail them.
 
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -214,17 +216,44 @@ fn concurrent_requests_share_one_bandwidth_budget() {
 }
 
 #[test]
-fn keep_alive_reuses_one_connection() {
+fn keep_alive_answers_every_request_on_one_connection() {
+    // Spoken over one raw socket. A pooling client cannot test this: hyper
+    // races a fresh dial against the pool checkout, and on loopback the dial
+    // can win before the previous connection is back in the pool.
     let dir = tempfile::tempdir().unwrap();
-    write_file(dir.path(), "e.bin", 100);
+    let body = write_file(dir.path(), "e.bin", 100);
     let sim = serve(dir.path(), 1000.0, 0.0);
-    let url = format!("{}/e.bin", sim.base_url());
-    rt().block_on(async {
-        let c = reqwest::Client::new();
-        for _ in 0..5 {
-            c.get(&url).send().await.unwrap().bytes().await.unwrap();
+    let addr = sim.base_url().trim_start_matches("http://").to_string();
+    let mut stream = TcpStream::connect(&addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut rd = BufReader::new(stream.try_clone().unwrap());
+    for _ in 0..5 {
+        write!(stream, "GET /e.bin HTTP/1.1\r\nHost: {addr}\r\n\r\n").unwrap();
+        let mut status = String::new();
+        rd.read_line(&mut status).unwrap();
+        assert!(status.starts_with("HTTP/1.1 200 "), "{status:?}");
+        let (mut len, mut conn) = (None, None);
+        loop {
+            let mut h = String::new();
+            rd.read_line(&mut h).unwrap();
+            let h = h.trim_end();
+            if h.is_empty() {
+                break;
+            }
+            let (k, v) = h.split_once(':').unwrap();
+            match k.to_ascii_lowercase().as_str() {
+                "content-length" => len = Some(v.trim().parse::<usize>().unwrap()),
+                "connection" => conn = Some(v.trim().to_string()),
+                _ => {}
+            }
         }
-    });
+        assert_eq!(conn.as_deref(), Some("keep-alive"));
+        let mut got = vec![0u8; len.unwrap()];
+        rd.read_exact(&mut got).unwrap();
+        assert_eq!(got, body);
+    }
     let t = sim.totals();
     assert_eq!(t.requests, 5);
     assert_eq!(t.connections, 1);
