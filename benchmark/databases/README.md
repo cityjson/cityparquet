@@ -885,6 +885,8 @@ structures a writer may omit, and the PostgreSQL difference is the separate
 index relations. The manifest's `sizes` block carries the same figures plus
 `index_bytes` and, for CityParquet, the Bloom-filter, page-index and footer
 bytes; `size_definitions` states these definitions and the index policy.
+On a textured dataset both figures include whatever appearance the system
+keeps, and the three systems keep different parts of it (Caveat 23).
 
 ## Metrics and the CSV contract
 
@@ -1354,6 +1356,50 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
     figures. A smaller row group would cut the cost of the hit, at a
     price elsewhere that the suite does not measure; the package uses the
     writer's default.
+
+23. **The three systems keep different parts of a textured dataset's
+    appearance, and none keeps an image.** A textured CityJSONSeq such as
+    Rotterdam's carries per-face `texture` indices in its geometries and,
+    on each feature line, an `appearance` block holding the texture
+    definitions (`textures`) and the texture coordinates
+    (`vertices-texture`); Rotterdam has no materials.
+    - **cjdb keeps the indices and drops the definitions.** Its importer
+      stores each object's CityJSON geometry as JSONB with the vertices
+      resolved and every other member, `texture` included, left in place
+      (cjdb's own `cjdb/model/BASICQUERIES.md` gives a query that removes
+      texture from all objects). From a feature line it reads only
+      `CityObjects` and `vertices`, and `cj_metadata` keeps only the
+      header's `metadata`, `transform`, `geometry-templates`, `extensions`
+      and extension root properties, so the feature's `appearance` block is
+      not stored: the stored indices point into a texture list and a
+      texture-coordinate pool that are not in the database.
+    - **3DCityDB imports the appearance model.**
+      `citydb-tool import cityjson` runs with no flag that disables
+      appearance, and on Rotterdam its import summary lists
+      `app:Appearance: 853`, one per feature carrying an `appearance`
+      block. It also logs
+      `ParameterizedTexture: Failed to import texture file /work/appearances/<name>.jpg`
+      for each texture, because the prepared input ships no image files:
+      the texture references are stored and the images are absent.
+    - **CityParquet keeps the references and the definitions.** The package
+      is the one the format family measures ("Which package is
+      "CityParquet""); for Rotterdam it holds `building.parquet`,
+      `metadata.json` and a `textures.parquet` sidecar. Each object's
+      texture references, with their texture coordinates inlined, are in
+      the object table's `texture_lod*` column, and the texture definitions
+      are the rows of `textures.parquet`, whose `image_uri` is set and whose
+      `image_data` (embedded image bytes) is NULL on every row.
+
+    No scenario asks for appearance, as in the format family, whose readers
+    exclude it (`benchmark/formats/READ_BENCHMARK.md`). The references
+    still travel wherever a scenario returns a whole stored value: cjdb's
+    geometry JSONB carries the `texture` member in `geometry-scan`,
+    `bbox-query`, `id-lookup` and `lod-query`, and `duckdb-cityparquet`'s
+    `SELECT *` in `id-lookup` returns the `texture_lod*` column. Appearance
+    therefore enters each system's stored size, and the two PostgreSQL
+    systems' ingest time, in different amounts: on a textured dataset
+    cjdb's `size_bytes` and `size_bytes_no_index` leave out the texture
+    definitions that the other two systems' figures include.
 
 ## Running the benchmark
 
