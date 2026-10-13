@@ -57,7 +57,8 @@ mod reader {
         let metadata =
             to_cj_metadata(&reader.header()).map_err(|e| err(path, "invalid header", e))?;
         let json = serde_json::to_string(&metadata)?;
-        CityJSON::from_str(&json).map_err(|e| err(path, "invalid CityJSON header", e))
+        json.parse::<CityJSON>()
+            .map_err(|e| err(path, "invalid CityJSON header", e))
     }
 
     /// A FlatCityBuf file's features, in file order, as CityJSONFeatures.
@@ -122,7 +123,7 @@ mod reader {
                     .map_err(|e| err(path, "cannot decode a feature", e))
                     .and_then(|f| Ok(serde_json::to_string(&f)?))
                     .and_then(|json| {
-                        CityJSONFeature::from_str(&json)
+                        json.parse::<CityJSONFeature>()
                             .map_err(|e| err(path, "invalid CityJSONFeature", e))
                     }),
             )

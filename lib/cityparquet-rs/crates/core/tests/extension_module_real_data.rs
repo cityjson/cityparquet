@@ -148,7 +148,8 @@ fn extension_marked_core_class_routes_to_the_core_file_with_a_prefixed_type() {
     let source = Source::open(&exported).unwrap();
     let feature = source.features().unwrap().next().unwrap().unwrap();
     assert_eq!(
-        feature.city_objects["EXT_BUILDING_1"].thetype, "+Building",
+        String::from(feature.city_objects["EXT_BUILDING_1"].thetype.clone()),
+        "+Building",
         "export restores the CityJSON + marker from the namespace prefix"
     );
 }

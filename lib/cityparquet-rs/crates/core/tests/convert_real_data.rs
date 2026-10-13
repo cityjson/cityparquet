@@ -530,38 +530,33 @@ fn bump_first_number(v: &mut Value, new_value: i64) -> bool {
 
 /// Writes a CityJSONSeq rendering of the real railway fixture (header line +
 /// one line per top-level object, built with cjseq's own doc->seq slicing —
-/// `get_metadata`/`get_cjfeature`, the exact machinery `Source::open` drives
-/// for whole-document input) with one feature's own material index pushed
+/// `header`/`features`, the exact machinery `Source::open` drives for
+/// whole-document input) with one feature's own material index pushed
 /// past that feature's local (already-sliced) materials array.
 ///
 /// Built as Seq rather than mutating the source `.city.json` directly: a
 /// genuinely out-of-range index inside a CityObject's geometry or a geometry
-/// template makes cjseq itself PANIC while re-slicing a WHOLE-DOCUMENT
-/// source (`get_metadata`/`get_cjfeature` index the doc-level materials
-/// array by every raw index found, with no bounds check) — a dangling
-/// reference is only reachable past that panic in Seq form, where each line
-/// is parsed as-is with no re-slicing pass, exactly like the real
-/// `benchmark/formats/data/Railway.city.jsonl` corpus case this option exists for.
-/// `geometry-templates` is dropped from the header: this test targets a
-/// regular feature's own material reference, not a template's, and
-/// `get_metadata`'s header pairs a RENUMBERED `appearance` with an
-/// UNTOUCHED-index `geometry-templates` (see `Source::doc_appearance`'s doc
-/// comment) — a mismatch irrelevant here that dropping templates sidesteps.
+/// template makes cjseq itself refuse a WHOLE-DOCUMENT source (slicing a
+/// feature out of the document is an error on an out-of-range index) — a
+/// dangling reference is only reachable in Seq form,
+/// where each line is read as-is with no re-slicing pass, exactly like the
+/// real `benchmark/formats/data/Railway.city.jsonl` corpus case this option
+/// exists for. `geometry-templates` is dropped from the header: this test
+/// targets a regular feature's own material reference, not a template's.
 fn dangling_material_variant() -> (tempfile::TempDir, PathBuf) {
-    use cjseq::CityJSON;
+    use cjseq::{CityJSON, SortingStrategy};
 
     let text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-    let doc = CityJSON::from_str(&text).unwrap();
+    let doc: CityJSON = text.parse().unwrap();
 
-    let mut header: Value = serde_json::to_value(doc.get_metadata()).unwrap();
+    let mut header: Value = serde_json::to_value(doc.header().unwrap()).unwrap();
     header["geometry-templates"] = Value::Null;
     header["appearance"] = Value::Null;
 
     let mut lines = vec![serde_json::to_string(&header).unwrap()];
     let mut mutated = false;
-    let mut i = 0usize;
-    while let Some(f) = doc.get_cjfeature(i) {
-        i += 1;
+    for f in doc.features(SortingStrategy::AsIs) {
+        let f = f.unwrap();
         let mut fv: Value = serde_json::to_value(&f).unwrap();
         if !mutated {
             let materials_len = fv["appearance"]["materials"]
@@ -960,7 +955,7 @@ fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
         corrupted,
         "target feature line must contain an object with geometry"
     );
-    feature["appearance"] = serde_json::json!({"materials": [{}]});
+    feature["appearance"] = serde_json::json!({"materials": [{"name": "dangling"}]});
     lines[TARGET_LINE] = serde_json::to_string(&feature).unwrap();
 
     let derived_dir = tempfile::tempdir().unwrap();

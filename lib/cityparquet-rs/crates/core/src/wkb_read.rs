@@ -449,43 +449,33 @@ mod tests {
     use super::*;
     use crate::wkb_write::{VertexPool, geometry_to_wkb, point_to_wkb};
 
-    fn pool_and(transform_scale: f64) -> (Vec<Vec<i64>>, cjseq::Transform) {
+    fn pool_and(transform_scale: f64) -> (Vec<[i64; 3]>, cjseq::Transform) {
         (
             vec![
-                vec![0, 0, 0],
-                vec![1000, 0, 0],
-                vec![1000, 1000, 0],
-                vec![0, 1000, 0],
-                vec![0, 0, 1000],
+                [0, 0, 0],
+                [1000, 0, 0],
+                [1000, 1000, 0],
+                [0, 1000, 0],
+                [0, 0, 1000],
             ],
             cjseq::Transform {
-                scale: vec![transform_scale; 3],
-                translate: vec![10.0, 20.0, 30.0],
+                scale: [transform_scale; 3],
+                translate: [10.0, 20.0, 30.0],
             },
         )
     }
 
-    fn geom(thetype: cjseq::GeometryType, boundaries: serde_json::Value) -> cjseq::Geometry {
-        cjseq::Geometry {
-            thetype,
-            lod: Some("2".into()),
-            boundaries,
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        }
+    fn geom(thetype: &str, boundaries: serde_json::Value) -> cjseq::Geometry {
+        crate::faces::geometry(serde_json::json!({
+            "type": thetype, "lod": "2", "boundaries": boundaries
+        }))
     }
 
     #[test]
     fn multisurface_round_trips_with_closing_vertex_stripped() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
-        let src = geom(
-            cjseq::GeometryType::MultiSurface,
-            serde_json::json!([[[0, 1, 2, 3]]]),
-        );
+        let src = geom("MultiSurface", serde_json::json!([[[0, 1, 2, 3]]]));
         let bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
 
         let decoded = wkb_to_geometry(&bytes).unwrap();
@@ -515,10 +505,7 @@ mod tests {
         let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
         // one shell, two faces: a 4-vertex ring and a 3-vertex ring sharing
         // vertices 0 and 1.
-        let src = geom(
-            cjseq::GeometryType::Solid,
-            serde_json::json!([[[[0, 1, 2, 3]], [[0, 1, 4]]]]),
-        );
+        let src = geom("Solid", serde_json::json!([[[[0, 1, 2, 3]], [[0, 1, 4]]]]));
         let bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
 
         let decoded = wkb_to_geometry(&bytes).unwrap();
@@ -544,10 +531,7 @@ mod tests {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
 
-        let mp = geom(
-            cjseq::GeometryType::MultiPoint,
-            serde_json::json!([0, 1, 4]),
-        );
+        let mp = geom("MultiPoint", serde_json::json!([0, 1, 4]));
         let bytes = geometry_to_wkb(&mp, &pool).unwrap().unwrap().bytes;
         let decoded = wkb_to_geometry(&bytes).unwrap();
         let DecodedKind::MultiPoint(idxs) = &decoded.kind else {
@@ -556,10 +540,7 @@ mod tests {
         assert_eq!(idxs.len(), 3);
         assert_eq!(decoded.coords.len(), 3);
 
-        let mls = geom(
-            cjseq::GeometryType::MultiLineString,
-            serde_json::json!([[0, 1, 2], [2, 3]]),
-        );
+        let mls = geom("MultiLineString", serde_json::json!([[0, 1, 2], [2, 3]]));
         let bytes = geometry_to_wkb(&mls, &pool).unwrap().unwrap().bytes;
         let decoded = wkb_to_geometry(&bytes).unwrap();
         let DecodedKind::MultiLineString(lines) = &decoded.kind else {
@@ -579,7 +560,7 @@ mod tests {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
         let src = geom(
-            cjseq::GeometryType::MultiSolid,
+            "MultiSolid",
             serde_json::json!([[[[[0, 1, 2, 3]]]], [[[[0, 1, 4]]]]]),
         );
         let bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
@@ -610,10 +591,7 @@ mod tests {
     fn truncated_buffer_errors() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
-        let src = geom(
-            cjseq::GeometryType::MultiSurface,
-            serde_json::json!([[[0, 1, 2, 3]]]),
-        );
+        let src = geom("MultiSurface", serde_json::json!([[[0, 1, 2, 3]]]));
         let bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
 
         for cut in [0, 1, 5, bytes.len() - 1] {
@@ -629,10 +607,7 @@ mod tests {
     fn big_endian_marker_errors() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
-        let src = geom(
-            cjseq::GeometryType::MultiSurface,
-            serde_json::json!([[[0, 1, 2, 3]]]),
-        );
+        let src = geom("MultiSurface", serde_json::json!([[[0, 1, 2, 3]]]));
         let mut bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
         bytes[0] = 0x00;
         let err = wkb_to_geometry(&bytes).unwrap_err();
@@ -643,10 +618,7 @@ mod tests {
     fn unknown_type_code_errors() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
-        let src = geom(
-            cjseq::GeometryType::MultiSurface,
-            serde_json::json!([[[0, 1, 2, 3]]]),
-        );
+        let src = geom("MultiSurface", serde_json::json!([[[0, 1, 2, 3]]]));
         let mut bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
         bytes[1..5].copy_from_slice(&9999u32.to_le_bytes());
         let err = wkb_to_geometry(&bytes).unwrap_err();
@@ -663,10 +635,7 @@ mod tests {
     fn valid_multisurface_bytes() -> Vec<u8> {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
-        let src = geom(
-            cjseq::GeometryType::MultiSurface,
-            serde_json::json!([[[0, 1, 2, 3]]]),
-        );
+        let src = geom("MultiSurface", serde_json::json!([[[0, 1, 2, 3]]]));
         geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes
     }
 

@@ -22,9 +22,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{Result, anyhow, bail};
-use cityparquet::cjseq::{CityObject, Geometry, GeometryType, Transform};
-use serde_json::Value;
+use anyhow::{Result, anyhow};
+use cityparquet::cjseq::{
+    CityObject, Geometry, MultiSolidValues, PrimitiveValues, Ring, Shell, SolidValues, Surface,
+    SurfaceIndex, Transform, VertexIndex,
+};
+use indexmap::IndexMap;
+use serde_json::{Map, Value};
 
 use super::returned::{ComparableTotals, IdDigest, ReturnedGeometry};
 
@@ -32,21 +36,18 @@ use super::returned::{ComparableTotals, IdDigest, ReturnedGeometry};
 /// integer vertices into real coordinates.
 #[derive(Clone, Copy)]
 pub(super) struct Vertices<'a> {
-    pub vertices: &'a [Vec<i64>],
+    pub vertices: &'a [[i64; 3]],
     pub transform: &'a Transform,
 }
 
 impl Vertices<'_> {
-    fn coordinate(&self, index: usize) -> Result<[f64; 3]> {
+    fn coordinate(&self, VertexIndex(index): VertexIndex) -> Result<[f64; 3]> {
         let vertex = self.vertices.get(index).ok_or_else(|| {
             anyhow!(
                 "geometry boundary references vertex {index}, but there are only {}",
                 self.vertices.len()
             )
         })?;
-        if vertex.len() < 3 {
-            bail!("vertex {index} has {} components, expected 3", vertex.len());
-        }
         let t = self.transform;
         Ok([
             vertex[0] as f64 * t.scale[0] + t.translate[0],
@@ -55,49 +56,73 @@ impl Vertices<'_> {
         ])
     }
 
-    /// Resolves every leaf of a `boundaries` tree and folds it into `extent`.
-    /// Returns the number of rings walked (arrays whose items are indices).
-    pub fn walk(&self, value: &Value, extent: &mut [f64; 6]) -> Result<u64> {
-        match value {
-            Value::Array(items) => {
-                let mut rings = 0u64;
-                let mut is_ring = false;
-                for item in items {
-                    if item.is_number() {
-                        is_ring = true;
-                    }
-                    rings += self.walk(item, extent)?;
+    /// Resolves every vertex of a geometry's `boundaries` and folds it into
+    /// `extent`. Returns the number of non-empty rings walked.
+    pub fn walk(&self, geometry: &Geometry, extent: &mut [f64; 6]) -> Result<u64> {
+        match geometry {
+            Geometry::MultiPoint { boundaries, .. } => self.ring(boundaries, extent),
+            Geometry::MultiLineString { boundaries, .. } => self.rings(boundaries, extent),
+            Geometry::MultiSurface { boundaries, .. }
+            | Geometry::CompositeSurface { boundaries, .. } => self.surfaces(boundaries, extent),
+            Geometry::Solid { boundaries, .. } => self.shells(boundaries, extent),
+            Geometry::MultiSolid { boundaries, .. }
+            | Geometry::CompositeSolid { boundaries, .. } => {
+                let mut rings = 0;
+                for solid in boundaries {
+                    rings += self.shells(solid, extent)?;
                 }
-                Ok(rings + u64::from(is_ring))
+                Ok(rings)
             }
-            Value::Number(number) => {
-                let index = number.as_u64().ok_or_else(|| {
-                    anyhow!("geometry boundary index '{number}' is not a whole number")
-                })? as usize;
-                let c = self.coordinate(index)?;
-                for axis in 0..3 {
-                    extent[axis] = extent[axis].min(c[axis]);
-                    extent[axis + 3] = extent[axis + 3].max(c[axis]);
-                }
-                Ok(0)
-            }
-            other => bail!("unexpected value in geometry boundaries: {other}"),
+            Geometry::GeometryInstance { boundaries, .. } => self.ring(boundaries, extent),
+            other => Err(anyhow!(
+                "geometry type {:?} is not supported",
+                other.geometry_type()
+            )),
         }
+    }
+
+    fn ring(&self, ring: &[VertexIndex], extent: &mut [f64; 6]) -> Result<u64> {
+        for &index in ring {
+            let c = self.coordinate(index)?;
+            for axis in 0..3 {
+                extent[axis] = extent[axis].min(c[axis]);
+                extent[axis + 3] = extent[axis + 3].max(c[axis]);
+            }
+        }
+        Ok(u64::from(!ring.is_empty()))
+    }
+
+    fn rings(&self, rings: &[Ring], extent: &mut [f64; 6]) -> Result<u64> {
+        let mut n = 0;
+        for ring in rings {
+            n += self.ring(ring, extent)?;
+        }
+        Ok(n)
+    }
+
+    fn surfaces(&self, surfaces: &[Surface], extent: &mut [f64; 6]) -> Result<u64> {
+        let mut n = 0;
+        for surface in surfaces {
+            n += self.rings(surface, extent)?;
+        }
+        Ok(n)
+    }
+
+    fn shells(&self, shells: &[Shell], extent: &mut [f64; 6]) -> Result<u64> {
+        let mut n = 0;
+        for shell in shells {
+            n += self.surfaces(shell, extent)?;
+        }
+        Ok(n)
     }
 }
 
 /// Reads every leaf of a JSON value (an attribute, a semantic-surface
-/// object) and returns how many there were, so the read cannot be skipped.
+/// member) and returns how many there were, so the read cannot be skipped.
 pub(super) fn touch(value: &Value) -> u64 {
     match value {
         Value::Array(items) => items.iter().map(touch).sum(),
-        Value::Object(map) => map
-            .iter()
-            .map(|(k, v)| {
-                std::hint::black_box(k.as_str());
-                touch(v)
-            })
-            .sum(),
+        Value::Object(map) => touch_map(map),
         Value::String(s) => {
             std::hint::black_box(s.as_str());
             1
@@ -114,21 +139,61 @@ pub(super) fn touch(value: &Value) -> u64 {
     }
 }
 
-/// The non-null leaves of a `semantics.values` tree: the faces carrying a
-/// semantic-surface reference.
-fn semantic_faces(value: &Value) -> u64 {
-    match value {
-        Value::Array(items) => items.iter().map(semantic_faces).sum(),
-        Value::Number(n) => {
-            std::hint::black_box(n.as_u64());
-            1
+/// Reads every key and leaf of a JSON object; see [`touch`].
+pub(super) fn touch_map(map: &Map<String, Value>) -> u64 {
+    map.iter()
+        .map(|(k, v)| {
+            std::hint::black_box(k.as_str());
+            touch(v)
+        })
+        .sum()
+}
+
+/// The non-null entries of a geometry's `semantics.values`: the faces
+/// carrying a semantic-surface reference.
+fn semantic_faces(geometry: &Geometry) -> u64 {
+    fn primitive(values: &PrimitiveValues<SurfaceIndex>) -> u64 {
+        values
+            .iter()
+            .flatten()
+            .map(|index| {
+                std::hint::black_box(index.0);
+                1
+            })
+            .sum()
+    }
+    fn solid(values: &SolidValues<SurfaceIndex>) -> u64 {
+        values.iter().flatten().map(primitive).sum()
+    }
+    fn multi_solid(values: &MultiSolidValues<SurfaceIndex>) -> u64 {
+        values.iter().flatten().map(solid).sum()
+    }
+    match geometry {
+        Geometry::MultiPoint { semantics, .. }
+        | Geometry::MultiLineString { semantics, .. }
+        | Geometry::MultiSurface { semantics, .. }
+        | Geometry::CompositeSurface { semantics, .. } => semantics
+            .as_ref()
+            .and_then(|s| s.values.as_ref())
+            .map_or(0, primitive),
+        Geometry::Solid { semantics, .. } => semantics
+            .as_ref()
+            .and_then(|s| s.values.as_ref())
+            .map_or(0, solid),
+        Geometry::MultiSolid { semantics, .. } | Geometry::CompositeSolid { semantics, .. } => {
+            semantics
+                .as_ref()
+                .and_then(|s| s.values.as_ref())
+                .map_or(0, multi_solid)
         }
-        _ => 0,
+        Geometry::GeometryInstance { .. } => 0,
+        // `Vertices::walk` refuses it before this is reached.
+        other => unreachable!("unsupported geometry type {:?}", other.geometry_type()),
     }
 }
 
 fn is_instance(geometry: &Geometry) -> bool {
-    matches!(geometry.thetype, GeometryType::GeometryInstance)
+    matches!(geometry, Geometry::GeometryInstance { .. })
 }
 
 /// Reads every field of one city object into `totals` (see the module
@@ -139,13 +204,13 @@ pub(super) fn visit_object(
     totals: &mut ComparableTotals,
 ) -> Result<()> {
     totals.objects += 1;
-    std::hint::black_box(co.thetype.as_str());
+    std::hint::black_box(&co.thetype);
     let mut leaves = 0u64;
     if let Some(attributes) = &co.attributes {
-        leaves += touch(attributes);
+        leaves += touch_map(attributes);
     }
     if let Some(extent) = &co.geographical_extent {
-        std::hint::black_box(extent.as_slice());
+        std::hint::black_box(extent);
     }
     for id in co
         .children
@@ -156,25 +221,31 @@ pub(super) fn visit_object(
         std::hint::black_box(id.as_str());
     }
     for geometry in co.geometry.iter().flatten() {
-        std::hint::black_box(geometry.lod.as_deref());
-        if is_instance(geometry) {
+        std::hint::black_box(geometry.lod());
+        if let Geometry::GeometryInstance {
+            boundaries,
+            template,
+            transformation_matrix,
+        } = geometry
+        {
             // Anchor and transformation only; the template is not expanded.
-            std::hint::black_box(geometry.template);
-            leaves += touch(&geometry.boundaries);
-            if let Some(matrix) = &geometry.transformation_matrix {
-                leaves += touch(matrix);
-            }
+            std::hint::black_box(template);
+            std::hint::black_box(boundaries);
+            std::hint::black_box(transformation_matrix);
+            leaves += (boundaries.len() + transformation_matrix.len()) as u64;
             continue;
         }
         totals.geometries += 1;
-        leaves += verts.walk(&geometry.boundaries, &mut totals.extent)?;
-        if let Some(semantics) = &geometry.semantics {
-            if let Some(values) = semantics.get("values") {
-                totals.semantic_faces += semantic_faces(values);
-            }
-            if let Some(surfaces) = semantics.get("surfaces") {
-                leaves += touch(surfaces);
-            }
+        leaves += verts.walk(geometry, &mut totals.extent)?;
+        totals.semantic_faces += semantic_faces(geometry);
+        for surface in geometry.surfaces().into_iter().flatten() {
+            std::hint::black_box(&surface.thetype);
+            std::hint::black_box(surface.parent);
+            std::hint::black_box(&surface.children);
+            leaves += 1
+                + u64::from(surface.parent.is_some())
+                + surface.children.as_ref().map_or(0, |c| c.len() as u64)
+                + touch_map(&surface.other);
         }
     }
     std::hint::black_box(leaves);
@@ -197,7 +268,11 @@ fn highest_lod(co: &CityObject) -> Option<&Geometry> {
         .iter()
         .flatten()
         .filter(|g| !is_instance(g))
-        .max_by_key(|g| lod_rank(g.lod.as_deref()))
+        .max_by_key(|g| {
+            g.lod().map_or((0, 0), |l| {
+                (u32::from(l.level()), u32::from(l.refinement().unwrap_or(0)))
+            })
+        })
 }
 
 /// Walks the coordinates of the object's highest-LoD geometry in place into
@@ -209,7 +284,7 @@ pub(super) fn visit_highest_lod(
 ) -> Result<()> {
     if let Some(geometry) = highest_lod(co) {
         out.geometries += 1;
-        std::hint::black_box(verts.walk(&geometry.boundaries, &mut out.extent)?);
+        std::hint::black_box(verts.walk(geometry, &mut out.extent)?);
     }
     Ok(())
 }
@@ -224,7 +299,7 @@ fn own_box(co: &CityObject, verts: Vertices<'_>) -> Result<MaybeBox> {
     let mut e = super::returned::EMPTY_EXTENT;
     let mut any = false;
     for geometry in co.geometry.iter().flatten() {
-        verts.walk(&geometry.boundaries, &mut e)?;
+        verts.walk(geometry, &mut e)?;
         any |= e[0].is_finite();
     }
     Ok(any.then_some(([e[0], e[1], e[2]], [e[3], e[4], e[5]])))
@@ -243,7 +318,7 @@ pub(super) fn union(a: MaybeBox, b: MaybeBox) -> MaybeBox {
 /// Every object's box over its whole `children` subtree, memoised and
 /// guarded against a cycle in a malformed hierarchy.
 pub(super) fn subtree_boxes<'a>(
-    objects: &'a HashMap<String, CityObject>,
+    objects: &'a IndexMap<String, CityObject>,
     verts: Vertices<'_>,
 ) -> Result<HashMap<&'a str, MaybeBox>> {
     let own: HashMap<&str, MaybeBox> = objects
@@ -252,7 +327,7 @@ pub(super) fn subtree_boxes<'a>(
         .collect::<Result<_>>()?;
     fn rec<'a>(
         id: &'a str,
-        objects: &'a HashMap<String, CityObject>,
+        objects: &'a IndexMap<String, CityObject>,
         own: &HashMap<&'a str, MaybeBox>,
         memo: &mut HashMap<&'a str, MaybeBox>,
         path: &mut HashSet<&'a str>,
@@ -287,7 +362,7 @@ pub(super) fn subtree_boxes<'a>(
 /// box intersects `window` (edges included) has its id folded into `ids` and
 /// its highest-LoD geometry walked into `out`.
 pub(super) fn window_objects(
-    objects: &HashMap<String, CityObject>,
+    objects: &IndexMap<String, CityObject>,
     verts: Vertices<'_>,
     window: &[f64; 6],
     ids: &mut IdDigest,
@@ -319,7 +394,16 @@ mod tests {
 
     #[test]
     fn semantic_faces_skip_nulls() {
-        let v: Value = serde_json::json!([[0, 1, null, 2], [null]]);
-        assert_eq!(semantic_faces(&v), 3);
+        let g: Geometry = serde_json::from_value(serde_json::json!({
+            "type": "Solid",
+            "lod": "2",
+            "boundaries": [[[[0, 1, 2]], [[0, 2, 3]], [[0, 3, 1]], [[1, 3, 2]]], [[[4, 5, 6]]]],
+            "semantics": {
+                "surfaces": [{"type": "WallSurface"}],
+                "values": [[0, 0, null, 0], [null]]
+            }
+        }))
+        .unwrap();
+        assert_eq!(semantic_faces(&g), 3);
     }
 }

@@ -1103,11 +1103,20 @@ impl RawBuilding {
         let materials = app.interner.materials();
         let textures = app.interner.textures();
         if !materials.is_empty() || !textures.is_empty() {
+            fn typed<T: serde::de::DeserializeOwned>(defs: &[Value], what: &str) -> Result<Vec<T>> {
+                defs.iter()
+                    .map(|d| serde_json::from_value(d.clone()))
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|e| CityParquetError::Schema(format!("CityGML {what}: {e}")))
+            }
             feature.appearance = Some(Appearance {
-                materials: (!materials.is_empty()).then(|| materials.to_vec()),
-                textures: (!textures.is_empty()).then(|| textures.to_vec()),
-                vertices_texture: (!app.uvs.uvs.is_empty())
-                    .then(|| app.uvs.uvs.iter().map(|uv| uv.to_vec()).collect()),
+                materials: (!materials.is_empty())
+                    .then(|| typed(materials, "material"))
+                    .transpose()?,
+                textures: (!textures.is_empty())
+                    .then(|| typed(textures, "texture"))
+                    .transpose()?,
+                vertices_texture: (!app.uvs.uvs.is_empty()).then(|| app.uvs.uvs.clone()),
                 default_theme_texture: None,
                 default_theme_material: None,
             });

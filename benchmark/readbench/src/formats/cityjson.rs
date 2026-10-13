@@ -82,9 +82,7 @@ use super::returned::{ComparableTotals, IdDigest, ReturnedGeometry};
 use super::{Answer, AttrAggregates, FormatRunner, IoStats, RunOutcome, Source as TransportSource};
 use crate::scenario::{QueryParams, Scenario};
 
-/// A parsed whole CityJSON document, with its `transform` validated once so
-/// the per-vertex hot path below can index `scale`/`translate` without
-/// re-checking their length on every coordinate.
+/// A parsed whole CityJSON document.
 struct Document {
     doc: CityJSON,
 }
@@ -97,16 +95,9 @@ impl Document {
     /// silently accepting a Seq stream here would measure a different format
     /// under this format's name.
     fn parse(text: &str, origin: &str) -> Result<Self> {
-        let doc =
-            CityJSON::from_str(text).map_err(|e| anyhow!("invalid CityJSON in {origin}: {e}"))?;
-        if doc.transform.scale.len() < 3 || doc.transform.translate.len() < 3 {
-            bail!(
-                "CityJSON in {origin} has a malformed transform (scale/translate must each have \
-                 3 components, got {}/{})",
-                doc.transform.scale.len(),
-                doc.transform.translate.len()
-            );
-        }
+        let doc = text
+            .parse::<CityJSON>()
+            .map_err(|e| anyhow!("invalid CityJSON in {origin}: {e}"))?;
         Ok(Self { doc })
     }
 

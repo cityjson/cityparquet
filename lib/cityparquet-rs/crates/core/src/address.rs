@@ -47,7 +47,14 @@ pub(crate) const CITY_KEY: &str = "locality";
 pub(crate) const STATE_KEY: &str = "administrativeArea";
 pub(crate) const COUNTRY_KEY: &str = "country";
 pub(crate) const FREE_TEXT_KEY: &str = "freeText";
-pub(crate) const LOCATION_KEY: &str = "location";
+
+/// The `lod` an exported `location` carries. CityJSON's schema requires one on
+/// every `MultiPoint`; the package keeps the location's points and not its
+/// LoD, so export writes `"1"`, the value of the specification's own worked
+/// example.
+pub(crate) fn location_lod() -> cjseq::Lod {
+    cjseq::Lod::new(1, None).expect("1 is a LoD")
+}
 
 /// One address entry's postal fields, mapped from a source's raw JSON member
 /// names to the reserved struct's fields (spec "Addresses"). A field is
@@ -71,12 +78,8 @@ fn str_member(obj: &serde_json::Map<String, Value>, key: &str) -> Option<String>
 }
 
 /// Map one source `address[]` entry's recognised members onto
-/// [`AddressPostal`]. A non-object entry (malformed input) maps to every
-/// field `None`.
-pub(crate) fn map_postal_fields(entry: &Value) -> AddressPostal {
-    let Some(obj) = entry.as_object() else {
-        return AddressPostal::default();
-    };
+/// [`AddressPostal`].
+pub(crate) fn map_postal_fields(obj: &serde_json::Map<String, Value>) -> AddressPostal {
     AddressPostal {
         street: str_member(obj, STREET_KEY),
         house_number: str_member(obj, HOUSE_NUMBER_KEY),
@@ -116,6 +119,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn members(entry: Value) -> serde_json::Map<String, Value> {
+        entry.as_object().unwrap().clone()
+    }
+
     #[test]
     fn maps_recognised_members_only() {
         let entry = json!({
@@ -129,7 +136,7 @@ mod tests {
             "freeText": "note",
             "Country": "unrecognised-casing-must-not-map",
         });
-        let postal = map_postal_fields(&entry);
+        let postal = map_postal_fields(&members(entry));
         assert_eq!(postal.country.as_deref(), Some("Finland"));
         assert_eq!(postal.city.as_deref(), Some("Helsinki"));
         assert_eq!(postal.state.as_deref(), Some("Uusimaa"));
@@ -150,24 +157,15 @@ mod tests {
             "countryName": "Finland",
             "postalCode": "00100",
         });
-        let postal = map_postal_fields(&entry);
+        let postal = map_postal_fields(&members(entry));
         assert_eq!(postal.country, None);
         assert_eq!(postal.zip_code, None);
     }
 
     #[test]
-    fn non_object_entry_maps_to_all_none() {
-        assert_eq!(
-            map_postal_fields(&json!("just a string")),
-            AddressPostal::default()
-        );
-        assert_eq!(map_postal_fields(&json!(null)), AddressPostal::default());
-    }
-
-    #[test]
     fn unrecognised_member_names_do_not_corrupt_recognised_ones() {
         let entry = json!({"Locality": "Espoo", "locality": "Helsinki"});
-        let postal = map_postal_fields(&entry);
+        let postal = map_postal_fields(&members(entry));
         assert_eq!(postal.city.as_deref(), Some("Helsinki"));
     }
 
@@ -177,9 +175,8 @@ mod tests {
             "country": "Finland",
             "locality": "Helsinki",
         });
-        let postal = map_postal_fields(&entry);
-        let members = postal_to_members(&postal);
-        assert_eq!(map_postal_fields(&Value::Object(members)), postal);
+        let postal = map_postal_fields(&members(entry));
+        assert_eq!(map_postal_fields(&postal_to_members(&postal)), postal);
     }
 
     /// CityJSON 2.0.1's own documented worked example
@@ -206,7 +203,7 @@ mod tests {
             "thoroughfareName": "rue de la Patate",
             "postcode": "H0H 0H0",
         });
-        let postal = map_postal_fields(&entry);
+        let postal = map_postal_fields(&members(entry));
         assert_eq!(postal.country.as_deref(), Some("Canada"));
         assert_eq!(postal.city.as_deref(), Some("Chibougamau"));
         assert_eq!(postal.house_number.as_deref(), Some("1"));

@@ -9,7 +9,7 @@ use cityparquet::source::{Source, SourceFormat};
 use cjseq::{CityJSON, CityJSONFeature, Transform};
 
 /// A buffered source built from delft's header with a mutated transform.
-fn delft_source_with_transform(scale: Vec<f64>, translate: Vec<f64>) -> Source {
+fn delft_source_with_transform(scale: [f64; 3], translate: [f64; 3]) -> Source {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let mut header = src.header().clone();
     header.transform = Transform { scale, translate };
@@ -166,19 +166,10 @@ fn crs_mismatch_is_error() {
 }
 
 #[test]
-fn transform_with_fewer_than_three_components_is_rejected() {
-    let bad = delft_source_with_transform(vec![1.0], vec![0.0, 0.0, 0.0]);
-    assert!(
-        merge_sources(&[bad]).is_err(),
-        "a <3-component scale must error, not panic"
-    );
-}
-
-#[test]
 fn zero_or_nonfinite_scale_is_rejected() {
-    let zero = delft_source_with_transform(vec![0.0, 0.001, 0.001], vec![0.0, 0.0, 0.0]);
+    let zero = delft_source_with_transform([0.0, 0.001, 0.001], [0.0, 0.0, 0.0]);
     assert!(merge_sources(&[zero]).is_err(), "zero scale must error");
-    let inf = delft_source_with_transform(vec![f64::INFINITY, 0.001, 0.001], vec![0.0, 0.0, 0.0]);
+    let inf = delft_source_with_transform([f64::INFINITY, 0.001, 0.001], [0.0, 0.0, 0.0]);
     assert!(
         merge_sources(&[inf]).is_err(),
         "non-finite scale must error"

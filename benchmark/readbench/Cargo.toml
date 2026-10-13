@@ -12,15 +12,6 @@
 resolver = "3"
 members = ["."]
 
-# THE cjseq PATCH MUST BE REPEATED HERE. `[patch.crates-io]` is honoured only in
-# the workspace root actually being built, and `cityparquet` (below) depends on
-# `cjseq`. Without this line, a build rooted here would silently resolve the
-# unpatched 0.4.1 from crates.io and reintroduce the texture UV-vertex
-# mis-basing that corrupts `.city.json` export — in the benchmark, of all
-# places. See ../../lib/cityparquet-rs/vendor/cjseq/PATCHES.md.
-[patch.crates-io]
-cjseq = { path = "../../lib/cityparquet-rs/vendor/cjseq" }
-
 [package]
 name = "cityparquet-readbench"
 description = "Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParquet, etc.)"
@@ -85,7 +76,7 @@ cityparquet-schema = { path = "../../lib/cityparquet-rs/crates/schema" }
 # error here rather than a subtle one — but only because the types differ.
 #
 # `cjseq2` supplies `fcb_core` 0.7.6's own `CityJSONFeature`/`CityObject` types.
-# It is a DIFFERENT crate from the `cjseq` 0.4 that `cityparquet` and this
+# It is a DIFFERENT crate from the `cjseq` that `cityparquet` and this
 # crate's `cityjsonseq` runner use, and the two must not be conflated.
 #
 # The library workspace expressed these as ranges and was protected only by its
@@ -100,6 +91,8 @@ clap = { version = "4", features = ["derive", "env"] }
 # stay in the source order.
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
+# `cjseq` keys a document's and a feature's `CityObjects` by an `IndexMap`.
+indexmap = "2"
 arrow-array = "58"
 arrow-schema = "58"
 parquet = { version = "58", features = ["zstd"] }

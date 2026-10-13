@@ -123,12 +123,12 @@ fn open_without_appearance_changes_only_the_appearance() {
         let mut a_types: Vec<_> = a
             .city_objects
             .iter()
-            .map(|(k, v)| (k.clone(), v.thetype.clone()))
+            .map(|(k, v)| (k.clone(), String::from(v.thetype.clone())))
             .collect();
         let mut b_types: Vec<_> = b
             .city_objects
             .iter()
-            .map(|(k, v)| (k.clone(), v.thetype.clone()))
+            .map(|(k, v)| (k.clone(), String::from(v.thetype.clone())))
             .collect();
         a_types.sort();
         b_types.sort();
@@ -140,13 +140,13 @@ fn open_without_appearance_changes_only_the_appearance() {
                 .geometry
                 .iter()
                 .flatten()
-                .map(|g| g.boundaries.clone())
+                .map(|g| serde_json::to_value(g).unwrap()["boundaries"].clone())
                 .collect();
             let bounds_b: Vec<_> = co_b
                 .geometry
                 .iter()
                 .flatten()
-                .map(|g| g.boundaries.clone())
+                .map(|g| serde_json::to_value(g).unwrap()["boundaries"].clone())
                 .collect();
             assert_eq!(bounds_a, bounds_b, "{id}: geometry boundaries must match");
         }

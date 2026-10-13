@@ -19,7 +19,9 @@ use arrow_array::types::Int32Type;
 use arrow_array::{ArrayRef, Float64Array, RecordBatch, StructArray};
 use arrow_buffer::NullBufferBuilder;
 use arrow_schema::{DataType, Field, Schema};
-use cjseq::{CityJSONFeature, CityObject, Geometry, GeometryType, Transform};
+use cjseq::{
+    CityJSONFeature, CityObject, CityObjectType, Geometry, MaterialObject, TextureObject, Transform,
+};
 use serde_json::Value;
 
 use cityparquet_schema::crs::AxisOrder;
@@ -35,10 +37,10 @@ use crate::source::{FeatureIter, OrderedFeatures, Source};
 use crate::wkb_write::{VertexPool, geometry_bbox, geometry_to_wkb, point_to_wkb};
 
 /// Members carried by a dedicated column, stripped from the `other` payload
-/// (§5.1). `children_roles` rides the flatten member but has its own column
-/// (G5); `address` has its own reserved struct column; `geographicalExtent`
-/// is carried by `bbox`, which unions it with the object's computed subtree
-/// extent; the rest are cjseq's typed fields.
+/// (§5.1). `children_roles` has its own column (G5); `address` has its own
+/// reserved struct column; `geographicalExtent` is carried by `bbox`, which
+/// unions it with the object's computed subtree extent; the rest are cjseq's
+/// typed fields.
 pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 8] = [
     "type",
     "attributes",
@@ -50,17 +52,13 @@ pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 8] = [
     "geographicalExtent",
 ];
 
-/// The object's members cjseq has no typed field for (`children_roles`,
-/// `address`, and the `other` leftovers) — read once per row by
-/// [`RowWriter::push_object`] and shared by every consumer of them. The typed
-/// fields (`type`, `attributes`, `geometry`, `children`, `parents`,
-/// `geographicalExtent`) are never in it, so no whole-object serialisation
-/// is needed to reach these.
+/// The object's members cjseq has no typed field for (`address`, and the
+/// `other` leftovers) — read once per row by [`RowWriter::push_object`] and
+/// shared by every consumer of them. The typed fields (`type`, `attributes`,
+/// `geometry`, `children`, `children_roles`, `parents`,
+/// `geographicalExtent`) are never in it.
 pub(crate) fn object_json(co: &CityObject) -> Result<serde_json::Map<String, Value>> {
-    match co.other_members() {
-        Value::Object(map) => Ok(map.clone()),
-        _ => Ok(serde_json::Map::new()),
-    }
+    Ok(co.other.clone())
 }
 
 /// The `other` payload from an already-serialised member map: every member
@@ -263,194 +261,28 @@ fn face_count_i32(n: usize) -> Result<i32> {
 /// count is reduced by the drops inside it, so the total equals the WKB face
 /// count.
 fn solid_shells(geom: &Geometry, dropped: &[usize]) -> Result<Option<Vec<Vec<i32>>>> {
-    match geom.thetype {
-        GeometryType::Solid => {
-            let shells: Vec<Vec<Vec<Vec<usize>>>> = crate::wkb_write::boundaries(geom)?;
-            let mut pos = 0;
-            let faces: Vec<i32> = shells
-                .iter()
-                .map(|shell| {
-                    face_count_i32(shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()))
-                })
-                .collect::<Result<_>>()?;
-            // One solid -> one inner list, even though a Solid's own
-            // boundaries have no outer "per-solid" nesting of their own.
-            Ok(Some(vec![faces]))
-        }
-        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
-            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> = crate::wkb_write::boundaries(geom)?;
-            let mut pos = 0;
-            let faces: Vec<Vec<i32>> = solids
-                .iter()
-                .map(|solid| {
-                    solid
-                        .iter()
-                        .map(|shell| {
-                            face_count_i32(
-                                shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()),
-                            )
-                        })
-                        .collect::<Result<_>>()
-                })
-                .collect::<Result<_>>()?;
-            Ok(Some(faces))
+    let mut pos = 0;
+    let mut stored = |shells: &[cjseq::Shell]| -> Result<Vec<i32>> {
+        shells
+            .iter()
+            .map(|shell| {
+                face_count_i32(shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()))
+            })
+            .collect()
+    };
+    match geom {
+        // One solid -> one inner list, even though a Solid's own boundaries
+        // have no outer "per-solid" nesting of their own.
+        Geometry::Solid { boundaries, .. } => Ok(Some(vec![stored(boundaries)?])),
+        Geometry::MultiSolid { boundaries, .. } | Geometry::CompositeSolid { boundaries, .. } => {
+            Ok(Some(
+                boundaries
+                    .iter()
+                    .map(|solid| stored(solid))
+                    .collect::<Result<_>>()?,
+            ))
         }
         _ => Ok(None),
-    }
-}
-
-/// Number of leaf faces beneath a boundary subtree that sits `depth`
-/// array-levels above the face list (a "face" is a list of rings). Used to
-/// size CityJSON's null shorthand in `semantics.values` when flattening.
-pub(crate) fn count_boundary_faces(boundaries: &Value, depth: usize) -> usize {
-    match boundaries {
-        Value::Array(arr) if depth == 0 => arr.len(),
-        Value::Array(arr) => arr.iter().map(|b| count_boundary_faces(b, depth - 1)).sum(),
-        _ => 0,
-    }
-}
-
-/// `semantics.values` nesting above the flat per-face list: 0 for the
-/// surface-list types (`MultiSurface`/`CompositeSurface`, already flat), 1 for
-/// `Solid` (shells → faces), 2 for `MultiSolid`/`CompositeSolid`.
-pub(crate) fn values_nesting_depth(thetype: &GeometryType) -> usize {
-    solid_face_nesting_depth(thetype).unwrap_or(0)
-}
-
-/// Per face — in the same depth-first order [`count_boundary_faces`] counts
-/// and [`flatten_values`] flattens, so entry `i` describes the face at flat
-/// position `i` BEFORE the writer-dropped positions are filtered out — the
-/// per-ring STORED vertex count: `Some(n)` for a ring the writer keeps,
-/// `None` for one it drops (fewer than three source indices, the
-/// [`crate::wkb_write::normalise_ring`] rule). A face's STORED ring count is
-/// therefore the number of `Some` entries, and `n` is the number of `[u, v]`
-/// pairs a textured ring carries — the WKB ring's closing repeat takes none.
-pub(crate) fn face_ring_vertex_counts(boundaries: &Value, depth: usize) -> Vec<Vec<Option<usize>>> {
-    fn walk(b: &Value, depth: usize, out: &mut Vec<Vec<Option<usize>>>) {
-        match b {
-            Value::Array(arr) if depth == 0 => out.extend(arr.iter().map(face_ring_lengths)),
-            Value::Array(arr) => {
-                for child in arr {
-                    walk(child, depth - 1, out);
-                }
-            }
-            // Matches `count_boundary_faces`, which counts no face here.
-            _ => {}
-        }
-    }
-    let mut out = Vec::new();
-    walk(boundaries, depth, &mut out);
-    out
-}
-
-/// One face's rings as stored vertex counts (see
-/// [`face_ring_vertex_counts`]). A malformed ring — not an array, or holding
-/// anything but non-negative integers — is `None`, the same answer a ring
-/// the writer drops gets: neither reaches the WKB.
-fn face_ring_lengths(face: &Value) -> Vec<Option<usize>> {
-    face.as_array()
-        .map(|rings| rings.iter().map(stored_ring_len).collect())
-        .unwrap_or_default()
-}
-
-fn stored_ring_len(ring: &Value) -> Option<usize> {
-    let indices: Vec<usize> = ring
-        .as_array()?
-        .iter()
-        .map(|v| v.as_u64().map(|n| n as usize))
-        .collect::<Option<_>>()?;
-    crate::wkb_write::distinct_ring_len(&indices)
-}
-
-/// Flatten `semantics.values` into a per-face `face_semantics` list (§8) in
-/// depth-first WKB face order, expanding CityJSON's null shorthand — a single
-/// `null` standing for a whole shell/solid — into one `null` per face of that
-/// part (using `boundaries` to size it). Entries are kept verbatim (a surface
-/// index or `null`). The result covers the ORIGINAL faces, before the
-/// degenerate-drop filter the caller then applies.
-pub(crate) fn flatten_values(
-    values: &Value,
-    boundaries: &Value,
-    depth: usize,
-    out: &mut Vec<Value>,
-) {
-    match (values, depth) {
-        // A whole subtree with no semantics: one null per face beneath it.
-        (Value::Null, _) => {
-            out.extend(std::iter::repeat_n(
-                Value::Null,
-                count_boundary_faces(boundaries, depth),
-            ));
-        }
-        // Flat per-face entries. Size EXACTLY to this boundary's face count —
-        // pad a short list with null, ignore a long one's overflow — so a
-        // malformed shell/solid can never shift a later part's entries onto the
-        // wrong faces (each part stays aligned to its own boundary).
-        (Value::Array(varr), 0) => {
-            for i in 0..count_boundary_faces(boundaries, 0) {
-                out.push(varr.get(i).cloned().unwrap_or(Value::Null));
-            }
-        }
-        // A nesting level: recurse per BOUNDARY child (not per values child),
-        // so a missing values child expands to nulls and an extra one is
-        // ignored — again keeping every part aligned to its boundary.
-        (Value::Array(varr), _) => {
-            let barr = boundaries.as_array();
-            for i in 0..barr.map_or(0, Vec::len) {
-                let v = varr.get(i).unwrap_or(&Value::Null);
-                let b = barr.and_then(|b| b.get(i)).unwrap_or(&Value::Null);
-                flatten_values(v, b, depth - 1, out);
-            }
-        }
-        // Malformed non-array where a nested value was expected: fill the whole
-        // subtree with null so the face alignment is preserved.
-        _ => out.extend(std::iter::repeat_n(
-            Value::Null,
-            count_boundary_faces(boundaries, depth),
-        )),
-    }
-}
-
-/// Number of shell/solid nesting levels above the per-face entries in a
-/// Solid-family `semantics`/`material`/`texture` values array: `Solid`'s
-/// values nest one level (shells -> faces), `MultiSolid`/`CompositeSolid`'s
-/// nest two (solids -> shells -> faces). `None` for the non-solid types,
-/// whose per-surface arrays sit directly at the top level.
-///
-/// Derived from the geometry type rather than inferred from the values'
-/// own shape: a shape-only heuristic cannot tell "a shells array holding a
-/// single scalar-valued face list" apart from "a face holding a single
-/// texture ring" — they collide byte-for-byte whenever there is exactly one
-/// shell, which is the common case for a `Solid` (e.g. delft's Pand Solids
-/// each have a single shell). Getting that case wrong means the walker
-/// would stop one level too early and filter by SHELL position instead of
-/// FACE position, silently corrupting the realignment on the most common
-/// shape rather than merely skipping it.
-fn solid_face_nesting_depth(thetype: &GeometryType) -> Option<usize> {
-    match thetype {
-        GeometryType::Solid => Some(1),
-        GeometryType::MultiSolid | GeometryType::CompositeSolid => Some(2),
-        _ => None,
-    }
-}
-
-/// A `semantics.values` entry (a surface index or `null`) as an
-/// `Option<i32>` — the typed `face_semantics` item shape (spec: `LIST<INT>`,
-/// items nullable).
-fn face_semantics_entry(v: &Value) -> Result<Option<i32>> {
-    match v {
-        Value::Null => Ok(None),
-        Value::Number(n) => {
-            let i = n.as_i64().ok_or_else(|| {
-                CityParquetError::Schema(format!("semantics value {n} is not an integer"))
-            })?;
-            Ok(Some(face_count_i32(usize::try_from(i).map_err(|_| {
-                CityParquetError::Schema(format!("semantics value {i} is negative"))
-            })?)?))
-        }
-        other => Err(CityParquetError::Schema(format!(
-            "semantics value must be an integer or null, got {other}"
-        ))),
     }
 }
 
@@ -480,32 +312,21 @@ pub(crate) fn compute_geometry_properties(
     geom: &Geometry,
     dropped_surfaces: &[usize],
 ) -> Result<GeometryProperties> {
-    let type_name = crate::geometry_properties::cm_geometry_type(&geom.thetype)?;
+    let type_name = crate::geometry_properties::cm_geometry_type(&geom.geometry_type())?;
 
     let mut surfaces = None;
     let mut face_semantics = None;
-    if let Some(semantics) = &geom.semantics {
-        if let Some(s) = semantics.get("surfaces") {
-            surfaces = Some(s.clone());
-        }
-        let depth = values_nesting_depth(&geom.thetype);
-        let mut flat = Vec::new();
-        if let Some(values) = semantics.get("values") {
-            flatten_values(values, &geom.boundaries, depth, &mut flat);
-        }
-        // Force exactly one entry per ORIGINAL face: pad a source `values`
-        // shorter than the face count with `null` rather than erroring (§8,
-        // "defensive on source"), and truncate a malformed longer one. After
-        // the drop-filter below this yields exactly the WKB face count.
-        let original_faces = count_boundary_faces(&geom.boundaries, depth);
-        flat.resize(original_faces, Value::Null);
-        // Align to the EMITTED faces: drop the writer-removed positions.
+    if let Some((defs, flat)) = crate::faces::semantics(geom) {
+        surfaces = Some(serde_json::to_value(defs)?);
+        // `flat` has exactly one entry per ORIGINAL face (a short source
+        // `values` padded with null, §8 "defensive on source"); align it to
+        // the EMITTED faces by dropping the writer-removed positions.
         let dropped: std::collections::HashSet<usize> = dropped_surfaces.iter().copied().collect();
         let entries: Vec<Option<i32>> = flat
             .into_iter()
             .enumerate()
             .filter(|(i, _)| !dropped.contains(i))
-            .map(|(_, v)| face_semantics_entry(&v))
+            .map(|(_, v)| v.map(|s| face_count_i32(s.0)).transpose())
             .collect::<Result<_>>()?;
         face_semantics = Some(entries);
     }
@@ -525,24 +346,10 @@ pub(crate) fn compute_geometry_properties(
 /// & implicit geometries").
 type ImplicitGeometryFields = (i64, Vec<u8>, Option<Vec<f64>>);
 
-/// Parses a CityJSON `transformationMatrix` value into the flat 16-value
-/// list the reserved column stores, erroring — not silently truncating or
-/// padding — when it is not an array of exactly 16 numbers (spec "Appearance
-/// & implicit geometries": "exactly 16 values when non-null"), and when it is
-/// not affine: its last row MUST be exactly `0, 0, 0, 1` (spec "Placement").
-fn parse_transformation_matrix(v: &Value) -> Result<Vec<f64>> {
-    let values: Vec<f64> = serde_json::from_value(v.clone()).map_err(|e| {
-        CityParquetError::Schema(format!(
-            "implicit_geometry.transformationMatrix is not an array of numbers: {e}"
-        ))
-    })?;
-    if values.len() != 16 {
-        return Err(CityParquetError::Schema(format!(
-            "implicit_geometry.transformationMatrix must have exactly 16 values (a flat row-major \
-             4x4), got {}",
-            values.len()
-        )));
-    }
+/// Checks a CityJSON `transformationMatrix` — a flat row-major 4x4, which
+/// the geometry's type already holds to exactly 16 values — is affine: its
+/// last row MUST be exactly `0, 0, 0, 1` (spec "Placement").
+fn check_transformation_matrix(values: &[f64; 16]) -> Result<Vec<f64>> {
     if values[12..] != [0.0, 0.0, 0.0, 1.0] {
         return Err(CityParquetError::Schema(format!(
             "implicit_geometry.transformationMatrix must be affine, its last row 0, 0, 0, 1; \
@@ -550,38 +357,31 @@ fn parse_transformation_matrix(v: &Value) -> Result<Vec<f64>> {
             &values[12..]
         )));
     }
-    Ok(values)
+    Ok(values.to_vec())
 }
 
 /// `implicit_geometry` binding rule: built from the first CityJSON
-/// `GeometryInstance` geometry on the object; `None` when it can't be
-/// resolved (missing `template` index, empty/malformed boundaries) so callers null the column
-/// rather than panic. A present but malformed `transformationMatrix` (wrong
-/// length or non-numeric) is a hard error, not a graceful drop — see
-/// [`parse_transformation_matrix`].
+/// `GeometryInstance` geometry on the object; `None` for any other geometry.
+/// A projective `transformationMatrix` is a hard error, not a graceful drop —
+/// see [`check_transformation_matrix`].
 fn build_implicit_geometry(
     geom: &Geometry,
     pool: &VertexPool,
 ) -> Result<Option<ImplicitGeometryFields>> {
-    let Some(template_index) = geom.template else {
+    let Geometry::GeometryInstance {
+        boundaries: [vertex],
+        template,
+        transformation_matrix,
+    } = geom
+    else {
         return Ok(None);
     };
-    let Ok(idxs) = serde_json::from_value::<Vec<usize>>(geom.boundaries.clone()) else {
-        return Ok(None);
-    };
-    let Some(&first_idx) = idxs.first() else {
-        return Ok(None);
-    };
-    let point = point_to_wkb(pool.coord(first_idx)?);
-    let matrix = geom
-        .transformation_matrix
-        .as_ref()
-        .map(parse_transformation_matrix)
-        .transpose()?;
+    let point = point_to_wkb(pool.coord(vertex.0)?);
+    let matrix = check_transformation_matrix(transformation_matrix)?;
     // CityJSON's `template` is the index into `geometry-templates.templates`,
     // which `build_implicit_geometry_rows` also uses as the sidecar row's `id` — so this
     // reference resolves by value against `implicit_geometries.parquet`.
-    Ok(Some((template_index as i64, point, matrix)))
+    Ok(Some((template.0 as i64, point, Some(matrix))))
 }
 
 /// One `address[]` entry's resolved fields, ready for the reserved `address`
@@ -601,51 +401,16 @@ struct AddressRow {
 /// geometry, so a malformed one is silently dropped rather than aborting the
 /// whole conversion (mirrors [`build_implicit_geometry`]'s graceful-degradation
 /// style).
-fn build_location_wkb(location: &Value, pool: &VertexPool) -> Option<Vec<u8>> {
-    let obj = location.as_object()?;
-    if obj.get("type").and_then(Value::as_str) != Some("MultiPoint") {
-        return None;
+fn build_location_wkb(location: &Geometry, pool: &VertexPool) -> Option<Vec<u8>> {
+    match location {
+        Geometry::MultiPoint { boundaries, .. } if !boundaries.is_empty() => {}
+        _ => return None,
     }
-    let idxs: Vec<usize> = serde_json::from_value(obj.get("boundaries")?.clone()).ok()?;
-    if idxs.is_empty() {
-        return None;
-    }
-    let geom = Geometry {
-        thetype: GeometryType::MultiPoint,
-        lod: None,
-        boundaries: serde_json::to_value(&idxs).ok()?,
-        semantics: None,
-        material: None,
-        texture: None,
-        template: None,
-        transformation_matrix: None,
-    };
-    geometry_to_wkb(&geom, pool).ok().flatten().map(|o| o.bytes)
-}
-
-/// The source object's raw `address` array (spec "Addresses"), if any — read
-/// directly since cjseq has no typed field for it (CityJSON does not
-/// prescribe address member names; it rides the struct's private
-/// `#[serde(flatten)]` member, like `children_roles`). `None` when the
-/// object carries no `address` member, or a malformed (non-array) one —
-/// treated as absent rather than an error, since a corrupt `address` member
-/// should not abort an otherwise-valid conversion. `Some(vec![])` is kept
-/// distinct from `None`: an explicit empty array is a genuine (if unusual)
-/// value, not "no address at all".
-pub(crate) fn raw_address_members(co: &CityObject) -> Result<Option<Vec<Value>>> {
-    Ok(address_members_from_json(&object_json(co)?))
-}
-
-/// [`raw_address_members`]'s core over an already-serialised member map — the
-/// form [`RowWriter::push_object`] uses, so the row loop serialises the object
-/// only once (review P5b).
-pub(crate) fn address_members_from_json(
-    co_json: &serde_json::Map<String, Value>,
-) -> Option<Vec<Value>> {
-    match co_json.get("address") {
-        Some(Value::Array(arr)) => Some(arr.clone()),
-        _ => None,
-    }
+    // The location's `lod` plays no part in its WKB.
+    geometry_to_wkb(location, pool)
+        .ok()
+        .flatten()
+        .map(|o| o.bytes)
 }
 
 /// Build the reserved `address` column's row value: one [`AddressRow`] per
@@ -653,23 +418,19 @@ pub(crate) fn address_members_from_json(
 /// to nothing recognised (an all-`None` struct still occupies its list
 /// position), since "how many addresses" is itself meaningful. `None` when
 /// the object carries no `address` member at all (column cell null).
-fn build_address_rows(
-    co_json: &serde_json::Map<String, Value>,
-    pool: &VertexPool,
-) -> Result<Option<Vec<AddressRow>>> {
-    let Some(entries) = address_members_from_json(co_json) else {
-        return Ok(None);
-    };
+fn build_address_rows(co: &CityObject, pool: &VertexPool) -> Option<Vec<AddressRow>> {
+    let entries = co.address.as_ref()?;
     let rows = entries
         .iter()
         .map(|entry| AddressRow {
-            postal: crate::address::map_postal_fields(entry),
+            postal: crate::address::map_postal_fields(&entry.other),
             location: entry
-                .get("location")
+                .location
+                .as_ref()
                 .and_then(|loc| build_location_wkb(loc, pool)),
         })
         .collect();
-    Ok(Some(rows))
+    Some(rows)
 }
 
 /// Per-object accumulator filled by [`accumulate_geometry`], consumed by
@@ -707,7 +468,7 @@ struct GeometrySlotData {
 /// (empty when the feature carries no appearance block at all — a geometry
 /// that still has a non-empty `material` map in that case is a dangling
 /// reference, caught by [`accumulate_geometry`]'s interner rewrite).
-fn feature_local_materials(feature: &CityJSONFeature) -> &[Value] {
+fn feature_local_materials(feature: &CityJSONFeature) -> &[MaterialObject] {
     feature
         .appearance
         .as_ref()
@@ -716,7 +477,7 @@ fn feature_local_materials(feature: &CityJSONFeature) -> &[Value] {
 }
 
 /// This feature's local texture definitions (see [`feature_local_materials`]).
-fn feature_local_textures(feature: &CityJSONFeature) -> &[Value] {
+fn feature_local_textures(feature: &CityJSONFeature) -> &[TextureObject] {
     feature
         .appearance
         .as_ref()
@@ -725,7 +486,7 @@ fn feature_local_textures(feature: &CityJSONFeature) -> &[Value] {
 }
 
 /// This feature's local UV vertex pool (see [`feature_local_materials`]).
-fn feature_local_uvs(feature: &CityJSONFeature) -> &[Vec<f64>] {
+fn feature_local_uvs(feature: &CityJSONFeature) -> &[[f64; 2]] {
     feature
         .appearance
         .as_ref()
@@ -737,9 +498,9 @@ fn feature_local_uvs(feature: &CityJSONFeature) -> &[Vec<f64>] {
 /// vertices arrays that a geometry's `material`/`texture` indices resolve
 /// against before being rewritten to dataset-global ids.
 pub(crate) struct LocalDefs<'a> {
-    pub materials: &'a [Value],
-    pub textures: &'a [Value],
-    pub uvs: &'a [Vec<f64>],
+    pub materials: &'a [MaterialObject],
+    pub textures: &'a [TextureObject],
+    pub uvs: &'a [[f64; 2]],
 }
 
 /// Flatten one geometry's `material`/`texture` maps into the typed cells the
@@ -776,17 +537,11 @@ pub(crate) fn rewrite_geometry_appearance(
     Option<TextureCell>,
     GeometryProperties,
 )> {
-    let material = match &geom.material {
-        Some(material) => {
-            let material = serde_json::to_value(material)?;
+    let faces = crate::faces::Faces::of(geom);
+    let material = match crate::faces::material_themes(geom) {
+        Some(themes) => {
             let cell = interner
-                .flatten_material_map(
-                    &material,
-                    &geom.boundaries,
-                    &geom.thetype,
-                    dropped_surfaces,
-                    defs.materials,
-                )
+                .flatten_material_map(&themes, faces.count(), dropped_surfaces, defs.materials)
                 .map_err(|e| {
                     CityParquetError::Schema(format!(
                         "{context}: cannot resolve material map to global ids: {e}"
@@ -797,14 +552,12 @@ pub(crate) fn rewrite_geometry_appearance(
         None => None,
     };
 
-    let texture = match &geom.texture {
-        Some(texture) => {
-            let texture = serde_json::to_value(texture)?;
+    let texture = match crate::faces::texture_themes(geom) {
+        Some(themes) => {
             let cell = interner
                 .flatten_texture_map(
-                    &texture,
-                    &geom.boundaries,
-                    &geom.thetype,
+                    &themes,
+                    &faces.ring_vertex_counts(),
                     dropped_surfaces,
                     defs.textures,
                     defs.uvs,
@@ -869,7 +622,7 @@ fn accumulate_geometry(
         return Ok(());
     };
     for geom in geoms {
-        if geom.thetype == GeometryType::GeometryInstance {
+        if matches!(geom, Geometry::GeometryInstance { .. }) {
             if acc.implicit_geometry.is_none() {
                 // Name the object in a malformed-matrix error.
                 acc.implicit_geometry =
@@ -907,7 +660,7 @@ fn accumulate_geometry(
         // (`encode` is public and takes an independent scan; a Seq file is
         // also reopened between the scan and encode passes). Reject rather
         // than silently drop or misplace the geometry.
-        let lod = match geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) {
+        let lod = match crate::cjtypes::geometry_lod(geom) {
             Some(lod) if per_lod => lod,
             _ => {
                 return Err(CityParquetError::Lod(format!(
@@ -980,16 +733,16 @@ fn synthesize_footprint(
     let mut best: Option<(Lod, &Geometry)> = None;
     for geom in geoms {
         if !matches!(
-            geom.thetype,
-            GeometryType::Solid
-                | GeometryType::MultiSolid
-                | GeometryType::CompositeSolid
-                | GeometryType::MultiSurface
-                | GeometryType::CompositeSurface
+            geom,
+            Geometry::Solid { .. }
+                | Geometry::MultiSolid { .. }
+                | Geometry::CompositeSolid { .. }
+                | Geometry::MultiSurface { .. }
+                | Geometry::CompositeSurface { .. }
         ) {
             continue;
         }
-        let Some(lod) = geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) else {
+        let Some(lod) = crate::cjtypes::geometry_lod(geom) else {
             continue;
         };
         if lod.major() == 0 {
@@ -1384,30 +1137,17 @@ impl RowWriter {
     /// ONLY on `CityObjectGroup` (§2.5), so only those objects are inspected —
     /// spec-correct, and it keeps the lookup off the hot path for the common
     /// `Building`/`BuildingPart` hierarchy, whose parents carry `children` but
-    /// never `children_roles`. cjseq 0.4.1 has no typed field for it (it is
-    /// captured in `CityObject`'s private `#[serde(flatten)]` member), so it
-    /// has to be read off the serialised member map — which arrives
-    /// pre-serialised from [`RowWriter::push_object`] ([`object_json`]), once
-    /// per row and shared with the `address` and `other` paths.
+    /// never `children_roles`.
     ///
-    /// A present `children_roles` MUST be an array of strings with exactly one
-    /// entry per child (CityJSON 2.0.1 §2.5); anything else is rejected, not
+    /// A present `children_roles` MUST have exactly one entry per child
+    /// (CityJSON 2.0.1 §2.5), each a string; anything else is rejected, not
     /// silently coerced, so a corrupt role list can never be stored.
-    fn children_roles(
-        co: &CityObject,
-        co_json: &serde_json::Map<String, Value>,
-        id: &str,
-    ) -> Result<Option<Vec<String>>> {
-        if co.thetype != "CityObjectGroup" {
+    fn children_roles(co: &CityObject, id: &str) -> Result<Option<Vec<String>>> {
+        if co.thetype != CityObjectType::CityObjectGroup {
             return Ok(None);
         }
-        let Some(roles) = co_json.get("children_roles").cloned() else {
+        let Some(roles) = &co.children_roles else {
             return Ok(None);
-        };
-        let Value::Array(roles) = roles else {
-            return Err(CityParquetError::Schema(format!(
-                "object {id}: children_roles must be an array of strings"
-            )));
         };
         let child_count = co.children.as_ref().map_or(0, Vec::len);
         if roles.len() != child_count {
@@ -1420,7 +1160,7 @@ impl RowWriter {
         roles
             .iter()
             .map(|role| {
-                role.as_str().map(str::to_string).ok_or_else(|| {
+                role.clone().ok_or_else(|| {
                     CityParquetError::Schema(format!(
                         "object {id}: every children_roles entry must be a string"
                     ))
@@ -1445,7 +1185,7 @@ impl RowWriter {
             .expect("id came from this feature's own city_objects keys");
         let pool = VertexPool::new(&feature.vertices, transform, self.axis_order);
         // The ONE whole-object serialisation this row performs (review P5b);
-        // children_roles / address / other all read from this map.
+        // children_roles / other read from this map.
         let co_json = object_json(co)?;
 
         self.id.append_value(id);
@@ -1461,14 +1201,15 @@ impl RowWriter {
         // so it keeps its own class name, with CityJSON's leading `+` marker
         // replaced by the extension's namespace prefix (spec "Extensions":
         // `+ThermalZone` → `energy_ThermalZone`) so export can restore it.
-        let object_type = match cityparquet_schema::class_info(&co.thetype) {
+        let thetype = crate::cjtypes::object_type_name(&co.thetype);
+        let object_type = match cityparquet_schema::class_info(&thetype) {
             Some(info) => info.citygml_class.to_string(),
-            None => self.naming.encode_name(&co.thetype, "city-object type")?,
+            None => self.naming.encode_name(&thetype, "city-object type")?,
         };
         self.object_type.append(&object_type)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());
         Self::push_string_list(&mut self.children, co.children.as_deref());
-        let children_roles = Self::children_roles(co, &co_json, id)?;
+        let children_roles = Self::children_roles(co, id)?;
         Self::push_string_list(&mut self.children_roles, children_roles.as_deref());
         // Geometry accumulation (incl. optional LoD0 synthesis) populates
         // geometry slots and bboxes that are written to columns below; both
@@ -1508,9 +1249,7 @@ impl RowWriter {
             }
         }
 
-        // Address rows must be derived BEFORE `co_json` is consumed for
-        // `other` below (they are pushed further down, with the column).
-        let address_rows = build_address_rows(&co_json, &pool)?;
+        let address_rows = build_address_rows(co, &pool);
 
         // `other`: the single escape hatch (§5.1) for source members with no
         // dedicated column. Null when the object has none.
@@ -1522,7 +1261,7 @@ impl RowWriter {
         // (`merge_other_members` in `src/decode.rs`). The member is dropped
         // instead, counted and diagnosed rather than failing the conversion.
         let unmapped = unmapped_from_json(co_json);
-        let attrs = co.attributes.as_ref().and_then(Value::as_object);
+        let attrs = co.attributes.as_ref();
         let mut merged = serde_json::Map::new();
         for (key, value) in unmapped {
             let collides = attrs.is_some_and(|attrs| attrs.get(&key).is_some_and(|v| !v.is_null()));
@@ -1594,7 +1333,6 @@ impl RowWriter {
         let normalised: HashMap<String, &Value> = co
             .attributes
             .as_ref()
-            .and_then(|v| v.as_object())
             .map(|obj| {
                 obj.iter()
                     .map(|(k, v)| Ok((stored_attribute_name(&self.naming, k)?, v)))
@@ -1908,9 +1646,7 @@ mod tests {
         }))
         .unwrap();
         let pool = VertexPool::raw(&[], AxisOrder::LonLat);
-        let rows = build_address_rows(&object_json(&co).unwrap(), &pool)
-            .unwrap()
-            .unwrap();
+        let rows = build_address_rows(&co, &pool).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].postal.city.as_deref(), Some("Helsinki"));
         assert_eq!(
@@ -1925,74 +1661,44 @@ mod tests {
         let co: CityObject =
             serde_json::from_value(serde_json::json!({"type": "Building"})).unwrap();
         let pool = VertexPool::raw(&[], AxisOrder::LonLat);
-        assert!(
-            build_address_rows(&object_json(&co).unwrap(), &pool)
-                .unwrap()
-                .is_none()
+        assert!(build_address_rows(&co, &pool).is_none());
+    }
+
+    #[test]
+    fn check_transformation_matrix_accepts_an_affine_matrix() {
+        let mut values = [0.0; 16];
+        for (i, v) in values.iter_mut().take(12).enumerate() {
+            *v = i as f64;
+        }
+        values[15] = 1.0;
+        assert_eq!(
+            check_transformation_matrix(&values).unwrap(),
+            values.to_vec()
         );
-    }
-
-    // spec "Appearance & implicit geometries": transformationMatrix MUST have exactly
-    // 16 values when non-null.
-    #[test]
-    fn parse_transformation_matrix_rejects_a_non_16_length_matrix() {
-        assert!(parse_transformation_matrix(&serde_json::json!([1.0, 2.0, 3.0])).is_err());
-        assert!(parse_transformation_matrix(&serde_json::json!([])).is_err());
-    }
-
-    #[test]
-    fn parse_transformation_matrix_accepts_exactly_16_values() {
-        let values: Vec<f64> = (0..12).map(f64::from).chain([0.0, 0.0, 0.0, 1.0]).collect();
-        let parsed = parse_transformation_matrix(&serde_json::to_value(&values).unwrap()).unwrap();
-        assert_eq!(parsed, values);
     }
 
     /// spec "Placement": the last row MUST be exactly `0, 0, 0, 1`.
     #[test]
-    fn parse_transformation_matrix_rejects_a_projective_matrix() {
-        let values: Vec<f64> = (0..16).map(f64::from).collect();
-        let err = parse_transformation_matrix(&serde_json::to_value(&values).unwrap()).unwrap_err();
+    fn check_transformation_matrix_rejects_a_projective_matrix() {
+        let values: [f64; 16] = std::array::from_fn(|i| i as f64);
+        let err = check_transformation_matrix(&values).unwrap_err();
         assert!(format!("{err}").contains("0, 0, 0, 1"), "{err}");
     }
 
     /// No fixture carries MultiSolid/CompositeSolid, so the nested `shells`
     /// branch gets direct coverage here: 2 solids — first with shells of
-    /// (1, 2) faces, second with one 1-face shell. Nesting is the real
-    /// G7 sol-review Finding 1: a malformed `semantics.values` with a shell
-    /// SHORTER than its boundary must not shift the next shell's entries onto
-    /// the wrong faces. A Solid with two 2-face shells and values
-    /// `[[0], [1, 1]]` must flatten to `[0, null, 1, 1]` (shell 0 padded), not
-    /// `[0, 1, 1, null]` (which a global pad would produce).
-    #[test]
-    fn flatten_sizes_each_shell_to_its_boundary() {
-        // Two shells, each two faces (each face a single triangular ring).
-        let boundaries =
-            serde_json::json!([[[[0, 1, 2]], [[0, 1, 3]]], [[[0, 2, 3]], [[1, 2, 3]]]]);
-        let mut out = Vec::new();
-        flatten_values(&serde_json::json!([[0], [1, 1]]), &boundaries, 1, &mut out);
-        assert_eq!(
-            Value::Array(out),
-            serde_json::json!([0, null, 1, 1]),
-            "the short first shell must be padded to its two faces before the second shell"
-        );
-    }
-
+    /// (1, 2) faces, second with one 1-face shell.
     /// 5-level MultiSolid shape: solids → shells → surfaces → rings → indices.
     #[test]
     fn multisolid_shells_nest_per_solid() {
-        let geom = Geometry {
-            thetype: GeometryType::MultiSolid,
-            lod: Some("2".into()),
-            boundaries: serde_json::json!([
+        let geom = crate::faces::geometry(serde_json::json!({
+            "type": "MultiSolid",
+            "lod": "2",
+            "boundaries": [
                 [[[[0, 1, 2]]], [[[0, 1, 2]], [[0, 1, 3]]]],
                 [[[[0, 2, 3]]]]
-            ]),
-            semantics: None,
-            material: None,
-            texture: None,
-            template: None,
-            transformation_matrix: None,
-        };
+            ]
+        }));
         // `shells` nests one list per solid (§8), no separate counts key.
         assert_eq!(
             solid_shells(&geom, &[]).unwrap(),
@@ -2035,15 +1741,10 @@ mod tests {
             }]
         }))
         .unwrap();
-        let vertices: Vec<Vec<i64>> = vec![
-            vec![0, 0, 0],
-            vec![1000, 0, 0],
-            vec![1000, 1000, 0],
-            vec![0, 1000, 0],
-        ];
+        let vertices = [[0, 0, 0], [1000, 0, 0], [1000, 1000, 0], [0, 1000, 0]];
         let transform = Transform {
-            scale: vec![1.0; 3],
-            translate: vec![0.0; 3],
+            scale: [1.0; 3],
+            translate: [0.0; 3],
         };
         let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
@@ -2051,18 +1752,18 @@ mod tests {
         // above references (material indices up to 7, texture index up to
         // 1, UV indices up to 3): the interner rewrite now resolves every
         // index against a real local def, so these must exist.
-        let local_materials: Vec<Value> = (0..8)
-            .map(|i| serde_json::json!({"name": format!("m{i}")}))
+        let local_materials: Vec<MaterialObject> = (0..8)
+            .map(|i| serde_json::from_value(serde_json::json!({"name": format!("m{i}")})).unwrap())
             .collect();
-        let local_textures: Vec<Value> = (0..2)
-            .map(|i| serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}))
+        let local_textures: Vec<TextureObject> = (0..2)
+            .map(|i| {
+                serde_json::from_value(
+                    serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}),
+                )
+                .unwrap()
+            })
             .collect();
-        let local_uvs: Vec<Vec<f64>> = vec![
-            vec![0.0, 0.0],
-            vec![1.0, 0.0],
-            vec![1.0, 1.0],
-            vec![0.0, 1.0],
-        ];
+        let local_uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
@@ -2104,8 +1805,10 @@ mod tests {
         // Surface 0 (material index 5, texture index 0) was dropped; only
         // surface 1's material index 7 / texture index 1 survive, now
         // rewritten to dataset-global ids with inlined UVs.
-        let gid_material_7 = interner.intern_material(&local_materials[7]) as i64;
-        let gid_texture_1 = interner.intern_texture(&local_textures[1]) as i64;
+        let gid_material_7 =
+            interner.intern_material(&serde_json::to_value(&local_materials[7]).unwrap()) as i64;
+        let gid_texture_1 =
+            interner.intern_texture(&serde_json::to_value(&local_textures[1]).unwrap()) as i64;
         assert_eq!(
             *slot.material.as_ref().unwrap(),
             MaterialCell {
@@ -2154,7 +1857,7 @@ mod tests {
                 // too short to form a ring at all
                 "boundaries": [[[[0, 1, 2]], [[0, 1]], [[1, 2, 3]]]],
                 "semantics": {
-                    "surfaces": [{"type": "A"}, {"type": "B"}, {"type": "C"}],
+                    "surfaces": [{"type": "WallSurface"}, {"type": "RoofSurface"}, {"type": "GroundSurface"}],
                     "values": [[0, 1, 2]]
                 },
                 "material": {"visual": {"values": [[1, 2, 3]]}},
@@ -2166,27 +1869,27 @@ mod tests {
             }]
         }))
         .unwrap();
-        let vertices: Vec<Vec<i64>> = vec![
-            vec![0, 0, 0],
-            vec![1000, 0, 0],
-            vec![1000, 1000, 0],
-            vec![0, 1000, 0],
-        ];
+        let vertices = [[0, 0, 0], [1000, 0, 0], [1000, 1000, 0], [0, 1000, 0]];
         let transform = Transform {
-            scale: vec![1.0; 3],
-            translate: vec![0.0; 3],
+            scale: [1.0; 3],
+            translate: [0.0; 3],
         };
         let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
         // Local defs sized to cover the raw indices above (material 1..3,
         // texture 0..2, UV 0..2).
-        let local_materials: Vec<Value> = (0..4)
-            .map(|i| serde_json::json!({"name": format!("m{i}")}))
+        let local_materials: Vec<MaterialObject> = (0..4)
+            .map(|i| serde_json::from_value(serde_json::json!({"name": format!("m{i}")})).unwrap())
             .collect();
-        let local_textures: Vec<Value> = (0..3)
-            .map(|i| serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}))
+        let local_textures: Vec<TextureObject> = (0..3)
+            .map(|i| {
+                serde_json::from_value(
+                    serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}),
+                )
+                .unwrap()
+            })
             .collect();
-        let local_uvs: Vec<Vec<f64>> = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![1.0, 1.0]];
+        let local_uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
 
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
@@ -2226,17 +1929,23 @@ mod tests {
         );
         assert_eq!(
             props.surfaces,
-            Some(serde_json::json!([{"type": "A"}, {"type": "B"}, {"type": "C"}])),
+            Some(
+                serde_json::json!([{"type": "WallSurface"}, {"type": "RoofSurface"}, {"type": "GroundSurface"}])
+            ),
             "the surfaces lookup table is stored verbatim (face_semantics indexes into it)"
         );
 
         // Face 1 (material index 2, texture index 1) was dropped; faces 0
         // and 2 survive, rewritten to dataset-global ids and flattened out
         // of the shell nesting.
-        let gid_material_1 = interner.intern_material(&local_materials[1]) as i64;
-        let gid_material_3 = interner.intern_material(&local_materials[3]) as i64;
-        let gid_texture_0 = interner.intern_texture(&local_textures[0]) as i64;
-        let gid_texture_2 = interner.intern_texture(&local_textures[2]) as i64;
+        let gid_material_1 =
+            interner.intern_material(&serde_json::to_value(&local_materials[1]).unwrap()) as i64;
+        let gid_material_3 =
+            interner.intern_material(&serde_json::to_value(&local_materials[3]).unwrap()) as i64;
+        let gid_texture_0 =
+            interner.intern_texture(&serde_json::to_value(&local_textures[0]).unwrap()) as i64;
+        let gid_texture_2 =
+            interner.intern_texture(&serde_json::to_value(&local_textures[2]).unwrap()) as i64;
         let uv = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
         assert_eq!(
             *slot.material.as_ref().unwrap(),
@@ -2295,7 +2004,7 @@ mod tests {
                     ]
                 ],
                 "semantics": {
-                    "surfaces": [{"type": "A"}],
+                    "surfaces": [{"type": "WallSurface"}],
                     "values": [[[10, 11], [12]], [[13, 14]]]
                 },
                 "material": {"visual": {"values": [[[1, 2], [3]], [[4, 5]]]}},
@@ -2312,27 +2021,27 @@ mod tests {
             }]
         }))
         .unwrap();
-        let vertices: Vec<Vec<i64>> = vec![
-            vec![0, 0, 0],
-            vec![1000, 0, 0],
-            vec![1000, 1000, 0],
-            vec![0, 1000, 0],
-        ];
+        let vertices = [[0, 0, 0], [1000, 0, 0], [1000, 1000, 0], [0, 1000, 0]];
         let transform = Transform {
-            scale: vec![1.0; 3],
-            translate: vec![0.0; 3],
+            scale: [1.0; 3],
+            translate: [0.0; 3],
         };
         let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
         // Local defs sized to cover the raw indices above (material 1..5,
         // texture 0..4, UV 0..2).
-        let local_materials: Vec<Value> = (0..6)
-            .map(|i| serde_json::json!({"name": format!("m{i}")}))
+        let local_materials: Vec<MaterialObject> = (0..6)
+            .map(|i| serde_json::from_value(serde_json::json!({"name": format!("m{i}")})).unwrap())
             .collect();
-        let local_textures: Vec<Value> = (0..5)
-            .map(|i| serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}))
+        let local_textures: Vec<TextureObject> = (0..5)
+            .map(|i| {
+                serde_json::from_value(
+                    serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}),
+                )
+                .unwrap()
+            })
             .collect();
-        let local_uvs: Vec<Vec<f64>> = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![1.0, 1.0]];
+        let local_uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
 
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
@@ -2374,9 +2083,12 @@ mod tests {
         // Flat positions 2 (material 3, texture 2) and 4 (material 5,
         // texture 4) were dropped; the survivors are rewritten to
         // dataset-global ids, flat across solids and shells.
-        let gid_material_1 = interner.intern_material(&local_materials[1]) as i64;
-        let gid_material_2 = interner.intern_material(&local_materials[2]) as i64;
-        let gid_material_4 = interner.intern_material(&local_materials[4]) as i64;
+        let gid_material_1 =
+            interner.intern_material(&serde_json::to_value(&local_materials[1]).unwrap()) as i64;
+        let gid_material_2 =
+            interner.intern_material(&serde_json::to_value(&local_materials[2]).unwrap()) as i64;
+        let gid_material_4 =
+            interner.intern_material(&serde_json::to_value(&local_materials[4]).unwrap()) as i64;
         assert_eq!(
             *slot.material.as_ref().unwrap(),
             MaterialCell {
@@ -2391,9 +2103,12 @@ mod tests {
             },
             "the material cell is flat per WKB face across solids and shells"
         );
-        let gid_texture_0 = interner.intern_texture(&local_textures[0]) as i64;
-        let gid_texture_1 = interner.intern_texture(&local_textures[1]) as i64;
-        let gid_texture_3 = interner.intern_texture(&local_textures[3]) as i64;
+        let gid_texture_0 =
+            interner.intern_texture(&serde_json::to_value(&local_textures[0]).unwrap()) as i64;
+        let gid_texture_1 =
+            interner.intern_texture(&serde_json::to_value(&local_textures[1]).unwrap()) as i64;
+        let gid_texture_3 =
+            interner.intern_texture(&serde_json::to_value(&local_textures[3]).unwrap()) as i64;
         let uv = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
         let ring = |id: i64| {
             vec![TextureRing {

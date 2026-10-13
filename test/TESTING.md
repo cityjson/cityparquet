@@ -53,8 +53,8 @@ were built against, which is each submodule's own `build/release/duckdb`.
 ### 0.1 cityparquet-rs needs no submodule
 
 `lib/cityparquet-rs` takes the City3D STAC crates (`city3d-stac-types`,
-`city3d-stac-gen`) from crates.io, and its only vendored code, `vendor/cjseq`, is
-an in-tree copy. Its `just check` therefore needs no `git submodule update`; the
+`city3d-stac-gen`) from crates.io and `cjseq` as a git dependency. Its `just
+check` therefore needs no `git submodule update`; the
 two DuckDB extensions are the only submodules (`just setup` from the repository
 root checks them out).
 

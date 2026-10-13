@@ -53,7 +53,7 @@ fn solid_coords(pkg: &Path) -> CoordsByBuildingLod {
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {
-                if obj.object.thetype != "Building" {
+                if String::from(obj.object.thetype.clone()) != "Building" {
                     continue;
                 }
                 for (lod, decoded, _props) in &obj.geometries {
@@ -98,16 +98,10 @@ fn building_attributes(pkg: &Path) -> AttrsByBuilding {
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {
-                if obj.object.thetype != "Building" {
+                if String::from(obj.object.thetype.clone()) != "Building" {
                     continue;
                 }
-                let attrs = obj
-                    .object
-                    .attributes
-                    .as_ref()
-                    .and_then(serde_json::Value::as_object)
-                    .cloned()
-                    .unwrap_or_default();
+                let attrs = obj.object.attributes.as_ref().cloned().unwrap_or_default();
                 map.insert(obj.id.clone(), attrs);
             }
         }

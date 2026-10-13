@@ -56,10 +56,10 @@ impl<'a> VertexBuilder<'a> {
         }))
     }
 
-    /// The distinct vertices, in index order, as `Vec<Vec<i64>>` for a
+    /// The distinct vertices, in index order, for a
     /// `CityJSONFeature.vertices`.
-    pub fn into_vertices(self) -> Vec<Vec<i64>> {
-        self.verts.into_iter().map(|v| v.to_vec()).collect()
+    pub fn into_vertices(self) -> Vec<[i64; 3]> {
+        self.verts
     }
 }
 
@@ -79,7 +79,7 @@ mod tests {
         assert_ne!(a, d);
         let verts = b.into_vertices();
         assert_eq!(verts.len(), 2);
-        assert_eq!(verts[a], vec![50_000, 0, 150_000]);
+        assert_eq!(verts[a], [50_000, 0, 150_000]);
     }
 
     #[test]

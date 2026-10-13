@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # No submodules: the city3d-stac crates come from crates.io and
-      # vendor/cjseq is an in-tree copy.
+      # cjseq is a git dependency.
       - uses: actions/checkout@v4
         with: { submodules: false }
       - uses: dtolnay/rust-toolchain@stable

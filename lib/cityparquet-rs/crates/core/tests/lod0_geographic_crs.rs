@@ -70,11 +70,11 @@ fn a_footprint_synthesised_from_a_degree_valued_solid_matches_the_source_footpri
 
     let source_lod0 = geoms
         .iter()
-        .find(|g| g.lod.as_deref() == Some("0"))
+        .find(|g| g.lod().map(|l| l.to_string()).as_deref() == Some("0"))
         .expect("the source lod0FootPrint");
     let solid = geoms
         .iter()
-        .find(|g| g.lod.as_deref() == Some("1"))
+        .find(|g| g.lod().map(|l| l.to_string()).as_deref() == Some("1"))
         .expect("the source lod1Solid");
 
     let (truth_faces, _) = faces_from_geometry(source_lod0, &pool).unwrap();

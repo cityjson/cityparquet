@@ -214,7 +214,7 @@ fn a_foreign_writers_values_decode() {
         );
     }
     assert_eq!(objects.len(), 1);
-    assert_eq!(objects[0].object.thetype, "Bridge");
+    assert_eq!(String::from(objects[0].object.thetype.clone()), "Bridge");
     // The DECODED VALUE, not just that decoding didn't error: a unit-
     // confusion bug (a MICROS raw value read through the MILLIS divisor)
     // would still decode without error, just to the wrong instant.
@@ -377,7 +377,7 @@ fn a_table_omitting_the_optional_reserved_columns_decodes() {
         );
     }
     assert_eq!(objects.len(), 1);
-    assert_eq!(objects[0].object.thetype, "Bridge");
+    assert_eq!(String::from(objects[0].object.thetype.clone()), "Bridge");
     assert!(
         objects[0].address.is_none(),
         "an absent column decodes as an absent address, not Some(vec![])"

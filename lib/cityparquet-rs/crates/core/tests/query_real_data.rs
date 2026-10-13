@@ -232,7 +232,7 @@ fn attr_filter_eq_matches_object_type_dictionary_column() {
 
     let expected = objects
         .iter()
-        .filter(|o| o.object.thetype == "BuildingPart")
+        .filter(|o| String::from(o.object.thetype.clone()) == "BuildingPart")
         .count() as u64;
     assert_eq!(expected, 1116, "sanity: delft's known BuildingPart count");
 
@@ -256,7 +256,6 @@ fn attr_filter_eq_matches_string_attribute_column_and_excludes_nulls() {
             o.object
                 .attributes
                 .as_ref()
-                .and_then(|v| v.as_object())
                 .and_then(|attrs| attrs.get("status"))
                 .and_then(|v| v.as_str())
                 == Some("Pand in gebruik")
@@ -290,7 +289,6 @@ fn attr_filter_numeric_predicates_match_year_built_attribute_column() {
             o.object
                 .attributes
                 .as_ref()
-                .and_then(|v| v.as_object())
                 .and_then(|attrs| attrs.get("oorspronkelijkbouwjaar"))
                 .and_then(|v| v.as_i64())
         })
@@ -359,7 +357,6 @@ fn attr_stats_matches_independently_computed_year_built_stats() {
             o.object
                 .attributes
                 .as_ref()
-                .and_then(|v| v.as_object())
                 .and_then(|attrs| attrs.get("oorspronkelijkbouwjaar"))
                 .and_then(|v| v.as_i64())
         })

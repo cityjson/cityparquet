@@ -112,8 +112,8 @@ rounded: an attribute written `28.184951782226562` was stored as the double one
 ULP below it. That is a conversion silently not preserving the value it was
 handed, and it affects `cityparquet convert` generally — this pipeline only
 surfaced it, by re-serialising the numbers and changing which side of the fast
-path they fell on. The feature is now enabled in `lib/cityparquet-rs/Cargo.toml`
-and in `vendor/cjseq`, which parses and re-serialises the same numbers.
+path they fell on. The feature is enabled in `lib/cityparquet-rs/Cargo.toml`,
+which also covers `cjseq`: Cargo unifies one `serde_json` across the build.
 
 ## Running it
 

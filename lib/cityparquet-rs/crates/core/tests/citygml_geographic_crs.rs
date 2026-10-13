@@ -44,9 +44,9 @@ fn the_quantisation_step_follows_the_declared_axis_units() {
     let header = parse_header(&data_fixture("plateau_yokohama_bldg_fragment.gml")).unwrap();
 
     // Degree, degree, metre — not [1 mm; 3].
-    assert_eq!(header.transform.scale, vec![NANO_DEGREE, NANO_DEGREE, MM]);
+    assert_eq!(header.transform.scale, [NANO_DEGREE, NANO_DEGREE, MM]);
     // The origin is still the envelope's lower corner, in document axis order.
-    assert_eq!(header.transform.translate, LOWER_CORNER.to_vec());
+    assert_eq!(header.transform.translate, LOWER_CORNER);
 }
 
 #[test]

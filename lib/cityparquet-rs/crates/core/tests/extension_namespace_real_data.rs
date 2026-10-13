@@ -141,8 +141,8 @@ fn export_restores_the_plus_marker_and_the_extensions_member() {
 
     let source = Source::open(&exported).unwrap();
     assert_eq!(
-        source.header().extensions,
-        Some(json!({"Energy": {"url": "https://example.org/energy.ext.json", "version": "3.0"}})),
+        serde_json::to_value(&source.header().extensions).unwrap(),
+        (json!({"Energy": {"url": "https://example.org/energy.ext.json", "version": "3.0"}})),
         "the CityJSON extensions member is rebuilt from city.extensions"
     );
     let feature = source.features().unwrap().next().unwrap().unwrap();
@@ -151,7 +151,8 @@ fn export_restores_the_plus_marker_and_the_extensions_member() {
     assert_eq!(attributes["+heatCapacity"], json!(250000.5));
     assert!(attributes.get("energy_heatCapacity").is_none());
     let geometry = &co.geometry.as_ref().unwrap()[0];
-    let surfaces: Vec<&str> = geometry.semantics.as_ref().unwrap()["surfaces"]
+    let geometry = serde_json::to_value(geometry).unwrap();
+    let surfaces: Vec<&str> = geometry["semantics"]["surfaces"]
         .as_array()
         .unwrap()
         .iter()

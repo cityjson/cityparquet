@@ -21,29 +21,27 @@
 //! {"values": <nested rings>}}`, a *ring* being `[t, uv0, uv1, ...]` (texture
 //! index followed by UV indices) or the sentinel `[null]` for "no texture".
 //! The nesting of `values` differs by geometry type, so the flattening is
-//! driven by the geometry's own `boundaries` through the walk that produces
-//! `face_semantics` ([`crate::encode::flatten_values`] and friends): one
-//! traversal defines WKB face order for semantics and appearance alike, which
-//! is what makes "entry `i` is WKB face `i`" meaningful. CityJSON's
-//! shorthands are expanded on the way — a `null` standing for a whole shell
-//! or solid becomes one `null` per face beneath it, a theme's
-//! whole-geometry `value` becomes one entry per face — and the writer-dropped
-//! face positions are removed afterwards, so a theme's list is exactly as
-//! long as the geometry's WKB face count. Texture goes one level deeper: a
-//! face's entry is the list of its STORED rings
-//! ([`crate::encode::face_ring_vertex_counts`]), each carrying one `[u, v]`
+//! driven by the geometry's own boundaries through [`crate::faces`], the walk
+//! that also produces `face_semantics`: one traversal defines WKB face order
+//! for semantics and appearance alike, which is what makes "entry `i` is WKB
+//! face `i`" meaningful. CityJSON's shorthands are expanded on the way — a
+//! `null` standing for a whole shell or solid becomes one `null` per face
+//! beneath it, a theme's whole-geometry `value` becomes one entry per face —
+//! and the writer-dropped face positions are removed afterwards, so a theme's
+//! list is exactly as long as the geometry's WKB face count. Texture goes one
+//! level deeper: a face's entry is the list of its STORED rings
+//! ([`crate::faces::Faces::ring_vertex_counts`]), each carrying one `[u, v]`
 //! per distinct ring vertex.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use cityparquet_schema::{CityParquetError, Result};
-use cjseq::GeometryType;
+use cjseq::{MaterialIndex, MaterialObject, TextureObject, TexturedRing};
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::appearance_columns::{MaterialCell, TextureCell, TextureRing};
-use crate::encode::{
-    count_boundary_faces, face_ring_vertex_counts, flatten_values, values_nesting_depth,
-};
+use crate::faces::{MaterialTheme, TextureTheme};
 
 fn schema_err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Schema(msg.into())
@@ -53,12 +51,10 @@ fn schema_err(msg: impl Into<String>) -> CityParquetError {
 ///
 /// A cell's MAP entry order is exactly this iteration order, and therefore
 /// part of the bytes the writer lays down, so it must be a property of the
-/// theme names alone. `serde_json`'s object map is an `IndexMap` whenever any
-/// member of the dependency graph enables `preserve_order` — which Cargo
-/// unifies workspace-wide, and this workspace does — under which iterating it
-/// directly would leak the source document's member order into the column.
-fn sorted_themes(obj: &serde_json::Map<String, Value>) -> BTreeMap<&str, &Value> {
-    obj.iter().map(|(k, v)| (k.as_str(), v)).collect()
+/// theme names alone: a geometry's themes come in source order, which would
+/// otherwise leak into the column.
+fn sorted_themes<'a, T>(themes: &'a [(&'a str, T)]) -> BTreeMap<&'a str, &'a T> {
+    themes.iter().map(|(k, v)| (*k, v)).collect()
 }
 
 /// Dedupes CityJSON material/texture definitions across an entire dataset,
@@ -129,124 +125,97 @@ impl AppearanceInterner {
         &self.textures
     }
 
-    /// Flatten one geometry's `material` member — `{"<theme>": {"values":
-    /// <nested ints|null>} | {"value": <int>}}` — into a [`MaterialCell`]:
-    /// theme -> one global material id (or `None`) per WKB face.
+    /// Flatten one geometry's `material` themes (see
+    /// [`crate::faces::material_themes`]) into a [`MaterialCell`]: theme ->
+    /// one global material id (or `None`) per WKB face.
     ///
-    /// `boundaries` and `thetype` size the walk (the same one that produces
-    /// `face_semantics`), so entry `i` is WKB face `i`. A theme's
-    /// whole-geometry `{"value": n}` is expanded to one entry per face, and a
-    /// `null` standing for a whole shell or solid becomes one `None` per face
-    /// beneath it. `dropped` are the writer-dropped ORIGINAL flat face
-    /// positions, removed AFTER flattening.
+    /// `faces` is the geometry's face count before any drop; a theme's
+    /// whole-geometry `value` is expanded to one entry per stored face.
+    /// `dropped` are the writer-dropped ORIGINAL flat face positions, removed
+    /// AFTER flattening.
     ///
-    /// Every integer index `i` is replaced by
-    /// `intern_material(&local_defs[i])`; an out-of-range `i` is a `Schema`
-    /// error naming the theme, unless [`Self::set_tolerate_invalid_refs`] is
-    /// set. A theme all of whose entries are `null` stays present as a
-    /// same-length all-null list; an empty source map yields an empty
-    /// [`MaterialCell::themes`], which the caller writes as a null cell.
-    pub fn flatten_material_map(
+    /// Every index `i` is replaced by `intern_material(&local_defs[i])`; an
+    /// out-of-range `i` is a `Schema` error naming the theme, unless
+    /// [`Self::set_tolerate_invalid_refs`] is set. A theme all of whose
+    /// entries are `null` stays present as a same-length all-null list; an
+    /// empty source map yields an empty [`MaterialCell::themes`], which the
+    /// caller writes as a null cell.
+    pub(crate) fn flatten_material_map(
         &mut self,
-        map: &Value,
-        boundaries: &Value,
-        thetype: &GeometryType,
+        themes: &[(&str, MaterialTheme)],
+        faces: usize,
         dropped: &[usize],
-        local_defs: &[Value],
+        local_defs: &[MaterialObject],
     ) -> Result<MaterialCell> {
-        let obj = map.as_object().ok_or_else(|| {
-            schema_err("material map must be a JSON object of theme -> {value|values}")
-        })?;
         self.local_ids.clear();
         self.local_ids.resize(local_defs.len(), None);
-        let depth = values_nesting_depth(thetype);
-        let faces = count_boundary_faces(boundaries, depth);
         let dropped: HashSet<usize> = dropped.iter().copied().collect();
         let stored = (0..faces).filter(|i| !dropped.contains(i)).count();
 
-        let mut themes = Vec::with_capacity(obj.len());
-        for (theme, inner) in sorted_themes(obj) {
-            let inner_obj = inner
-                .as_object()
-                .ok_or_else(|| schema_err(format!("material theme '{theme}' must be an object")))?;
-            let ids = if let Some(values) = inner_obj.get("values") {
-                let mut flat = Vec::with_capacity(faces);
-                flatten_values(values, boundaries, depth, &mut flat);
-                // Exactly one entry per ORIGINAL face: pad a short source
-                // `values` with null and truncate a malformed longer one, as
-                // `face_semantics` does, so the drop filter below lands on
-                // the right positions.
-                flat.resize(faces, Value::Null);
-                flat.iter()
+        let mut cell = Vec::with_capacity(themes.len());
+        for (theme, entries) in sorted_themes(themes) {
+            let ids = match entries {
+                MaterialTheme::PerFace(flat) => flat
+                    .iter()
                     .enumerate()
                     .filter(|(i, _)| !dropped.contains(i))
-                    .map(|(_, v)| self.resolve_material_index(v, local_defs, theme))
-                    .collect::<Result<Vec<_>>>()?
-            } else if let Some(value) = inner_obj.get("value") {
+                    .map(|(_, v)| self.resolve_material_index(*v, local_defs, theme))
+                    .collect::<Result<Vec<_>>>()?,
                 // A whole-geometry broadcast: resolve once, then repeat.
-                vec![self.resolve_material_index(value, local_defs, theme)?; stored]
-            } else {
-                return Err(schema_err(format!(
-                    "material theme '{theme}' has neither 'values' nor 'value'"
-                )));
+                MaterialTheme::Whole(value) => {
+                    vec![self.resolve_material_index(Some(*value), local_defs, theme)?; stored]
+                }
+                MaterialTheme::Missing => {
+                    return Err(schema_err(format!(
+                        "material theme '{theme}' has neither 'values' nor 'value'"
+                    )));
+                }
             };
-            themes.push((theme.to_string(), ids));
+            cell.push((theme.to_string(), ids));
         }
-        Ok(MaterialCell { themes })
+        Ok(MaterialCell { themes: cell })
     }
 
-    /// One `material` entry as a global id: `null` -> `None`, a non-negative
-    /// integer -> the global id of `local_defs[i]`. An out-of-range index is
-    /// a `Schema` error naming the theme, or — with
+    /// One `material` entry as a global id: `None` stays `None`, an index
+    /// becomes the global id of `local_defs[i]`. An out-of-range index is a
+    /// `Schema` error naming the theme, or — with
     /// [`Self::set_tolerate_invalid_refs`] — `None` plus one count in
     /// [`Self::invalid_refs_dropped`].
     fn resolve_material_index(
         &mut self,
-        v: &Value,
-        local_defs: &[Value],
+        v: Option<MaterialIndex>,
+        local_defs: &[MaterialObject],
         theme: &str,
     ) -> Result<Option<i64>> {
-        match v {
-            Value::Null => Ok(None),
-            Value::Number(n) => {
-                let idx = n.as_u64().ok_or_else(|| {
-                    schema_err(format!(
-                        "material index in theme '{theme}' is not a non-negative integer: {n}"
-                    ))
-                })? as usize;
-                match local_defs.get(idx) {
-                    Some(def) => Ok(Some(match self.local_ids[idx] {
-                        Some(id) => id,
-                        None => {
-                            let id = self.intern_material(def);
-                            self.local_ids[idx] = Some(id);
-                            id
-                        }
-                    } as i64)),
-                    None if self.tolerate_invalid_refs => {
-                        self.invalid_refs_dropped += 1;
-                        Ok(None)
-                    }
-                    None => Err(schema_err(format!(
-                        "material index {idx} in theme '{theme}' out of range (local defs len {})",
-                        local_defs.len()
-                    ))),
+        let Some(MaterialIndex(idx)) = v else {
+            return Ok(None);
+        };
+        match local_defs.get(idx) {
+            Some(def) => Ok(Some(match self.local_ids[idx] {
+                Some(id) => id,
+                None => {
+                    let id = self.intern_material(&definition_json(def)?);
+                    self.local_ids[idx] = Some(id);
+                    id
                 }
+            } as i64)),
+            None if self.tolerate_invalid_refs => {
+                self.invalid_refs_dropped += 1;
+                Ok(None)
             }
-            other => Err(schema_err(format!(
-                "material index in theme '{theme}' must be an integer or null, got {other}"
+            None => Err(schema_err(format!(
+                "material index {idx} in theme '{theme}' out of range (local defs len {})",
+                local_defs.len()
             ))),
         }
     }
 
-    /// Flatten one geometry's `texture` member — `{"<theme>": {"values":
-    /// <nested rings>}}`, a *ring* being `[t, uv0, uv1, ...]` or the
-    /// untextured sentinel `[null]` — into a [`TextureCell`]: theme -> per
+    /// Flatten one geometry's `texture` themes (see
+    /// [`crate::faces::texture_themes`]) into a [`TextureCell`]: theme -> per
     /// WKB face -> per STORED ring.
     ///
-    /// The walk is [`Self::flatten_material_map`]'s, stopped at the face
-    /// level, so each flattened entry is one face's ring array (or `null`).
-    /// Within a face the source rings are matched positionally against the
+    /// `rings_per_face` is [`crate::faces::Faces::ring_vertex_counts`]. Within
+    /// a face the source rings are matched positionally against the
     /// boundary's own rings: a ring the writer drops consumes its texture
     /// entry and contributes nothing, a source array that stops short leaves
     /// the remaining stored rings untextured, and a surplus source entry is
@@ -255,38 +224,24 @@ impl AppearanceInterner {
     /// count — fewer is an error naming the face and ring, and a surplus is
     /// the closing repeat the source ring carried, which the WKB ring's own
     /// closing point replaces.
-    pub fn flatten_texture_map(
+    pub(crate) fn flatten_texture_map(
         &mut self,
-        map: &Value,
-        boundaries: &Value,
-        thetype: &GeometryType,
+        themes: &[TextureTheme<'_>],
+        rings_per_face: &[Vec<Option<usize>>],
         dropped: &[usize],
-        local_defs: &[Value],
-        local_uvs: &[Vec<f64>],
+        local_defs: &[TextureObject],
+        local_uvs: &[[f64; 2]],
     ) -> Result<TextureCell> {
-        let obj = map
-            .as_object()
-            .ok_or_else(|| schema_err("texture map must be a JSON object of theme -> {values}"))?;
         self.local_ids.clear();
         self.local_ids.resize(local_defs.len(), None);
-        let depth = values_nesting_depth(thetype);
-        let faces = count_boundary_faces(boundaries, depth);
-        let rings_per_face = face_ring_vertex_counts(boundaries, depth);
         let dropped: HashSet<usize> = dropped.iter().copied().collect();
 
-        let mut themes = Vec::with_capacity(obj.len());
-        for (theme, inner) in sorted_themes(obj) {
-            let inner_obj = inner
-                .as_object()
-                .ok_or_else(|| schema_err(format!("texture theme '{theme}' must be an object")))?;
-            let values = inner_obj.get("values").ok_or_else(|| {
+        let mut cell = Vec::with_capacity(themes.len());
+        for (theme, flat) in sorted_themes(themes) {
+            let flat = flat.as_ref().ok_or_else(|| {
                 schema_err(format!("texture theme '{theme}' is missing 'values'"))
             })?;
-            let mut flat = Vec::with_capacity(faces);
-            flatten_values(values, boundaries, depth, &mut flat);
-            flat.resize(faces, Value::Null);
-
-            let mut per_face = Vec::with_capacity(faces);
+            let mut per_face = Vec::with_capacity(flat.len());
             for (face, entry) in flat.iter().enumerate() {
                 if dropped.contains(&face) {
                     continue;
@@ -296,7 +251,7 @@ impl AppearanceInterner {
                 // which is what the column's invariants are stated over.
                 let stored_face = per_face.len();
                 let rings = self.flatten_texture_face(
-                    entry,
+                    entry.unwrap_or(&[]),
                     ring_lens,
                     local_defs,
                     local_uvs,
@@ -305,34 +260,23 @@ impl AppearanceInterner {
                 )?;
                 per_face.push(rings);
             }
-            themes.push((theme.to_string(), per_face));
+            cell.push((theme.to_string(), per_face));
         }
-        Ok(TextureCell { themes })
+        Ok(TextureCell { themes: cell })
     }
 
-    /// One face's stored rings (see [`Self::flatten_texture_map`]).
+    /// One face's stored rings (see [`Self::flatten_texture_map`]). `source`
+    /// is empty when the face has no texture entry: every stored ring gets
+    /// the untextured struct.
     fn flatten_texture_face(
         &mut self,
-        entry: &Value,
+        source: &[TexturedRing],
         ring_lens: &[Option<usize>],
-        local_defs: &[Value],
-        local_uvs: &[Vec<f64>],
+        local_defs: &[TextureObject],
+        local_uvs: &[[f64; 2]],
         theme: &str,
         face: usize,
     ) -> Result<Vec<TextureRing>> {
-        let source: &[Value] = match entry {
-            // No texture for this face — either the source said so, or the
-            // walk expanded a `null` standing for a whole shell or solid.
-            // Every stored ring gets the untextured struct.
-            Value::Null => &[],
-            Value::Array(rings) => rings,
-            other => {
-                return Err(schema_err(format!(
-                    "texture theme '{theme}' face {face} must be an array of rings or null, \
-                     got {other}"
-                )));
-            }
-        };
         let mut out = Vec::with_capacity(ring_lens.len());
         let mut source = source.iter();
         for len in ring_lens {
@@ -353,65 +297,42 @@ impl AppearanceInterner {
     /// One stored ring's `{id, uv}` (see [`Self::flatten_texture_map`]).
     fn texture_ring(
         &mut self,
-        entry: Option<&Value>,
+        entry: Option<&TexturedRing>,
         vertices: usize,
-        local_defs: &[Value],
-        local_uvs: &[Vec<f64>],
+        local_defs: &[TextureObject],
+        local_uvs: &[[f64; 2]],
         site: &RingSite,
     ) -> Result<TextureRing> {
         let RingSite { theme, face, ring } = *site;
         let bare = TextureRing { id: None, uv: None };
-        let items = match entry {
-            None | Some(Value::Null) => return Ok(bare),
-            Some(Value::Array(items)) => items,
-            Some(other) => {
-                return Err(schema_err(format!(
-                    "texture theme '{theme}' face {face} ring {ring} must be an array, got {other}"
-                )));
-            }
+        // `[null]` is CityJSON's untextured-ring sentinel.
+        let Some(TexturedRing::Textured { texture, uvs }) = entry else {
+            return Ok(bare);
         };
-        // `[null]` is CityJSON's untextured-ring sentinel. A null texture
-        // index resolves to no id at all, and the column keeps `id` and `uv`
-        // null together, so any UV indices behind one go with it.
-        let id = match items.first() {
-            None | Some(Value::Null) => return Ok(bare),
-            Some(Value::Number(n)) => {
-                let idx = n.as_u64().ok_or_else(|| {
-                    schema_err(format!(
-                        "texture index in theme '{theme}' is not a non-negative integer: {n}"
-                    ))
-                })? as usize;
-                match local_defs.get(idx) {
-                    Some(def) => match self.local_ids[idx] {
-                        Some(id) => id as i64,
-                        None => {
-                            let id = self.intern_texture(def);
-                            self.local_ids[idx] = Some(id);
-                            id as i64
-                        }
-                    },
-                    None if self.tolerate_invalid_refs => {
-                        self.invalid_refs_dropped += 1;
-                        // The UV entries are meaningless without a resolved
-                        // texture, so the whole ring becomes untextured.
-                        return Ok(bare);
-                    }
-                    None => {
-                        return Err(schema_err(format!(
-                            "texture index {idx} in theme '{theme}' out of range (local defs len {})",
-                            local_defs.len()
-                        )));
-                    }
+        let idx = texture.0;
+        let id = match local_defs.get(idx) {
+            Some(def) => match self.local_ids[idx] {
+                Some(id) => id as i64,
+                None => {
+                    let id = self.intern_texture(&definition_json(def)?);
+                    self.local_ids[idx] = Some(id);
+                    id as i64
                 }
+            },
+            None if self.tolerate_invalid_refs => {
+                self.invalid_refs_dropped += 1;
+                // The UV entries are meaningless without a resolved texture,
+                // so the whole ring becomes untextured.
+                return Ok(bare);
             }
-            Some(other) => {
+            None => {
                 return Err(schema_err(format!(
-                    "texture index in theme '{theme}' must be an integer or null, got {other}"
+                    "texture index {idx} in theme '{theme}' out of range (local defs len {})",
+                    local_defs.len()
                 )));
             }
         };
-        let refs = &items[1..];
-        if refs.len() < vertices {
+        if uvs.len() < vertices {
             // Fewer UVs than the ring has vertices (CityJSON 2.0.1 §6.2 asks
             // for one per vertex): which vertex lacks one is not stated, so
             // the ring's texture cannot be placed.
@@ -422,18 +343,14 @@ impl AppearanceInterner {
             return Err(schema_err(format!(
                 "texture theme '{theme}' face {face} ring {ring}: {} uv indices for {vertices} \
                  distinct vertices",
-                refs.len()
+                uvs.len()
             )));
         }
         let mut uv = Vec::with_capacity(vertices);
         // Anything past the distinct vertex count is the closing repeat the
         // source ring carried; the WKB ring closes itself and takes no pair.
-        for uv_ref in &refs[..vertices] {
-            let idx = uv_ref.as_u64().ok_or_else(|| {
-                schema_err(format!(
-                    "UV index in theme '{theme}' must be a non-negative integer, got {uv_ref}"
-                ))
-            })? as usize;
+        for uv_ref in &uvs[..vertices] {
+            let idx = uv_ref.0;
             let Some(pair) = local_uvs.get(idx) else {
                 if self.tolerate_invalid_refs {
                     self.invalid_refs_dropped += 1;
@@ -444,18 +361,19 @@ impl AppearanceInterner {
                     local_uvs.len()
                 )));
             };
-            if pair.len() < 2 {
-                return Err(schema_err(format!(
-                    "UV vertex {idx} in theme '{theme}' has fewer than 2 coordinates"
-                )));
-            }
-            uv.push([pair[0], pair[1]]);
+            uv.push(*pair);
         }
         Ok(TextureRing {
             id: Some(id),
             uv: Some(uv),
         })
     }
+}
+
+/// A material or texture definition as the JSON the sidecar stores and the
+/// interner dedupes by.
+fn definition_json(def: &impl Serialize) -> Result<Value> {
+    Ok(serde_json::to_value(def)?)
 }
 
 /// Where a texture ring sits, for the errors that name it: the theme, and the
@@ -525,8 +443,10 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use cjseq::CityJSON;
+    use cjseq::{CityJSON, Geometry};
     use serde_json::json;
+
+    use crate::faces::Faces;
 
     use crate::appearance_columns::{TextureCell, TextureRing};
     use crate::source::Source;
@@ -571,28 +491,62 @@ mod tests {
 
     // ---- flatten_material_map: flat per WKB face ----
 
-    /// shell 0: 2 faces (the first with a hole), shell 1: 1 face.
-    fn solid_two_shells() -> (Value, GeometryType) {
-        (
+    /// A Solid with `extra` members (`material`/`texture`); shell 0: 2 faces
+    /// (the first with a hole), shell 1: 1 face.
+    fn solid_two_shells(extra: Value) -> Geometry {
+        multi_surface_or_solid(
+            "Solid",
             json!([[[[0, 1, 2, 3], [4, 5, 6]], [[0, 1, 2]]], [[[7, 8, 9]]]]),
-            GeometryType::Solid,
+            extra,
+        )
+    }
+
+    fn multi_surface_or_solid(thetype: &str, boundaries: Value, extra: Value) -> Geometry {
+        let mut g = json!({"type": thetype, "lod": "2", "boundaries": boundaries});
+        for (k, v) in extra.as_object().unwrap() {
+            g[k] = v.clone();
+        }
+        crate::faces::geometry(g)
+    }
+
+    fn typed<T: serde::de::DeserializeOwned>(v: Value) -> T {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn flatten_materials(
+        i: &mut AppearanceInterner,
+        g: &Geometry,
+        dropped: &[usize],
+        defs: &[MaterialObject],
+    ) -> Result<MaterialCell> {
+        let themes = crate::faces::material_themes(g).expect("a material member");
+        i.flatten_material_map(&themes, Faces::of(g).count(), dropped, defs)
+    }
+
+    fn flatten_textures(
+        i: &mut AppearanceInterner,
+        g: &Geometry,
+        dropped: &[usize],
+        defs: &[TextureObject],
+        uvs: &[[f64; 2]],
+    ) -> Result<TextureCell> {
+        let themes = crate::faces::texture_themes(g).expect("a texture member");
+        i.flatten_texture_map(
+            &themes,
+            &Faces::of(g).ring_vertex_counts(),
+            dropped,
+            defs,
+            uvs,
         )
     }
 
     #[test]
     fn material_values_flatten_per_wkb_face_and_expand_the_broadcast() {
-        let (b, t) = solid_two_shells();
-        let defs = vec![json!({"name": "a"}), json!({"name": "b"})];
+        let g = solid_two_shells(json!({"material":
+            {"": {"values": [[0, null], [1]]}, "night": {"value": 1}}}));
+        let defs: Vec<MaterialObject> = typed(json!([{"name": "a"}, {"name": "b"}]));
         let mut i = AppearanceInterner::new();
-        let cell = i
-            .flatten_material_map(
-                &json!({"": {"values": [[0, null], [1]]}, "night": {"value": 1}}),
-                &b,
-                &t,
-                &[],
-                &defs,
-            )
-            .unwrap();
+        let cell = flatten_materials(&mut i, &g, &[], &defs).unwrap();
         assert_eq!(
             cell.themes,
             vec![
@@ -604,41 +558,30 @@ mod tests {
 
     #[test]
     fn material_null_shorthand_and_dropped_face_are_honoured() {
-        let (b, t) = solid_two_shells();
-        let defs = vec![json!({"name": "a"})];
-        let mut i = AppearanceInterner::new();
         // whole first shell null; face 1 (the hole-bearing face's neighbour)
         // dropped by the writer
-        let cell = i
-            .flatten_material_map(&json!({"": {"values": [null, [0]]}}), &b, &t, &[1], &defs)
-            .unwrap();
+        let g = solid_two_shells(json!({"material": {"": {"values": [null, [0]]}}}));
+        let defs: Vec<MaterialObject> = typed(json!([{"name": "a"}]));
+        let mut i = AppearanceInterner::new();
+        let cell = flatten_materials(&mut i, &g, &[1], &defs).unwrap();
         assert_eq!(cell.themes, vec![("".to_string(), vec![None, Some(0)])]);
     }
 
     #[test]
     fn an_all_null_theme_stays_present() {
-        let (b, t) = solid_two_shells();
+        let g = solid_two_shells(json!({"material":
+            {"x": {"values": [[null, null], [null]]}}}));
         let mut i = AppearanceInterner::new();
-        let cell = i
-            .flatten_material_map(
-                &json!({"x": {"values": [[null, null], [null]]}}),
-                &b,
-                &t,
-                &[],
-                &[],
-            )
-            .unwrap();
+        let cell = flatten_materials(&mut i, &g, &[], &[]).unwrap();
         assert_eq!(cell.themes, vec![("x".to_string(), vec![None, None, None])]);
     }
 
     #[test]
     fn material_out_of_range_index_is_a_schema_error_naming_the_theme() {
-        let (b, t) = solid_two_shells();
+        let g = solid_two_shells(json!({"material": {"visual": {"value": 5}}}));
+        let defs: Vec<MaterialObject> = typed(json!([{"name": "a"}]));
         let mut i = AppearanceInterner::new();
-        let defs = vec![json!({"name": "a"})];
-        let err = i
-            .flatten_material_map(&json!({"visual": {"value": 5}}), &b, &t, &[], &defs)
-            .unwrap_err();
+        let err = flatten_materials(&mut i, &g, &[], &defs).unwrap_err();
         match err {
             CityParquetError::Schema(msg) => assert!(msg.contains("visual"), "{msg}"),
             other => panic!("expected Schema error, got {other:?}"),
@@ -647,24 +590,16 @@ mod tests {
 
     /// A cell's MAP entry order is what the writer lays down on disk, so it
     /// must not depend on the source object's member order — which, under
-    /// serde_json's `preserve_order` (an `IndexMap`, unified workspace-wide
-    /// from another member's dependency), is the source's literal order. Both
-    /// flatteners sort their themes by name, so the same multi-theme geometry
-    /// writes the same bytes on every run.
+    /// serde_json's `preserve_order` (an `IndexMap`, which cjseq enables), is
+    /// the source's literal order. Both flatteners sort their themes by name,
+    /// so the same multi-theme geometry writes the same bytes on every run.
     #[test]
     fn themes_are_flattened_in_sorted_order() {
-        let (b, t) = solid_two_shells();
-        let defs = vec![json!({"name": "a"})];
+        let g = solid_two_shells(json!({"material":
+            {"night": {"value": 0}, "day": {"value": 0}}}));
+        let defs: Vec<MaterialObject> = typed(json!([{"name": "a"}]));
         let mut i = AppearanceInterner::new();
-        let cell = i
-            .flatten_material_map(
-                &json!({"night": {"value": 0}, "day": {"value": 0}}),
-                &b,
-                &t,
-                &[],
-                &defs,
-            )
-            .unwrap();
+        let cell = flatten_materials(&mut i, &g, &[], &defs).unwrap();
         assert_eq!(
             cell.themes
                 .iter()
@@ -674,22 +609,15 @@ mod tests {
             "material themes must be written sorted, not in source order"
         );
 
-        let tex_defs = vec![json!({"type": "PNG", "image": "a.png"})];
-        let uvs = vec![vec![0.0, 0.0]];
+        let tex_defs: Vec<TextureObject> = typed(json!([{"type": "PNG", "image": "a.png"}]));
+        let uvs = [[0.0, 0.0]];
         let values = json!([
             [[[0, 0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0]]],
             [[[0, 0, 0, 0]]]
         ]);
-        let cell = i
-            .flatten_texture_map(
-                &json!({"night": {"values": values.clone()}, "day": {"values": values}}),
-                &b,
-                &t,
-                &[],
-                &tex_defs,
-                &uvs,
-            )
-            .unwrap();
+        let g = solid_two_shells(json!({"texture":
+            {"night": {"values": values.clone()}, "day": {"values": values}}}));
+        let cell = flatten_textures(&mut i, &g, &[], &tex_defs, &uvs).unwrap();
         assert_eq!(
             cell.themes
                 .iter()
@@ -704,21 +632,12 @@ mod tests {
 
     #[test]
     fn texture_rings_inline_uvs_per_distinct_vertex_and_keep_ring_count() {
-        let (b, t) = solid_two_shells();
-        let defs = vec![json!({"type": "PNG", "image": "a.png"})];
-        let uvs = vec![
-            vec![0.0, 0.0],
-            vec![1.0, 0.0],
-            vec![1.0, 1.0],
-            vec![0.0, 1.0],
-            vec![0.5, 0.5],
-        ];
+        let defs: Vec<TextureObject> = typed(json!([{"type": "PNG", "image": "a.png"}]));
+        let uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5]];
         let mut i = AppearanceInterner::new();
-        let map =
-            json!({"": {"values": [ [ [[0, 0, 1, 2, 3], [null]], null ], [ [[0, 4, 4, 4]] ] ]}});
-        let cell = i
-            .flatten_texture_map(&map, &b, &t, &[], &defs, &uvs)
-            .unwrap();
+        let g = solid_two_shells(json!({"texture":
+            {"": {"values": [ [ [[0, 0, 1, 2, 3], [null]], [] ], [ [[0, 4, 4, 4]] ] ]}}}));
+        let cell = flatten_textures(&mut i, &g, &[], &defs, &uvs).unwrap();
         let faces = &cell.themes[0].1;
         assert_eq!(faces.len(), 3);
         assert_eq!(faces[0].len(), 2, "exterior + hole");
@@ -733,21 +652,20 @@ mod tests {
         assert_eq!(
             faces[1],
             vec![TextureRing { id: None, uv: None }],
-            "a null face expands to one bare ring per ring"
+            "a face with no ring entries is one bare ring per stored ring"
         );
         assert_eq!(faces[2][0].uv.as_ref().unwrap().len(), 3);
     }
 
     #[test]
     fn texture_uv_count_mismatch_is_an_error_naming_the_ring() {
-        let (b, t) = solid_two_shells();
-        let defs = vec![json!({"type": "PNG", "image": "a.png"})];
-        let uvs = vec![vec![0.0, 0.0]; 5];
+        let defs: Vec<TextureObject> = typed(json!([{"type": "PNG", "image": "a.png"}]));
+        let uvs = [[0.0, 0.0]; 5];
         let mut i = AppearanceInterner::new();
         // face 0's exterior has 4 vertices but only 2 uvs
-        let map = json!({"": {"values": [ [ [[0, 0, 1]], [null] ], [ [[null]] ] ]}});
-        let e = i
-            .flatten_texture_map(&map, &b, &t, &[], &defs, &uvs)
+        let g = solid_two_shells(json!({"texture":
+            {"": {"values": [ [ [[0, 0, 1]], [[null]] ], [ [[null]] ] ]}}}));
+        let e = flatten_textures(&mut i, &g, &[], &defs, &uvs)
             .unwrap_err()
             .to_string();
         assert!(e.contains("face 0") && e.contains("ring 0"), "{e}");
@@ -758,18 +676,19 @@ mod tests {
         // face 0 has an exterior, a 2-index (dropped) hole, and a real hole:
         // the stored face has 2 rings and the texture list must lose entry 1,
         // keeping the real hole's texture.
-        let b = json!([[[0, 1, 2, 3], [4, 5], [6, 7, 8]]]);
-        let t = GeometryType::MultiSurface;
-        let defs = vec![
-            json!({"type": "PNG", "image": "a.png"}),
-            json!({"type": "PNG", "image": "b.png"}),
-        ];
-        let uvs = vec![vec![0.0, 0.0]; 9];
+        let g = multi_surface_or_solid(
+            "MultiSurface",
+            json!([[[0, 1, 2, 3], [4, 5], [6, 7, 8]]]),
+            json!({"texture":
+                {"": {"values": [ [ [0, 0, 1, 2, 3], [1, 4, 5], [1, 6, 7, 8] ] ]}}}),
+        );
+        let defs: Vec<TextureObject> = typed(json!([
+            {"type": "PNG", "image": "a.png"},
+            {"type": "PNG", "image": "b.png"}
+        ]));
+        let uvs = [[0.0, 0.0]; 9];
         let mut i = AppearanceInterner::new();
-        let map = json!({"": {"values": [ [ [0, 0, 1, 2, 3], [1, 4, 5], [1, 6, 7, 8] ] ]}});
-        let cell = i
-            .flatten_texture_map(&map, &b, &t, &[], &defs, &uvs)
-            .unwrap();
+        let cell = flatten_textures(&mut i, &g, &[], &defs, &uvs).unwrap();
         let rings = &cell.themes[0].1[0];
         assert_eq!(rings.len(), 2);
         assert_eq!(rings[0].id, Some(0));
@@ -785,46 +704,29 @@ mod tests {
         // boundary ring [0,1,2,0] is closed in the source; the writer strips
         // the repeat, so the stored ring has 3 distinct vertices and the 4th
         // uv (for the repeat) is dropped.
-        let b = json!([[[0, 1, 2, 0]]]);
-        let t = GeometryType::MultiSurface;
-        let defs = vec![json!({"type": "PNG", "image": "a.png"})];
-        let uvs = vec![
-            vec![0.0, 0.0],
-            vec![1.0, 0.0],
-            vec![1.0, 1.0],
-            vec![0.0, 0.0],
-        ];
+        let g = multi_surface_or_solid(
+            "MultiSurface",
+            json!([[[0, 1, 2, 0]]]),
+            json!({"texture": {"": {"values": [ [[0, 0, 1, 2, 3]] ]}}}),
+        );
+        let defs: Vec<TextureObject> = typed(json!([{"type": "PNG", "image": "a.png"}]));
+        let uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]];
         let mut i = AppearanceInterner::new();
-        let cell = i
-            .flatten_texture_map(
-                &json!({"": {"values": [ [[0, 0, 1, 2, 3]] ]}}),
-                &b,
-                &t,
-                &[],
-                &defs,
-                &uvs,
-            )
-            .unwrap();
+        let cell = flatten_textures(&mut i, &g, &[], &defs, &uvs).unwrap();
         assert_eq!(cell.themes[0].1[0][0].uv.as_ref().unwrap().len(), 3);
     }
 
     #[test]
     fn texture_out_of_range_uv_index_is_a_schema_error_naming_the_theme() {
-        let b = json!([[[0, 1, 2]]]);
-        let t = GeometryType::MultiSurface;
-        let defs = vec![json!({"image": "t0.png"})];
-        let uvs = vec![vec![0.0, 0.0]];
+        let g = multi_surface_or_solid(
+            "MultiSurface",
+            json!([[[0, 1, 2]]]),
+            json!({"texture": {"visual": {"values": [[[0, 0, 99, 0]]]}}}),
+        );
+        let defs: Vec<TextureObject> = typed(json!([{"image": "t0.png"}]));
+        let uvs = [[0.0, 0.0]];
         let mut i = AppearanceInterner::new();
-        let err = i
-            .flatten_texture_map(
-                &json!({"visual": {"values": [[[0, 0, 99, 0]]]}}),
-                &b,
-                &t,
-                &[],
-                &defs,
-                &uvs,
-            )
-            .unwrap_err();
+        let err = flatten_textures(&mut i, &g, &[], &defs, &uvs).unwrap_err();
         match err {
             CityParquetError::Schema(msg) => assert!(msg.contains("visual"), "{msg}"),
             other => panic!("expected Schema error, got {other:?}"),
@@ -833,17 +735,18 @@ mod tests {
 
     // ---- railway sweep: real CityJSON data, dataset-wide dedupe ----
 
-    /// Finds the first JSON number reachable via a pre-order walk of objects
-    /// (in key order) then arrays (in element order). Used to correlate a
-    /// position in an unrewritten map with the same position in the
-    /// rewritten map, without hard-coding the map's nesting shape.
-    fn find_first_int(v: &Value) -> Option<u64> {
-        match v {
-            Value::Number(n) => n.as_u64(),
-            Value::Array(items) => items.iter().find_map(find_first_int),
-            Value::Object(map) => map.values().find_map(find_first_int),
-            _ => None,
-        }
+    /// The first material index a geometry's themes refer to, in source
+    /// order: used to correlate a feature-local index with the global id the
+    /// flattened cell carries at the same position.
+    fn first_material_index(g: &Geometry) -> Option<usize> {
+        crate::faces::material_themes(g)?
+            .into_iter()
+            .find_map(|(_, theme)| match theme {
+                MaterialTheme::PerFace(ids) => ids.into_iter().flatten().next(),
+                MaterialTheme::Whole(id) => Some(id),
+                MaterialTheme::Missing => None,
+            })
+            .map(|MaterialIndex(i)| i)
     }
 
     /// Asserts every ring of a flattened texture cell: `id` and `uv` are
@@ -877,7 +780,7 @@ mod tests {
         let mut interner = AppearanceInterner::new();
 
         let mut sample_texture_cell: Option<TextureCell> = None;
-        let mut fidelity_check: Option<(usize, Value)> = None;
+        let mut fidelity_check: Option<(usize, MaterialObject)> = None;
         let mut swept_any_material = false;
         let mut swept_any_texture = false;
 
@@ -893,43 +796,26 @@ mod tests {
             for co in feature.city_objects.values() {
                 let Some(geoms) = &co.geometry else { continue };
                 for g in geoms {
-                    if let Some(material) = &g.material {
-                        let map = serde_json::to_value(material).unwrap();
-                        let cell = interner
-                            .flatten_material_map(
-                                &map,
-                                &g.boundaries,
-                                &g.thetype,
-                                &[],
-                                &local_materials,
-                            )
-                            .unwrap();
+                    if crate::faces::material_themes(g).is_some() {
+                        let cell =
+                            flatten_materials(&mut interner, g, &[], &local_materials).unwrap();
                         swept_any_material = true;
                         if fidelity_check.is_none()
                             && let (Some(lid), Some(gid)) = (
-                                find_first_int(&map),
+                                first_material_index(g),
                                 cell.themes
                                     .iter()
                                     .flat_map(|(_, ids)| ids.iter())
                                     .find_map(|id| *id),
                             )
                         {
-                            fidelity_check =
-                                Some((gid as usize, local_materials[lid as usize].clone()));
+                            fidelity_check = Some((gid as usize, local_materials[lid].clone()));
                         }
                     }
-                    if let Some(texture) = &g.texture {
-                        let map = serde_json::to_value(texture).unwrap();
-                        let cell = interner
-                            .flatten_texture_map(
-                                &map,
-                                &g.boundaries,
-                                &g.thetype,
-                                &[],
-                                &local_textures,
-                                &local_uvs,
-                            )
-                            .unwrap();
+                    if crate::faces::texture_themes(g).is_some() {
+                        let cell =
+                            flatten_textures(&mut interner, g, &[], &local_textures, &local_uvs)
+                                .unwrap();
                         swept_any_texture = true;
                         if sample_texture_cell.is_none() {
                             sample_texture_cell = Some(cell);
@@ -954,19 +840,15 @@ mod tests {
 
         // The railway fixture is a whole CityJSON document (not a
         // CityJSONSeq stream): its `geometry-templates` carry their own
-        // material/texture members, generically shaped exactly like a
-        // regular geometry's, but indexed against the document's *raw,
-        // unsliced* appearance arrays rather than any per-feature local
-        // slice (cjseq's `CityJSON::get_metadata` clones the templates
-        // before reslicing their indices, so the clone actually attached to
-        // `Source::header()` keeps the original document-global indices).
-        // Two materials and one texture in this fixture are referenced only
-        // from templates, never from a regular feature geometry, so the
-        // per-feature sweep above alone would land on 83/33 rather than the
-        // dataset's true 85/34. Sweep the templates too, against the raw
+        // material/texture members, indexed against the document's
+        // appearance arrays rather than any per-feature slice. Two materials
+        // and one texture in this fixture are referenced only from
+        // templates, never from a regular feature geometry, so the
+        // per-feature sweep above alone lands on 83/33 rather than the
+        // dataset's true 85/34. Sweep the templates too, against the
         // document's own appearance arrays, to reach every definition.
         let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-        let raw_doc = CityJSON::from_str(&raw_text).unwrap();
+        let raw_doc: CityJSON = raw_text.parse().unwrap();
         if let Some(templates) = &raw_doc.geometry_templates {
             let raw_appearance = raw_doc.appearance.as_ref();
             let raw_materials = raw_appearance
@@ -979,24 +861,11 @@ mod tests {
                 .and_then(|a| a.vertices_texture.clone())
                 .unwrap_or_default();
             for g in &templates.templates {
-                if let Some(material) = &g.material {
-                    let map = serde_json::to_value(material).unwrap();
-                    interner
-                        .flatten_material_map(&map, &g.boundaries, &g.thetype, &[], &raw_materials)
-                        .unwrap();
+                if crate::faces::material_themes(g).is_some() {
+                    flatten_materials(&mut interner, g, &[], &raw_materials).unwrap();
                 }
-                if let Some(texture) = &g.texture {
-                    let map = serde_json::to_value(texture).unwrap();
-                    interner
-                        .flatten_texture_map(
-                            &map,
-                            &g.boundaries,
-                            &g.thetype,
-                            &[],
-                            &raw_textures,
-                            &raw_uvs,
-                        )
-                        .unwrap();
+                if crate::faces::texture_themes(g).is_some() {
+                    flatten_textures(&mut interner, g, &[], &raw_textures, &raw_uvs).unwrap();
                 }
             }
         }
@@ -1023,9 +892,11 @@ mod tests {
         assert_cell_rings_valid(&tex, interner.textures().len());
 
         // (c) global-id fidelity: the global definition a rewritten index
-        // points to is byte-for-byte the feature-local definition it
-        // replaced.
+        // points to is the feature-local definition it replaced.
         let (gid, expected_def) = fidelity_check.expect("expected at least one material index");
-        assert_eq!(interner.materials()[gid], expected_def);
+        assert_eq!(
+            interner.materials()[gid],
+            serde_json::to_value(expected_def).unwrap()
+        );
     }
 }

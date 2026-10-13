@@ -70,10 +70,7 @@ pub fn parse_header_from<R: BufRead>(input: R) -> Result<CityJSON> {
     };
 
     let mut header = CityJSON::new(); // version "2.0", identity transform
-    header.transform = Transform {
-        scale: scale.to_vec(),
-        translate: translate.to_vec(),
-    };
+    header.transform = Transform { scale, translate };
 
     let mut metadata = Metadata {
         geographical_extent: None,
@@ -82,6 +79,7 @@ pub fn parse_header_from<R: BufRead>(input: R) -> Result<CityJSON> {
         reference_date: None,
         reference_system: None,
         title: None,
+        other: serde_json::Map::new(),
     };
     let mut has_metadata = false;
     if let Some(e) = envelope {

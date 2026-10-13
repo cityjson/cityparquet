@@ -178,6 +178,9 @@ fn city_geometry_type(thetype: &GeometryType) -> Option<&'static str> {
         GeometryType::MultiSolid | GeometryType::CompositeSolid => Some("GeometryCollection Z"),
         // A GeometryInstance produces no geometry column at all.
         GeometryType::GeometryInstance => None,
+        // `geometry_bbox` has already refused the geometry
+        // (`crate::wkb_write::unsupported_geometry`).
+        other => unreachable!("unsupported geometry type {other:?}"),
     }
 }
 
@@ -242,8 +245,13 @@ pub(crate) fn scan_keeping(
     mut keep: Option<&mut Vec<CityJSONFeature>>,
 ) -> Result<ScanResult> {
     let header = source.header();
+    let extensions_json = header
+        .extensions
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
     let extensions =
-        cityparquet_schema::extensions::declarations_from_cityjson(header.extensions.as_ref())?;
+        cityparquet_schema::extensions::declarations_from_cityjson(extensions_json.as_ref())?;
     let naming = ExtensionNaming::new(extensions.as_ref());
     let mut inferer = AttributeInferer::default();
     let mut string_cardinality: BTreeMap<String, StringCardinality> = BTreeMap::new();
@@ -330,13 +338,14 @@ pub(crate) fn scan_keeping(
 
         for (id, co) in &feature.city_objects {
             object_count += 1;
-            naming.encode_name(&co.thetype, "city-object type")?;
-            let module_key = resolver.resolve(&co.thetype)?;
+            let thetype = crate::cjtypes::object_type_name(&co.thetype);
+            naming.encode_name(&thetype, "city-object type")?;
+            let module_key = resolver.resolve(&thetype)?;
             // Every module actually encountered gets an entry, even one with
             // no analysis geometry at all — see the field's doc comment.
             module_lod_sets.entry(module_key.clone()).or_default();
 
-            if let Some(attrs) = co.attributes.as_ref().and_then(|v| v.as_object()) {
+            if let Some(attrs) = &co.attributes {
                 for (name, value) in attrs {
                     let name = crate::encode::stored_attribute_name(&naming, name)?;
                     // Only JSON strings: a column that ends up `String`
@@ -361,19 +370,20 @@ pub(crate) fn scan_keeping(
             };
             for geom in geoms {
                 let bbox = geometry_bbox(geom, &pool)?;
-                match &geom.lod {
+                match geom.lod() {
                     Some(lod) => {
-                        let parsed = Lod::parse(lod).map_err(|_| {
+                        let lod = lod.to_string();
+                        let parsed = Lod::parse(&lod).map_err(|_| {
                             CityParquetError::Lod(format!("object {id}: invalid lod {lod:?}"))
                         })?;
-                        if !lod_strings.contains(lod) {
-                            lod_strings.push(lod.clone());
+                        if !lod_strings.contains(&lod) {
+                            lod_strings.push(lod);
                         }
                         geometries_with_lod += 1;
                         // Record this LoD's realised WKB type(s) — both
                         // dataset-wide and per-module (§metadata "The footer
                         // describes the file it lives in").
-                        if let Some(t) = city_geometry_type(&geom.thetype) {
+                        if let Some(t) = city_geometry_type(&geom.geometry_type()) {
                             lod_geo.entry(parsed).or_default().insert(t.to_string());
                             module_geo
                                 .entry(module_key.clone())
@@ -390,33 +400,18 @@ pub(crate) fn scan_keeping(
                             .or_default()
                             .insert(parsed);
                     }
-                    None => {
-                        // A `GeometryInstance` is lod-less by design — its
-                        // referenced template carries the lod (§12) and it
-                        // routes to the `implicit_geometry` column, not a geometry
-                        // column. Any OTHER lod-less geometry is invalid
-                        // CityJSON 2.0 (§3 requires `lod` on every
-                        // non-instance geometry) and MUST be rejected here,
-                        // not silently dropped (in a mixed dataset) nor kept
-                        // in an un-suffixed column (in a uniformly lod-less
-                        // one) — the two behaviours the old code chose
-                        // between depending on the rest of the dataset.
-                        if geom.thetype != GeometryType::GeometryInstance {
-                            return Err(CityParquetError::Lod(format!(
-                                "object {id}: geometry has no \"lod\" (CityJSON 2.0 §3 \
-                                 requires it on every non-GeometryInstance geometry)"
-                            )));
-                        }
-                        has_geometry_instance = true;
-                    }
+                    // A `GeometryInstance` is lod-less by design — its
+                    // referenced template carries the lod (§12) and it routes
+                    // to the `implicit_geometry` column, not a geometry
+                    // column. cjseq requires `lod` on every other geometry.
+                    None => has_geometry_instance = true,
                 }
             }
         }
     }
 
     // A dataset with at least one LoD-bearing geometry uses per-LoD columns
-    // (every non-instance geometry now has a lod — the loop above rejected any
-    // that did not). A dataset with none — only `GeometryInstance`s, or an
+    // (every non-instance geometry has a lod). A dataset with none — only `GeometryInstance`s, or an
     // attributes-only dataset with no geometry at all — has no analysis
     // geometry, hence no LoDs and no dataset bbox; its tables carry no
     // geometry column at all (the zero-analysis-geometry case, §9 / Appendix
@@ -605,7 +600,10 @@ pub(crate) fn scan_keeping(
         module_geo,
         bloom_attributes,
         source_format: to_schema_source_format(source.format()),
-        source_version: header.version.clone(),
+        source_version: serde_json::to_value(header.version)?
+            .as_str()
+            .expect("a CityJSON version serialises as a string")
+            .to_string(),
     })
 }
 

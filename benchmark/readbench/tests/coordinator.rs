@@ -64,11 +64,11 @@ fn prepare_seq_artefact(prepared: &Path, input: &Path, base: &str) {
 fn collect_delft_document(dir: &Path) -> PathBuf {
     let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
-    let header = CityJSON::from_str(lines.next().unwrap()).unwrap();
+    let header = lines.next().unwrap().parse::<CityJSON>().unwrap();
     let features: Vec<CityJSONFeature> = lines
-        .map(|line| CityJSONFeature::from_str(line).unwrap())
+        .map(|line| line.parse::<CityJSONFeature>().unwrap())
         .collect();
-    let doc = cjseq_to_cj(header, features);
+    let doc = cjseq_to_cj(header, features).unwrap();
     let path = dir.join("delft.city.json");
     std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
     path
