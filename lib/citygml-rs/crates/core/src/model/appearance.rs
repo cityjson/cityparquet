@@ -21,6 +21,8 @@ pub struct Material {
     pub theme: String,
     /// The `gml:id`s of the polygons it colours.
     pub targets: Vec<String>,
+    /// The `X3DMaterial`'s own `gml:id`.
+    pub id: Option<String>,
     pub name: Option<String>,
     pub ambient_intensity: Option<f64>,
     pub diffuse_color: Option<Vec<f64>>,

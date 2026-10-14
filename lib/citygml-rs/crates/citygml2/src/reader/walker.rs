@@ -229,6 +229,8 @@ pub fn read_generic_object<R: BufRead>(
                 {
                     let attr_name = get_attr_local(&e, b"name");
                     read_generic_attribute(reader, buf, &mut b, attr_name, ty)?;
+                } else if ns_is(&rr, ns::APPEARANCE) && name == b"appearance" {
+                    b.add_appearance(read_appearance(reader, buf, b"appearance")?);
                 } else if !ns_is(&rr, NS_GML) && is_semantic_surface_property(&name) {
                     // The object's own boundary surfaces, in the module
                     // namespace the property itself is in.
@@ -572,7 +574,7 @@ fn read_bounded_by<R: BufRead>(
                 let local = e.local_name();
                 if own_module {
                     let name = local.as_ref().to_vec();
-                    let idx = b.push_boundary_surface(qname(ns, &name));
+                    let idx = b.push_boundary_surface(qname(ns, &name), None);
                     read_semantic_surface(reader, buf, b, idx, &name, ns)?;
                 } else {
                     skip_element(reader, buf)?;
@@ -614,7 +616,7 @@ fn read_semantic_surface<R: BufRead>(
                     let collected = gml::collect_surfaces(reader, buf)?;
                     b.add_boundary_geometry(surface, &lod, collected);
                 } else if own_module && SEMANTIC_SURFACES.contains(&name.as_slice()) {
-                    let idx = b.push_boundary_surface(qname(ns, &name));
+                    let idx = b.push_boundary_surface(qname(ns, &name), Some(surface));
                     read_semantic_surface(reader, buf, b, idx, &name, ns)?;
                 } else if own_module && name == b"opening" {
                     read_semantic_surface(reader, buf, b, surface, &name, ns)?;

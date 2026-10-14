@@ -406,6 +406,7 @@ pub fn collect_surfaces<R: BufRead>(
                     let id = gml_id(&e);
                     let mut poly = read_polygon(reader, buf)?;
                     poly.id = id.clone();
+                    poly.groups = open.iter().rev().map(|(_, id, _)| id.clone()).collect();
                     if let Some((_, _, members)) = open.last_mut() {
                         members.push(AggregateMember::Polygon(out.polygons.len()));
                     }
@@ -494,6 +495,7 @@ pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> 
         exterior,
         interiors: interior_rings,
         ring_ids,
+        groups: Vec::new(),
     })
 }
 

@@ -59,6 +59,9 @@ impl QName {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundarySurface {
     pub class: QName,
+    /// The surface this one is nested in: a wall, for the `Door` or `Window`
+    /// in one of its openings.
+    pub parent: Option<usize>,
 }
 
 /// One city object as CityGML describes it, with its geometry resolved: every
@@ -102,6 +105,7 @@ impl GmlObject {
                 if let Some(id) = &face.id {
                     faces.insert(id.clone());
                 }
+                faces.extend(face.polygon.groups.iter().cloned());
                 rings.extend(face.polygon.ring_ids.iter().flatten().cloned());
             }
         }

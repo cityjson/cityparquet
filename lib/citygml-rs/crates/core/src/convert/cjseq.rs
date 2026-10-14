@@ -43,10 +43,10 @@ impl FromGml for CityJSONFeature {
         let mut vertices = VertexPool::new(&context.transform);
         let mut appearance = Palettes::default();
         let mut feature = CityJSONFeature::new();
-        let root_id = object
-            .id
-            .clone()
-            .unwrap_or_else(|| format!("Building_{}", context.index));
+        let root_id = object.id.clone().unwrap_or_else(|| {
+            let ty = cityjson_type(&object.class).unwrap_or(&object.class.local);
+            format!("{ty}_{}", context.index)
+        });
         feature.id = root_id.clone();
         emit(
             object,
@@ -115,7 +115,7 @@ fn emit(
     }
     if feature.city_objects.contains_key(my_id) {
         return Err(Error::invalid(format!(
-            "duplicate CityObject id {my_id:?} within a Building assembly"
+            "duplicate CityObject id {my_id:?} within one feature"
         )));
     }
     feature.add_co(my_id.to_string(), co);
@@ -158,26 +158,8 @@ fn attributes(attributes: &[Attribute]) -> Map<String, Json> {
 /// [`apply_textures`]), its vertices pushed in face order.
 fn geometry(g: &Geometry, object: &GmlObject, vertices: &mut VertexPool) -> Result<CjGeometry> {
     let lod: Lod = g.lod.parse().map_err(build_error)?;
-    let surfaces = if g.semantics && !object.boundary_surfaces.is_empty() {
-        Some(
-            object
-                .boundary_surfaces
-                .iter()
-                .map(|s| {
-                    Ok(SemanticsSurface {
-                        thetype: SemanticSurfaceType::try_from(s.class.local.clone())
-                            .map_err(build_error)?,
-                        parent: None,
-                        children: None,
-                        other: Map::new(),
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-        )
-    } else {
-        None
-    };
-    let semantic = |f: &Face| f.surface.map(SurfaceIndex);
+    let (surfaces, renumber) = semantic_surfaces(g, object)?;
+    let semantic = |f: &Face| f.surface.map(|s| SurfaceIndex(renumber[&s]));
     Ok(match &g.shape {
         Shape::MultiSurface(faces) => CjGeometry::MultiSurface {
             lod,
@@ -246,6 +228,54 @@ fn geometry(g: &Geometry, object: &GmlObject, vertices: &mut VertexPool) -> Resu
     })
 }
 
+/// A geometry's semantic surfaces, and where each object-level surface
+/// index lands among them.
+type SurfaceSubset = (Option<Vec<SemanticsSurface>>, HashMap<usize, usize>);
+
+/// The boundary surfaces a geometry's faces are tagged with, and those they
+/// are nested in, in the object's order, with each object-level index's
+/// position among them. `None` when no face is tagged: the geometry then has
+/// no `semantics` member.
+fn semantic_surfaces(g: &Geometry, object: &GmlObject) -> Result<SurfaceSubset> {
+    let all = &object.boundary_surfaces;
+    let mut used = std::collections::BTreeSet::new();
+    for face in g.shape.faces() {
+        let mut next = face.surface;
+        while let Some(s) = next {
+            let surface = all.get(s).ok_or_else(|| {
+                Error::invalid(format!("face tagged with missing boundary surface {s}"))
+            })?;
+            if !used.insert(s) {
+                break;
+            }
+            next = surface.parent;
+        }
+    }
+    if used.is_empty() {
+        return Ok((None, HashMap::new()));
+    }
+    let renumber: HashMap<usize, usize> = used.iter().enumerate().map(|(i, &s)| (s, i)).collect();
+    let surfaces = used
+        .iter()
+        .map(|&s| {
+            let surface = &all[s];
+            let children: Vec<SurfaceIndex> = used
+                .iter()
+                .filter(|&&c| all[c].parent == Some(s))
+                .map(|c| SurfaceIndex(renumber[c]))
+                .collect();
+            Ok(SemanticsSurface {
+                thetype: SemanticSurfaceType::try_from(surface.class.local.clone())
+                    .map_err(build_error)?,
+                parent: surface.parent.map(|p| SurfaceIndex(renumber[&p])),
+                children: (!children.is_empty()).then_some(children),
+                other: Map::new(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((Some(surfaces), renumber))
+}
+
 /// Intern the object's materials and stamp each geometry's `material`. A
 /// material is interned even when it targets nothing, so a definition
 /// survives; a theme that colours no face of a geometry is left off it. Two
@@ -270,9 +300,14 @@ fn apply_materials(
             targets.insert(t, idx);
         }
     }
+    // A face is coloured through its own id, else through the innermost
+    // aggregate holding it that a material targets.
     let lookup = |theme: &str, f: &Face| {
+        let targets = &by_theme[theme];
         f.id.as_deref()
-            .and_then(|id| by_theme[theme].get(id))
+            .into_iter()
+            .chain(f.polygon.groups.iter().map(String::as_str))
+            .find_map(|id| targets.get(id))
             .copied()
     };
     for (g, cj) in object.geometries.iter().zip(geometries.iter_mut()) {
@@ -492,11 +527,17 @@ struct Palettes {
 }
 
 impl Palettes {
+    /// A material without a `gml:name` is named by its `gml:id`, and one
+    /// with neither by its place in the palette (`material-2`), since
+    /// CityJSON requires a name. Identical unnamed materials are one entry.
     fn intern_material(&mut self, m: &Material) -> Result<MaterialIndex> {
-        let object = material_object(m)?;
+        let mut object = material_object(m)?;
         let key = serde_json::to_string(&object).map_err(build_error)?;
         let next = self.materials.len();
         let idx = *self.material_ids.entry(key).or_insert_with(|| {
+            if object.name.is_empty() {
+                object.name = format!("material-{next}");
+            }
             self.materials.push(object);
             next
         });
@@ -545,10 +586,7 @@ fn material_object(m: &Material) -> Result<MaterialObject> {
         }
     };
     Ok(MaterialObject {
-        name: m
-            .name
-            .clone()
-            .ok_or_else(|| invalid("missing field `name`".to_string()))?,
+        name: m.name.clone().or_else(|| m.id.clone()).unwrap_or_default(),
         ambient_intensity: finite(m.ambient_intensity),
         diffuse_color: color("diffuseColor", &m.diffuse_color)?,
         emissive_color: color("emissiveColor", &m.emissive_color)?,

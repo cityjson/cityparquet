@@ -13,6 +13,10 @@ pub struct Polygon {
     /// The `gml:id` of each ring, exterior first: what a texture's
     /// `ring="#id"` names.
     pub ring_ids: Vec<Option<String>>,
+    /// The `gml:id`s of the identified surface aggregates (`CompositeSurface`,
+    /// `MultiSurface`) the polygon is read inside, innermost first: a
+    /// material targeting one of them colours the polygon.
+    pub groups: Vec<String>,
 }
 
 /// One face of a geometry: a polygon in place, with the orientation it is
@@ -58,7 +62,4 @@ pub struct Geometry {
     /// The LoD as the element name gives it (`"2"` for `lod2Solid`).
     pub lod: String,
     pub shape: Shape,
-    /// Whether the geometry carries the object's boundary surfaces. A
-    /// standalone `lodNMultiSurface` read beside them does not.
-    pub semantics: bool,
 }

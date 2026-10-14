@@ -93,7 +93,16 @@ pub fn has_nonnull_value(values: &Value) -> bool {
 /// face — a surface index or `null`).
 pub struct Semantics {
     pub surfaces: Vec<String>,
+    /// Each surface's `parent` (a wall, for a `Window` in it); a surface past
+    /// the end of the list has none.
+    pub parents: Vec<Option<usize>>,
     pub values: Value,
+}
+
+impl Semantics {
+    fn parent(&self, i: usize) -> Option<usize> {
+        self.parents.get(i).copied().flatten()
+    }
 }
 
 fn err(m: impl Into<String>) -> CityParquetError {
@@ -106,6 +115,15 @@ fn err(m: impl Into<String>) -> CityParquetError {
 pub fn parse_semantics(props: Option<&Value>) -> Option<Semantics> {
     let props = props?;
     let surfaces = props.get("surfaces")?.as_array()?;
+    let parents: Vec<Option<usize>> = surfaces
+        .iter()
+        .map(|s| {
+            s.get("parent")
+                .and_then(Value::as_u64)
+                .and_then(|p| usize::try_from(p).ok())
+                .filter(|&p| p < surfaces.len())
+        })
+        .collect();
     let surfaces: Vec<String> = surfaces
         .iter()
         .map(|s| {
@@ -116,7 +134,11 @@ pub fn parse_semantics(props: Option<&Value>) -> Option<Semantics> {
         })
         .collect();
     let values = props.get("face_semantics")?.clone();
-    Some(Semantics { surfaces, values })
+    Some(Semantics {
+        surfaces,
+        parents,
+        values,
+    })
 }
 
 /// Whether every surface type is a legal XML element name (NCName). A CityJSON
@@ -270,50 +292,93 @@ fn write_one_solid<W: Write>(
     Ok(())
 }
 
-/// Emit one `<bldg:boundedBy><bldg:{ty}>…` surface holding `polys` as inline
-/// `gml:Polygon`s (each with its optional polygon + ring `gml:id`s); a zero-face
-/// surface is an empty `<bldg:{ty}/>`. Shared by the solid (xlinked ids) and
-/// MultiSurface paths.
-fn write_boundedby_surface<W: Write>(
+/// Emit surface `i` inside `wrapper` (`bldg:boundedBy`, or `bldg:opening`
+/// for a surface nested in another): `<bldg:{ty}>` holding its faces as
+/// inline `gml:Polygon`s (each with its optional polygon and ring
+/// `gml:id`s), then the surfaces whose parent it is, each in an opening. A
+/// surface with neither faces nor children is an empty `<bldg:{ty}/>`. Shared
+/// by the solid (xlinked ids) and MultiSurface paths.
+#[allow(clippy::too_many_arguments)]
+fn write_surface_tree<'a, W: Write>(
     w: &mut Writer<W>,
     coords: &[[f64; 3]],
-    ty: &str,
+    sem: &Semantics,
+    i: usize,
+    wrapper: &str,
     major: u8,
-    polys: &[(&Face, Option<&FaceIds>)],
+    polys_of: &impl Fn(usize) -> Vec<(&'a Face, Option<&'a FaceIds>)>,
+    depth: usize,
 ) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new("bldg:boundedBy")))?;
-    let tag = format!("bldg:{ty}");
-    if polys.is_empty() {
+    let polys = polys_of(i);
+    let children: Vec<usize> = (0..sem.surfaces.len())
+        .filter(|&c| c != i && sem.parent(c) == Some(i))
+        .collect();
+    w.write_event(Event::Start(BytesStart::new(wrapper)))?;
+    let tag = format!("bldg:{}", sem.surfaces[i]);
+    if polys.is_empty() && children.is_empty() {
         w.write_event(Event::Empty(BytesStart::new(tag.as_str())))?;
     } else {
         w.write_event(Event::Start(BytesStart::new(tag.as_str())))?;
-        let ms = format!("bldg:lod{major}MultiSurface");
-        w.write_event(Event::Start(BytesStart::new(ms.as_str())))?;
-        for (face, ids) in polys {
-            let poly_id = ids.and_then(|f| f.poly.as_deref());
-            let ring_ids = ids.and_then(FaceIds::ring_slice);
-            write_inline_member_ids(w, coords, face, poly_id, ring_ids)?;
+        if !polys.is_empty() {
+            let ms = format!("bldg:lod{major}MultiSurface");
+            w.write_event(Event::Start(BytesStart::new(ms.as_str())))?;
+            for (face, ids) in &polys {
+                let poly_id = ids.and_then(|f| f.poly.as_deref());
+                let ring_ids = ids.and_then(FaceIds::ring_slice);
+                write_inline_member_ids(w, coords, face, poly_id, ring_ids)?;
+            }
+            w.write_event(Event::End(BytesEnd::new(ms.as_str())))?;
         }
-        w.write_event(Event::End(BytesEnd::new(ms.as_str())))?;
+        // A parent chain longer than the surface list is a cycle.
+        if depth < sem.surfaces.len() {
+            for c in children {
+                write_surface_tree(
+                    w,
+                    coords,
+                    sem,
+                    c,
+                    "bldg:opening",
+                    major,
+                    polys_of,
+                    depth + 1,
+                )?;
+            }
+        }
         w.write_event(Event::End(BytesEnd::new(tag.as_str())))?;
     }
-    w.write_event(Event::End(BytesEnd::new("bldg:boundedBy")))?;
+    w.write_event(Event::End(BytesEnd::new(wrapper)))?;
     Ok(())
 }
 
-/// Emit the `bldg:boundedBy` block for a solid: one element per `surface_types`
-/// entry, in array order, each holding the inline (id-stamped) polygons of the
-/// faces assigned to it.
+/// Emit every surface with no parent as a `bldg:boundedBy`, its descendants
+/// nested in it (see [`write_surface_tree`]).
+fn write_surfaces<'a, W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    sem: &Semantics,
+    major: u8,
+    polys_of: &impl Fn(usize) -> Vec<(&'a Face, Option<&'a FaceIds>)>,
+) -> Result<()> {
+    for i in 0..sem.surfaces.len() {
+        if sem.parent(i).is_none() {
+            write_surface_tree(w, coords, sem, i, "bldg:boundedBy", major, polys_of, 0)?;
+        }
+    }
+    Ok(())
+}
+
+/// Emit the `bldg:boundedBy` block for a solid: each surface holding the
+/// inline (id-stamped) polygons of the faces assigned to it.
 fn write_boundedby<W: Write>(
     w: &mut Writer<W>,
     coords: &[[f64; 3]],
-    surface_types: &[String],
+    sem: &Semantics,
     members: &[Shells],
     surfaces: &[FaceSurfaces],
     plans: &[Vec<FaceEmit>],
     major: u8,
 ) -> Result<()> {
-    for (i, ty) in surface_types.iter().enumerate() {
+    let polys_of = |i: usize| {
         let mut polys: Vec<(&Face, Option<&FaceIds>)> = Vec::new();
         for (m, shells) in members.iter().enumerate() {
             let mut fi = 0usize;
@@ -330,9 +395,9 @@ fn write_boundedby<W: Write>(
                 }
             }
         }
-        write_boundedby_surface(w, coords, ty, major, &polys)?;
-    }
-    Ok(())
+        polys
+    };
+    write_surfaces(w, coords, sem, major, &polys_of)
 }
 
 /// Emit a Solid/CompositeSolid with semantics: `bldg:lod<major>Solid` whose
@@ -442,7 +507,7 @@ pub fn write_solid_with_semantics<W: Write>(
     w.write_event(Event::End(BytesEnd::new(elem.as_str())))?;
 
     // 4. Emit bldg:boundedBy per surface.
-    write_boundedby(w, coords, &sem.surfaces, &members, &surfaces, &plans, major)?;
+    write_boundedby(w, coords, sem, &members, &surfaces, &plans, major)?;
     Ok(flat_ids)
 }
 
@@ -483,16 +548,16 @@ pub fn write_multisurface_with_semantics<W: Write>(
             )
         })
         .collect();
-    for (i, ty) in sem.surfaces.iter().enumerate() {
-        let polys: Vec<(&Face, Option<&FaceIds>)> = faces
+    let polys_of = |i: usize| -> Vec<(&Face, Option<&FaceIds>)> {
+        faces
             .iter()
             .zip(&surfaces)
             .enumerate()
             .filter(|(_, (_, s))| **s == Some(i))
             .map(|(k, (f, _))| (f, Some(&flat_ids[k])))
-            .collect();
-        write_boundedby_surface(w, coords, ty, major, &polys)?;
-    }
+            .collect()
+    };
+    write_surfaces(w, coords, sem, major, &polys_of)?;
     Ok(flat_ids)
 }
 
@@ -524,6 +589,7 @@ mod tests {
     #[test]
     fn extension_type_is_not_emittable() {
         let s = Semantics {
+            parents: Vec::new(),
             surfaces: vec!["+Custom".into()],
             values: json!([0]),
         };
@@ -623,6 +689,7 @@ mod tests {
         ]);
         let props = json!({ "type": "Solid", "shells": [[3]] });
         let sem = Semantics {
+            parents: Vec::new(),
             surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
             values: json!([0, null, 1]),
         };
@@ -664,6 +731,7 @@ mod tests {
         let kind = tri(0, 1, 2);
         let props = json!({ "type": "Solid", "shells": [[1]] });
         let sem = Semantics {
+            parents: Vec::new(),
             surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
             values: json!([0]),
         };
@@ -702,6 +770,7 @@ mod tests {
             vec![vec![6, 7, 8]],
         ];
         let sem = Semantics {
+            parents: Vec::new(),
             surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
             values: json!([0, 0, 1]),
         };
@@ -723,6 +792,7 @@ mod tests {
         let coords = semantic_coords();
         let faces = vec![vec![vec![0, 1, 2]], vec![vec![3, 4, 5]]];
         let sem = Semantics {
+            parents: Vec::new(),
             surfaces: vec!["WallSurface".into()],
             values: json!([0, null]),
         };
@@ -735,6 +805,7 @@ mod tests {
         let coords = semantic_coords();
         let faces = vec![vec![vec![0, 1, 2]]];
         let sem = Semantics {
+            parents: Vec::new(),
             surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
             values: json!([0]),
         };
@@ -755,6 +826,7 @@ mod tests {
         ]);
         let props = json!({ "type": "CompositeSolid", "shells": [[1], [1]] });
         let sem = Semantics {
+            parents: Vec::new(),
             surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
             values: json!([0, 1]),
         };

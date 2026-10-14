@@ -12,7 +12,7 @@ use std::io::BufRead;
 
 use citygml_core::model::{Appearance, Material, RingUvs, Texture};
 use citygml_core::xml::{
-    NS_GML, get_attr_local, ns_is, read_text, skip_element, unexpected_eof, xml_err,
+    NS_GML, get_attr_local, gml_id, ns_is, read_text, skip_element, unexpected_eof, xml_err,
 };
 use citygml_core::{Error, Result};
 use quick_xml::events::Event;
@@ -90,7 +90,9 @@ fn read_surface_data_member<R: BufRead>(
             Event::Start(e) => {
                 let local = e.local_name();
                 if app && local.as_ref() == b"X3DMaterial" {
+                    let id = gml_id(&e);
                     let mut material = read_x3d_material(reader, buf)?;
+                    material.id = id;
                     material.theme = theme.to_string();
                     out.materials.push(material);
                 } else if app && local.as_ref() == b"ParameterizedTexture" {

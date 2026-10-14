@@ -13,7 +13,7 @@
 //! - a LoD with boundary-surface geometry and no solid gets one MultiSurface
 //!   of those faces, plus any standalone face at that LoD none of them holds;
 //! - a standalone `lodNMultiSurface` at a LoD with no boundary geometry is a
-//!   MultiSurface of its own, without semantics.
+//!   MultiSurface of its own, its faces untagged.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -150,10 +150,11 @@ impl ObjectBuilder {
         }
     }
 
-    /// Start a boundary surface of class `class`; returns its index, for
+    /// Start a boundary surface of class `class`, nested in surface `parent`
+    /// (a `Door` in a wall's opening) if any; returns its index, for
     /// [`Self::add_boundary_geometry`].
-    pub fn push_boundary_surface(&mut self, class: QName) -> usize {
-        self.surfaces.push(BoundarySurface { class });
+    pub fn push_boundary_surface(&mut self, class: QName, parent: Option<usize>) -> usize {
+        self.surfaces.push(BoundarySurface { class, parent });
         self.surfaces.len() - 1
     }
 
@@ -285,7 +286,6 @@ impl ObjectBuilder {
             geometries.push(Geometry {
                 lod: lod.clone(),
                 shape: Shape::MultiSurface(faces),
-                semantics: false,
             });
         }
         // Each LoD whose geometry lives only in boundary surfaces (no solid
@@ -310,14 +310,7 @@ impl ObjectBuilder {
                 geometries.push(Geometry {
                     lod: lod.clone(),
                     shape: Shape::MultiSurface(faces),
-                    semantics: true,
                 });
-            }
-        }
-        let has_surfaces = !self.surfaces.is_empty();
-        for geometry in &mut geometries {
-            if !matches!(geometry.shape, Shape::MultiSurface(_)) {
-                geometry.semantics = has_surfaces;
             }
         }
         let children = self
@@ -354,7 +347,6 @@ impl ObjectBuilder {
         Ok(Geometry {
             lod: lod.to_string(),
             shape,
-            semantics: false,
         })
     }
 
