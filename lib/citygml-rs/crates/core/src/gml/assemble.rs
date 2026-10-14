@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::read::{AggregateMember, Collected, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use crate::model::{
-    Address, Appearance, Attribute, BoundarySurface, Face, Geometry, GmlObject, Line, Polygon,
-    QName, Shape,
+    Address, Appearance, Attribute, BoundarySurface, Face, Geometry, GmlObject, GroupMember, Line,
+    MemberTarget, Polygon, QName, Shape,
 };
 use crate::{Error, Result};
 
@@ -95,6 +95,7 @@ pub struct ObjectBuilder {
     attributes: Vec<Attribute>,
     addresses: Vec<Address>,
     children: Vec<ObjectBuilder>,
+    members: Vec<GroupMember>,
     appearance: Appearance,
 }
 
@@ -125,6 +126,7 @@ impl ObjectBuilder {
             attributes: Vec::new(),
             addresses: Vec::new(),
             children: Vec::new(),
+            members: Vec::new(),
             appearance: Appearance::default(),
         }
     }
@@ -265,6 +267,33 @@ impl ObjectBuilder {
     /// polygons stay its own.
     pub fn add_part(&mut self, part: ObjectBuilder) {
         self.children.push(part);
+    }
+
+    /// Add a group member nested in this group: an object of its own, like
+    /// a part.
+    pub fn add_member(&mut self, member: ObjectBuilder, role: Option<String>) {
+        self.members.push(GroupMember {
+            target: MemberTarget::Child(self.children.len()),
+            role,
+        });
+        self.children.push(member);
+    }
+
+    /// Add a group member this group references by `gml:id`, unless it is
+    /// already one, or the group itself.
+    pub fn add_member_ref(&mut self, id: String, role: Option<String>) {
+        let known = self.id.as_ref() == Some(&id)
+            || self
+                .members
+                .iter()
+                .any(|m| matches!(&m.target, MemberTarget::Id(have) if *have == id));
+        if known {
+            return;
+        }
+        self.members.push(GroupMember {
+            target: MemberTarget::Id(id),
+            role,
+        });
     }
 
     /// Add a child feature found in a nesting property (an installation, a
@@ -420,6 +449,8 @@ impl ObjectBuilder {
             boundary_surfaces: self.surfaces,
             appearance: self.appearance,
             children,
+            members: self.members,
+            groups: Vec::new(),
         })
     }
 

@@ -16,8 +16,8 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 use citygml_core::gml::XlinkBudget;
-use citygml_core::model::{Appearance, ModelAppearance};
-use citygml_core::xml::{gml_id, ns_is, ns_of, skip_element, xml_err};
+use citygml_core::model::{Appearance, GroupIndex, ModelAppearance};
+use citygml_core::xml::{get_attr_local, gml_id, ns_is, ns_of, skip_element, xml_err};
 use citygml_core::{Error, GmlObject, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
@@ -34,6 +34,10 @@ pub struct FeatureReader {
     /// in the document it is declared. Empty when the reader was opened
     /// without it.
     model_appearance: ModelAppearance,
+    /// Member `gml:id` -> the groups that reference it by `xlink:href`, read
+    /// up front with the appearance, so a member read before its group
+    /// still names it. Empty for a reader opened on a stream.
+    groups_of: GroupIndex,
     /// The document's allowance for expanding xlinks to surface aggregates,
     /// shared by every object it holds.
     xlink_budget: XlinkBudget,
@@ -50,9 +54,9 @@ impl FeatureReader {
     /// Open `path` for streaming.
     ///
     /// Reads the document once up front to index its CityModel-level
-    /// appearance, then streams it again for the objects: two passes, unless
-    /// the document never spells `appearanceMember`.
-    /// [`Self::open_without_appearance`] is the one-pass form.
+    /// appearance and its groups' referenced members, then streams it again
+    /// for the objects: two passes, unless the document spells neither
+    /// `appearanceMember` nor `groupMember`.
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_inner(path, true)
     }
@@ -61,17 +65,19 @@ impl FeatureReader {
     ///
     /// Objects stream identically apart from appearance defined at the
     /// CityModel level, which is left out; an object's own `app:appearance`
-    /// is still read. The pass it saves costs a second full read of the file
-    /// and holds every CityModel-level definition in memory, which a caller
-    /// that only counts or measures geometry never consults.
+    /// is still read. Leaving it out spares holding every CityModel-level
+    /// definition in memory, which a caller that only counts or measures
+    /// geometry never consults, and the up-front pass altogether for a
+    /// document without groups.
     pub fn open_without_appearance(path: &Path) -> Result<Self> {
         Self::open_inner(path, false)
     }
 
     /// Stream objects from any `BufRead` positioned at the document's first
-    /// byte, in one pass and without the CityModel-level appearance (which
-    /// would need a second read). Nothing is read beyond what the objects
-    /// pulled so far need.
+    /// byte, in one pass, without the CityModel-level appearance and without
+    /// an object's referencing groups in [`GmlObject::groups`] (each would
+    /// need a second read). Nothing is read beyond what the objects pulled
+    /// so far need.
     pub fn from_reader(input: Box<dyn BufRead + Send>) -> Self {
         Self::from_parts(input, ModelAppearance::default())
     }
@@ -91,15 +97,10 @@ impl FeatureReader {
     fn open_inner(path: &Path, with_appearance: bool) -> Result<Self> {
         let file = File::open(path)
             .map_err(|e| Error::io(format!("cannot reopen {}", path.display()), e))?;
-        let model_appearance = if with_appearance {
-            read_model_appearance(path)?
-        } else {
-            ModelAppearance::default()
-        };
-        Ok(Self::from_parts(
-            Box::new(BufReader::new(file)),
-            model_appearance,
-        ))
+        let index = read_index(path, with_appearance)?;
+        let mut reader = Self::from_parts(Box::new(BufReader::new(file)), index.appearance);
+        reader.groups_of = index.groups_of;
+        Ok(reader)
     }
 
     fn from_parts(input: Box<dyn BufRead + Send>, model_appearance: ModelAppearance) -> Self {
@@ -111,6 +112,7 @@ impl FeatureReader {
             index: 0,
             done: false,
             model_appearance,
+            groups_of: GroupIndex::default(),
             xlink_budget: XlinkBudget::default(),
             inside_member: false,
             skipped_members: BTreeMap::new(),
@@ -159,6 +161,9 @@ impl FeatureReader {
                     self.inside_member = false;
                     let mut object = builder.finish(&self.xlink_budget)?;
                     object.scope_model_appearance(&self.model_appearance);
+                    if !self.groups_of.is_empty() {
+                        object.assign_groups(&self.groups_of);
+                    }
                     return Ok(Some(object));
                 }
                 Event::End(e) => {
@@ -247,20 +252,25 @@ mod features {
     }
 }
 
-/// Whether the bytes of `path` may contain `needle`: `false` only when a
-/// document in an ASCII-compatible encoding certainly does not. A document
-/// that may be UTF-16 (a byte-order mark or a zero byte at its start) is
-/// assumed to contain it.
-fn may_contain(path: &Path, needle: &[u8]) -> Result<bool> {
-    may_contain_in_chunks(path, needle, 8 << 20)
+/// For each needle, whether the bytes of `path` may contain it: `false` only
+/// when a document in an ASCII-compatible encoding certainly does not. A
+/// document that may be UTF-16 (a byte-order mark or a zero byte at its
+/// start) is assumed to contain every needle. One read of the file.
+fn may_contain<const N: usize>(path: &Path, needles: [&[u8]; N]) -> Result<[bool; N]> {
+    may_contain_in_chunks(path, needles, 8 << 20)
 }
 
-fn may_contain_in_chunks(path: &Path, needle: &[u8], chunk: usize) -> Result<bool> {
+fn may_contain_in_chunks<const N: usize>(
+    path: &Path,
+    needles: [&[u8]; N],
+    chunk: usize,
+) -> Result<[bool; N]> {
     let io = |e| Error::io(format!("cannot read {}", path.display()), e);
     let mut file = File::open(path).map_err(io)?;
-    let finder = memchr::memmem::Finder::new(needle);
-    let keep = needle.len() - 1;
-    let mut buf = vec![0u8; chunk.max(needle.len())];
+    let finders = needles.map(memchr::memmem::Finder::new);
+    let keep = needles.iter().map(|n| n.len()).max().unwrap_or(1).max(1) - 1;
+    let mut found = [false; N];
+    let mut buf = vec![0u8; chunk.max(keep + 1)];
     let mut filled = 0;
     let mut first = true;
     loop {
@@ -271,16 +281,16 @@ fn may_contain_in_chunks(path: &Path, needle: &[u8], chunk: usize) -> Result<boo
                 || head.starts_with(&[0xFF, 0xFE])
                 || head.contains(&0)
             {
-                return Ok(true);
+                return Ok([true; N]);
             }
             first = false;
         }
         let end = filled + read;
-        if finder.find(&buf[..end]).is_some() {
-            return Ok(true);
+        for (hit, finder) in found.iter_mut().zip(&finders) {
+            *hit = *hit || finder.find(&buf[..end]).is_some();
         }
-        if read == 0 {
-            return Ok(false);
+        if read == 0 || found.iter().all(|&hit| hit) {
+            return Ok(found);
         }
         // Carry the tail over, so a needle across the boundary is found.
         let tail = end.saturating_sub(keep);
@@ -289,40 +299,80 @@ fn may_contain_in_chunks(path: &Path, needle: &[u8], chunk: usize) -> Result<boo
     }
 }
 
-/// Read every CityModel-level `app:appearanceMember` into one indexed
-/// [`ModelAppearance`]. Building subtrees are skipped, and an object's own
-/// `app:appearance` (the other property name) is not promoted to model scope.
-fn read_model_appearance(path: &Path) -> Result<ModelAppearance> {
-    if !may_contain(path, b"appearanceMember")? {
-        return Ok(ModelAppearance::default());
+/// What the up-front pass over a document finds.
+#[derive(Default)]
+struct DocumentIndex {
+    appearance: ModelAppearance,
+    groups_of: GroupIndex,
+}
+
+/// Read every CityModel-level `app:appearanceMember` (when `with_appearance`)
+/// into one indexed [`ModelAppearance`], and every group's `xlink:href`
+/// member into member id -> group ids. Building subtrees are skipped, and an
+/// object's own `app:appearance` (the other property name) is not promoted
+/// to model scope.
+fn read_index(path: &Path, with_appearance: bool) -> Result<DocumentIndex> {
+    let [has_appearance, with_groups] = may_contain(path, [b"appearanceMember", b"groupMember"])?;
+    let with_appearance = with_appearance && has_appearance;
+    if !with_appearance && !with_groups {
+        return Ok(DocumentIndex::default());
     }
     let file =
         File::open(path).map_err(|e| Error::io(format!("cannot reopen {}", path.display()), e))?;
     let mut reader = NsReader::from_reader(BufReader::new(file));
     reader.config_mut().expand_empty_elements = true;
     let mut buf = Vec::new();
-    let mut out = Appearance::default();
+    let mut appearance = Appearance::default();
+    let mut groups_of = GroupIndex::default();
+    // The groups the reader is inside, innermost last: a group may be
+    // another group's nested member.
+    let mut open_groups: Vec<Option<String>> = Vec::new();
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(&mut buf).map_err(xml_err)?;
         match ev {
             Event::Start(e) => {
-                if ns_is(&rr, ns::BUILDING) && e.local_name().as_ref() == b"Building" {
+                let local = e.local_name();
+                if ns_is(&rr, ns::BUILDING) && local.as_ref() == b"Building" {
                     skip_element(&mut reader, &mut buf)?;
-                } else if ns_is(&rr, ns::APPEARANCE)
-                    && e.local_name().as_ref() == b"appearanceMember"
+                } else if with_appearance
+                    && ns_is(&rr, ns::APPEARANCE)
+                    && local.as_ref() == b"appearanceMember"
                 {
                     let app =
                         appearance::read_appearance(&mut reader, &mut buf, b"appearanceMember")?;
-                    out.materials.extend(app.materials);
-                    out.textures.extend(app.textures);
+                    appearance.materials.extend(app.materials);
+                    appearance.textures.extend(app.textures);
+                } else if ns_is(&rr, ns::CITY_OBJECT_GROUP) {
+                    match local.as_ref() {
+                        b"CityObjectGroup" => open_groups.push(gml_id(&e)),
+                        b"groupMember" => {
+                            let member = get_attr_local(&e, b"href")
+                                .and_then(|href| walker::member_id(&href));
+                            if let (Some(member), Some(Some(group))) = (member, open_groups.last())
+                            {
+                                groups_of.add(group, &member);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Event::End(e) => {
+                if ns_is(&rr, ns::CITY_OBJECT_GROUP)
+                    && e.local_name().as_ref() == b"CityObjectGroup"
+                {
+                    open_groups.pop();
                 }
             }
             Event::Eof => break,
             _ => {}
         }
     }
-    Ok(ModelAppearance::new(out))
+    Ok(DocumentIndex {
+        appearance: ModelAppearance::new(appearance),
+        groups_of,
+    })
 }
 
 #[cfg(test)]
@@ -343,12 +393,14 @@ mod tests {
         let with = data("building_citymodel_appearance.gml");
         let without = data("b1_lod2_cs_w_sem.gml");
         for chunk in [5, 7, 4096, 8 << 20] {
-            assert!(
-                may_contain_in_chunks(&with, b"appearanceMember", chunk).unwrap(),
+            assert_eq!(
+                may_contain_in_chunks(&with, [b"appearanceMember"], chunk).unwrap(),
+                [true],
                 "{chunk}"
             );
-            assert!(
-                !may_contain_in_chunks(&without, b"appearanceMember", chunk).unwrap(),
+            assert_eq!(
+                may_contain_in_chunks(&without, [b"appearanceMember"], chunk).unwrap(),
+                [false],
                 "{chunk}"
             );
         }

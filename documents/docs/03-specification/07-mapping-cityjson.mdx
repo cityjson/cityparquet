@@ -26,7 +26,7 @@ CityGML conceptual model:
 | appearance (surface data) | [`material_lod*` / `texture_lod*`](/specification/appearance-templates) + sidecars |
 | implicit geometry (`ImplicitGeometry`) | `implicit_geometry` struct (reference point, transformation matrix) + the relative geometry in [`implicit_geometries.parquet`](/specification/appearance-templates) |
 | address | the [`address` column](/specification/object-table-schema) |
-| `CityObjectGroup` + its members | the group is a row (in `generics.parquet`); membership is carried by `children` / `children_roles` / `parents` — no dedicated file |
+| `CityObjectGroup` + its members | the group is a row (in `generics.parquet`); membership is carried by `children` / `children_roles` / `parents`, a member referenced by `xlink:href` staying a feature of its own — no dedicated file |
 | ADE feature types / attributes | [extension rules](/specification/extensions) |
 
 3DCityDB's normalised relational schema is **not** reproduced: its property,

@@ -1,4 +1,4 @@
-use super::{Address, Appearance, Attribute, Geometry, ModelAppearance};
+use super::{Address, Appearance, Attribute, Geometry, GroupIndex, GroupMember, ModelAppearance};
 
 /// A CityGML thematic module. The same module keeps its name across
 /// versions; each version's reader maps its own namespace URIs onto these.
@@ -89,9 +89,29 @@ pub struct GmlObject {
     /// CityModel that target them first, then the object's own.
     pub appearance: Appearance,
     pub children: Vec<GmlObject>,
+    /// A `CityObjectGroup`'s members, in document order: a member nested in
+    /// the group is one of [`Self::children`]; one it references by
+    /// `xlink:href` lives elsewhere in the document, in a feature of its own
+    /// or inside another object.
+    pub members: Vec<GroupMember>,
+    /// The `gml:id`s of the groups that reference this object as a member,
+    /// in document order. Empty when the reader did not index the document's
+    /// groups.
+    pub groups: Vec<String>,
 }
 
 impl GmlObject {
+    /// Record, on this object and every descendant with a `gml:id`, the
+    /// groups `index` says reference it.
+    pub fn assign_groups(&mut self, index: &GroupIndex) {
+        if let Some(id) = &self.id {
+            self.groups = index.groups_of(id).map(str::to_string).collect();
+        }
+        for child in &mut self.children {
+            child.assign_groups(index);
+        }
+    }
+
     /// Every polygon `gml:id` and ring `gml:id` this object's own geometry
     /// carries (not its children's): what an appearance can target on it.
     fn targetable_ids(

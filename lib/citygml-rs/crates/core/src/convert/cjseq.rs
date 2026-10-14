@@ -23,7 +23,7 @@ use serde_json::{Map, Value as Json};
 
 use super::FromGml;
 use crate::model::{
-    Address, Attribute, Face, Geometry, GmlObject, Material, Shape, Texture, Value,
+    Address, Attribute, Face, Geometry, GmlObject, Material, MemberTarget, Shape, Texture, Value,
 };
 use crate::vocabulary::{cityjson_type, relation_to_construction};
 use crate::{Error, Result};
@@ -124,11 +124,20 @@ fn emit(
                 .collect::<Result<_>>()?,
         );
     }
-    if let Some(p) = parent_id {
-        co.parents = Some(vec![p.to_string()]);
+    // An object's structural parent comes first, so a group referencing it
+    // never decides its feature.
+    let parents: Vec<String> = parent_id
+        .map(str::to_string)
+        .into_iter()
+        .chain(object.groups.iter().cloned())
+        .collect();
+    if !parents.is_empty() {
+        co.parents = Some(parents);
     }
-    if !child_ids.is_empty() {
-        co.children = Some(child_ids.clone());
+    let (children, roles) = children_and_roles(object, &child_ids);
+    if !children.is_empty() {
+        co.children = Some(children);
+        co.children_roles = roles;
     }
     if feature.city_objects.contains_key(my_id) {
         return Err(Error::invalid(format!(
@@ -141,6 +150,31 @@ fn emit(
         emit(child, id, Some(my_id), vertices, palettes, feature)?;
     }
     Ok(())
+}
+
+/// An object's `children`: its nested children, then the members a group
+/// references by id, in document order; with `children_roles` when any
+/// member has a role.
+fn children_and_roles(
+    object: &GmlObject,
+    child_ids: &[String],
+) -> (Vec<String>, Option<Vec<Option<String>>>) {
+    let mut children = child_ids.to_vec();
+    let mut roles = vec![None; child_ids.len()];
+    for member in &object.members {
+        match &member.target {
+            MemberTarget::Child(i) => roles[*i] = member.role.clone(),
+            // A member names its group by `gml:id`, so an id-less group's
+            // referenced members cannot name it back: they are left out.
+            MemberTarget::Id(id) if object.id.is_some() => {
+                children.push(id.clone());
+                roles.push(member.role.clone());
+            }
+            MemberTarget::Id(_) => {}
+        }
+    }
+    let roles = roles.iter().any(Option::is_some).then_some(roles);
+    (children, roles)
 }
 
 fn build_error(e: impl std::fmt::Display) -> Error {

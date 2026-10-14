@@ -43,6 +43,11 @@ attribute names and types, addresses and appearance palettes
   installation (from its outer or interior class).
 - Addresses (`address`), xAL leaves mapped to CityJSON's address members, with
   the `MultiPoint` location.
+- `CityObjectGroup` members (`grp:groupMember`) with their roles, as the group's
+  `children` and `children_roles`. A member nested in the group is the group's
+  child in its feature; one referenced by `xlink:href` stays a feature of its
+  own and names the group among its `parents`, wherever it sits in the
+  document (the reader indexes the groups in its up-front pass).
 - Materials (`app:X3DMaterial`, unnamed ones included) and textures
   (`app:ParameterizedTexture`), feature-local and **CityModel-level**
   (`app:appearanceMember`), targeting polygons or the surface aggregates
@@ -75,7 +80,9 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
 
 ### Other documented limitations
 
-- A `CityObjectGroup`'s members (`grp:groupMember`) are not linked to it.
+- A group's `grp:parent` and `grp:geometry` are not read. A member read from a
+  stream (`FeatureReader::from_reader`, one pass) does not name the groups that
+  reference it.
 - `ImplicitGeometry` is not read (no fixture yet).
 - Raster, breakline and mass-point relief components have no CityJSON type
   and are tallied as skipped members.

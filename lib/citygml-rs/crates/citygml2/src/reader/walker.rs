@@ -13,6 +13,8 @@
 //!   properties nest sub-features, read as objects of their own when
 //!   [`NESTED`] names their class;
 //! - `address` is a postal address;
+//! - a group's `groupMember` is a member: an object of its own when nested,
+//!   a `gml:id` when referenced by `xlink:href`;
 //! - any other text-only property of a CityGML module is an attribute, typed
 //!   as [`attributes::property_type`] says;
 //! - `gml:name`, `gml:description`, `gen:` generic attributes and
@@ -175,6 +177,17 @@ pub fn read_object<R: BufRead>(
                         })?;
                     } else {
                         skip_element(reader, buf)?;
+                    }
+                } else if module == Some(Module::CityObjectGroup) && name == b"groupMember" {
+                    let role = get_attr_local(&e, b"role");
+                    match get_attr_local(&e, b"href") {
+                        Some(href) => {
+                            skip_element(reader, buf)?;
+                            if let Some(id) = member_id(&href) {
+                                b.add_member_ref(id, role);
+                            }
+                        }
+                        None => read_group_member(reader, buf, &mut b, role, depth)?,
                     }
                 } else if let Some(module) = module {
                     read_module_property(
@@ -442,6 +455,54 @@ fn read_nested<R: BufRead>(
                     "unexpected end of document inside <{}>",
                     String::from_utf8_lossy(prop_name)
                 )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The `gml:id` a group member's `xlink:href` names in this document
+/// (`#id`). A member in another document cannot be linked, so it is `None`.
+pub fn member_id(href: &str) -> Option<String> {
+    let id = href.strip_prefix('#')?;
+    (!id.is_empty() && !id.contains('#')).then(|| id.to_string())
+}
+
+/// Read a `grp:groupMember` holding its member inline (positioned after its
+/// `Start`): an object of any class this reader reads, at any level, kept
+/// as the group's child. A member of a class it does not read is skipped.
+fn read_group_member<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    b: &mut ObjectBuilder,
+    role: Option<String>,
+    depth: usize,
+) -> Result<()> {
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                let uri = ns_of(&rr).unwrap_or_default();
+                let class = top_level_class(&uri, local.as_ref())
+                    .or_else(|| nested_class(&uri, local.as_ref()).map(|(class, _)| class));
+                match class {
+                    Some(class) => {
+                        let end = local.as_ref().to_vec();
+                        let id = gml_id(&e);
+                        let member = read_object(reader, buf, class, id, &end, depth + 1)?;
+                        b.add_member(member, role.clone());
+                    }
+                    None => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"groupMember" => break,
+            Event::Eof => {
+                return Err(Error::invalid(
+                    "unexpected end of document inside <groupMember>",
+                ));
             }
             _ => {}
         }

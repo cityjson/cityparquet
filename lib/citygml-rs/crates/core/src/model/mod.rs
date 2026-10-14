@@ -7,11 +7,13 @@
 mod address;
 mod appearance;
 mod geometry;
+mod group;
 mod object;
 mod value;
 
 pub use address::Address;
 pub use appearance::{Appearance, Material, ModelAppearance, RingUvs, Texture};
 pub use geometry::{Face, Geometry, Line, Polygon, Ring, Shape};
+pub use group::{GroupIndex, GroupMember, MemberTarget};
 pub use object::{BoundarySurface, GmlObject, Module, Namespace, QName};
 pub use value::{Attribute, AttributeName, Value};

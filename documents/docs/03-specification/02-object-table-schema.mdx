@@ -51,6 +51,24 @@ this — and then more than one chain leads to a root. The chain to follow is th
 through the **first** entry of `parents`. Without that rule `feature_id` would depend on
 which chain an implementation happened to walk first, and two conforming writers could
 disagree about the same object.
+
+Group membership does not bind an object to the group's family. Where the chain
+through first parents reaches a `CityObjectGroup`, the object just below the group
+**MAY** instead root a family of its own: its `feature_id` is its own `id`, the objects
+below it on the chain take that `feature_id`, and the group still names it in
+`children`, across families. The source decides which, in one way for each kind of
+source:
+
+- a CityJSONSeq source keeps its features: a member in its group's feature is in the
+  group's family, and a member that is a feature of its own roots its family;
+- a member that a CityJSON document lists among a group's `children` is in the group's
+  family, as CityJSON's own rule for features puts it there;
+- a member nested in a CityGML group is in the group's family;
+- a member that a CityGML group references by `xlink:href` roots a family of its own,
+  with the group among its `parents`.
+
+A writer **MUST** list an object's structural parent (the building of a room) before
+any group in `parents`, so that only a group membership can start a family of its own.
 :::
 
 :::note[Feature families are contiguous]
