@@ -1579,6 +1579,47 @@ the same three centroids, digit for digit. The railway's matrices are all the
 identity; a `NULL` matrix also means identity, and a singular matrix raises for
 a `SOLID_3D` (`lib/duckdb-3d/docs/FUNCTIONS.md`).
 
+### 4.7 Every tool chain on real data — `test/toolchain/`
+
+4.3 to 4.6 follow one dataset through one chain by hand. `test/toolchain/`
+does the same for every dataset in a pinned corpus (`corpus.toml`: CityJSON,
+CityJSONSeq, CityGML 2.0 and FlatCityBuf, real data first, with small
+fixtures only for what no published dataset carries) and every chain:
+
+| Chain                                                                 | Checked against                    |
+| --------------------------------------------------------------------- | ---------------------------------- |
+| cityparquet-rs: `convert`, `validate`, `export`                       | the source                         |
+| duckdb-cityjson: `insert_*`, `cityparquet_validate`, `COPY … TO`      | the source                         |
+| each writer's package, exported by the other tool                     | the source                         |
+| each writer's package, exported by cityparquet-rs                     | each other (`packages agree`)      |
+| the rs package, read and rewritten by duckdb-cityjson                 | the source                         |
+| duckdb-3d over both packages and over the source                      | each other, per object and LoD     |
+| CityGML: the source and the rs GML export, both read by citygml-tools | each other, plus an element census |
+
+Every comparison with a source goes through `test/toolchain/cjcompare.py`,
+which reads CityJSON, CityJSONSeq and FlatCityBuf itself and shares no code
+with any writer. It compares models, not documents (vertices dereferenced,
+ring starts aligned, appearance resolved per face), per category: objects,
+hierarchy, attributes, address, geometry, coordinates, semantics, materials,
+textures and templates. A difference is a failure unless the specification
+allows it, and the comparator says which rule allows it.
+
+```sh
+uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 --with pytest \
+  pytest -q test/toolchain/test_cjcompare.py     # the comparator against mutated real data
+uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 \
+  test/toolchain/run.py fetch --profile quick
+uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 \
+  test/toolchain/run.py run --profile quick
+```
+
+The tools come from `CITYPARQUET`, `CITYJSON_EXTENSION`, `THREE_D_EXTENSION`
+and `CITYGML_TOOLS`, each defaulting to its build path in this tree; the run
+directory under `test/runs/toolchain/` (ignored) holds `results.jsonl` and
+`report.md`. The skill `testing-cityparquet-toolchain`
+(`.claude/skills/`) says how to triage what it finds. It is not a stage of
+`test/run-all.sh`: it downloads its corpus and takes about ten minutes.
+
 ---
 
 ## Part 5 — Benchmarks (procedure only)

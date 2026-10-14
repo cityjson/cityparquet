@@ -1,0 +1,32 @@
+# Failures that are understood and decided elsewhere.
+#
+# A failing step becomes `known` only when every one of its failure lines
+# matches an entry here (`dataset` and `step` are regular expressions over the
+# dataset id and the step name, `match` over one failure line). Each entry
+# names where the issue is recorded. An entry is for a decision or a tracked
+# defect, never for silencing a failure nobody has looked at: a new failure
+# stays a failure in the report until someone says whose it is.
+
+[[issue]]
+id = "cjseq-lod4"
+dataset = "^lod4-gml$"
+step = "^rs convert$"
+match = '"4" is not a LoD'
+summary = "the cjseq revision cityparquet pins accepts LoD 0 to 3.3 only, so a CityGML 2.0 LoD 4 building is refused; LoD 4 is allowed from cjseq 4e0e1c6, and the entry goes once cityparquet pins it"
+reference = "ai/decision-records/0010-export-citygml-lod4-to-cityjson-as-lod-4-0-with-a-warning.md; cjseq 4e0e1c6 (HideBa/cjseq)"
+
+[[issue]]
+id = "extension-class-without-module"
+dataset = "^noise-extension$"
+step = "^(rs convert|dk write)$"
+match = "no resolvable module|belongs to no CityGML module"
+summary = "a CityJSON Extension class that is not a core class name and declares no module has no file to go to, and the specification makes that a hard error; CityJSON Extensions have no way to declare a module, so no such class can be stored yet"
+reference = "documents/docs/03-specification/06-extensions.mdx, The ModuleKey; documents/open-questions.md, Extensions"
+
+[[issue]]
+id = "helsinki-invalid-texture-rings"
+dataset = "^helsinki-seq"
+step = ".*"
+match = "BID_(048465dc|18d4a090|242d9a9d|8beab8ee)\\S* (Solid@lod2\\.0 face 1 ring [0-2] theme 'rgbTexture'|geometry at lod Some\\(\"2\\.0\"\\): texture differs)"
+summary = "five texture rings in Helsinki_tex carry one UV fewer than they have vertices (a repeated vertex has no UV of its own), which is not valid CityJSON; cityparquet-rs refuses the file unless told --tolerate-invalid-appearance, then leaves those rings untextured"
+reference = "corpus.toml, helsinki-seq-2000; `cityparquet convert --help`"
