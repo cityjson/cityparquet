@@ -41,7 +41,7 @@ its CityGML tests also exercise them.
 
 ## Conventions
 
-- `cjseq` is pinned to the **same git rev** as `lib/cityparquet-rs/Cargo.toml`;
+- `cjseq` is pinned to the **same exact version** as `lib/cityparquet-rs/Cargo.toml`;
   bump both together, or the two workspaces build two copies.
 - Tests read real CityGML files committed under each crate's `tests/data`, no
   larger than about 100 MB each; never inline hand-written XML.
