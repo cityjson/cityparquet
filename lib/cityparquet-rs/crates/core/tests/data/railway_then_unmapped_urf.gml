@@ -4,8 +4,7 @@
   upstream document. Its purpose is to hold, in ONE file, a mapped member whose
   gml:id can be found FOLLOWED BY a member of a type the reader does not map.
   No published CityGML tile has that shape at a committable size: PLATEAU
-  publishes one module per tile, and the one naturally mixed tile in the
-  benchmark corpus (Tokyo Chuo-ku `ubld`) is 22 MB of a single unmapped object.
+  publishes one module per tile.
 
   Both halves are verbatim real data, concatenated, nothing rewritten:
 
@@ -16,25 +15,26 @@
       bldg:Building GMLID_BUI46739_1739_10911 — the id this fixture exists to
       let an id-lookup HIT.
     * cityObjectMembers 5-7 — the three members of
-      plateau_trk_fragment.gml (Japan PLATEAU, Tokyo Tachikawa-shi, module
-      `trk`; CC BY 4.0, MLIT Japan), byte for byte, in document order. All
-      three are tran:Track, which the reader does not map.
+      plateau_urf_fragment.gml (Japan PLATEAU, Tokyo Chiyoda-ku, module
+      `urf`; MLIT Japan), byte for byte, in document order. All three are
+      `urf:` ADE classes, which the reader does not map.
 
   The root element is railway_lod3_fragment.gml's own, verbatim, plus exactly
-  two namespace bindings the PLATEAU members need and the Railway document did
-  not declare: `core` (the CityGML 2.0 core namespace, which the Railway root
-  already binds as its DEFAULT namespace) and `uro` (the PLATEAU urban-object
-  extension). Nothing else was added, removed or reordered.
+  three namespace bindings the PLATEAU members need and the Railway document
+  did not declare: `core` (the CityGML 2.0 core namespace, which the Railway
+  root already binds as its DEFAULT namespace), `urf` (the PLATEAU
+  urban-function extension) and `uro` (the PLATEAU urban-object extension). Nothing else was added, removed or reordered.
 
   The two halves use different coordinate reference systems, which is
-  harmless and deliberate: the Track members are skipped before any coordinate
+  harmless and deliberate: the urf members are skipped before any coordinate
   of theirs is read, and the skipping is the whole point.
 
-  Used by tests/citygml_runner.rs to prove that `id-lookup` keeps draining the
-  document after it has found its target, so the skipped-member guard still
-  fires. Restoring an early exit on a hit makes that test fail.
+  Used by benchmark/readbench/tests/citygml_runner.rs to prove that
+  `id-lookup` keeps draining the document after a miss, so the skipped-member
+  guard still fires.
 -->
-<CityModel xmlns:veg="http://www.opengis.net/citygml/vegetation/2.0" xmlns:gml="http://www.opengis.net/gml" xmlns:grp="http://www.opengis.net/citygml/cityobjectgroup/2.0" xmlns:tran="http://www.opengis.net/citygml/transportation/2.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:wtr="http://www.opengis.net/citygml/waterbody/2.0" xmlns:tex="http://www.opengis.net/citygml/texturedsurface/2.0" xmlns:app="http://www.opengis.net/citygml/appearance/2.0" xmlns:luse="http://www.opengis.net/citygml/landuse/2.0" xmlns:frn="http://www.opengis.net/citygml/cityfurniture/2.0" xmlns:dem="http://www.opengis.net/citygml/relief/2.0" xmlns:bldg="http://www.opengis.net/citygml/building/2.0" xmlns="http://www.opengis.net/citygml/2.0" xmlns:xal="urn:oasis:names:tc:ciq:xsdschema:xAL:2.0" xmlns:brid="http://www.opengis.net/citygml/bridge/2.0" xmlns:gen="http://www.opengis.net/citygml/generics/2.0" xmlns:tun="http://www.opengis.net/citygml/tunnel/2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/citygml/vegetation/2.0 http://schemas.opengis.net/citygml/vegetation/2.0/vegetation.xsd http://www.opengis.net/citygml/cityobjectgroup/2.0 http://schemas.opengis.net/citygml/cityobjectgroup/2.0/cityObjectGroup.xsd http://www.opengis.net/citygml/transportation/2.0 http://schemas.opengis.net/citygml/transportation/2.0/transportation.xsd http://www.opengis.net/citygml/texturedsurface/2.0 http://schemas.opengis.net/citygml/texturedsurface/2.0/texturedSurface.xsd http://www.opengis.net/citygml/waterbody/2.0 http://schemas.opengis.net/citygml/waterbody/2.0/waterBody.xsd http://www.opengis.net/citygml/appearance/2.0 http://schemas.opengis.net/citygml/appearance/2.0/appearance.xsd http://www.opengis.net/citygml/landuse/2.0 http://schemas.opengis.net/citygml/landuse/2.0/landUse.xsd http://www.opengis.net/citygml/cityfurniture/2.0 http://schemas.opengis.net/citygml/cityfurniture/2.0/cityFurniture.xsd http://www.opengis.net/citygml/relief/2.0 http://schemas.opengis.net/citygml/relief/2.0/relief.xsd http://www.opengis.net/citygml/building/2.0 http://schemas.opengis.net/citygml/building/2.0/building.xsd http://www.opengis.net/citygml/bridge/2.0 http://schemas.opengis.net/citygml/bridge/2.0/bridge.xsd http://www.opengis.net/citygml/generics/2.0 http://schemas.opengis.net/citygml/generics/2.0/generics.xsd http://www.opengis.net/citygml/tunnel/2.0 http://schemas.opengis.net/citygml/tunnel/2.0/tunnel.xsd" xmlns:core="http://www.opengis.net/citygml/2.0" xmlns:uro="https://www.geospatial.jp/iur/uro/3.1">
+<CityModel xmlns:veg="http://www.opengis.net/citygml/vegetation/2.0" xmlns:gml="http://www.opengis.net/gml" xmlns:grp="http://www.opengis.net/citygml/cityobjectgroup/2.0" xmlns:tran="http://www.opengis.net/citygml/transportation/2.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:wtr="http://www.opengis.net/citygml/waterbody/2.0" xmlns:tex="http://www.opengis.net/citygml/texturedsurface/2.0" xmlns:app="http://www.opengis.net/citygml/appearance/2.0" xmlns:luse="http://www.opengis.net/citygml/landuse/2.0" xmlns:frn="http://www.opengis.net/citygml/cityfurniture/2.0" xmlns:dem="http://www.opengis.net/citygml/relief/2.0" xmlns:bldg="http://www.opengis.net/citygml/building/2.0" xmlns="http://www.opengis.net/citygml/2.0" xmlns:xal="urn:oasis:names:tc:ciq:xsdschema:xAL:2.0" xmlns:brid="http://www.opengis.net/citygml/bridge/2.0" xmlns:gen="http://www.opengis.net/citygml/generics/2.0" xmlns:tun="http://www.opengis.net/citygml/tunnel/2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/citygml/vegetation/2.0 http://schemas.opengis.net/citygml/vegetation/2.0/vegetation.xsd http://www.opengis.net/citygml/cityobjectgroup/2.0 http://schemas.opengis.net/citygml/cityobjectgroup/2.0/cityObjectGroup.xsd http://www.opengis.net/citygml/transportation/2.0 http://schemas.opengis.net/citygml/transportation/2.0/transportation.xsd http://www.opengis.net/citygml/texturedsurface/2.0 http://schemas.opengis.net/citygml/texturedsurface/2.0/texturedSurface.xsd http://www.opengis.net/citygml/waterbody/2.0 http://schemas.opengis.net/citygml/waterbody/2.0/waterBody.xsd http://www.opengis.net/citygml/appearance/2.0 http://schemas.opengis.net/citygml/appearance/2.0/appearance.xsd http://www.opengis.net/citygml/landuse/2.0 http://schemas.opengis.net/citygml/landuse/2.0/landUse.xsd http://www.opengis.net/citygml/cityfurniture/2.0 http://schemas.opengis.net/citygml/cityfurniture/2.0/cityFurniture.xsd http://www.opengis.net/citygml/relief/2.0 http://schemas.opengis.net/citygml/relief/2.0/relief.xsd http://www.opengis.net/citygml/building/2.0 http://schemas.opengis.net/citygml/building/2.0/building.xsd http://www.opengis.net/citygml/bridge/2.0 http://schemas.opengis.net/citygml/bridge/2.0/bridge.xsd http://www.opengis.net/citygml/generics/2.0 http://schemas.opengis.net/citygml/generics/2.0/generics.xsd http://www.opengis.net/citygml/tunnel/2.0 http://schemas.opengis.net/citygml/tunnel/2.0/tunnel.xsd" xmlns:core="http://www.opengis.net/citygml/2.0" xmlns:urf="https://www.geospatial.jp/iur/urf/3.2" xmlns:uro="https://www.geospatial.jp/iur/uro/3.2">
+
 <cityObjectMember>
     <bldg:Building gml:id="GMLID_BUI46739_1739_10911">
       <gml:description>Simple Chapel with a recess/loggia</gml:description>
@@ -1441,488 +1441,81 @@
     </grp:CityObjectGroup>
   </cityObjectMember>
 <core:cityObjectMember>
-		<tran:Track gml:id="trk_68254a26-5aa7-4390-8cc8-c12d571e163f">
-			<core:creationDate>2024-03-15</core:creationDate>
-			<tran:class codeSpace="../../codelists/TransportationComplex_class.xml">1020</tran:class>
-			<tran:function codeSpace="../../codelists/Track_function.xml">2</tran:function>
-			<tran:trafficArea>
-				<tran:TrafficArea gml:id="tfa_a877d325-6f92-4520-860f-3ceb09d02c11">
-					<tran:function codeSpace="../../codelists/TrafficArea_function.xml">2000</tran:function>
-					<tran:lod2MultiSurface>
-						<gml:MultiSurface>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_76aad17a-4f43-49ec-b378-4024ee93225c">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.702812168326666 139.41241100951459 0 35.70280596907775 139.41286137111913 0 35.70283815223804 139.4128613922079 0 35.70283814243507 139.41285987611104 0 35.702844312273015 139.41241167377598 0 35.702812168326666 139.41241100951459 0</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-						</gml:MultiSurface>
-					</tran:lod2MultiSurface>
-				</tran:TrafficArea>
-			</tran:trafficArea>
-			<tran:trafficArea>
-				<tran:TrafficArea gml:id="tfa_1d800aa1-dcd4-4a82-80be-05785f644295">
-					<tran:function codeSpace="../../codelists/TrafficArea_function.xml">2000</tran:function>
-					<tran:lod3MultiSurface>
-						<gml:MultiSurface>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_97241980-e71c-4b27-997c-92284910274e">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70283814243507 139.41285987611104 85.41328052902819 35.702834812827525 139.41255191216646 85.40770207801206 35.70283221198436 139.4127103920511 85.40764148155453 35.70283814243507 139.41285987611104 85.41328052902819</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_9185c560-c0e4-4014-b79e-4e699b541fbe">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.702834812827525 139.41255191216646 85.40770207801206 35.70283814243507 139.41285987611104 85.41328052902819 35.702844312100765 139.41241167415495 85.41264618851811 35.702834812827525 139.41255191216646 85.40770207801206</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_0ec2d50c-396e-4fd6-a2bd-129fb57896de">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70282030183768 139.4125515620266 85.39783916936283 35.702844312100765 139.41241167415495 85.41264618851811 35.70281216848164 139.41241100918558 85.39079982920659 35.70282030183768 139.4125515620266 85.39783916936283</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_cad3c086-fa08-4dfa-a50d-1fb6aafc706b">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.702844312100765 139.41241167415495 85.41264618851811 35.70282030183768 139.4125515620266 85.39783916936283 35.702834812827525 139.41255191216646 85.40770207801206 35.702844312100765 139.41241167415495 85.41264618851811</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_d7149629-6dc9-4a3d-b410-c1593ea28c07">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70283814243507 139.41285987611104 85.41328052902819 35.70283221198436 139.4127103920511 85.40764148155453 35.70280596907773 139.41286137111913 85.39143722697989 35.70283814243507 139.41285987611104 85.41328052902819</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_685a4aad-dd6c-442b-b9db-dbd62d76a284">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70280596907773 139.41286137111913 85.39143722697989 35.70283221198436 139.4127103920511 85.40764148155453 35.70280804963917 139.4127102402978 85.39122333134272 35.70280596907773 139.41286137111913 85.39143722697989</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_243f9efb-78d3-4c66-a32a-ca6c295bd89a">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70281023724193 139.41255131917512 85.39099841009157 35.70282030183768 139.4125515620266 85.39783916936283 35.70281216848164 139.41241100918558 85.39079982920659 35.70281023724193 139.41255131917512 85.39099841009157</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-						</gml:MultiSurface>
-					</tran:lod3MultiSurface>
-				</tran:TrafficArea>
-			</tran:trafficArea>
-			<tran:auxiliaryTrafficArea>
-				<tran:AuxiliaryTrafficArea gml:id="atr_a27a7d0d-6738-4f58-9eb4-d54728442949">
-					<tran:function codeSpace="../../codelists/AuxiliaryTrafficArea_function.xml">3000</tran:function>
-					<tran:lod3MultiSurface>
-						<gml:MultiSurface>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_83769380-99d0-4a04-8e5f-4e36bbccb38a">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70282030183768 139.4125515620266 85.39783916936283 35.70283221198436 139.4127103920511 85.40764148155453 35.702834812827525 139.41255191216646 85.40770207801206 35.70282030183768 139.4125515620266 85.39783916936283</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_0f65d10e-f0ea-44a1-9848-c5de91b7a3d2">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70283221198436 139.4127103920511 85.40764148155453 35.70282030183768 139.4125515620266 85.39783916936283 35.70280804963917 139.4127102402978 85.39122333134272 35.70283221198436 139.4127103920511 85.40764148155453</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_5b6d4c24-b26c-4911-a981-851c816bf7f0">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70280804963917 139.4127102402978 85.39122333134272 35.70282030183768 139.4125515620266 85.39783916936283 35.70281023724193 139.41255131917512 85.39099841009157 35.70280804963917 139.4127102402978 85.39122333134272</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-						</gml:MultiSurface>
-					</tran:lod3MultiSurface>
-				</tran:AuxiliaryTrafficArea>
-			</tran:auxiliaryTrafficArea>
-			<tran:lod1MultiSurface>
-				<gml:MultiSurface>
-					<gml:surfaceMember>
-						<gml:Polygon>
-							<gml:exterior>
-								<gml:LinearRing>
-									<gml:posList>35.702812168326666 139.41241100951459 0 35.70280596907775 139.41286137111913 0 35.70283815223804 139.4128613922079 0 35.70283814243507 139.41285987611104 0 35.702844312273015 139.41241167377598 0 35.702812168326666 139.41241100951459 0</gml:posList>
-								</gml:LinearRing>
-							</gml:exterior>
-						</gml:Polygon>
-					</gml:surfaceMember>
-				</gml:MultiSurface>
-			</tran:lod1MultiSurface>
-			<tran:lod2MultiSurface>
-				<gml:MultiSurface>
-					<gml:surfaceMember xlink:href="#poly_76aad17a-4f43-49ec-b378-4024ee93225c"></gml:surfaceMember>
-				</gml:MultiSurface>
-			</tran:lod2MultiSurface>
-			<tran:lod3MultiSurface>
-				<gml:MultiSurface>
-					<gml:surfaceMember xlink:href="#poly_97241980-e71c-4b27-997c-92284910274e"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_9185c560-c0e4-4014-b79e-4e699b541fbe"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_0ec2d50c-396e-4fd6-a2bd-129fb57896de"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_cad3c086-fa08-4dfa-a50d-1fb6aafc706b"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_d7149629-6dc9-4a3d-b410-c1593ea28c07"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_685a4aad-dd6c-442b-b9db-dbd62d76a284"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_243f9efb-78d3-4c66-a32a-ca6c295bd89a"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_83769380-99d0-4a04-8e5f-4e36bbccb38a"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_0f65d10e-f0ea-44a1-9848-c5de91b7a3d2"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_5b6d4c24-b26c-4911-a981-851c816bf7f0"></gml:surfaceMember>
-				</gml:MultiSurface>
-			</tran:lod3MultiSurface>
-			<uro:tranDataQualityAttribute>
-				<uro:DataQualityAttribute>
-					<uro:geometrySrcDescLod1 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">000</uro:geometrySrcDescLod1>
-					<uro:geometrySrcDescLod2 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">000</uro:geometrySrcDescLod2>
-					<uro:geometrySrcDescLod3 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">000</uro:geometrySrcDescLod3>
-					<uro:thematicSrcDesc codeSpace="../../codelists/DataQualityAttribute_thematicSrcDesc.xml">000</uro:thematicSrcDesc>
-					<uro:thematicSrcDesc codeSpace="../../codelists/DataQualityAttribute_thematicSrcDesc.xml">023</uro:thematicSrcDesc>
-					<uro:lodType codeSpace="../../codelists/Road_lodType.xml">3.0</uro:lodType>
-					<uro:publicSurveyDataQualityAttribute>
-						<uro:PublicSurveyDataQualityAttribute>
-							<uro:srcScaleLod1 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_srcScale.xml">1</uro:srcScaleLod1>
-							<uro:srcScaleLod2 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_srcScale.xml">1</uro:srcScaleLod2>
-							<uro:srcScaleLod3 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_srcScale.xml">2</uro:srcScaleLod3>
-							<uro:publicSurveySrcDescLod1 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_publicSurveySrcDesc.xml">023</uro:publicSurveySrcDescLod1>
-							<uro:publicSurveySrcDescLod2 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_publicSurveySrcDesc.xml">023</uro:publicSurveySrcDescLod2>
-							<uro:publicSurveySrcDescLod3 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_publicSurveySrcDesc.xml">011</uro:publicSurveySrcDescLod3>
-						</uro:PublicSurveyDataQualityAttribute>
-					</uro:publicSurveyDataQualityAttribute>
-				</uro:DataQualityAttribute>
-			</uro:tranDataQualityAttribute>
-		</tran:Track>
-	</core:cityObjectMember>
-	<core:cityObjectMember>
-		<tran:Track gml:id="trk_a08218d6-ae9d-4b9a-bdc9-54d959efaf28">
-			<core:creationDate>2024-03-15</core:creationDate>
-			<tran:class codeSpace="../../codelists/TransportationComplex_class.xml">1020</tran:class>
-			<tran:function codeSpace="../../codelists/Track_function.xml">2</tran:function>
-			<tran:trafficArea>
-				<tran:TrafficArea gml:id="tfa_f920efed-3608-4a1f-aaee-b4d7d1893d07">
-					<tran:function codeSpace="../../codelists/TrafficArea_function.xml">2000</tran:function>
-					<tran:lod2MultiSurface>
-						<gml:MultiSurface>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_52d9757c-f4b5-480d-8540-02e3f5a2eeca">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70195579202734 139.41239331468128 0 35.70192875208404 139.41239356731694 0 35.701927859309876 139.41280268097327 0 35.70193270577296 139.4128026367376 0 35.70195489805868 139.4128031180346 0 35.70195579202734 139.41239331468128 0</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-						</gml:MultiSurface>
-					</tran:lod2MultiSurface>
-				</tran:TrafficArea>
-			</tran:trafficArea>
-			<tran:trafficArea>
-				<tran:TrafficArea gml:id="tfa_fabcfa4f-4323-48af-a0da-0c4da4d055c4">
-					<tran:function codeSpace="../../codelists/TrafficArea_function.xml">2000</tran:function>
-					<tran:lod3MultiSurface>
-						<gml:MultiSurface>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_3a868b04-d86b-4570-b61a-efe8ef38f5fa">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70195148762501 139.41269161814984 85.05262803721341 35.70192445034574 139.4126916859769 85.03860615934568 35.701949880104955 139.4128030092731 85.05125113502068 35.70195148762501 139.41269161814984 85.05262803721341</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_97542112-79ff-42e8-8f43-e274fe4aeb24">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.701949880104955 139.4128030092731 85.05125113502068 35.70192445034574 139.4126916859769 85.03860615934568 35.70192284786936 139.41280272755355 85.03723357739806 35.701949880104955 139.4128030092731 85.05125113502068</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-						</gml:MultiSurface>
-					</tran:lod3MultiSurface>
-				</tran:TrafficArea>
-			</tran:trafficArea>
-			<tran:trafficArea>
-				<tran:TrafficArea gml:id="tfa_90f092fe-aa04-4a93-97bd-c12a197c75ae">
-					<tran:function codeSpace="../../codelists/TrafficArea_function.xml">2000</tran:function>
-					<tran:lod3MultiSurface>
-						<gml:MultiSurface>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_6dcb8875-dc3e-4450-a55f-ef3e6a69683a">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70195302630226 139.41253035568477 85.05421254891377 35.70192875208404 139.41239356731694 85.04229119588999 35.701926778415356 139.4125303526753 85.04060039588052 35.70195302630226 139.41253035568477 85.05421254891377</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_d4e95347-2d7b-42c0-8317-f3b44cca3ace">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70192875208404 139.41239356731694 85.04229119588999 35.70195302630226 139.41253035568477 85.05421254891377 35.70195579202734 139.41239331468128 85.05631535685565 35.70192875208404 139.41239356731694 85.04229119588999</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_5cb10ca1-dc98-4808-ba42-3bdd90d2993d">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70195579202734 139.41239331468128 85.05631535685565 35.70195302630226 139.41253035568477 85.05421254891377 35.70195378900306 139.41253213454527 85.05459940899092 35.70195579202734 139.41239331468128 85.05631535685565</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-						</gml:MultiSurface>
-					</tran:lod3MultiSurface>
-				</tran:TrafficArea>
-			</tran:trafficArea>
-			<tran:auxiliaryTrafficArea>
-				<tran:AuxiliaryTrafficArea gml:id="atr_9061dc68-7cb0-46e0-b864-d435d88e16a9">
-					<tran:function codeSpace="../../codelists/AuxiliaryTrafficArea_function.xml">3000</tran:function>
-					<tran:lod3MultiSurface>
-						<gml:MultiSurface>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_484b3ab3-b00e-4ad3-8d15-d24aecf9a482">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70195378900306 139.41253213454527 85.05459940899092 35.70192445034574 139.4126916859769 85.03860615934568 35.70195148762501 139.41269161814984 85.05262803721341 35.70195378900306 139.41253213454527 85.05459940899092</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_939ecb7b-e781-4838-b0ab-58be46e55604">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70192445034574 139.4126916859769 85.03860615934568 35.70195378900306 139.41253213454527 85.05459940899092 35.701926778415356 139.4125303526753 85.04060039588052 35.70192445034574 139.4126916859769 85.03860615934568</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_2a9f3656-b53e-43b3-8360-86dc9f03fcad">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.701926778415356 139.4125303526753 85.04060039588052 35.70195378900306 139.41253213454527 85.05459940899092 35.70195302630226 139.41253035568477 85.05421254891368 35.701926778415356 139.4125303526753 85.04060039588052</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-						</gml:MultiSurface>
-					</tran:lod3MultiSurface>
-				</tran:AuxiliaryTrafficArea>
-			</tran:auxiliaryTrafficArea>
-			<tran:lod1MultiSurface>
-				<gml:MultiSurface>
-					<gml:surfaceMember>
-						<gml:Polygon>
-							<gml:exterior>
-								<gml:LinearRing>
-									<gml:posList>35.70195579202734 139.41239331468128 0 35.70192875208404 139.41239356731694 0 35.701927859309876 139.41280268097327 0 35.70193270577296 139.4128026367376 0 35.70195489805868 139.4128031180346 0 35.70195579202734 139.41239331468128 0</gml:posList>
-								</gml:LinearRing>
-							</gml:exterior>
-						</gml:Polygon>
-					</gml:surfaceMember>
-				</gml:MultiSurface>
-			</tran:lod1MultiSurface>
-			<tran:lod2MultiSurface>
-				<gml:MultiSurface>
-					<gml:surfaceMember xlink:href="#poly_52d9757c-f4b5-480d-8540-02e3f5a2eeca"></gml:surfaceMember>
-				</gml:MultiSurface>
-			</tran:lod2MultiSurface>
-			<tran:lod3MultiSurface>
-				<gml:MultiSurface>
-					<gml:surfaceMember xlink:href="#poly_3a868b04-d86b-4570-b61a-efe8ef38f5fa"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_97542112-79ff-42e8-8f43-e274fe4aeb24"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_6dcb8875-dc3e-4450-a55f-ef3e6a69683a"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_d4e95347-2d7b-42c0-8317-f3b44cca3ace"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_5cb10ca1-dc98-4808-ba42-3bdd90d2993d"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_484b3ab3-b00e-4ad3-8d15-d24aecf9a482"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_939ecb7b-e781-4838-b0ab-58be46e55604"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_2a9f3656-b53e-43b3-8360-86dc9f03fcad"></gml:surfaceMember>
-				</gml:MultiSurface>
-			</tran:lod3MultiSurface>
-			<uro:tranDataQualityAttribute>
-				<uro:DataQualityAttribute>
-					<uro:geometrySrcDescLod1 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">000</uro:geometrySrcDescLod1>
-					<uro:geometrySrcDescLod2 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">000</uro:geometrySrcDescLod2>
-					<uro:geometrySrcDescLod3 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">000</uro:geometrySrcDescLod3>
-					<uro:thematicSrcDesc codeSpace="../../codelists/DataQualityAttribute_thematicSrcDesc.xml">000</uro:thematicSrcDesc>
-					<uro:thematicSrcDesc codeSpace="../../codelists/DataQualityAttribute_thematicSrcDesc.xml">023</uro:thematicSrcDesc>
-					<uro:lodType codeSpace="../../codelists/Road_lodType.xml">3.0</uro:lodType>
-					<uro:publicSurveyDataQualityAttribute>
-						<uro:PublicSurveyDataQualityAttribute>
-							<uro:srcScaleLod1 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_srcScale.xml">1</uro:srcScaleLod1>
-							<uro:srcScaleLod2 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_srcScale.xml">1</uro:srcScaleLod2>
-							<uro:srcScaleLod3 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_srcScale.xml">2</uro:srcScaleLod3>
-							<uro:publicSurveySrcDescLod1 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_publicSurveySrcDesc.xml">023</uro:publicSurveySrcDescLod1>
-							<uro:publicSurveySrcDescLod2 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_publicSurveySrcDesc.xml">023</uro:publicSurveySrcDescLod2>
-							<uro:publicSurveySrcDescLod3 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_publicSurveySrcDesc.xml">011</uro:publicSurveySrcDescLod3>
-						</uro:PublicSurveyDataQualityAttribute>
-					</uro:publicSurveyDataQualityAttribute>
-				</uro:DataQualityAttribute>
-			</uro:tranDataQualityAttribute>
-		</tran:Track>
-	</core:cityObjectMember>
-	<core:cityObjectMember>
-		<tran:Track gml:id="trk_5a9d1556-f670-4d76-ae6b-ad4750173dc3">
-			<core:creationDate>2024-03-15</core:creationDate>
-			<tran:class codeSpace="../../codelists/TransportationComplex_class.xml">1020</tran:class>
-			<tran:function codeSpace="../../codelists/Track_function.xml">2</tran:function>
-			<tran:trafficArea>
-				<tran:TrafficArea gml:id="tfa_5a5952b7-ac66-485c-b759-cc20cc733d4f">
-					<tran:function codeSpace="../../codelists/TrafficArea_function.xml">2000</tran:function>
-					<tran:lod2MultiSurface>
-						<gml:MultiSurface>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_84ea446b-6171-4f79-8ffc-bb667188d478">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.701360048989855 139.41238035771556 0 35.70135816201996 139.4128237764615 0 35.70148535253148 139.4128262027319 0 35.70148569780995 139.412796033171 0 35.70148745530939 139.41238289154686 0 35.701360048989855 139.41238035771556 0</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-						</gml:MultiSurface>
-					</tran:lod2MultiSurface>
-				</tran:TrafficArea>
-			</tran:trafficArea>
-			<tran:trafficArea>
-				<tran:TrafficArea gml:id="tfa_98ccd379-8bd4-42d7-b87b-f4ebfe4f1370">
-					<tran:function codeSpace="../../codelists/TrafficArea_function.xml">2000</tran:function>
-					<tran:lod3MultiSurface>
-						<gml:MultiSurface>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_846edfdf-50d4-4a1b-9e92-34f0e9956019">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70143575650047 139.4128252566435 84.84750323451124 35.7014853525315 139.4128262027319 84.8767963804432 35.70148569780997 139.412796033171 84.87716794189721 35.70143575650047 139.4128252566435 84.84750323451124</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_bca6967b-f0ed-4d27-9a11-0e6471fe62b7">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.701364029525365 139.41238043700983 84.82296297450515 35.70135816201996 139.4128237764615 84.8193162061511 35.70143158554568 139.4123817806489 84.84750323451124 35.701364029525365 139.41238043700983 84.82296297450515</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_75083897-e2ab-4662-9356-613caacb06c2">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70135816201996 139.4128237764615 84.8193162061511 35.70148569780997 139.412796033171 84.87716794189721 35.70143158554568 139.4123817806489 84.84750323451124 35.70135816201996 139.4128237764615 84.8193162061511</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_f1078429-b3bc-4dfc-8018-236d01283e97">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70149116461629 139.41238296563375 84.88269243956357 35.70143158554568 139.4123817806489 84.84750323451124 35.70148569780997 139.412796033171 84.87716794189721 35.70149116461629 139.41238296563375 84.88269243956357</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-							<gml:surfaceMember>
-								<gml:Polygon gml:id="poly_72ce8e56-006c-427d-8a6a-aeead4ad8475">
-									<gml:exterior>
-										<gml:LinearRing>
-											<gml:posList>35.70143575650047 139.4128252566435 84.84750323451124 35.70148569780997 139.412796033171 84.87716794189721 35.70135816201996 139.4128237764615 84.8193162061511 35.70143575650047 139.4128252566435 84.84750323451124</gml:posList>
-										</gml:LinearRing>
-									</gml:exterior>
-								</gml:Polygon>
-							</gml:surfaceMember>
-						</gml:MultiSurface>
-					</tran:lod3MultiSurface>
-				</tran:TrafficArea>
-			</tran:trafficArea>
-			<tran:lod1MultiSurface>
-				<gml:MultiSurface>
-					<gml:surfaceMember>
-						<gml:Polygon>
-							<gml:exterior>
-								<gml:LinearRing>
-									<gml:posList>35.701360048989855 139.41238035771556 0 35.70135816201996 139.4128237764615 0 35.70148535253148 139.4128262027319 0 35.70148569780995 139.412796033171 0 35.70148745530939 139.41238289154686 0 35.701360048989855 139.41238035771556 0</gml:posList>
-								</gml:LinearRing>
-							</gml:exterior>
-						</gml:Polygon>
-					</gml:surfaceMember>
-				</gml:MultiSurface>
-			</tran:lod1MultiSurface>
-			<tran:lod2MultiSurface>
-				<gml:MultiSurface>
-					<gml:surfaceMember xlink:href="#poly_84ea446b-6171-4f79-8ffc-bb667188d478"></gml:surfaceMember>
-				</gml:MultiSurface>
-			</tran:lod2MultiSurface>
-			<tran:lod3MultiSurface>
-				<gml:MultiSurface>
-					<gml:surfaceMember xlink:href="#poly_846edfdf-50d4-4a1b-9e92-34f0e9956019"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_bca6967b-f0ed-4d27-9a11-0e6471fe62b7"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_75083897-e2ab-4662-9356-613caacb06c2"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_f1078429-b3bc-4dfc-8018-236d01283e97"></gml:surfaceMember>
-					<gml:surfaceMember xlink:href="#poly_72ce8e56-006c-427d-8a6a-aeead4ad8475"></gml:surfaceMember>
-				</gml:MultiSurface>
-			</tran:lod3MultiSurface>
-			<uro:tranDataQualityAttribute>
-				<uro:DataQualityAttribute>
-					<uro:geometrySrcDescLod1 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">000</uro:geometrySrcDescLod1>
-					<uro:geometrySrcDescLod2 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">000</uro:geometrySrcDescLod2>
-					<uro:geometrySrcDescLod3 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">000</uro:geometrySrcDescLod3>
-					<uro:thematicSrcDesc codeSpace="../../codelists/DataQualityAttribute_thematicSrcDesc.xml">000</uro:thematicSrcDesc>
-					<uro:thematicSrcDesc codeSpace="../../codelists/DataQualityAttribute_thematicSrcDesc.xml">023</uro:thematicSrcDesc>
-					<uro:lodType codeSpace="../../codelists/Road_lodType.xml">3.0</uro:lodType>
-					<uro:publicSurveyDataQualityAttribute>
-						<uro:PublicSurveyDataQualityAttribute>
-							<uro:srcScaleLod1 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_srcScale.xml">1</uro:srcScaleLod1>
-							<uro:srcScaleLod2 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_srcScale.xml">1</uro:srcScaleLod2>
-							<uro:srcScaleLod3 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_srcScale.xml">2</uro:srcScaleLod3>
-							<uro:publicSurveySrcDescLod1 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_publicSurveySrcDesc.xml">023</uro:publicSurveySrcDescLod1>
-							<uro:publicSurveySrcDescLod2 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_publicSurveySrcDesc.xml">023</uro:publicSurveySrcDescLod2>
-							<uro:publicSurveySrcDescLod3 codeSpace="../../codelists/PublicSurveyDataQualityAttribute_publicSurveySrcDesc.xml">011</uro:publicSurveySrcDescLod3>
-						</uro:PublicSurveyDataQualityAttribute>
-					</uro:publicSurveyDataQualityAttribute>
-				</uro:DataQualityAttribute>
-			</uro:tranDataQualityAttribute>
-		</tran:Track>
-	</core:cityObjectMember>
+    <urf:FirePreventionDistrict gml:id="urf_aa9fab84-6e72-4224-9a2e-ef5cf5452497"><core:creationDate>2026-03-13</core:creationDate>
+      <urf:function codeSpace="../../codelists/Common_districtsAndZonesType.xml">24</urf:function>
+      <urf:usage codeSpace="../../codelists/FirePreventionDistrict_usage.xml">1</urf:usage>
+      <urf:validFrom>2004-06-24</urf:validFrom>
+      <urf:validFromType codeSpace="../../codelists/Common_validType.xml">1</urf:validFromType>
+      <urf:custodian>江東区</urf:custodian>
+      <urf:notificationNumber>江東区告示第157号</urf:notificationNumber>
+      <urf:finalNotificationDate>2022-12-19</urf:finalNotificationDate>
+      <urf:finalNotificationNumber>江東区告示第386号</urf:finalNotificationNumber>
+      <urf:prefecture codeSpace="../../codelists/Common_localPublicAuthorities.xml">13</urf:prefecture>
+      <urf:city codeSpace="../../codelists/Common_localPublicAuthorities.xml">13100</urf:city>
+      <urf:lod1MultiSurface><gml:MultiSurface srsName="http://www.opengis.net/def/crs/EPSG/0/6697" srsDimension="3"><gml:surfaceMember><gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>35.66762592777675 139.80044061128262 0 35.66762589161923 139.8004402357374 0 35.66760930402866 139.8001361935991 0 35.66760759179212 139.80010486818784 0 35.66760596103718 139.8000748682499 0 35.66760477447665 139.80002141772303 0 35.66760323195138 139.79995207232315 0 35.667618030563546 139.79958935250264 0 35.66761873777855 139.79957197703095 0 35.66650244304334 139.79971071746144 0 35.66653168261897 139.80006411344016 0 35.66679876823209 139.80002967237598 0 35.66680238456594 139.8000688833598 0 35.66683394886863 139.80045613513764 0 35.66684064148347 139.80053845656167 0 35.666894686017464 139.80053167443938 0 35.66693841917709 139.80052615574678 0 35.66715299287117 139.8004990830222 0 35.667190623937735 139.80049434000065 0 35.66720865079892 139.80049207926947 0 35.66736856713659 139.80047223065918 0 35.66753469372361 139.80045161725778 0 35.66757150461726 139.8004471727663 0 35.66762592777675 139.80044061128262 0</gml:posList>
+                </gml:LinearRing>
+              </gml:exterior>
+            </gml:Polygon>
+          </gml:surfaceMember>
+        </gml:MultiSurface>
+      </urf:lod1MultiSurface>
+      <urf:dataQualityAttribute><uro:DataQualityAttribute><uro:geometrySrcDescLod1 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">400</uro:geometrySrcDescLod1>
+          <uro:thematicSrcDesc codeSpace="../../codelists/DataQualityAttribute_thematicSrcDesc.xml">400</uro:thematicSrcDesc>
+        </uro:DataQualityAttribute>
+      </urf:dataQualityAttribute>
+      <urf:location>江東区古石場二丁目</urf:location>
+    </urf:FirePreventionDistrict>
+  </core:cityObjectMember>
+<core:cityObjectMember>
+    <urf:FirePreventionDistrict gml:id="urf_7f6cdcce-77bc-4fd7-a815-b8323fde7b98"><core:creationDate>2026-03-13</core:creationDate>
+      <urf:function codeSpace="../../codelists/Common_districtsAndZonesType.xml">24</urf:function>
+      <urf:usage codeSpace="../../codelists/FirePreventionDistrict_usage.xml">1</urf:usage>
+      <urf:validFrom>1999-04-13</urf:validFrom>
+      <urf:validFromType codeSpace="../../codelists/Common_validType.xml">3</urf:validFromType>
+      <urf:custodian>葛飾区</urf:custodian>
+      <urf:notificationNumber>葛飾区告示第94号</urf:notificationNumber>
+      <urf:finalNotificationDate>1999-04-01</urf:finalNotificationDate>
+      <urf:finalNotificationNumber>葛飾区告示第184号</urf:finalNotificationNumber>
+      <urf:prefecture codeSpace="../../codelists/Common_localPublicAuthorities.xml">13</urf:prefecture>
+      <urf:city codeSpace="../../codelists/Common_localPublicAuthorities.xml">13100</urf:city>
+      <urf:lod1MultiSurface><gml:MultiSurface srsName="http://www.opengis.net/def/crs/EPSG/0/6697" srsDimension="3"><gml:surfaceMember><gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>35.73462335404084 139.8725999570792 0 35.73465416198863 139.8726571935692 0 35.734648956243014 139.8724786506307 0 35.73464655833076 139.87239632189278 0 35.73458622836112 139.87130344928082 0 35.73456762845963 139.8713185528014 0 35.73442867457159 139.87143148100597 0 35.73442834999666 139.87143174617378 0 35.73401065121776 139.871764867847 0 35.73393744132108 139.87182478411967 0 35.733971350833336 139.8724391289104 0 35.73397486305876 139.87255939839326 0 35.73397513934567 139.87256901641246 0 35.73397613760647 139.87260355284346 0 35.7340119566308 139.8726071522628 0 35.73413103795494 139.87257294004365 0 35.73429790594118 139.87249453081157 0 35.73436741255115 139.87245929909457 0 35.734479200070076 139.87240264106916 0 35.73451075192437 139.8723899431007 0 35.73455723397852 139.87247708013612 0 35.734558810415365 139.8724799994591 0 35.734578556362614 139.87251670107324 0 35.73462335404084 139.8725999570792 0</gml:posList>
+                </gml:LinearRing>
+              </gml:exterior>
+            </gml:Polygon>
+          </gml:surfaceMember>
+        </gml:MultiSurface>
+      </urf:lod1MultiSurface>
+      <urf:dataQualityAttribute><uro:DataQualityAttribute><uro:geometrySrcDescLod1 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">400</uro:geometrySrcDescLod1>
+          <uro:thematicSrcDesc codeSpace="../../codelists/DataQualityAttribute_thematicSrcDesc.xml">400</uro:thematicSrcDesc>
+        </uro:DataQualityAttribute>
+      </urf:dataQualityAttribute>
+      <urf:location>葛飾区奥戸九丁目</urf:location>
+    </urf:FirePreventionDistrict>
+  </core:cityObjectMember>
+<core:cityObjectMember>
+    <urf:FirePreventionDistrict gml:id="urf_d60fbdd6-7038-4e37-b4c6-8c31be142f3d"><core:creationDate>2026-03-13</core:creationDate>
+      <urf:function codeSpace="../../codelists/Common_districtsAndZonesType.xml">24</urf:function>
+      <urf:usage codeSpace="../../codelists/FirePreventionDistrict_usage.xml">1</urf:usage>
+      <urf:validFrom>2004-06-24</urf:validFrom>
+      <urf:validFromType codeSpace="../../codelists/Common_validType.xml">1</urf:validFromType>
+      <urf:custodian>北区</urf:custodian>
+      <urf:notificationNumber>北区告示第238号</urf:notificationNumber>
+      <urf:finalNotificationDate>2004-06-02</urf:finalNotificationDate>
+      <urf:finalNotificationNumber>北区告示第122号</urf:finalNotificationNumber>
+      <urf:prefecture codeSpace="../../codelists/Common_localPublicAuthorities.xml">13</urf:prefecture>
+      <urf:city codeSpace="../../codelists/Common_localPublicAuthorities.xml">13100</urf:city>
+      <urf:lod1MultiSurface><gml:MultiSurface srsName="http://www.opengis.net/def/crs/EPSG/0/6697" srsDimension="3"><gml:surfaceMember><gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>35.738109133671806 139.7600218035991 0 35.73825312631476 139.75980007260054 0 35.73825622431936 139.7597956806677 0 35.73826733753677 139.75977997145478 0 35.73827691222753 139.7597688517397 0 35.73828862162526 139.7597552425407 0 35.73830334818524 139.7597377058111 0 35.7383131388676 139.759726044161 0 35.738335990902854 139.75970063938084 0 35.73834770966499 139.75968761610218 0 35.738374120191935 139.75965913455292 0 35.73838356056066 139.75964947427755 0 35.73839334322966 139.75963945990375 0 35.7384581243036 139.75958080523327 0 35.73850536554535 139.75953802047593 0 35.73859688332083 139.75945379128495 0 35.7386209791979 139.75942841835442 0 35.738629014162505 139.75941996438996 0 35.73864392949 139.75940166450735 0 35.73865226679168 139.7593864994586 0 35.73865540904041 139.75938079182055 0 35.73865726274151 139.75937573765896 0 35.73866240093727 139.7593617695779 0 35.738666677738024 139.75933951052812 0 35.738670287935804 139.75930326665068 0 35.738670310720494 139.75926705925937 0 35.73866833632339 139.75925174896375 0 35.738666878151975 139.75924041823725 0 35.73865993304542 139.7592036645218 0 35.73865828956174 139.75919879048857 0 35.73865291664475 139.75918287528532 0 35.7386421848756 139.75915924818804 0 35.73863143903554 139.7591420444603 0 35.73862623302686 139.75913370225177 0 35.73856750048034 139.75906108781476 0 35.73847514569672 139.7589425353109 0 35.73837601611966 139.75881520015474 0 35.73826837078804 139.75867698346678 0 35.73819366935601 139.75858105725348 0 35.73791908474933 139.7590575109681 0 35.73785617463572 139.75916794823388 0 35.737790140073464 139.7592838828342 0 35.73773689432516 139.75938284619718 0 35.73771387478933 139.7594289359726 0 35.737692565734385 139.7594716190324 0 35.73764852587397 139.75957568132068 0 35.73761689082343 139.75966852175316 0 35.737634219852325 139.75967641050494 0 35.73764366004937 139.7596811888613 0 35.737677832316216 139.75969851460306 0 35.73772043694736 139.75972339459707 0 35.73772400772304 139.7597256466438 0 35.73772743422656 139.75972781037905 0 35.737759605177295 139.75974467366677 0 35.737852255743235 139.759802751785 0 35.73779545108154 139.7599195949955 0 35.73768214748212 139.76015262836154 0 35.737679671827955 139.76015771617915 0 35.73791845410151 139.7604583200844 0 35.73806381044431 139.76064131262518 0 35.73816406510751 139.76051553020804 0 35.738323034812595 139.76031608548828 0 35.738230143838166 139.76018828988398 0 35.738109133671806 139.7600218035991 0</gml:posList>
+                </gml:LinearRing>
+              </gml:exterior>
+            </gml:Polygon>
+          </gml:surfaceMember>
+        </gml:MultiSurface>
+      </urf:lod1MultiSurface>
+      <urf:dataQualityAttribute><uro:DataQualityAttribute><uro:geometrySrcDescLod1 codeSpace="../../codelists/DataQualityAttribute_geometrySrcDesc.xml">400</uro:geometrySrcDescLod1>
+          <uro:thematicSrcDesc codeSpace="../../codelists/DataQualityAttribute_thematicSrcDesc.xml">400</uro:thematicSrcDesc>
+        </uro:DataQualityAttribute>
+      </urf:dataQualityAttribute>
+      <urf:location>北区田端六丁目</urf:location>
+    </urf:FirePreventionDistrict>
+  </core:cityObjectMember>
 </CityModel>
