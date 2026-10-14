@@ -44,7 +44,7 @@ thiserror = "2"
 # cjseq 0.5 is not on crates.io yet, so it comes from git, pinned to a commit
 # on the fork's `main`; crates.io refuses a crate with a git dependency, which
 # is what keeps `cityparquet` unpublished.
-cjseq = { git = "https://github.com/HideBa/cjseq", rev = "0d92c4b51f4b32b9dc2aadf649b4b6caf8ad69f7" }
+cjseq = { git = "https://github.com/HideBa/cjseq", rev = "4e0e1c642eec05a4671e76b5e6e6b62d0ffd21ea" }
 quick-xml = "0.39"
 chrono = "0.4"
 flate2 = "1"
