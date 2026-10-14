@@ -128,18 +128,21 @@ new_sandbox() {
   dir="$(mktemp -d "${TMPDIR:-/tmp}/readbench_prepare_test.XXXXXX")"
   mkdir -p "$dir/repo/benchmark/scripts" "$dir/repo/lib/cityparquet-rs" "$dir/bin" "$dir/data" "$dir/out"
   mkdir -p "$dir/repo/benchmark/readbench"
-  # The corpus normalisation, stubbed: it copies INPUT, and when told to drop
-  # (STUB_NORMALISE_DROPPED > 0) appends a marker feature, so a case can see
-  # which source the rest of the chain was built from.
+  # The corpus normalisation, stubbed: it copies INPUT, and when either rule
+  # is told to change something (STUB_NORMALISE_DROPPED > 0: geometries
+  # dropped; STUB_NORMALISE_SEMANTICS > 0: semantics removed below LoD 2)
+  # appends a marker feature, so a case can see which source the rest of the
+  # chain was built from.
   cat >"$dir/bin/lod-normalise" <<'NORMALISE_STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 cp "$1" "$2"
 dropped=${STUB_NORMALISE_DROPPED:-0}
-if [[ $dropped -gt 0 ]]; then
+semantics=${STUB_NORMALISE_SEMANTICS:-0}
+if [[ $dropped -gt 0 || $semantics -gt 0 ]]; then
   printf '{"type":"CityJSONFeature","id":"normalised"}\n' >>"$2"
 fi
-echo "dropped=$dropped geometries=9->$((9 - dropped)) vertices=4->4"
+echo "dropped=$dropped semantics_removed=$semantics geometries=9->$((9 - dropped)) vertices=4->4"
 NORMALISE_STUB
   chmod +x "$dir/bin/lod-normalise"
   # The CityJSONSeq feature order, stubbed: the stream keeps its order and
@@ -1655,7 +1658,7 @@ case_an_unchanged_source_is_used_as_is() {
     fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
     return
   fi
-  if ! log_mentions "0 geometries dropped" || ! cmp -s "$dir/data/tiny.city.jsonl" "$dir/out/tiny.city.jsonl"; then
+  if ! log_mentions "0 geometries dropped; semantics removed from 0 geometries (LoD < 2)" || ! cmp -s "$dir/data/tiny.city.jsonl" "$dir/out/tiny.city.jsonl"; then
     fail "$name" "the CityJSONSeq artefact differs from the source; log: $(cat "$LAST_LOG")"
     return
   fi
@@ -1693,6 +1696,164 @@ case_a_normalised_dataset_refuses_every_stage() {
   fi
   if ! grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.fcb"; then
     fail "$name" "the refusal does not name the FlatCityBuf file; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 9': the second rule — no semantics below LoD 2 — is reported, and a
+# source it alone changed still replaces INPUT for the whole chain.
+# --------------------------------------------------------------------------
+case_the_semantics_rule_is_reported_and_feeds_the_chain() {
+  local name="a source only the semantics rule changed feeds every artefact"
+  local dir
+  dir="$(new_sandbox cargo)"
+  STUB_NORMALISE_SEMANTICS=4 run_prepare "$dir" --formats cityjsonseq,cityparquet "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "normalise tiny: one geometry per LoD and object: 0 geometries dropped; semantics removed from 4 geometries (LoD < 2) (geometries=9->9 vertices=4->4)"; then
+    fail "$name" "no normalisation log line naming both rules; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! grep -qF '"id":"normalised"' "$dir/out/tiny.city.jsonl"; then
+    fail "$name" "the CityJSONSeq artefact was not built from the normalised source"
+    return
+  fi
+  pass "$name"
+}
+
+# A prebuilt LOD_NORMALISE from before the semantics rule prints no
+# `semantics_removed=`; using it would build artefacts that still carry the
+# semantics CityGML 2.0 cannot hold, under the current chain's stamp.
+case_a_normaliser_without_the_semantics_count_is_refused() {
+  local name="a normaliser that prints no semantics count is refused"
+  local dir
+  dir="$(new_sandbox cargo)"
+  cat >"$dir/bin/old-lod-normalise" <<'OLD_NORMALISE_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+cp "$1" "$2"
+echo "dropped=0 geometries=9->9 vertices=4->4"
+OLD_NORMALISE_STUB
+  chmod +x "$dir/bin/old-lod-normalise"
+  RUN_PREPARE_LOD_NORMALISE="$dir/bin/old-lod-normalise" run_prepare "$dir" --formats cityparquet "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "lod-normalise printed no semantics count"; then
+    return
+  fi
+  if [[ -e "$dir/out/tiny.parquet" ]]; then
+    fail "$name" "an artefact was built before the refusal"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 9'': chain version 9 — the semantics rule — changed every stage but
+# the CityGML one for a dataset the rule changed. The CityGML artefact is
+# synthesised by `citygml-tools from-cityjson -v 2.0`, which cannot write
+# semantics below LoD 2 and so writes the same document with or without
+# them, and the 1 M-object synthesis runs for hours: a directory stamped 8
+# keeps its `.gml` and rebuilds the other four.
+# --------------------------------------------------------------------------
+case_a_semantics_only_change_keeps_the_citygml() {
+  local name="a dataset only the semantics rule changed refuses every stage but the CityGML one"
+  local dir out
+  dir="$(new_sandbox cargo fcb cjseq citygml-tools)"
+  STUB_NORMALISE_SEMANTICS=2 run_prepare "$dir" "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "first run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  printf '8\n' >"$dir/out/.readbench-chain/tiny"
+  STUB_NORMALISE_SEMANTICS=2 run_prepare "$dir" "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "built by an older derivation chain"; then
+    return
+  fi
+  for out in tiny.city.json tiny.city.jsonl tiny.fcb tiny.parquet; do
+    if ! grep -F "rm -rf" "$LAST_LOG" | tr ' ' '\n' | grep -qxF "$dir/out/$out"; then
+      fail "$name" "the refusal does not name $out; log: $(cat "$LAST_LOG")"
+      return
+    fi
+  done
+  if grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.gml"; then
+    fail "$name" "the refusal names the CityGML artefact, whose content did not change; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  # Removing what the refusal names is enough: the next run rebuilds those
+  # four and keeps the `.gml`.
+  rm -rf "$dir/out/tiny.city.json" "$dir/out/tiny.city.jsonl" "$dir/out/tiny.fcb" "$dir/out/tiny.parquet"
+  STUB_NORMALISE_SEMANTICS=2 run_prepare "$dir" "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "run after removal: exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "skip $dir/out/tiny.gml (already present)"; then
+    fail "$name" "the CityGML artefact was not kept; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ "$(cat "$dir/out/.readbench-chain/tiny")" != "9" ]]; then
+    fail "$name" "the stamp is '$(cat "$dir/out/.readbench-chain/tiny")', not 9"
+    return
+  fi
+  pass "$name"
+}
+
+# The geometry rule (chain version 7) is older than a stamp of 8, so a
+# dataset only it changes — Vienna in the corpus — is current at 8, every
+# stage, the CityGML one included; and so is a dataset neither rule changes.
+case_a_geometry_only_change_is_current_at_8() {
+  local name="a dataset only the geometry rule changed, or none, is current at chain 8"
+  local dir dropped
+  for dropped in 1 0; do
+    dir="$(new_sandbox cargo fcb cjseq citygml-tools)"
+    STUB_NORMALISE_DROPPED=$dropped run_prepare "$dir" "$dir/data/tiny.city.jsonl" "$dir/out"
+    if [[ $LAST_RC -ne 0 ]]; then
+      fail "$name" "first run (dropped=$dropped): exit $LAST_RC; log: $(cat "$LAST_LOG")"
+      return
+    fi
+    printf '8\n' >"$dir/out/.readbench-chain/tiny"
+    STUB_NORMALISE_DROPPED=$dropped run_prepare "$dir" "$dir/data/tiny.city.jsonl" "$dir/out"
+    if [[ $LAST_RC -ne 0 ]]; then
+      fail "$name" "second run (dropped=$dropped): exit $LAST_RC; log: $(cat "$LAST_LOG")"
+      return
+    fi
+    if ! log_mentions "skip $dir/out/tiny.gml (already present)" \
+      || ! log_mentions "skip $dir/out/tiny.parquet (already present)"; then
+      fail "$name" "the artefacts were not reused (dropped=$dropped); log: $(cat "$LAST_LOG")"
+      return
+    fi
+  done
+  pass "$name"
+}
+
+# Both rules at once: the geometry rule last changed the CityGML stage at 7,
+# so a directory stamped 6 refuses the `.gml` too, and one stamped 8 does not.
+case_both_rules_key_the_citygml_on_the_geometry_rule() {
+  local name="with both rules firing, the CityGML stage follows the geometry rule alone"
+  local dir
+  dir="$(new_sandbox cargo fcb cjseq citygml-tools)"
+  STUB_NORMALISE_DROPPED=1 STUB_NORMALISE_SEMANTICS=1 run_prepare "$dir" "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "first run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  printf '6\n' >"$dir/out/.readbench-chain/tiny"
+  STUB_NORMALISE_DROPPED=1 STUB_NORMALISE_SEMANTICS=1 run_prepare "$dir" "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "built by an older derivation chain" \
+    || ! grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.gml"; then
+    fail "$name" "a stamp of 6 did not refuse the CityGML artefact; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  printf '8\n' >"$dir/out/.readbench-chain/tiny"
+  STUB_NORMALISE_DROPPED=1 STUB_NORMALISE_SEMANTICS=1 run_prepare "$dir" "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "built by an older derivation chain"; then
+    return
+  fi
+  if grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.gml"; then
+    fail "$name" "a stamp of 8 refused the CityGML artefact; log: $(cat "$LAST_LOG")"
     return
   fi
   pass "$name"
@@ -1760,6 +1921,11 @@ case_the_normalised_source_feeds_the_chain
 case_an_unchanged_source_is_used_as_is
 case_a_same_lod_skip_after_normalisation_is_an_error
 case_a_normalised_dataset_refuses_every_stage
+case_the_semantics_rule_is_reported_and_feeds_the_chain
+case_a_normaliser_without_the_semantics_count_is_refused
+case_a_semantics_only_change_keeps_the_citygml
+case_a_geometry_only_change_is_current_at_8
+case_both_rules_key_the_citygml_on_the_geometry_rule
 case_lod_normalise_is_built_when_not_given
 case_a_citygml_input_is_not_normalised
 
