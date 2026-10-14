@@ -357,7 +357,12 @@ Mechanics, all of which change what the numbers mean:
   untimed beforehand, then `DELETE … WHERE id > watermark` in
   foreign-key order — because each importer also writes rows carrying none
   of the suffixed ids (cjdb's relationship and `cj_metadata` rows,
-  3DCityDB's boundary-surface `feature` rows). Leaving cjdb's
+  3DCityDB's boundary-surface `feature` rows). 3DCityDB's watermarked
+  tables also cover the appearance model it imports from a textured
+  dataset (Caveat 23) — `appearance`, `appear_to_surface_data`, `surface_data`
+  and `tex_image`, since `appearance.feature_id` is `ON DELETE SET NULL`
+  and would otherwise outlive the deleted feature — while
+  `surface_data_mapping` goes by cascade. Leaving cjdb's
   `cj_metadata` row behind would be worse than untidy: cjdb's importer
   prompts on stdin when a file of that name was imported before, which in
   a benchmark run is a hang rather than a question.

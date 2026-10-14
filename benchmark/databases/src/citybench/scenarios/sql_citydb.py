@@ -597,10 +597,16 @@ def _probe(probe: IdProbe | None) -> IdProbe:
 #: The tables `append-object`'s untimed reset empties back to its
 #: watermark, in foreign-key order. `citydb-tool import` writes far more
 #: than the CityObjects of the file: a `feature` row per boundary surface,
-#: a `property` row per attribute and association, and a `geometry_data`
-#: row per geometry. Those carry no id of ours, so the reset is a watermark
-#: on each table's own primary key rather than a predicate on `objectid`.
-APPEND_RESET_TABLES: tuple[str, ...] = ("property", "geometry_data", "feature")
+#: a `property` row per attribute and association, a `geometry_data` row
+#: per geometry and, for a textured file, the appearance model
+#: (`appearance`, `appear_to_surface_data`, `surface_data`, `tex_image`;
+#: README Caveat 23). Those carry no id of ours, so the reset is a
+#: watermark on each table's own primary key rather than a predicate on
+#: `objectid`.
+APPEND_RESET_TABLES: tuple[str, ...] = (
+    "property", "appear_to_surface_data", "appearance", "surface_data",
+    "tex_image", "geometry_data", "feature",
+)
 
 
 def append_watermark_sql() -> list[tuple[str, str]]:
@@ -614,13 +620,20 @@ def append_watermark_sql() -> list[tuple[str, str]]:
 def append_reset_sql(watermarks: dict[str, int]) -> list[tuple[str, tuple]]:
     """The UNTIMED statements removing everything one append added.
 
-    Deletion order is `property` (which references both `feature` and
-    `geometry_data`), then `geometry_data` (which references `feature`),
-    then `feature`. An appearance-bearing dataset would also add
-    `surface_data`/`surface_data_mapping` rows, which this reset does not
-    remove: the delete would then fail loudly on the foreign key rather
-    than leave the schema quietly wrong, and no dataset in this corpus
-    carries appearances.
+    Every table is deleted before the tables it references: `property`
+    (references `feature`, `geometry_data` and `appearance`), then
+    `appear_to_surface_data` (references `appearance` and `surface_data`),
+    `appearance` (references `feature`), `surface_data` (references
+    `tex_image`), `tex_image`, `geometry_data` (references `feature`) and
+    `feature`.
+
+    The appearance tables are listed explicitly because nothing cascades
+    into them from `feature`: `appearance.feature_id` is ON DELETE SET
+    NULL, so deleting the appended features alone would orphan their
+    `appearance` row, and its `appear_to_surface_data` and `surface_data`
+    rows with it, one more set per sample. `surface_data_mapping` has a
+    composite key and no `id` to watermark; its rows go by ON DELETE
+    CASCADE from `surface_data` and `geometry_data`.
     """
     return [
         (f"DELETE FROM {SCHEMA}.{table} WHERE id > %s", (watermarks[table],))
