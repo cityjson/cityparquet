@@ -50,13 +50,43 @@ pub enum Shape {
     Solid(Vec<Vec<Face>>),
     /// Solids, each a list of shells.
     CompositeSolid(Vec<Vec<Vec<Face>>>),
+    /// A [`Template`] placed by an `ImplicitGeometry`.
+    Instance(Instance),
+}
+
+/// An `ImplicitGeometry`: a shared relative geometry placed at a reference
+/// point by a transformation matrix.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Instance {
+    /// The position of the relative geometry among the document's
+    /// [`Template`]s.
+    pub template: usize,
+    /// The 4×4 transformation matrix, row by row.
+    pub matrix: [f64; 16],
+    /// Where the relative geometry's origin lands, in world coordinates.
+    pub reference_point: [f64; 3],
+}
+
+/// A relative geometry (`relativeGMLGeometry`) that one or more
+/// `ImplicitGeometry`s instantiate, in its own local coordinates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Template {
+    /// The geometry's `gml:id`, what another `ImplicitGeometry`'s
+    /// `relativeGMLGeometry xlink:href` names.
+    pub id: Option<String>,
+    /// The geometry, at the LoD of the property that defines it.
+    pub geometry: Geometry,
+    /// The materials and textures that target its faces.
+    pub appearance: super::Appearance,
 }
 
 impl Shape {
     /// Every face, in order; none for points and lines.
     pub fn faces(&self) -> Box<dyn Iterator<Item = &Face> + '_> {
         match self {
-            Shape::MultiPoint(_) | Shape::MultiLineString(_) => Box::new(std::iter::empty()),
+            Shape::MultiPoint(_) | Shape::MultiLineString(_) | Shape::Instance(_) => {
+                Box::new(std::iter::empty())
+            }
             Shape::MultiSurface(faces) | Shape::CompositeSurface(faces) => Box::new(faces.iter()),
             Shape::Solid(shells) => Box::new(shells.iter().flatten()),
             Shape::CompositeSolid(solids) => Box::new(solids.iter().flatten().flatten()),

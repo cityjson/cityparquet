@@ -170,3 +170,183 @@ fn a_track_agrees_with_citygml_tools() {
         oracle("oracle/plateau_trk_fragment.city.jsonl")
     );
 }
+
+/// The relative geometries `header` (a CityJSON header) declares, each
+/// resolved to what it means, with no index left: its type and LoD, its
+/// rings as millimetre coordinates, and per face the material and per ring
+/// the texture image and its UVs for each theme.
+fn templates(header: &Value) -> Vec<Value> {
+    let mm = |v: &Value| -> Vec<i64> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (c.as_f64().unwrap() * 1e3).round() as i64)
+            .collect()
+    };
+    let vertices = header["geometry-templates"]["vertices-templates"]
+        .as_array()
+        .unwrap();
+    let app = &header["appearance"];
+    let uv = |i: &Value| -> Vec<i64> {
+        app["vertices-texture"][i.as_u64().unwrap() as usize]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (c.as_f64().unwrap() * 1e4).round() as i64)
+            .collect()
+    };
+    let themes = |member: &str, t: &Value, f: &dyn Fn(&Value) -> Value| -> Value {
+        let resolved: BTreeMap<String, Value> = t[member]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(theme, r)| {
+                // `value` is one value for every surface.
+                let surfaces = t["boundaries"].as_array().unwrap().len();
+                let values = match r.get("value") {
+                    Some(v) => vec![f(v); surfaces],
+                    None => r["values"].as_array().unwrap().iter().map(f).collect(),
+                };
+                (theme.clone(), Value::Array(values))
+            })
+            .collect();
+        serde_json::to_value(resolved).unwrap()
+    };
+    header["geometry-templates"]["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            let rings: Vec<Vec<Vec<i64>>> = t["boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|surface| surface.as_array().unwrap())
+                .map(|ring| {
+                    ring.as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|i| mm(&vertices[i.as_u64().unwrap() as usize]))
+                        .collect()
+                })
+                .collect();
+            // A material by what it looks like: citygml-tools keeps one of
+            // two materials that differ only in name, and its name.
+            let material = |i: &Value| match i.as_u64() {
+                Some(i) => {
+                    let mut m = app["materials"][i as usize].clone();
+                    m.as_object_mut().unwrap().remove("name");
+                    m
+                }
+                None => Value::Null,
+            };
+            let texture = |surface: &Value| -> Value {
+                surface
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|ring| match ring.as_array() {
+                        Some(ring) if !ring.is_empty() && !ring[0].is_null() => {
+                            let image =
+                                &app["textures"][ring[0].as_u64().unwrap() as usize]["image"];
+                            let uvs: Vec<Vec<i64>> = ring[1..].iter().map(uv).collect();
+                            serde_json::json!([image, uvs])
+                        }
+                        _ => Value::Null,
+                    })
+                    .collect()
+            };
+            serde_json::json!({
+                "type": t["type"],
+                "lod": t["lod"],
+                "rings": rings,
+                "material": themes("material", t, &material),
+                "texture": themes("texture", t, &texture),
+            })
+        })
+        .collect()
+}
+
+/// Each City Object's GeometryInstances, by id: the template, the matrix and
+/// the reference point in millimetres.
+fn instances(features: &[Value]) -> BTreeMap<String, Vec<Value>> {
+    let mut out = BTreeMap::new();
+    for f in features {
+        let t = &f["transform"];
+        for (id, co) in f["CityObjects"].as_object().unwrap() {
+            for g in co["geometry"].as_array().into_iter().flatten() {
+                if g["type"] != "GeometryInstance" {
+                    continue;
+                }
+                let v = &f["vertices"][g["boundaries"][0].as_u64().unwrap() as usize];
+                let point: Vec<i64> = (0..3)
+                    .map(|i| {
+                        let real = v[i].as_f64().unwrap() * t["scale"][i].as_f64().unwrap()
+                            + t["translate"][i].as_f64().unwrap();
+                        (real * 1e3).round() as i64
+                    })
+                    .collect();
+                out.entry(id.clone())
+                    .or_insert_with(Vec::new)
+                    .push(serde_json::json!({
+                        "template": g["template"],
+                        "transformationMatrix": g["transformationMatrix"],
+                        "point": point,
+                    }));
+            }
+        }
+    }
+    out
+}
+
+/// Fifteen trees of the LoD 3 Railway instantiate three relative geometries
+/// through `ImplicitGeometry`, the first use of each inline and the others by
+/// `xlink:href`, coloured and textured by the CityModel's appearance. The
+/// templates, the appearance they index, and every instance agree with
+/// citygml-tools.
+#[test]
+fn implicit_geometries_agree_with_citygml_tools() {
+    let gml = data("railway_trees_fragment.gml");
+    let transform = cjseq::Transform {
+        scale: [1e-3; 3],
+        translate: [0.0; 3],
+    };
+    let (geometry_templates, appearance) =
+        citygml_core::convert::cjseq::geometry_templates(&citygml2::read_templates(&gml).unwrap())
+            .unwrap()
+            .expect("the trees' relative geometries");
+    let header = serde_json::json!({
+        "geometry-templates": geometry_templates,
+        "appearance": appearance,
+    });
+    let our_features: Vec<Value> = FeatureReader::open(&gml)
+        .unwrap()
+        .features(transform.clone())
+        .map(|f| {
+            let mut f = serde_json::to_value(f.unwrap()).unwrap();
+            f["transform"] = serde_json::to_value(&transform).unwrap();
+            f
+        })
+        .collect();
+
+    let text = std::fs::read_to_string(data("oracle/railway_trees_fragment.city.jsonl")).unwrap();
+    let mut lines = text
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap());
+    let oracle_header = lines.next().unwrap();
+    let oracle_features: Vec<Value> = lines
+        .map(|mut f| {
+            f["transform"] = oracle_header["transform"].clone();
+            f
+        })
+        .collect();
+
+    assert_eq!(templates(&header), templates(&oracle_header));
+    let instances_ours = instances(&our_features);
+    assert_eq!(instances_ours.len(), 15);
+    assert_eq!(instances_ours, instances(&oracle_features));
+    assert_eq!(
+        ours("railway_trees_fragment.gml"),
+        oracle("oracle/railway_trees_fragment.city.jsonl")
+    );
+}

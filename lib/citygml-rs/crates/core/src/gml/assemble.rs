@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::read::{AggregateMember, Collected, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use crate::model::{
-    Address, Appearance, Attribute, BoundarySurface, Face, Geometry, GmlObject, GroupMember, Line,
-    MemberTarget, Polygon, QName, Shape,
+    Address, Appearance, Attribute, BoundarySurface, Face, Geometry, GmlObject, GroupMember,
+    Instance, Line, MemberTarget, Polygon, QName, Shape,
 };
 use crate::{Error, Result};
 
@@ -192,6 +192,11 @@ impl ObjectBuilder {
         }
     }
 
+    /// Record an `ImplicitGeometry` at `lod`.
+    pub fn add_instance(&mut self, lod: String, instance: Instance) {
+        self.add_direct(lod, Shape::Instance(instance));
+    }
+
     /// Record a TIN at `lod`: its triangles as one composite surface.
     pub fn add_tin(&mut self, lod: String, collected: Collected) {
         let faces: Vec<Face> = self
@@ -204,7 +209,7 @@ impl ObjectBuilder {
         }
     }
 
-    /// Keep `shape` as a point, curve or TIN geometry at `lod`, unless that
+    /// Keep `shape` as a point, curve, TIN or instance geometry at `lod`, unless that
     /// LoD already has one. [`Self::finish`] keeps it only at a LoD no
     /// surface or solid holds: a CityParquet object has one geometry per LoD.
     fn add_direct(&mut self, lod: String, shape: Shape) {
@@ -419,7 +424,8 @@ impl ObjectBuilder {
                 });
             }
         }
-        // Points, lines and TINs, at a LoD no surface or solid holds.
+        // Points, lines, TINs and instances, at a LoD no surface or solid
+        // holds.
         for g in self.direct {
             if !geometries.iter().any(|have: &Geometry| have.lod == g.lod) {
                 geometries.push(g);

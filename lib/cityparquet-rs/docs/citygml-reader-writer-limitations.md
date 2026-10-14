@@ -48,6 +48,15 @@ attribute names and types, addresses and appearance palettes
   child in its feature; one referenced by `xlink:href` stays a feature of its
   own and names the group among its `parents`, wherever it sits in the
   document (the reader indexes the groups in its up-front pass).
+- `ImplicitGeometry` (`lodNImplicitRepresentation`): each relative geometry
+  becomes a CityJSON template in the header's `geometry-templates`, coloured
+  and textured by the CityModel-level appearance that targets it, and each
+  `ImplicitGeometry` a `GeometryInstance` with its reference point and
+  transformation matrix, whether its `relativeGMLGeometry` is inline or an
+  `xlink:href` to a relative geometry another `ImplicitGeometry` writes inline,
+  anywhere in the document. On the LoD 3
+  Railway's trees, templates, their appearance and every instance agree with
+  `citygml-tools to-cityjson`.
 - Materials (`app:X3DMaterial`, unnamed ones included) and textures
   (`app:ParameterizedTexture`), feature-local and **CityModel-level**
   (`app:appearanceMember`), targeting polygons or the surface aggregates
@@ -61,14 +70,6 @@ attribute names and types, addresses and appearance palettes
 
 ## Deferred / not yet supported
 
-### Needs a cross-cutting `cityparquet-schema` (Arrow) change
-
-A CityObject's non-geometry members are encoded from **fixed columns**, so these
-need a new column + encoder/decoder work (not just reader/writer):
-
-- **`ImplicitGeometry` ↔ CityJSON GeometryInstance / geometry-templates (CG-8)** —
-  implicit-geometry plumbing.
-
 ### Writer round-trip for the reader-only features above
 
 The reader ingests these but the CityGML **writer** does not yet emit them (they
@@ -77,13 +78,27 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
 - Non-building 1st-level objects (CG-7 writer side; `non_building_skipped`).
 - BuildingInstallation emission (CG-5 writer side).
 - CityModel-level appearance / non-building appearance emission.
+- `ImplicitGeometry` emission.
 
 ### Other documented limitations
 
 - A group's `grp:parent` and `grp:geometry` are not read. A member read from a
   stream (`FeatureReader::from_reader`, one pass) does not name the groups that
   reference it.
-- `ImplicitGeometry` is not read (no fixture yet).
+- An `ImplicitGeometry` is dropped when its relative geometry is a
+  `libraryObject` only, lives in another document, is an `xlink:href` to a
+  geometry no `ImplicitGeometry` writes inline (one in an object's
+  `lodNGeometry`), or is a kind the reader does not read as a relative
+  geometry (`gml:MultiSolid`, a bare `gml:OrientableSurface` or
+  `gml:TriangulatedSurface`). Every `ImplicitGeometry` read from a stream
+  (`FeatureReader::from_reader`) is dropped too, since its header has no
+  templates. At a LoD that also has surface or solid geometry the instance is
+  dropped, a CityParquet object holding one geometry per LoD. A material or
+  texture an object's own `app:appearance` puts on a relative geometry is not
+  carried onto the template.
+- A document with implicit geometries is read in full by the up-front pass,
+  buildings included, so it costs one more pass over the file than one
+  without.
 - Raster, breakline and mass-point relief components have no CityJSON type
   and are tallied as skipped members.
 - At a LoD with a solid, boundary-surface polygons that are not faces of the

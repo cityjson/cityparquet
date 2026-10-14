@@ -8,6 +8,7 @@
 mod appearance;
 mod attributes;
 pub mod document;
+mod templates;
 mod walker;
 
 use std::collections::BTreeMap;
@@ -16,13 +17,14 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 use citygml_core::gml::XlinkBudget;
-use citygml_core::model::{Appearance, GroupIndex, ModelAppearance};
+use citygml_core::model::{Appearance, GroupIndex, ModelAppearance, Template};
 use citygml_core::xml::{get_attr_local, gml_id, ns_is, ns_of, skip_element, xml_err};
 use citygml_core::{Error, GmlObject, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 
 use crate::ns;
+use templates::{TemplateIndex, Templates};
 
 pub struct FeatureReader {
     reader: NsReader<Box<dyn BufRead + Send>>,
@@ -38,6 +40,11 @@ pub struct FeatureReader {
     /// up front with the appearance, so a member read before its group
     /// still names it. Empty for a reader opened on a stream.
     groups_of: GroupIndex,
+    /// Where the document's relative geometries are, read up front, so an
+    /// `ImplicitGeometry` that references one defined later still finds it.
+    /// Empty for a reader opened on a stream, whose instances are then
+    /// left out.
+    templates: TemplateIndex,
     /// The document's allowance for expanding xlinks to surface aggregates,
     /// shared by every object it holds.
     xlink_budget: XlinkBudget,
@@ -54,9 +61,10 @@ impl FeatureReader {
     /// Open `path` for streaming.
     ///
     /// Reads the document once up front to index its CityModel-level
-    /// appearance and its groups' referenced members, then streams it again
-    /// for the objects: two passes, unless the document spells neither
-    /// `appearanceMember` nor `groupMember`.
+    /// appearance, its groups' referenced members and its relative
+    /// geometries, then streams it again for the objects: two passes, unless
+    /// the document spells none of `appearanceMember`, `groupMember` and
+    /// `ImplicitGeometry`.
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_inner(path, true)
     }
@@ -68,16 +76,16 @@ impl FeatureReader {
     /// is still read. Leaving it out spares holding every CityModel-level
     /// definition in memory, which a caller that only counts or measures
     /// geometry never consults, and the up-front pass altogether for a
-    /// document without groups.
+    /// document without groups or implicit geometries.
     pub fn open_without_appearance(path: &Path) -> Result<Self> {
         Self::open_inner(path, false)
     }
 
     /// Stream objects from any `BufRead` positioned at the document's first
-    /// byte, in one pass, without the CityModel-level appearance and without
-    /// an object's referencing groups in [`GmlObject::groups`] (each would
-    /// need a second read). Nothing is read beyond what the objects pulled
-    /// so far need.
+    /// byte, in one pass, without the CityModel-level appearance, without
+    /// an object's referencing groups in [`GmlObject::groups`] and without
+    /// its `ImplicitGeometry`s (each would need a second read). Nothing is
+    /// read beyond what the objects pulled so far need.
     pub fn from_reader(input: Box<dyn BufRead + Send>) -> Self {
         Self::from_parts(input, ModelAppearance::default())
     }
@@ -100,6 +108,7 @@ impl FeatureReader {
         let index = read_index(path, with_appearance)?;
         let mut reader = Self::from_parts(Box::new(BufReader::new(file)), index.appearance);
         reader.groups_of = index.groups_of;
+        reader.templates = index.templates.index;
         Ok(reader)
     }
 
@@ -113,6 +122,7 @@ impl FeatureReader {
             done: false,
             model_appearance,
             groups_of: GroupIndex::default(),
+            templates: TemplateIndex::default(),
             xlink_budget: XlinkBudget::default(),
             inside_member: false,
             skipped_members: BTreeMap::new(),
@@ -155,8 +165,12 @@ impl FeatureReader {
                     };
                     let id = gml_id(&e);
                     let end = local.as_ref().to_vec();
+                    let cx = walker::Cx {
+                        depth: 0,
+                        templates: &self.templates,
+                    };
                     let builder =
-                        walker::read_object(&mut self.reader, &mut self.buf, class, id, &end, 0)?;
+                        walker::read_object(&mut self.reader, &mut self.buf, class, id, &end, cx)?;
                     self.index += 1;
                     self.inside_member = false;
                     let mut object = builder.finish(&self.xlink_budget)?;
@@ -299,22 +313,39 @@ fn may_contain_in_chunks<const N: usize>(
     }
 }
 
+/// The relative geometries of the document at `path` that its
+/// `ImplicitGeometry`s instantiate, in document order, each with the
+/// CityModel-level appearance that targets it. An [`Instance`]'s
+/// `template` is a position in this list.
+///
+/// [`Instance`]: citygml_core::model::Instance
+pub fn read_templates(path: &Path) -> Result<Vec<Template>> {
+    let mut index = read_index(path, true)?;
+    index.templates.scope_model_appearance(&index.appearance);
+    Ok(index.templates.templates)
+}
+
 /// What the up-front pass over a document finds.
 #[derive(Default)]
 struct DocumentIndex {
     appearance: ModelAppearance,
     groups_of: GroupIndex,
+    templates: Templates,
 }
 
 /// Read every CityModel-level `app:appearanceMember` (when `with_appearance`)
-/// into one indexed [`ModelAppearance`], and every group's `xlink:href`
-/// member into member id -> group ids. Building subtrees are skipped, and an
+/// into one indexed [`ModelAppearance`], every group's `xlink:href` member
+/// into member id -> group ids, and every inline relative geometry. Building
+/// subtrees are skipped unless the document has implicit geometries, and an
 /// object's own `app:appearance` (the other property name) is not promoted
 /// to model scope.
 fn read_index(path: &Path, with_appearance: bool) -> Result<DocumentIndex> {
-    let [has_appearance, with_groups] = may_contain(path, [b"appearanceMember", b"groupMember"])?;
+    let [has_appearance, with_groups, with_templates] = may_contain(
+        path,
+        [b"appearanceMember", b"groupMember", b"ImplicitGeometry"],
+    )?;
     let with_appearance = with_appearance && has_appearance;
-    if !with_appearance && !with_groups {
+    if !with_appearance && !with_groups && !with_templates {
         return Ok(DocumentIndex::default());
     }
     let file =
@@ -324,6 +355,9 @@ fn read_index(path: &Path, with_appearance: bool) -> Result<DocumentIndex> {
     let mut buf = Vec::new();
     let mut appearance = Appearance::default();
     let mut groups_of = GroupIndex::default();
+    let mut templates = Templates::default();
+    // The LoD of the `lodNImplicitRepresentation` the reader is inside.
+    let mut implicit_lod: Option<String> = None;
     // The groups the reader is inside, innermost last: a group may be
     // another group's nested member.
     let mut open_groups: Vec<Option<String>> = Vec::new();
@@ -333,8 +367,21 @@ fn read_index(path: &Path, with_appearance: bool) -> Result<DocumentIndex> {
         match ev {
             Event::Start(e) => {
                 let local = e.local_name();
-                if ns_is(&rr, ns::BUILDING) && local.as_ref() == b"Building" {
+                if !with_templates && ns_is(&rr, ns::BUILDING) && local.as_ref() == b"Building" {
                     skip_element(&mut reader, &mut buf)?;
+                } else if let Some(lod) = with_templates
+                    .then(|| walker::implicit_lod(local.as_ref()))
+                    .flatten()
+                {
+                    implicit_lod = Some(lod);
+                } else if let Some(lod) = implicit_lod.clone().filter(|_| {
+                    ns_is(&rr, ns::CORE)
+                        && local.as_ref() == b"relativeGMLGeometry"
+                        && get_attr_local(&e, b"href").is_none()
+                }) {
+                    // Only inside an `lodNImplicitRepresentation`, the one
+                    // place the object pass reads a relative geometry.
+                    templates.read(&mut reader, &mut buf, lod)?;
                 } else if with_appearance
                     && ns_is(&rr, ns::APPEARANCE)
                     && local.as_ref() == b"appearanceMember"
@@ -359,6 +406,10 @@ fn read_index(path: &Path, with_appearance: bool) -> Result<DocumentIndex> {
                 }
             }
             Event::End(e) => {
+                if implicit_lod.is_some() && walker::implicit_lod(e.local_name().as_ref()).is_some()
+                {
+                    implicit_lod = None;
+                }
                 if ns_is(&rr, ns::CITY_OBJECT_GROUP)
                     && e.local_name().as_ref() == b"CityObjectGroup"
                 {
@@ -372,6 +423,7 @@ fn read_index(path: &Path, with_appearance: bool) -> Result<DocumentIndex> {
     Ok(DocumentIndex {
         appearance: ModelAppearance::new(appearance),
         groups_of,
+        templates,
     })
 }
 

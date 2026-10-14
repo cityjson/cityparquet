@@ -28,14 +28,25 @@ use cjseq::{CityJSON, Metadata, Transform};
 use super::crs::{self, CrsResolution};
 use super::reader::error;
 
-/// Build the CityJSON header (transform + metadata) for the document at `path`.
+/// Build the CityJSON header for the document at `path`: transform and
+/// metadata, and the relative geometries its `ImplicitGeometry`s place as
+/// `geometry-templates`, with the appearance they index.
 pub fn parse_header(path: &Path) -> Result<CityJSON> {
     let file = File::open(path)
         .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
-    parse_header_from(BufReader::new(file))
+    let mut header = parse_header_from(BufReader::new(file))?;
+    let templates = citygml2::read_templates(path).map_err(error)?;
+    if let Some((templates, appearance)) =
+        citygml_core::convert::cjseq::geometry_templates(&templates).map_err(error)?
+    {
+        header.geometry_templates = Some(templates);
+        header.appearance = appearance;
+    }
+    Ok(header)
 }
 
-/// [`parse_header`] over any `BufRead`. It consumes the preamble (and, for a
+/// [`parse_header`] over any `BufRead`, without the templates, which would
+/// need a read of the whole document. It consumes the preamble (and, for a
 /// document that declares its CRS only on its objects, a bounded run of them),
 /// so a streaming caller that still needs those bytes records them and replays
 /// them ahead of the rest.

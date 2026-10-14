@@ -7,6 +7,8 @@
 //!
 //! - `lodNSolid`, `lodNMultiSurface`, `lodNGeometry`, and a building's
 //!   `lod0FootPrint` / `lod0RoofEdge`, are geometry;
+//! - `lodNImplicitRepresentation` places one of the document's relative
+//!   geometries ([`TemplateIndex`]);
 //! - `boundedBy`, and a transportation object's `trafficArea` /
 //!   `auxiliaryTrafficArea`, hold boundary surfaces;
 //! - `consistsOf…Part`, `outer…` / `interior…` and the room installation
@@ -25,7 +27,7 @@ use std::io::BufRead;
 use citygml_core::gml::ObjectBuilder;
 use citygml_core::gml::read::{self as gml, Collected, SolidGeom};
 use citygml_core::model::{
-    Address, Attribute, AttributeName, Line, Module, Namespace, Polygon, QName,
+    Address, Attribute, AttributeName, Instance, Line, Module, Namespace, Polygon, QName,
 };
 use citygml_core::xml::{
     NS_GML, get_attr_local, gml_id, ns_eq, ns_is, ns_of, skip_element, unescaped_text, xml_err,
@@ -36,11 +38,31 @@ use quick_xml::reader::NsReader;
 
 use super::appearance::read_appearance;
 use super::attributes::{self, AttrType};
+use super::templates::TemplateIndex;
 use crate::ns;
 
 /// Maximum nesting depth of parts and nested features: a guard against
 /// attacker-controlled XML recursion.
 const MAX_PART_DEPTH: usize = 32;
+
+/// What every level of an object's subtree is read with.
+#[derive(Clone, Copy)]
+pub struct Cx<'a> {
+    /// How many levels below a top-level object.
+    pub depth: usize,
+    /// The document's relative geometries, which an `ImplicitGeometry`
+    /// instantiates.
+    pub templates: &'a TemplateIndex,
+}
+
+impl Cx<'_> {
+    fn deeper(self) -> Self {
+        Self {
+            depth: self.depth + 1,
+            ..self
+        }
+    }
+}
 
 /// The CityGML 2.0 top-level classes this reader reads.
 ///
@@ -138,16 +160,16 @@ fn qname(uri: &[u8], local: &[u8]) -> QName {
 }
 
 /// Read an object of class `class` (positioned after its `Start`, ending at
-/// `End(end_name)`), `depth` levels below a top-level object.
+/// `End(end_name)`), `cx.depth` levels below a top-level object.
 pub fn read_object<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     class: QName,
     id: Option<String>,
     end_name: &[u8],
-    depth: usize,
+    cx: Cx<'_>,
 ) -> Result<ObjectBuilder> {
-    if depth > MAX_PART_DEPTH {
+    if cx.depth > MAX_PART_DEPTH {
         return Err(Error::invalid(format!(
             "CityGML features nested deeper than {MAX_PART_DEPTH}"
         )));
@@ -187,7 +209,7 @@ pub fn read_object<R: BufRead>(
                                 b.add_member_ref(id, role);
                             }
                         }
-                        None => read_group_member(reader, buf, &mut b, role, depth)?,
+                        None => read_group_member(reader, buf, &mut b, role, cx)?,
                     }
                 } else if let Some(module) = module {
                     read_module_property(
@@ -197,7 +219,7 @@ pub fn read_object<R: BufRead>(
                         &mut pending,
                         (&uri, module),
                         &name,
-                        depth,
+                        cx,
                     )?;
                 } else {
                     // A property of another namespace (an ADE's): a text-only
@@ -256,7 +278,7 @@ fn read_module_property<R: BufRead>(
     pending: &mut Pending,
     (uri, module): (&[u8], Module),
     name: &[u8],
-    depth: usize,
+    cx: Cx<'_>,
 ) -> Result<()> {
     if let Some(lod) = lod_suffix(name, b"Solid") {
         let geom = read_lod_solid(reader, buf, name.to_vec())?;
@@ -279,12 +301,11 @@ fn read_module_property<R: BufRead>(
         }
     } else if let Some(lod) = lod_suffix(name, b"Geometry") {
         // `lodNGeometry` may wrap a solid or a surface collection.
-        match read_lod_geometry(reader, buf, name.to_vec())? {
-            Some(LodGeom::Solid(geom)) => b.add_solid(lod, geom),
-            Some(LodGeom::Surfaces(polys)) => b.add_plain_surfaces(lod, polys),
-            Some(LodGeom::Lines(lines)) => b.add_lines(lod, lines),
-            Some(LodGeom::Points(points)) => b.add_points(lod, points),
-            None => {}
+        let (_, geom) = read_lod_geometry(reader, buf, name)?;
+        add_lod_geometry(b, lod, geom);
+    } else if let Some(lod) = implicit_lod(name) {
+        if let Some(instance) = read_implicit(reader, buf, name, cx.templates)? {
+            b.add_instance(lod, instance);
         }
     } else if let Some(lod) =
         lod_suffix(name, b"MultiCurve").or_else(|| lod_suffix(name, b"Network"))
@@ -304,7 +325,7 @@ fn read_module_property<R: BufRead>(
     } else if name == b"address" {
         b.push_address(read_address(reader, buf)?);
     } else if is_nesting_property(name) {
-        read_nested(reader, buf, b, name, uri, depth)?;
+        read_nested(reader, buf, b, name, uri, cx)?;
     } else {
         let ty = attributes::property_type(module, name);
         push_leaf(reader, buf, b, name, ty, || {
@@ -426,7 +447,7 @@ fn read_nested<R: BufRead>(
     b: &mut ObjectBuilder,
     prop_name: &[u8],
     uri: &[u8],
-    depth: usize,
+    cx: Cx<'_>,
 ) -> Result<()> {
     loop {
         buf.clear();
@@ -440,7 +461,7 @@ fn read_nested<R: BufRead>(
                 if let Some((class, nesting)) = nested {
                     let end = local.as_ref().to_vec();
                     let id = gml_id(&e);
-                    let child = read_object(reader, buf, class, id, &end, depth + 1)?;
+                    let child = read_object(reader, buf, class, id, &end, cx.deeper())?;
                     match nesting {
                         Nesting::Part => b.add_part(child),
                         Nesting::Child => b.add_child(child),
@@ -477,7 +498,7 @@ fn read_group_member<R: BufRead>(
     buf: &mut Vec<u8>,
     b: &mut ObjectBuilder,
     role: Option<String>,
-    depth: usize,
+    cx: Cx<'_>,
 ) -> Result<()> {
     loop {
         buf.clear();
@@ -492,7 +513,7 @@ fn read_group_member<R: BufRead>(
                     Some(class) => {
                         let end = local.as_ref().to_vec();
                         let id = gml_id(&e);
-                        let member = read_object(reader, buf, class, id, &end, depth + 1)?;
+                        let member = read_object(reader, buf, class, id, &end, cx.deeper())?;
                         b.add_member(member, role.clone());
                     }
                     None => skip_element(reader, buf)?,
@@ -508,6 +529,11 @@ fn read_group_member<R: BufRead>(
         }
     }
     Ok(())
+}
+
+/// `lodNImplicitRepresentation` -> the LoD `"N"`, else `None`.
+pub(crate) fn implicit_lod(local: &[u8]) -> Option<String> {
+    lod_suffix(local, b"ImplicitRepresentation")
 }
 
 /// `lodN<suffix>` -> the LoD `"N"`, else `None`.
@@ -556,22 +582,26 @@ fn is_nesting_property(local: &[u8]) -> bool {
 }
 
 /// The geometry a `lodNGeometry` property wraps.
-enum LodGeom {
+pub(crate) enum LodGeom {
     Solid(SolidGeom),
     Surfaces(Vec<Polygon>),
     Lines(Vec<Line>),
     Points(Vec<[f64; 3]>),
 }
 
-/// Inside a `lodNGeometry` (positioned after its `Start`, ending at
-/// `End(end)`): a `gml:Solid` / `CompositeSolid` is a solid, a
-/// `gml:MultiSurface` / `CompositeSurface` / `Polygon` a surface list, a
-/// curve or curve aggregate lines, and a `gml:Point` / `MultiPoint` points.
-fn read_lod_geometry<R: BufRead>(
+/// Inside a `lodNGeometry` or a `relativeGMLGeometry` (positioned after its
+/// `Start`, ending at `End(end)`): a `gml:Solid` / `CompositeSolid` is a
+/// solid, a `gml:MultiSurface` / `CompositeSurface` / `Polygon` a surface
+/// list, a curve or curve aggregate lines, and a `gml:Point` / `MultiPoint`
+/// points. Also returns the `gml:id` of the first geometry element.
+pub(crate) fn read_lod_geometry<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
-    end: Vec<u8>,
-) -> Result<Option<LodGeom>> {
+    end: &[u8],
+) -> Result<(Option<String>, Option<LodGeom>)> {
+    let end = end.to_vec();
+    let mut id: Option<String> = None;
+    let mut first = true;
     let mut solid: Option<SolidGeom> = None;
     let mut polys: Vec<Polygon> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
@@ -582,6 +612,9 @@ fn read_lod_geometry<R: BufRead>(
         let is_gml = ns_is(&rr, NS_GML);
         match ev {
             Event::Start(e) => {
+                if std::mem::take(&mut first) {
+                    id = gml_id(&e);
+                }
                 let local = e.local_name();
                 match (is_gml, local.as_ref()) {
                     (true, b"Solid") => {
@@ -593,7 +626,12 @@ fn read_lod_geometry<R: BufRead>(
                         )?))
                     }
                     (true, b"MultiSurface") | (true, b"CompositeSurface") => {
-                        polys.extend(surface_polygons(reader, buf)?);
+                        // A material or texture may target the aggregate.
+                        let aggregate = gml_id(&e);
+                        polys.extend(surface_polygons(reader, buf)?.into_iter().map(|mut p| {
+                            p.groups.extend(aggregate.clone());
+                            p
+                        }));
                     }
                     (true, b"Polygon") => {
                         let id = gml_id(&e);
@@ -624,11 +662,99 @@ fn read_lod_geometry<R: BufRead>(
             _ => {}
         }
     }
-    Ok(solid
+    let geom = solid
         .map(LodGeom::Solid)
         .or_else(|| (!polys.is_empty()).then_some(LodGeom::Surfaces(polys)))
         .or_else(|| (!lines.is_empty()).then_some(LodGeom::Lines(lines)))
-        .or_else(|| (!points.is_empty()).then_some(LodGeom::Points(points))))
+        .or_else(|| (!points.is_empty()).then_some(LodGeom::Points(points)));
+    Ok((id, geom))
+}
+
+/// Record what [`read_lod_geometry`] read as `b`'s geometry at `lod`.
+pub(crate) fn add_lod_geometry(b: &mut ObjectBuilder, lod: String, geom: Option<LodGeom>) {
+    match geom {
+        Some(LodGeom::Solid(geom)) => b.add_solid(lod, geom),
+        Some(LodGeom::Surfaces(polys)) => b.add_plain_surfaces(lod, polys),
+        Some(LodGeom::Lines(lines)) => b.add_lines(lod, lines),
+        Some(LodGeom::Points(points)) => b.add_points(lod, points),
+        None => {}
+    }
+}
+
+/// An `lodNImplicitRepresentation` (positioned after its `Start`, ending at
+/// `End(end)`) as an [`Instance`] of one of `templates`. `None` when it
+/// names no relative geometry of this document (a `libraryObject` only, or
+/// an `xlink:href` to another document or to the `ImplicitGeometry` itself),
+/// or has no reference point.
+fn read_implicit<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    end: &[u8],
+    templates: &TemplateIndex,
+) -> Result<Option<Instance>> {
+    let mut matrix = IDENTITY;
+    let mut template: Option<usize> = None;
+    let mut reference_point: Option<[f64; 3]> = None;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                match (ns_is(&rr, ns::CORE), local.as_ref()) {
+                    (true, b"ImplicitGeometry") => {}
+                    (true, b"transformationMatrix") => {
+                        let text = read_leaf_text(reader, buf, b"transformationMatrix")?;
+                        matrix = parse_matrix(text.as_deref().unwrap_or_default())?;
+                    }
+                    (true, b"relativeGMLGeometry") => {
+                        template = match get_attr_local(&e, b"href") {
+                            Some(href) => member_id(&href).and_then(|id| templates.by_id(&id)),
+                            None => templates.at(reader.buffer_position()),
+                        };
+                        skip_element(reader, buf)?;
+                    }
+                    (true, b"referencePoint") => {
+                        reference_point = gml::collect_points(reader, buf)?.first().copied();
+                    }
+                    _ => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == end => break,
+            Event::Eof => {
+                return Err(Error::invalid(
+                    "unexpected end of document inside an lodNImplicitRepresentation",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(template
+        .zip(reference_point)
+        .map(|(template, reference_point)| Instance {
+            template,
+            matrix,
+            reference_point,
+        }))
+}
+
+const IDENTITY: [f64; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
+
+/// A `transformationMatrix`: sixteen numbers, row by row.
+fn parse_matrix(text: &str) -> Result<[f64; 16]> {
+    let values = text
+        .split_whitespace()
+        .map(|t| t.parse::<f64>().ok().filter(|v| v.is_finite()))
+        .collect::<Option<Vec<f64>>>();
+    values
+        .and_then(|v| <[f64; 16]>::try_from(v).ok())
+        .ok_or_else(|| {
+            Error::invalid(format!(
+                "a transformationMatrix is sixteen finite numbers, not {text:?}"
+            ))
+        })
 }
 
 /// Inside a `lodNSolid`: the wrapped `gml:Solid` or `gml:CompositeSolid`.

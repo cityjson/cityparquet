@@ -13,7 +13,7 @@ mod value;
 
 pub use address::Address;
 pub use appearance::{Appearance, Material, ModelAppearance, RingUvs, Texture};
-pub use geometry::{Face, Geometry, Line, Polygon, Ring, Shape};
+pub use geometry::{Face, Geometry, Instance, Line, Polygon, Ring, Shape, Template};
 pub use group::{GroupIndex, GroupMember, MemberTarget};
 pub use object::{BoundarySurface, GmlObject, Module, Namespace, QName};
 pub use value::{Attribute, AttributeName, Value};

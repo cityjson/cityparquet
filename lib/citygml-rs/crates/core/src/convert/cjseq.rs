@@ -15,15 +15,17 @@ use std::collections::HashMap;
 
 use cjseq::{
     Appearance as CjAppearance, BorderColor, CityJSONFeature, CityObject, CityObjectAddress,
-    CityObjectType, Geometry as CjGeometry, Lod, MaterialIndex, MaterialObject, MaterialReference,
-    SemanticSurfaceType, Semantics, SemanticsSurface, SurfaceIndex, TextureFormat, TextureIndex,
-    TextureObject, TextureReference, TexturedRing, Transform, UvIndex, VertexIndex,
+    CityObjectType, Geometry as CjGeometry, GeometryTemplates, Lod, MaterialIndex, MaterialObject,
+    MaterialReference, SemanticSurfaceType, Semantics, SemanticsSurface, SurfaceIndex,
+    TemplateIndex, TextureFormat, TextureIndex, TextureObject, TextureReference, TexturedRing,
+    Transform, UvIndex, VertexIndex,
 };
 use serde_json::{Map, Value as Json};
 
 use super::FromGml;
 use crate::model::{
-    Address, Attribute, Face, Geometry, GmlObject, Material, MemberTarget, Shape, Texture, Value,
+    Address, Attribute, Face, Geometry, GmlObject, Material, MemberTarget, Module, QName, Shape,
+    Template, Texture, Value,
 };
 use crate::vocabulary::{cityjson_type, relation_to_construction};
 use crate::{Error, Result};
@@ -59,17 +61,57 @@ impl FromGml for CityJSONFeature {
             &mut feature,
         )?;
         feature.vertices = vertices.into_vertices();
-        if !appearance.materials.is_empty() || !appearance.textures.is_empty() {
-            feature.appearance = Some(CjAppearance {
-                materials: (!appearance.materials.is_empty()).then_some(appearance.materials),
-                textures: (!appearance.textures.is_empty()).then_some(appearance.textures),
-                vertices_texture: (!appearance.uvs.is_empty()).then_some(appearance.uvs),
-                default_theme_texture: None,
-                default_theme_material: None,
-            });
-        }
+        feature.appearance = appearance.into_appearance();
         Ok(feature)
     }
+}
+
+/// A document's relative geometries as CityJSON `geometry-templates`, with
+/// the appearance their `material` and `texture` index: what a CityJSON
+/// header carries ahead of the features whose GeometryInstances name them.
+/// Template vertices keep their local coordinates unquantised. `None` when
+/// there are no templates.
+pub fn geometry_templates(
+    templates: &[Template],
+) -> Result<Option<(GeometryTemplates, Option<CjAppearance>)>> {
+    if templates.is_empty() {
+        return Ok(None);
+    }
+    let mut vertices = TemplatePool::default();
+    let mut palettes = Palettes::default();
+    let mut geometries = Vec::with_capacity(templates.len());
+    for template in templates {
+        if matches!(template.geometry.shape, Shape::Instance(_)) {
+            return Err(Error::invalid(
+                "a relative geometry cannot itself be an ImplicitGeometry",
+            ));
+        }
+        // A template is converted as an object holding only its geometry
+        // and appearance, so it is coloured exactly as an object is.
+        let holder = GmlObject {
+            id: template.id.clone(),
+            class: QName::module(Module::Core, "ImplicitGeometry"),
+            attributes: Vec::new(),
+            addresses: Vec::new(),
+            geometries: vec![template.geometry.clone()],
+            boundary_surfaces: Vec::new(),
+            appearance: template.appearance.clone(),
+            children: Vec::new(),
+            members: Vec::new(),
+            groups: Vec::new(),
+        };
+        let mut converted = vec![geometry(&template.geometry, &holder, &mut vertices)?];
+        apply_materials(&holder, &mut converted, &mut palettes)?;
+        apply_textures(&holder, &mut converted, &mut palettes)?;
+        geometries.extend(converted);
+    }
+    Ok(Some((
+        GeometryTemplates {
+            templates: geometries,
+            vertices_templates: vertices.vertices,
+        },
+        palettes.into_appearance(),
+    )))
 }
 
 /// Add `object` (and, depth first, its children) to `feature` as City
@@ -276,7 +318,7 @@ fn address(a: &Address, vertices: &mut VertexPool) -> Result<CityObjectAddress> 
 
 /// One geometry, without appearance (see [`apply_materials`] and
 /// [`apply_textures`]), its vertices pushed in face order.
-fn geometry(g: &Geometry, object: &GmlObject, vertices: &mut VertexPool) -> Result<CjGeometry> {
+fn geometry(g: &Geometry, object: &GmlObject, vertices: &mut impl Vertices) -> Result<CjGeometry> {
     let lod: Lod = g.lod.parse().map_err(build_error)?;
     let (surfaces, renumber) = semantic_surfaces(g, object)?;
     let semantic = |f: &Face| f.surface.map(|s| SurfaceIndex(renumber[&s]));
@@ -343,6 +385,11 @@ fn geometry(g: &Geometry, object: &GmlObject, vertices: &mut VertexPool) -> Resu
             }),
             material: None,
             texture: None,
+        },
+        Shape::Instance(instance) => CjGeometry::GeometryInstance {
+            boundaries: [vertices.push(instance.reference_point)?],
+            template: TemplateIndex(instance.template),
+            transformation_matrix: instance.matrix,
         },
         Shape::CompositeSolid(solids) => CjGeometry::CompositeSolid {
             lod,
@@ -707,6 +754,21 @@ impl Palettes {
         Ok(TextureIndex(idx))
     }
 
+    /// The palettes as a CityJSON `appearance`, or `None` when they hold no
+    /// material and no texture.
+    fn into_appearance(self) -> Option<CjAppearance> {
+        if self.materials.is_empty() && self.textures.is_empty() {
+            return None;
+        }
+        Some(CjAppearance {
+            materials: (!self.materials.is_empty()).then_some(self.materials),
+            textures: (!self.textures.is_empty()).then_some(self.textures),
+            vertices_texture: (!self.uvs.is_empty()).then_some(self.uvs),
+            default_theme_texture: None,
+            default_theme_material: None,
+        })
+    }
+
     fn intern_uv(&mut self, uv: [f64; 2]) -> UvIndex {
         let next = self.uvs.len();
         UvIndex(
@@ -786,6 +848,56 @@ fn texture_object(t: &Texture) -> Result<TextureObject> {
     })
 }
 
+/// Where a geometry's coordinates go: a feature's quantised vertex pool, or
+/// the unquantised template vertices.
+trait Vertices {
+    fn push(&mut self, coord: [f64; 3]) -> Result<VertexIndex>;
+
+    /// A face's rings, exterior first, wound backwards when the face is
+    /// reversed.
+    fn surface(&mut self, face: &Face) -> Result<Vec<Vec<VertexIndex>>> {
+        let poly = &face.polygon;
+        std::iter::once(&poly.exterior)
+            .chain(&poly.interiors)
+            .map(|ring| {
+                if face.reversed {
+                    ring.iter().rev().map(|&c| self.push(c)).collect()
+                } else {
+                    ring.iter().map(|&c| self.push(c)).collect()
+                }
+            })
+            .collect()
+    }
+}
+
+/// The templates' vertex pool: local coordinates as they are, each distinct
+/// vertex (by its exact bits) stored once.
+#[derive(Default)]
+struct TemplatePool {
+    index: HashMap<[u64; 3], usize>,
+    vertices: Vec<[f64; 3]>,
+}
+
+impl Vertices for TemplatePool {
+    fn push(&mut self, coord: [f64; 3]) -> Result<VertexIndex> {
+        if let Some(c) = coord.iter().find(|c| !c.is_finite()) {
+            return Err(Error::invalid(format!(
+                "non-finite CityGML coordinate component: {c}"
+            )));
+        }
+        let next = self.vertices.len();
+        Ok(VertexIndex(
+            *self
+                .index
+                .entry(coord.map(f64::to_bits))
+                .or_insert_with(|| {
+                    self.vertices.push(coord);
+                    next
+                }),
+        ))
+    }
+}
+
 /// A feature's vertex pool: world coordinates quantised against the
 /// transform, each distinct integer vertex stored once.
 struct VertexPool {
@@ -805,6 +917,12 @@ impl VertexPool {
         }
     }
 
+    fn into_vertices(self) -> Vec<[i64; 3]> {
+        self.vertices
+    }
+}
+
+impl Vertices for VertexPool {
     fn push(&mut self, coord: [f64; 3]) -> Result<VertexIndex> {
         let mut q = [0i64; 3];
         for i in 0..3 {
@@ -829,26 +947,6 @@ impl VertexPool {
             self.vertices.push(q);
             next
         })))
-    }
-
-    /// A face's rings, exterior first, wound backwards when the face is
-    /// reversed.
-    fn surface(&mut self, face: &Face) -> Result<Vec<Vec<VertexIndex>>> {
-        let poly = &face.polygon;
-        std::iter::once(&poly.exterior)
-            .chain(&poly.interiors)
-            .map(|ring| {
-                if face.reversed {
-                    ring.iter().rev().map(|&c| self.push(c)).collect()
-                } else {
-                    ring.iter().map(|&c| self.push(c)).collect()
-                }
-            })
-            .collect()
-    }
-
-    fn into_vertices(self) -> Vec<[i64; 3]> {
-        self.vertices
     }
 }
 
