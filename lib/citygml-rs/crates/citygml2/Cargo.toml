@@ -1,0 +1,21 @@
+[package]
+name = "citygml2"
+description = "CityGML 2.0 reader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+citygml-core = { workspace = true }
+quick-xml = { workspace = true }
+memchr = { workspace = true }
+cjseq = { workspace = true, optional = true }
+
+[dev-dependencies]
+cjseq = { workspace = true }
+
+[features]
+default = ["cjseq"]
+# `FeatureReader::features`, which yields cjseq `CityJSONFeature`s.
+cjseq = ["dep:cjseq", "citygml-core/cjseq"]

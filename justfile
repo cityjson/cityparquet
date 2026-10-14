@@ -65,14 +65,16 @@ hooks:
 # Gates
 # ---------------------------------------------------------------------------
 
-# Everything that gates a change to the Rust library, the benchmark harness
-# and CityLake. The three are separate Cargo workspaces, so each needs its own
-# clippy/test/fmt pass — `cd lib/cityparquet-rs && just check` deliberately
-# does NOT reach the harness or CityLake, which is what keeps that gate
-# runnable with no `uv`, no `jq`, no corpus and no local extension build.
-[doc("The full gate: three Rust workspaces, the plotting suite, the shell suites")]
+# Everything that gates a change to the Rust library, the CityGML readers,
+# the benchmark harness and CityLake. The four are separate Cargo workspaces,
+# so each needs its own clippy/test/fmt pass — `cd lib/cityparquet-rs && just
+# check` deliberately does NOT reach the harness or CityLake, which is what
+# keeps that gate runnable with no `uv`, no `jq`, no corpus and no local
+# extension build.
+[doc("The full gate: four Rust workspaces, the plotting suite, the shell suites")]
 check:
     cd {{RS}} && just check
+    cd lib/citygml-rs && just check
     cargo clippy {{READBENCH_CARGO}} --all-targets -- -D warnings
     cargo test {{READBENCH_CARGO}}
     cargo fmt {{READBENCH_CARGO}} --check

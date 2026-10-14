@@ -3,58 +3,43 @@
 //! Two concerns live here:
 //! - Parsing a `gml:Solid` / `gml:CompositeSolid` into an *unresolved* tree of
 //!   [`SurfaceRef`]s: each surface member is either an `xlink:href` to a polygon
-//!   defined elsewhere in the same building, or an inline `gml:Polygon`, with an
+//!   defined elsewhere in the same object, or an inline `gml:Polygon`, with an
 //!   optional orientation flip (`gml:OrientableSurface orientation="-"`).
-//!   Resolution against the building's polygon registry happens in `building`.
+//!   Resolution against the object's polygon registry happens in
+//!   [`super::ObjectBuilder`].
 //! - Harvesting inline `gml:Polygon`s (with their `gml:id`) from a subtree
 //!   ([`collect_polygons`]), used for `boundedBy` semantic surfaces and the
 //!   standalone `lodNMultiSurface` polygons the solid references.
 //!
 //! Coordinates come from `gml:posList` or per-point `gml:pos`; the GML closing
-//! duplicate ring point is dropped (CityJSON rings are not closed). The reader
+//! duplicate ring point is dropped. The reader
 //! runs with `expand_empty_elements`, so a self-closing `<... xlink:href=.../>`
 //! arrives as a `Start`+`End` pair.
 
 use std::io::BufRead;
 
-use cityparquet_schema::{CityParquetError, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 
-use super::xml::{
-    NS_GML, get_attr, gml_id, ns_is, read_text, skip_element, xlink_fragment, xml_err,
+use crate::model::{Polygon, Ring};
+use crate::xml::{
+    NS_GML, get_attr, gml_id, ns_is, read_text, skip_element, unexpected_eof, xlink_fragment,
+    xml_err,
 };
-
-pub type Ring = Vec<[f64; 3]>;
-
-/// A CityJSON "surface": an exterior ring plus optional interior (hole) rings.
-#[derive(Debug, Clone)]
-pub struct Polygon {
-    /// The polygon's `gml:id`, if any — the id an `app:target="#id"` appearance
-    /// reference (or an `xlink:href`) resolves to. `None` for an anonymous inline
-    /// polygon (which is therefore untargetable by appearance).
-    pub id: Option<String>,
-    pub exterior: Ring,
-    pub interiors: Vec<Ring>,
-    /// The `gml:id` of each ring, parallel to `[exterior, interiors...]` — the id
-    /// an `app:textureCoordinates ring="#id"` reference resolves to. `None` for an
-    /// anonymous ring.
-    pub ring_ids: Vec<Option<String>>,
-}
+use crate::{Error, Result};
 
 /// One surface of a solid shell, before xlink resolution.
 #[derive(Debug, Clone)]
 pub struct SurfaceRef {
     /// `true` when the surface's orientation is reversed (its rings must be
-    /// wound backwards so the outward normal flips — CityJSON has no
-    /// orientation flag).
+    /// wound backwards so the outward normal flips).
     pub reverse: bool,
     pub target: RefTarget,
 }
 
 #[derive(Debug, Clone)]
 pub enum RefTarget {
-    /// A `#fragment` reference to a polygon defined elsewhere in the building.
+    /// A `#fragment` reference to a polygon defined elsewhere in the object.
     Xlink(String),
     /// A polygon defined inline in the solid.
     Inline(Polygon),
@@ -124,7 +109,7 @@ fn read_solid_member<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) ->
             _ => {}
         }
     }
-    solid.ok_or_else(|| CityParquetError::Schema("gml:solidMember without gml:Solid".to_string()))
+    solid.ok_or_else(|| Error::invalid("gml:solidMember without gml:Solid".to_string()))
 }
 
 /// Parse a `gml:Solid` (positioned after its `Start`).
@@ -309,8 +294,7 @@ fn read_orientable_surface<R: BufRead>(
             _ => {}
         }
     }
-    result
-        .ok_or_else(|| CityParquetError::Schema("gml:OrientableSurface without baseSurface".into()))
+    result.ok_or_else(|| Error::invalid("gml:OrientableSurface without baseSurface"))
 }
 
 /// The inline content of a `gml:baseSurface`: a `gml:Polygon` or a nested
@@ -349,7 +333,7 @@ fn read_base_surface_inline<R: BufRead>(
             _ => {}
         }
     }
-    result.ok_or_else(|| CityParquetError::Schema("gml:baseSurface without a surface".into()))
+    result.ok_or_else(|| Error::invalid("gml:baseSurface without a surface"))
 }
 
 fn orientation_reversed(e: &quick_xml::events::BytesStart) -> bool {
@@ -494,8 +478,8 @@ pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> 
             _ => {}
         }
     }
-    let (exterior, ext_id) = exterior
-        .ok_or_else(|| CityParquetError::Schema("gml:Polygon without exterior ring".to_string()))?;
+    let (exterior, ext_id) =
+        exterior.ok_or_else(|| Error::invalid("gml:Polygon without exterior ring".to_string()))?;
     let mut ring_ids = Vec::with_capacity(1 + interiors.len());
     ring_ids.push(ext_id);
     let interior_rings = interiors
@@ -541,7 +525,7 @@ fn read_ring_container<R: BufRead>(
             _ => {}
         }
     }
-    ring.ok_or_else(|| CityParquetError::Schema("gml ring without LinearRing".to_string()))
+    ring.ok_or_else(|| Error::invalid("gml ring without LinearRing".to_string()))
 }
 
 /// A `gml:LinearRing`: points from `gml:posList` or per-point `gml:pos`. Drops
@@ -583,17 +567,16 @@ fn srs_dimension(e: &quick_xml::events::BytesStart) -> Option<usize> {
 /// `stride` values per point (z defaults to 0 when 2D).
 fn parse_coords(text: &str, stride: usize) -> Result<Vec<[f64; 3]>> {
     if stride < 2 {
-        return Err(CityParquetError::Schema(format!(
+        return Err(Error::invalid(format!(
             "invalid srsDimension {stride} in CityGML geometry"
         )));
     }
     let nums: std::result::Result<Vec<f64>, _> =
         text.split_whitespace().map(|t| t.parse::<f64>()).collect();
-    let nums = nums.map_err(|e| {
-        CityParquetError::Schema(format!("invalid coordinate in CityGML posList/pos: {e}"))
-    })?;
+    let nums = nums
+        .map_err(|e| Error::invalid(format!("invalid coordinate in CityGML posList/pos: {e}")))?;
     if nums.is_empty() || nums.len() % stride != 0 {
-        return Err(CityParquetError::Schema(format!(
+        return Err(Error::invalid(format!(
             "CityGML coordinate list length {} not a multiple of dimension {stride}",
             nums.len()
         )));
@@ -604,8 +587,8 @@ fn parse_coords(text: &str, stride: usize) -> Result<Vec<[f64; 3]>> {
         .collect())
 }
 
-fn eof(ctx: &str) -> CityParquetError {
-    CityParquetError::Schema(format!("unexpected end of CityGML document inside <{ctx}>"))
+fn eof(ctx: &str) -> Error {
+    unexpected_eof(ctx)
 }
 
 #[cfg(test)]

@@ -1,0 +1,19 @@
+[package]
+name = "citygml-core"
+description = "Version-neutral CityGML model, GML geometry and the conversion to CityJSON"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+quick-xml = { workspace = true }
+thiserror = { workspace = true }
+cjseq = { workspace = true, optional = true }
+serde = { version = "1", optional = true }
+serde_json = { workspace = true, optional = true }
+
+[features]
+default = ["cjseq"]
+# The conversion of a `GmlObject` to cjseq's CityJSON types.
+cjseq = ["dep:cjseq", "dep:serde", "dep:serde_json"]

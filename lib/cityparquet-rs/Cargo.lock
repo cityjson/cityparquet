@@ -870,6 +870,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "citygml-core"
+version = "0.1.0"
+dependencies = [
+ "cjseq 0.5.0",
+ "quick-xml 0.39.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "citygml2"
+version = "0.1.0"
+dependencies = [
+ "citygml-core",
+ "cjseq 0.5.0",
+ "memchr",
+ "quick-xml 0.39.4",
+]
+
+[[package]]
 name = "cityparquet"
 version = "0.1.0"
 dependencies = [
@@ -885,6 +906,8 @@ dependencies = [
  "cardinality-estimator",
  "chrono",
  "city3d-stac-types",
+ "citygml-core",
+ "citygml2",
  "cityparquet-schema",
  "cjseq 0.5.0",
  "fcb_core 0.7.6",
@@ -894,7 +917,6 @@ dependencies = [
  "geo-traits",
  "glob",
  "jsonschema 0.26.2",
- "memchr",
  "object_store 0.13.2",
  "parquet 58.3.0",
  "parquet-geospatial",

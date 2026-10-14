@@ -89,6 +89,11 @@ impl Source {
                     crs_is_operator_supplied: false,
                 });
             }
+            Some(crate::citygml::CityGmlVersion::V3_0) => {
+                return Err(err(
+                    "unsupported CityGML version 3.0 (only CityGML 2.0 is supported)".to_string(),
+                ));
+            }
             Some(crate::citygml::CityGmlVersion::Other(version)) => {
                 return Err(err(format!(
                     "unsupported CityGML version {version} (only CityGML 2.0 is supported)"

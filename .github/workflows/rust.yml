@@ -1,8 +1,8 @@
 name: Rust
 
-# The gate for both Rust workspaces — the library (lib/cityparquet-rs) and the
-# read-benchmark harness (benchmark/readbench) — plus the harness's own two
-# non-Rust suites.
+# The gate for the Rust workspaces — the library (lib/cityparquet-rs), the
+# CityGML readers it depends on (lib/citygml-rs) and the read-benchmark harness
+# (benchmark/readbench) — plus the harness's own two non-Rust suites.
 #
 # The BENCHMARKS THEMSELVES ARE NOT HERE and should not be added: they are
 # multi-hour, need a ~24 GB fetched corpus, and the database family needs
@@ -14,6 +14,7 @@ on:
     branches: [main, develop]
     paths:
       - "lib/cityparquet-rs/**"
+      - "lib/citygml-rs/**"
       - "benchmark/**"
       - "scripts/**"
       - "justfile"
@@ -21,6 +22,7 @@ on:
   pull_request:
     paths:
       - "lib/cityparquet-rs/**"
+      - "lib/citygml-rs/**"
       - "benchmark/**"
       - "scripts/**"
       - "justfile"
@@ -115,6 +117,36 @@ jobs:
 
       - name: just check
         working-directory: lib/cityparquet-rs
+        run: just check
+
+  citygml:
+    name: citygml-rs workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/citygml-rs/target
+          key: citygml-${{ runner.os }}-${{ hashFiles('lib/citygml-rs/Cargo.lock') }}
+          restore-keys: citygml-${{ runner.os }}-
+
+      - uses: extractions/setup-just@v4
+
+      - name: Install rustfmt and clippy
+        working-directory: lib/citygml-rs
+        run: rustup component add rustfmt clippy
+
+      # Self-contained: its tests read the CityGML files committed under each
+      # crate's tests/data, so nothing is fetched.
+      - name: just check
+        working-directory: lib/citygml-rs
         run: just check
 
   harness-suites:

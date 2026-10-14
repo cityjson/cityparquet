@@ -46,6 +46,10 @@ thiserror = "2"
 # is what keeps `cityparquet` unpublished.
 cjseq = { git = "https://github.com/HideBa/cjseq", rev = "4e0e1c642eec05a4671e76b5e6e6b62d0ffd21ea" }
 quick-xml = "0.39"
+# The CityGML readers, from this monorepo's `lib/citygml-rs` workspace. They
+# pin the same cjseq rev as above, so both resolve to one copy.
+citygml-core = { path = "../citygml-rs/crates/core", version = "0.1.0" }
+citygml2 = { path = "../citygml-rs/crates/citygml2", version = "0.1.0" }
 chrono = "0.4"
 flate2 = "1"
 object_store = { version = "0.13", features = ["http"] }
@@ -79,7 +83,6 @@ jsonschema = "0.26"
 cardinality-estimator = "1.0.3"
 # Parses CityJSONSeq feature lines a batch at a time across cores.
 rayon = "1.12"
-memchr = "2.7"
 # FlatCityBuf input (the `fcb` feature). The exact pin the read benchmark
 # (`benchmark/readbench`) carries, so the two resolve to one version.
 fcb_core = "=0.7.6"

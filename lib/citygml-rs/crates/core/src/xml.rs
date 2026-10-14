@@ -1,28 +1,24 @@
-//! Shared quick-xml helpers for the CityGML reader: namespace matching,
-//! attribute access, and subtree skipping/text collection.
+//! quick-xml helpers shared by the CityGML readers: namespace matching,
+//! attribute access, and subtree skipping and text collection.
+//!
+//! Every reader runs quick-xml with `expand_empty_elements`, so a
+//! self-closing `<gml:surfaceMember xlink:href="#a"/>` arrives as a `Start`
+//! and an `End`, and the `Start`-matching loops see its xlink.
 
 use std::io::BufRead;
 
-use cityparquet_schema::{CityParquetError, Result};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::ResolveResult;
 use quick_xml::reader::NsReader;
 
-/// GML namespace prefix — matches both GML 3.1 (`.../gml`) and 3.2
+use crate::{Error, Result};
+
+/// GML namespace prefix. It matches both GML 3.1 (`.../gml`) and 3.2
 /// (`.../gml/3.2`), which real CityGML 2.0 files mix.
 pub const NS_GML: &str = "http://www.opengis.net/gml";
-pub const NS_BLDG: &str = "http://www.opengis.net/citygml/building/2.0";
-pub const NS_GEN: &str = "http://www.opengis.net/citygml/generics/2.0";
-pub const NS_APP: &str = "http://www.opengis.net/citygml/appearance/2.0";
-/// CityGML 2.0 core namespace — used to sniff the `CityModel` root. Matching
-/// this exact version (not the `.../citygml` family) means a 1.0/3.0 document is
-/// not misclassified as CityGML 2.0 and then silently yielding no features.
-pub const NS_CORE: &str = "http://www.opengis.net/citygml/2.0";
-/// The CityGML core namespace *family* — every version shares this prefix
-/// (`.../citygml/1.0`, `.../citygml/2.0`, `.../citygml/3.0`). Matched to
-/// recognise a CityGML document of ANY version so an unsupported one can be
-/// reported as such, rather than falling through to the CityJSON sniff and
-/// failing as malformed JSON.
+
+/// The CityGML namespace *family*: every version and module shares this
+/// prefix (`.../citygml/2.0`, `.../citygml/building/3.0`, …).
 pub const NS_CITYGML_FAMILY: &str = "http://www.opengis.net/citygml";
 
 /// True when a resolved namespace starts with `prefix`.
@@ -47,7 +43,7 @@ pub fn ns_eq(rr: &ResolveResult, ns: &[u8]) -> bool {
     matches!(rr, ResolveResult::Bound(bound) if bound.as_ref() == ns)
 }
 
-/// Fetch an attribute value (by its raw, possibly-prefixed name) as a String.
+/// An attribute value, by its raw (possibly prefixed) name.
 pub fn get_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         if a.key.as_ref() == name {
@@ -60,13 +56,13 @@ pub fn get_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
     })
 }
 
-/// A CityGML/GML `gml:id` (or bare `id`).
+/// A `gml:id` (or bare `id`).
 pub fn gml_id(e: &BytesStart) -> Option<String> {
     get_attr(e, b"gml:id").or_else(|| get_attr(e, b"id"))
 }
 
-/// The value of an attribute matched by its *local* name (prefix stripped), so
-/// `xlink:href` is found regardless of the prefix the document binds.
+/// An attribute value matched by its *local* name (prefix stripped), so
+/// `xlink:href` is found whatever prefix the document binds.
 pub fn get_attr_local(e: &BytesStart, local: &[u8]) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         let key = a.key.as_ref();
@@ -82,31 +78,36 @@ pub fn get_attr_local(e: &BytesStart, local: &[u8]) -> Option<String> {
 }
 
 /// The `#fragment` target id of an `xlink:href` on this element, if present.
-/// Errors on an external reference (`other.gml#id`) or a non-fragment href —
-/// only intra-document references are resolvable by the streaming reader.
+/// Errors on an external reference (`other.gml#id`) or a non-fragment href:
+/// only intra-document references are resolvable by a streaming reader.
 pub fn xlink_fragment(e: &BytesStart) -> Result<Option<String>> {
     let Some(href) = get_attr_local(e, b"href") else {
         return Ok(None);
     };
     match href.strip_prefix('#') {
         Some(id) if !id.is_empty() && !id.contains('#') => Ok(Some(id.to_string())),
-        _ => Err(CityParquetError::Schema(format!(
+        _ => Err(Error::invalid(format!(
             "CityGML xlink:href {href:?} is not an intra-document #fragment reference \
              (external/shared geometry is out of scope)"
         ))),
     }
 }
 
-pub fn xml_err(e: impl std::fmt::Display) -> CityParquetError {
-    CityParquetError::Schema(format!("CityGML XML parse error: {e}"))
+/// A quick-xml failure as an [`Error`].
+pub fn xml_err(e: impl std::fmt::Display) -> Error {
+    Error::invalid(format!("CityGML XML parse error: {e}"))
+}
+
+/// The error for a document that ends inside `<ctx>`.
+pub fn unexpected_eof(ctx: &str) -> Error {
+    Error::invalid(format!("unexpected end of CityGML document inside <{ctx}>"))
 }
 
 /// The decoded, entity-unescaped content of a `BytesText` event.
 ///
 /// quick-xml 0.39 split `BytesText::unescape` into `decode` (encoding only)
 /// and `escape::unescape` (entities); a CityGML text node needs both, and
-/// neither normalises line endings — the reader does not depend on an
-/// XML-1.0/1.1 EOL distinction.
+/// neither normalises line endings.
 pub fn unescaped_text(t: &quick_xml::events::BytesText<'_>) -> Result<String> {
     let decoded = t.decode().map_err(xml_err)?;
     Ok(quick_xml::escape::unescape(&decoded)
@@ -114,12 +115,8 @@ pub fn unescaped_text(t: &quick_xml::events::BytesText<'_>) -> Result<String> {
         .into_owned())
 }
 
-fn eof_err(ctx: &str) -> CityParquetError {
-    CityParquetError::Schema(format!("unexpected end of CityGML document inside <{ctx}>"))
-}
-
-/// Consume the current element's remaining subtree. Call right after reading its
-/// `Start`; returns once its matching `End` is consumed.
+/// Consume the current element's remaining subtree. Call right after reading
+/// its `Start`; returns once its matching `End` is consumed.
 pub fn skip_element<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<()> {
     let mut depth = 1usize;
     loop {
@@ -132,13 +129,13 @@ pub fn skip_element<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> 
                     return Ok(());
                 }
             }
-            Event::Eof => return Err(eof_err("skip")),
+            Event::Eof => return Err(unexpected_eof("skip")),
             _ => {}
         }
     }
 }
 
-/// Collect the text content of the current element (assumes only text children),
+/// The text content of the current element (assumed to hold only text),
 /// consuming through its matching `End`.
 pub fn read_text<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<String> {
     let mut s = String::new();
@@ -148,7 +145,7 @@ pub fn read_text<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Res
             Event::Text(t) => s.push_str(&unescaped_text(&t)?),
             Event::CData(t) => s.push_str(&String::from_utf8_lossy(&t)),
             Event::End(_) => return Ok(s),
-            Event::Eof => return Err(eof_err("text")),
+            Event::Eof => return Err(unexpected_eof("text")),
             _ => {}
         }
     }
