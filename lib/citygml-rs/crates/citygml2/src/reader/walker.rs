@@ -19,7 +19,7 @@
 //!   a `gml:id` when referenced by `xlink:href`;
 //! - any other text-only property of a CityGML module is an attribute, typed
 //!   as [`attributes::property_type`] says;
-//! - a property in an ADE's namespace ([`ns::is_ade`]) is kept verbatim as
+//! - a property in an ADE's namespace ([`is_ade`]) is kept verbatim as
 //!   an [`XmlNode`], unless it is an ADE object's own geometry or boundary
 //!   surfaces, which are read as a CityGML object's are;
 //! - `gml:name`, `gml:description`, `gen:` generic attributes and
@@ -32,22 +32,32 @@
 use std::io::BufRead;
 
 use citygml_core::gml::ObjectBuilder;
-use citygml_core::gml::read::{self as gml, Collected, SolidGeom};
-use citygml_core::model::{
-    Address, Attribute, AttributeName, Instance, Line, Module, Namespace, Polygon, QName,
-    XmlAttribute, XmlContent, XmlNode,
+use citygml_core::gml::read::{self as gml, Collected};
+use citygml_core::model::{Address, Attribute, AttributeName, Module, Namespace, QName};
+use citygml_core::reader::appearance::read_appearance;
+use citygml_core::reader::geometry::{
+    ImplicitNames, add_lod_geometry, implicit_lod, lod_suffix, read_implicit, read_lod_geometry,
+    read_lod_solid,
 };
+use citygml_core::reader::node::{read_xml_node, xml_attributes};
+use citygml_core::reader::templates::TemplateIndex;
+use citygml_core::reader::text::{AttrType, read_leaf_text, to_value};
 use citygml_core::xml::{
-    NS_GML, get_attr_local, gml_id, ns_eq, ns_is, ns_of, skip_element, unescaped_text, xml_err,
+    NS_GML, get_attr_local, gml_id, is_ade, member_id, ns_eq, ns_is, ns_of, skip_element,
+    unescaped_text, xml_err,
 };
 use citygml_core::{Error, Result};
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 
-use super::appearance::read_appearance;
-use super::attributes::{self, AttrType};
-use super::templates::TemplateIndex;
+use super::attributes;
 use crate::ns;
+
+/// How CityGML 2.0 spells an `ImplicitGeometry`.
+pub(crate) const IMPLICIT: ImplicitNames<'static> = ImplicitNames {
+    namespace: ns::CORE,
+    relative_geometry: b"relativeGMLGeometry",
+};
 
 /// Maximum nesting depth of parts and nested features: a guard against
 /// attacker-controlled XML recursion.
@@ -105,7 +115,7 @@ pub fn top_level_class(uri: &[u8], local: &[u8]) -> Option<QName> {
 /// The class of an ADE object: an element of an ADE's namespace where a
 /// city object belongs.
 pub fn ade_class(uri: &[u8], local: &[u8]) -> Option<QName> {
-    ns::is_ade(uri).then(|| qname(uri, local))
+    is_ade(uri).then(|| qname(uri, local))
 }
 
 /// Whether an element is a feature the reader passes through rather than
@@ -205,7 +215,7 @@ pub fn read_object<R: BufRead>(
                 let uri = ns_of(&rr).unwrap_or_default();
                 let module = ns::module(&uri);
                 if module == Some(Module::Appearance) && name == b"appearance" {
-                    b.add_appearance(read_appearance(reader, buf, b"appearance")?);
+                    b.add_appearance(read_appearance(reader, buf, b"appearance", ns::APPEARANCE)?);
                 } else if let (Some(Module::Generics), Some(ty)) =
                     (module, attributes::generic_attr(&name))
                 {
@@ -240,7 +250,7 @@ pub fn read_object<R: BufRead>(
                         &name,
                         cx,
                     )?;
-                } else if ns::is_ade(&uri) {
+                } else if is_ade(&uri) {
                     let own = own_ade.as_deref() == Some(uri.as_slice());
                     let attributes = xml_attributes(&e)?;
                     if own && read_geometry_property(reader, buf, &mut b, &mut pending, &name, cx)?
@@ -249,7 +259,13 @@ pub fn read_object<R: BufRead>(
                     } else if own && is_semantic_surface_property(&name) {
                         read_bounded_by(reader, buf, &mut b, &uri, &name)?;
                     } else {
-                        let node = read_xml_node(reader, buf, qname(&uri, &name), attributes)?;
+                        let node = read_xml_node(
+                            reader,
+                            buf,
+                            qname(&uri, &name),
+                            attributes,
+                            ns::namespace,
+                        )?;
                         b.push_ade(node);
                     }
                 } else {
@@ -348,7 +364,7 @@ fn read_geometry_property<R: BufRead>(
     cx: Cx<'_>,
 ) -> Result<bool> {
     if let Some(lod) = lod_suffix(name, b"Solid") {
-        let geom = read_lod_solid(reader, buf, name.to_vec())?;
+        let geom = read_lod_solid(reader, buf, name)?;
         b.add_solid(lod, geom);
     } else if let Some(lod) =
         lod_suffix(name, b"MultiSurface").or_else(|| lod_suffix(name, b"FootPrint"))
@@ -371,7 +387,7 @@ fn read_geometry_property<R: BufRead>(
         let (_, geom) = read_lod_geometry(reader, buf, name)?;
         add_lod_geometry(b, lod, geom);
     } else if let Some(lod) = implicit_lod(name) {
-        if let Some(instance) = read_implicit(reader, buf, name, cx.templates)? {
+        if let Some(instance) = read_implicit(reader, buf, name, cx.templates, IMPLICIT)? {
             b.add_instance(lod, instance);
         }
     } else if let Some(lod) =
@@ -384,103 +400,6 @@ fn read_geometry_property<R: BufRead>(
         return Ok(false);
     }
     Ok(true)
-}
-
-/// An element's XML attributes, namespace declarations left out.
-pub(crate) fn xml_attributes(e: &BytesStart) -> Result<Vec<XmlAttribute>> {
-    let mut attributes = Vec::new();
-    for attribute in e.attributes() {
-        let attribute = attribute.map_err(xml_err)?;
-        let key = attribute.key.as_ref();
-        if key == b"xmlns" || key.starts_with(b"xmlns:") {
-            continue;
-        }
-        attributes.push(XmlAttribute {
-            name: String::from_utf8_lossy(key).into_owned(),
-            value: attribute.unescape_value().map_err(xml_err)?.into_owned(),
-        });
-    }
-    Ok(attributes)
-}
-
-/// The subtree of an element (positioned after its `Start`, which gave its
-/// `name` and `attributes`) as an [`XmlNode`], verbatim. Read without
-/// recursion, so a deep subtree cannot exhaust the stack.
-pub(crate) fn read_xml_node<R: BufRead>(
-    reader: &mut NsReader<R>,
-    buf: &mut Vec<u8>,
-    name: QName,
-    attributes: Vec<XmlAttribute>,
-) -> Result<XmlNode> {
-    struct Open {
-        name: QName,
-        attributes: Vec<XmlAttribute>,
-        text: String,
-        children: Vec<XmlNode>,
-    }
-    impl Open {
-        fn close(self) -> XmlNode {
-            let content = if !self.children.is_empty() {
-                XmlContent::Children(self.children)
-            } else if self.text.trim().is_empty() {
-                XmlContent::Empty
-            } else {
-                XmlContent::Text(self.text)
-            };
-            XmlNode {
-                name: self.name,
-                attributes: self.attributes,
-                content,
-            }
-        }
-    }
-    let mut open = vec![Open {
-        name,
-        attributes,
-        text: String::new(),
-        children: Vec::new(),
-    }];
-    loop {
-        buf.clear();
-        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
-        match ev {
-            Event::Start(e) => {
-                let uri = ns_of(&rr).unwrap_or_default();
-                open.push(Open {
-                    name: qname(&uri, e.local_name().as_ref()),
-                    attributes: xml_attributes(&e)?,
-                    text: String::new(),
-                    children: Vec::new(),
-                });
-            }
-            Event::Text(t) => {
-                if let Some(top) = open.last_mut() {
-                    top.text.push_str(&unescaped_text(&t)?);
-                }
-            }
-            Event::CData(t) => {
-                if let Some(top) = open.last_mut() {
-                    top.text.push_str(&String::from_utf8_lossy(&t));
-                }
-            }
-            Event::End(_) => {
-                let Some(top) = open.pop() else {
-                    unreachable!("an End always closes an open element");
-                };
-                let node = top.close();
-                match open.last_mut() {
-                    Some(parent) => parent.children.push(node),
-                    None => return Ok(node),
-                }
-            }
-            Event::Eof => {
-                return Err(Error::invalid(
-                    "unexpected end of document inside an ADE property",
-                ));
-            }
-            _ => {}
-        }
-    }
 }
 
 /// A text-only property (positioned after its `Start`) as an attribute
@@ -497,7 +416,7 @@ fn push_leaf<R: BufRead>(
     if let Some(text) = read_leaf_text(reader, buf, end)? {
         b.push_attribute(Attribute {
             name: AttributeName::Property(name()),
-            value: attributes::to_value(&text, ty),
+            value: to_value(&text, ty),
         });
     }
     Ok(())
@@ -570,17 +489,6 @@ fn read_address<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Resu
     Ok(address)
 }
 
-/// The polygons of a surface-collection subtree, without their xlinks.
-fn surface_polygons<R: BufRead>(
-    reader: &mut NsReader<R>,
-    buf: &mut Vec<u8>,
-) -> Result<Vec<Polygon>> {
-    Ok(gml::collect_polygons(reader, buf)?
-        .into_iter()
-        .map(|(_, p)| p)
-        .collect())
-}
-
 /// Read a nesting property (positioned after its `Start`, ending at
 /// `End(prop_name)`).
 ///
@@ -636,13 +544,6 @@ fn read_nested<R: BufRead>(
     Ok(())
 }
 
-/// The `gml:id` a group member's `xlink:href` names in this document
-/// (`#id`). A member in another document cannot be linked, so it is `None`.
-pub fn member_id(href: &str) -> Option<String> {
-    let id = href.strip_prefix('#')?;
-    (!id.is_empty() && !id.contains('#')).then(|| id.to_string())
-}
-
 /// Read a `grp:groupMember` holding its member inline (positioned after its
 /// `Start`): an object of any class this reader reads, at any level, or of
 /// an ADE's class, kept as the group's child. A member of a class it does not read is skipped.
@@ -685,23 +586,6 @@ fn read_group_member<R: BufRead>(
     Ok(())
 }
 
-/// `lodNImplicitRepresentation` -> the LoD `"N"`, else `None`.
-pub(crate) fn implicit_lod(local: &[u8]) -> Option<String> {
-    lod_suffix(local, b"ImplicitRepresentation")
-}
-
-/// `lodN<suffix>` -> the LoD `"N"`, else `None`.
-fn lod_suffix(local: &[u8], suffix: &[u8]) -> Option<String> {
-    let s = std::str::from_utf8(local).ok()?;
-    let suffix = std::str::from_utf8(suffix).ok()?;
-    let digits = s.strip_prefix("lod")?.strip_suffix(suffix)?;
-    if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
-        Some(digits.to_string())
-    } else {
-        None
-    }
-}
-
 /// Whether a module property holds the object's boundary surfaces:
 /// `boundedBy` for the modules whose features have them, and a
 /// transportation object's `trafficArea` / `auxiliaryTrafficArea`. CityJSON
@@ -733,220 +617,6 @@ pub(crate) fn is_nesting_property(local: &[u8]) -> bool {
         || name.ends_with("RoomInstallation")
         || name == "roomInstallation"
         || name == "hollowSpaceInstallation"
-}
-
-/// The geometry a `lodNGeometry` property wraps.
-pub(crate) enum LodGeom {
-    Solid(SolidGeom),
-    Surfaces(Vec<Polygon>),
-    Lines(Vec<Line>),
-    Points(Vec<[f64; 3]>),
-}
-
-/// Inside a `lodNGeometry` or a `relativeGMLGeometry` (positioned after its
-/// `Start`, ending at `End(end)`): a `gml:Solid` / `CompositeSolid` is a
-/// solid, a `gml:MultiSurface` / `CompositeSurface` / `Polygon` a surface
-/// list, a curve or curve aggregate lines, and a `gml:Point` / `MultiPoint`
-/// points. Also returns the `gml:id` of the first geometry element.
-pub(crate) fn read_lod_geometry<R: BufRead>(
-    reader: &mut NsReader<R>,
-    buf: &mut Vec<u8>,
-    end: &[u8],
-) -> Result<(Option<String>, Option<LodGeom>)> {
-    let end = end.to_vec();
-    let mut id: Option<String> = None;
-    let mut first = true;
-    let mut solid: Option<SolidGeom> = None;
-    let mut polys: Vec<Polygon> = Vec::new();
-    let mut lines: Vec<Line> = Vec::new();
-    let mut points: Vec<[f64; 3]> = Vec::new();
-    loop {
-        buf.clear();
-        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
-        let is_gml = ns_is(&rr, NS_GML);
-        match ev {
-            Event::Start(e) => {
-                if std::mem::take(&mut first) {
-                    id = gml_id(&e);
-                }
-                let local = e.local_name();
-                match (is_gml, local.as_ref()) {
-                    (true, b"Solid") => {
-                        solid = Some(SolidGeom::Solid(gml::read_solid(reader, buf)?))
-                    }
-                    (true, b"CompositeSolid") => {
-                        solid = Some(SolidGeom::Composite(gml::read_composite_solid(
-                            reader, buf,
-                        )?))
-                    }
-                    (true, b"MultiSurface") | (true, b"CompositeSurface") => {
-                        // A material or texture may target the aggregate.
-                        let aggregate = gml_id(&e);
-                        polys.extend(surface_polygons(reader, buf)?.into_iter().map(|mut p| {
-                            p.groups.extend(aggregate.clone());
-                            p
-                        }));
-                    }
-                    (true, b"Polygon") => {
-                        let id = gml_id(&e);
-                        let mut poly = gml::read_polygon(reader, buf)?;
-                        poly.id = id;
-                        polys.push(poly);
-                    }
-                    (
-                        true,
-                        b"LineString" | b"Curve" | b"MultiCurve" | b"CompositeCurve"
-                        | b"OrientableCurve",
-                    ) => {
-                        let local = local.as_ref().to_vec();
-                        lines.extend(gml::read_curve(reader, buf, &local)?);
-                    }
-                    (true, b"Point" | b"MultiPoint") => {
-                        points.extend(gml::collect_points(reader, buf)?);
-                    }
-                    _ => skip_element(reader, buf)?,
-                }
-            }
-            Event::End(e) if e.local_name().as_ref() == end.as_slice() => break,
-            Event::Eof => {
-                return Err(Error::invalid(
-                    "unexpected end of document inside a lodNGeometry",
-                ));
-            }
-            _ => {}
-        }
-    }
-    let geom = solid
-        .map(LodGeom::Solid)
-        .or_else(|| (!polys.is_empty()).then_some(LodGeom::Surfaces(polys)))
-        .or_else(|| (!lines.is_empty()).then_some(LodGeom::Lines(lines)))
-        .or_else(|| (!points.is_empty()).then_some(LodGeom::Points(points)));
-    Ok((id, geom))
-}
-
-/// Record what [`read_lod_geometry`] read as `b`'s geometry at `lod`.
-pub(crate) fn add_lod_geometry(b: &mut ObjectBuilder, lod: String, geom: Option<LodGeom>) {
-    match geom {
-        Some(LodGeom::Solid(geom)) => b.add_solid(lod, geom),
-        Some(LodGeom::Surfaces(polys)) => b.add_plain_surfaces(lod, polys),
-        Some(LodGeom::Lines(lines)) => b.add_lines(lod, lines),
-        Some(LodGeom::Points(points)) => b.add_points(lod, points),
-        None => {}
-    }
-}
-
-/// An `lodNImplicitRepresentation` (positioned after its `Start`, ending at
-/// `End(end)`) as an [`Instance`] of one of `templates`. `None` when it
-/// names no relative geometry of this document (a `libraryObject` only, or
-/// an `xlink:href` to another document or to the `ImplicitGeometry` itself),
-/// or has no reference point.
-fn read_implicit<R: BufRead>(
-    reader: &mut NsReader<R>,
-    buf: &mut Vec<u8>,
-    end: &[u8],
-    templates: &TemplateIndex,
-) -> Result<Option<Instance>> {
-    let mut matrix = IDENTITY;
-    let mut template: Option<usize> = None;
-    let mut reference_point: Option<[f64; 3]> = None;
-    loop {
-        buf.clear();
-        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
-        match ev {
-            Event::Start(e) => {
-                let local = e.local_name();
-                match (ns_is(&rr, ns::CORE), local.as_ref()) {
-                    (true, b"ImplicitGeometry") => {}
-                    (true, b"transformationMatrix") => {
-                        let text = read_leaf_text(reader, buf, b"transformationMatrix")?;
-                        matrix = parse_matrix(text.as_deref().unwrap_or_default())?;
-                    }
-                    (true, b"relativeGMLGeometry") => {
-                        template = match get_attr_local(&e, b"href") {
-                            Some(href) => member_id(&href).and_then(|id| templates.by_id(&id)),
-                            None => templates.at(reader.buffer_position()),
-                        };
-                        skip_element(reader, buf)?;
-                    }
-                    (true, b"referencePoint") => {
-                        reference_point = gml::collect_points(reader, buf)?.first().copied();
-                    }
-                    _ => skip_element(reader, buf)?,
-                }
-            }
-            Event::End(e) if e.local_name().as_ref() == end => break,
-            Event::Eof => {
-                return Err(Error::invalid(
-                    "unexpected end of document inside an lodNImplicitRepresentation",
-                ));
-            }
-            _ => {}
-        }
-    }
-    Ok(template
-        .zip(reference_point)
-        .map(|(template, reference_point)| Instance {
-            template,
-            matrix,
-            reference_point,
-        }))
-}
-
-const IDENTITY: [f64; 16] = [
-    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-];
-
-/// A `transformationMatrix`: sixteen numbers, row by row.
-fn parse_matrix(text: &str) -> Result<[f64; 16]> {
-    let values = text
-        .split_whitespace()
-        .map(|t| t.parse::<f64>().ok().filter(|v| v.is_finite()))
-        .collect::<Option<Vec<f64>>>();
-    values
-        .and_then(|v| <[f64; 16]>::try_from(v).ok())
-        .ok_or_else(|| {
-            Error::invalid(format!(
-                "a transformationMatrix is sixteen finite numbers, not {text:?}"
-            ))
-        })
-}
-
-/// Inside a `lodNSolid`: the wrapped `gml:Solid` or `gml:CompositeSolid`.
-fn read_lod_solid<R: BufRead>(
-    reader: &mut NsReader<R>,
-    buf: &mut Vec<u8>,
-    end: Vec<u8>,
-) -> Result<SolidGeom> {
-    let mut geom: Option<SolidGeom> = None;
-    loop {
-        buf.clear();
-        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
-        let is_gml = ns_is(&rr, NS_GML);
-        match ev {
-            Event::Start(e) => {
-                let local = e.local_name();
-                match (is_gml, local.as_ref()) {
-                    (true, b"Solid") => {
-                        geom = Some(SolidGeom::Solid(gml::read_solid(reader, buf)?))
-                    }
-                    (true, b"CompositeSolid") => {
-                        geom = Some(SolidGeom::Composite(gml::read_composite_solid(
-                            reader, buf,
-                        )?))
-                    }
-                    _ => skip_element(reader, buf)?,
-                }
-            }
-            Event::End(e) if e.local_name().as_ref() == end.as_slice() => break,
-            Event::Eof => {
-                return Err(Error::invalid(
-                    "unexpected end of document inside <lodNSolid>",
-                ));
-            }
-            _ => {}
-        }
-    }
-    geom.ok_or_else(|| Error::invalid("lodNSolid without gml:Solid or gml:CompositeSolid"))
 }
 
 /// The boundary surface classes a semantic-surface subtree may nest
@@ -1001,7 +671,7 @@ fn read_bounded_by<R: BufRead>(
             Event::Start(e) => {
                 let local = e.local_name();
                 let uri = ns_of(&rr).unwrap_or_default();
-                if own_module || ns::is_ade(&uri) {
+                if own_module || is_ade(&uri) {
                     let name = local.as_ref().to_vec();
                     let idx = b.push_boundary_surface(qname(&uri, &name), None);
                     read_semantic_surface(reader, buf, b, idx, &name, (ns, &uri))?;
@@ -1065,35 +735,4 @@ fn read_semantic_surface<R: BufRead>(
         }
     }
     Ok(())
-}
-
-/// A leaf element's text (positioned after its `Start`, ending at
-/// `End(end)`), verbatim: `None` for an empty or blank one, or one with
-/// child elements.
-fn read_leaf_text<R: BufRead>(
-    reader: &mut NsReader<R>,
-    buf: &mut Vec<u8>,
-    end: &[u8],
-) -> Result<Option<String>> {
-    let mut text = String::new();
-    let mut has_child = false;
-    loop {
-        buf.clear();
-        match reader.read_event_into(buf).map_err(xml_err)? {
-            Event::Text(t) => text.push_str(&unescaped_text(&t)?),
-            Event::CData(t) => text.push_str(&String::from_utf8_lossy(&t)),
-            Event::Start(_) => {
-                has_child = true;
-                skip_element(reader, buf)?;
-            }
-            Event::End(e) if e.local_name().as_ref() == end => break,
-            Event::Eof => {
-                return Err(Error::invalid(
-                    "unexpected end of document inside a typed property",
-                ));
-            }
-            _ => {}
-        }
-    }
-    Ok((!has_child && !text.trim().is_empty()).then_some(text))
 }

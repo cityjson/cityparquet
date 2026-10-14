@@ -51,22 +51,3 @@ pub fn namespace(uri: &[u8]) -> Namespace {
     }
     Namespace::Other(String::from_utf8_lossy(uri).into_owned())
 }
-
-/// Namespaces of standards, which no ADE's elements are in: every OGC
-/// namespace (CityGML, GML, WFS, …), every W3C one (XLink, XML Schema,
-/// SMIL, …), ISO/TC 211's, Schematron's and xAL.
-const NOT_ADE: &[&str] = &[
-    "http://www.opengis.net/",
-    "http://www.w3.org/",
-    "http://www.isotc211.org/",
-    "http://purl.oclc.org/dsdl/schematron",
-    "http://www.ascc.net/xml/schematron",
-    "urn:oasis:names:tc:ciq:",
-];
-
-/// Whether an element in the namespace `uri` belongs to an ADE: a bound
-/// namespace outside those of standards ([`NOT_ADE`]: OGC's, CityGML and
-/// GML among them, W3C's, ISO/TC 211's, Schematron's and xAL's).
-pub fn is_ade(uri: &[u8]) -> bool {
-    !uri.is_empty() && !NOT_ADE.iter().any(|ns| uri.starts_with(ns.as_bytes()))
-}

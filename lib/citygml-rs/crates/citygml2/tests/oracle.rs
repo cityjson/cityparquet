@@ -318,7 +318,7 @@ fn implicit_geometries_agree_with_citygml_tools() {
         scale: [1e-3; 3],
         translate: [0.0; 3],
     };
-    let document = citygml2::Document::read(&gml).unwrap();
+    let document = citygml2::read_document(&gml).unwrap();
     let (geometry_templates, appearance) =
         citygml_core::convert::cjseq::geometry_templates(document.templates())
             .unwrap()

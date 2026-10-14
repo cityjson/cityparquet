@@ -874,6 +874,7 @@ name = "citygml-core"
 version = "0.1.0"
 dependencies = [
  "cjseq 0.5.0-alpha.1",
+ "memchr",
  "quick-xml 0.39.4",
  "serde",
  "serde_json",

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use citygml_core::model::{Module, QName, Shape};
-use citygml2::FeatureReader;
+use citygml2::{FeatureReader, ObjectStream};
 
 fn data(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

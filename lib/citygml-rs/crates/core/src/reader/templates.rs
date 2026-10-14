@@ -1,6 +1,6 @@
 //! The relative geometries a document's `ImplicitGeometry`s instantiate.
 //!
-//! A relative geometry is written inline in the first `relativeGMLGeometry`
+//! A relative geometry is written inline in the first `ImplicitGeometry`
 //! that uses it, inside some object, and referenced by `xlink:href` from the
 //! others, possibly in objects read before it. So the up-front pass over the
 //! document reads every inline one, and the object pass finds each again:
@@ -10,18 +10,18 @@
 use std::collections::HashMap;
 use std::io::BufRead;
 
-use citygml_core::gml::{ObjectBuilder, XlinkBudget};
-use citygml_core::model::{ModelAppearance, Module, QName, Template};
-use citygml_core::{GmlObject, Result};
 use quick_xml::reader::NsReader;
 
-use super::walker;
+use super::geometry::{add_lod_geometry, read_lod_geometry};
+use crate::gml::{ObjectBuilder, XlinkBudget};
+use crate::model::{ModelAppearance, Module, QName, Template};
+use crate::{GmlObject, Result};
 
 /// Where each relative geometry of a document is.
 #[derive(Debug, Default)]
 pub struct TemplateIndex {
-    /// The byte position just after an inline `relativeGMLGeometry`'s start
-    /// tag -> its template.
+    /// The byte position just after an inline relative geometry property's
+    /// start tag -> its template.
     at: HashMap<u64, usize>,
     /// The `gml:id` of an inline relative geometry -> its template.
     by_id: HashMap<String, usize>,
@@ -48,18 +48,20 @@ pub struct Templates {
 
 impl Templates {
     /// Read the inline relative geometry `reader` is inside (positioned just
-    /// after the `relativeGMLGeometry` start tag) as the next template, at
-    /// the LoD `lod` of the property holding it.
+    /// after the start tag of the property holding it, which ends at
+    /// `End(end)`) as the next template, at the LoD `lod` of the
+    /// `lodNImplicitRepresentation` holding it.
     pub fn read<R: BufRead>(
         &mut self,
         reader: &mut NsReader<R>,
         buf: &mut Vec<u8>,
+        end: &[u8],
         lod: String,
     ) -> Result<()> {
         let position = reader.buffer_position();
-        let (id, geom) = walker::read_lod_geometry(reader, buf, b"relativeGMLGeometry")?;
+        let (id, geom) = read_lod_geometry(reader, buf, end)?;
         let mut b = ObjectBuilder::new(id.clone(), QName::module(Module::Core, "ImplicitGeometry"));
-        walker::add_lod_geometry(&mut b, lod, geom);
+        add_lod_geometry(&mut b, lod, geom);
         let Some(geometry) = b.finish(&XlinkBudget::default())?.geometries.pop() else {
             return Ok(());
         };

@@ -1,13 +1,16 @@
 use crate::model::{Module, Namespace, QName};
 
-/// CityGML classes and the CityJSON City Object type each becomes.
+/// CityGML 2.0 and 3.0 classes and the CityJSON City Object type each
+/// becomes. A class both versions name alike is listed once.
 ///
-/// Several CityGML 2.0 classes collapse onto one CityJSON type where CityJSON
-/// draws no distinction: an outer and an interior installation, and a
-/// `Track` or `TransportationComplex`, which CityJSON models as a `Road`. A
-/// few are spelled differently, following CityGML 3.0
-/// (`BridgeConstructiveElement`, `BuildingRoom`, `TunnelHollowSpace`), and a
-/// transportation `Square` is a `TransportSquare`.
+/// Several classes collapse onto one CityJSON type where CityJSON draws no
+/// distinction: an outer and an interior installation, a `Track` or
+/// `TransportationComplex`, which CityJSON models as a `Road`, and CityGML
+/// 3.0's generic spaces, each a `GenericCityObject`. A few are spelled
+/// differently: CityJSON follows CityGML 3.0 (`BridgeConstructiveElement`,
+/// `BuildingRoom`) where 2.0 differs, prefixes a tunnel's `HollowSpace`, a
+/// building's `Storey` and a transportation `Square`
+/// (`TunnelHollowSpace`, `BuildingStorey`, `TransportSquare`).
 const CLASSES: &[(Module, &str, &str)] = &[
     (Module::Building, "Building", "Building"),
     (Module::Building, "BuildingPart", "BuildingPart"),
@@ -22,7 +25,15 @@ const CLASSES: &[(Module, &str, &str)] = &[
         "BuildingInstallation",
     ),
     (Module::Building, "Room", "BuildingRoom"),
+    (Module::Building, "BuildingRoom", "BuildingRoom"),
     (Module::Building, "BuildingFurniture", "BuildingFurniture"),
+    (
+        Module::Building,
+        "BuildingConstructiveElement",
+        "BuildingConstructiveElement",
+    ),
+    (Module::Building, "Storey", "BuildingStorey"),
+    (Module::Building, "BuildingUnit", "BuildingUnit"),
     (Module::Bridge, "Bridge", "Bridge"),
     (Module::Bridge, "BridgePart", "BridgePart"),
     (Module::Bridge, "BridgeInstallation", "BridgeInstallation"),
@@ -36,6 +47,11 @@ const CLASSES: &[(Module, &str, &str)] = &[
         "BridgeConstructionElement",
         "BridgeConstructiveElement",
     ),
+    (
+        Module::Bridge,
+        "BridgeConstructiveElement",
+        "BridgeConstructiveElement",
+    ),
     (Module::Bridge, "BridgeRoom", "BridgeRoom"),
     (Module::Bridge, "BridgeFurniture", "BridgeFurniture"),
     (Module::Tunnel, "Tunnel", "Tunnel"),
@@ -46,8 +62,18 @@ const CLASSES: &[(Module, &str, &str)] = &[
         "IntTunnelInstallation",
         "TunnelInstallation",
     ),
+    (
+        Module::Tunnel,
+        "TunnelConstructiveElement",
+        "TunnelConstructiveElement",
+    ),
     (Module::Tunnel, "HollowSpace", "TunnelHollowSpace"),
     (Module::Tunnel, "TunnelFurniture", "TunnelFurniture"),
+    (
+        Module::Construction,
+        "OtherConstruction",
+        "OtherConstruction",
+    ),
     (Module::WaterBody, "WaterBody", "WaterBody"),
     (Module::LandUse, "LandUse", "LandUse"),
     (Module::CityFurniture, "CityFurniture", "CityFurniture"),
@@ -59,6 +85,17 @@ const CLASSES: &[(Module, &str, &str)] = &[
     (Module::Vegetation, "PlantCover", "PlantCover"),
     (Module::Generics, "GenericCityObject", "GenericCityObject"),
     (
+        Module::Generics,
+        "GenericOccupiedSpace",
+        "GenericCityObject",
+    ),
+    (
+        Module::Generics,
+        "GenericUnoccupiedSpace",
+        "GenericCityObject",
+    ),
+    (Module::Generics, "GenericLogicalSpace", "GenericCityObject"),
+    (
         Module::CityObjectGroup,
         "CityObjectGroup",
         "CityObjectGroup",
@@ -68,6 +105,7 @@ const CLASSES: &[(Module, &str, &str)] = &[
     (Module::Transportation, "Track", "Road"),
     (Module::Transportation, "TransportationComplex", "Road"),
     (Module::Transportation, "Square", "TransportSquare"),
+    (Module::Transportation, "Waterway", "Waterway"),
     (Module::Relief, "TINRelief", "TINRelief"),
 ];
 
@@ -145,4 +183,27 @@ pub fn cityjson_definition(class: &QName) -> &'static str {
         .map(|(_, _, definition)| *definition)
         .or_else(|| cityjson_type(class))
         .unwrap_or("_AbstractCityObject")
+}
+
+/// CityGML boundary surface classes whose CityJSON semantic surface type is
+/// spelled differently: CityGML 3.0's filling surfaces, and its
+/// transportation markings and holes. Every other boundary surface class
+/// of either version is the CityJSON type of the same name.
+const SURFACES: &[(Module, &str, &str)] = &[
+    (Module::Construction, "DoorSurface", "Door"),
+    (Module::Construction, "WindowSurface", "Window"),
+    (Module::Transportation, "Marking", "TransportationMarking"),
+    (Module::Transportation, "HoleSurface", "TransportationHole"),
+];
+
+/// The CityJSON semantic surface type of the CityGML boundary surface class
+/// `class` (`con:DoorSurface` -> `Door`).
+pub fn cityjson_surface(class: &QName) -> &str {
+    let Namespace::Module(module) = class.ns else {
+        return &class.local;
+    };
+    SURFACES
+        .iter()
+        .find(|(m, local, _)| *m == module && *local == class.local)
+        .map_or(&class.local, |(_, _, cityjson)| cityjson)
 }

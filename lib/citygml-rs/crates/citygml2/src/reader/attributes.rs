@@ -4,21 +4,11 @@
 use std::io::BufRead;
 
 use citygml_core::model::{Module, Value};
+use citygml_core::reader::text::{AttrType, to_value};
 use citygml_core::xml::{read_text, xml_err};
 use citygml_core::{Error, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
-
-/// How to type an attribute's text.
-#[derive(Clone, Copy)]
-pub enum AttrType {
-    Str,
-    Float,
-    Int,
-    Bool,
-    /// A whitespace-separated list of numbers.
-    FloatList,
-}
 
 /// The CityGML 2.0 properties whose schema type is a number or a boolean, by
 /// module and local name. Every other text-only property is text: codes,
@@ -101,32 +91,4 @@ pub fn read_generic<R: BufRead>(
     Ok(value_text
         .filter(|text| !text.trim().is_empty())
         .map(|text| to_value(&text, ty)))
-}
-
-/// A property's text as `ty`. A value that does not parse as its type stays
-/// text, trimmed.
-pub fn to_value(text: &str, ty: AttrType) -> Value {
-    match ty {
-        // String content is kept verbatim (a numeric-looking string attribute
-        // stays a string); only numeric attributes are trimmed and parsed.
-        AttrType::Str => Value::String(text.to_string()),
-        AttrType::Float => text
-            .trim()
-            .parse::<f64>()
-            .map_or_else(|_| Value::String(text.trim().to_string()), Value::Double),
-        AttrType::Int => text
-            .trim()
-            .parse::<i64>()
-            .map_or_else(|_| Value::String(text.trim().to_string()), Value::Integer),
-        AttrType::Bool => match text.trim() {
-            "true" | "1" => Value::Boolean(true),
-            "false" | "0" => Value::Boolean(false),
-            other => Value::String(other.to_string()),
-        },
-        AttrType::FloatList => text
-            .split_whitespace()
-            .map(|t| t.parse::<f64>().map(Value::Double))
-            .collect::<std::result::Result<_, _>>()
-            .map_or_else(|_| Value::String(text.trim().to_string()), Value::List),
-    }
 }

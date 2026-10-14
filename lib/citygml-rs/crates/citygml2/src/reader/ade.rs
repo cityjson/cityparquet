@@ -8,7 +8,7 @@
 
 use citygml_core::model::{AdeIndex, AdeIndexBuilder, Module, QName};
 use citygml_core::vocabulary::cityjson_type;
-use citygml_core::xml::xml_err;
+use citygml_core::xml::{is_ade, xml_err};
 use citygml_core::{Error, Result};
 use quick_xml::events::BytesStart;
 
@@ -46,7 +46,7 @@ impl AdeScan {
     /// by an [`Self::end`], so the caller calls neither for a subtree it
     /// consumes itself.
     pub(crate) fn start(&mut self, uri: &[u8], e: &BytesStart) -> Result<()> {
-        let ade = ns::is_ade(uri);
+        let ade = is_ade(uri);
         let mut attributes = Vec::new();
         for attribute in e.attributes() {
             let attribute = attribute.map_err(xml_err)?;

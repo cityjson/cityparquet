@@ -29,12 +29,16 @@ pub fn module_prefix(module: Module) -> &'static str {
         Module::Building => "bldg",
         Module::CityFurniture => "frn",
         Module::CityObjectGroup => "grp",
+        Module::Construction => "con",
+        Module::Dynamizer => "dyn",
         Module::Generics => "gen",
         Module::LandUse => "luse",
+        Module::PointCloud => "pcl",
         Module::Relief => "dem",
         Module::Transportation => "tran",
         Module::Tunnel => "tun",
         Module::Vegetation => "veg",
+        Module::Versioning => "vers",
         Module::WaterBody => "wtr",
     }
 }

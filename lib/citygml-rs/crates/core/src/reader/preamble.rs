@@ -3,8 +3,8 @@
 
 use std::io::BufRead;
 
-use citygml_core::Result;
-use citygml_core::xml::{NS_GML, get_attr, ns_is, read_text, xml_err};
+use crate::Result;
+use crate::xml::{NS_GML, get_attr, ns_is, read_text, xml_err};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 

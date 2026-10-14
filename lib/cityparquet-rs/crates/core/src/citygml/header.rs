@@ -1,4 +1,4 @@
-//! Synthesise a `cjseq::CityJSON` header for a CityGML 2.0 document.
+//! Synthesise a `cjseq::CityJSON` header for a CityGML document.
 //!
 //! Scans only the document preamble (the `gml:Envelope`, which precedes the
 //! first `cityObjectMember`) for the dataset CRS and extent, then picks the one
@@ -26,23 +26,26 @@ use cityparquet_schema::{CityParquetError, Result};
 use cjseq::{CityJSON, Metadata, Transform};
 
 use super::crs::{self, CrsResolution};
-use super::reader::error;
+use super::reader::{error, read_document};
+use citygml_core::reader::{Document, Preamble, scan_preamble};
+use citygml_core::sniff;
 
 /// Build the CityJSON header for the document at `path`: transform and
 /// metadata, the relative geometries its `ImplicitGeometry`s place as
 /// `geometry-templates` with the appearance they index, and the extensions
 /// its ADEs are declared as. Reads the whole document once for the templates
-/// and ADEs; [`parse_header_with`] takes a [`citygml2::Document`] already
-/// read.
+/// and ADEs; [`parse_header_with`] takes a [`Document`] already read.
 pub fn parse_header(path: &Path) -> Result<CityJSON> {
-    let document = citygml2::Document::read(path).map_err(error)?;
-    parse_header_with(path, &document)
+    let version = sniff(path).ok_or_else(|| {
+        CityParquetError::Schema(format!("{} is not a CityGML document", path.display()))
+    })?;
+    parse_header_with(path, &read_document(path, &version)?)
 }
 
 /// [`parse_header`] with the document-wide facts read beforehand, so that
-/// the same [`citygml2::Document`] can be handed to
+/// the same [`Document`] can be handed to
 /// [`super::FeatureReader::with_document`].
-pub fn parse_header_with(path: &Path, document: &citygml2::Document) -> Result<CityJSON> {
+pub fn parse_header_with(path: &Path, document: &Document) -> Result<CityJSON> {
     let file = File::open(path)
         .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
     let mut header = parse_header_from(BufReader::new(file))?;
@@ -65,8 +68,7 @@ pub fn parse_header_with(path: &Path, document: &citygml2::Document) -> Result<C
 /// so a streaming caller that still needs those bytes records them and replays
 /// them ahead of the rest.
 pub fn parse_header_from<R: BufRead>(input: R) -> Result<CityJSON> {
-    let citygml2::Preamble { srs_name, envelope } =
-        citygml2::scan_preamble(input).map_err(error)?;
+    let Preamble { srs_name, envelope } = scan_preamble(input).map_err(error)?;
 
     let translate = match &envelope {
         Some(e) => [e[0], e[1], e[2]],

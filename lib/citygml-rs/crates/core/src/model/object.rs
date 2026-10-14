@@ -13,12 +13,20 @@ pub enum Module {
     Building,
     CityFurniture,
     CityObjectGroup,
+    /// CityGML 3.0's: what buildings, bridges and tunnels share.
+    Construction,
+    /// CityGML 3.0's.
+    Dynamizer,
     Generics,
     LandUse,
+    /// CityGML 3.0's.
+    PointCloud,
     Relief,
     Transportation,
     Tunnel,
     Vegetation,
+    /// CityGML 3.0's.
+    Versioning,
     WaterBody,
 }
 

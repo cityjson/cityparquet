@@ -527,8 +527,12 @@ fn id_lookup_streamed(base_url: &str, key: &str, params: &QueryParams) -> Result
     let header = cityparquet::citygml::parse_header_from(prefix.chain(&mut start))
         .map_err(|e| anyhow!(e))
         .with_context(|| format!("reading the CityGML header of {key}"))?;
-    let reader = FeatureReader::from_reader(Box::new(start.replay()), &header.transform)
-        .map_err(|e| anyhow!(e))?;
+    let reader = FeatureReader::from_reader(
+        Box::new(start.replay()),
+        &cityparquet::citygml::CityGmlVersion::V2_0,
+        &header.transform,
+    )
+    .map_err(|e| anyhow!(e))?;
     let mut totals = ComparableTotals::default();
     let found = stream_members_until(reader, key, visit_hit(id, &header.transform, &mut totals))?;
     // `stream_members_until` consumed (and dropped) the reader, abandoning

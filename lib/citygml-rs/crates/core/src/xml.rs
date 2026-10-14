@@ -150,3 +150,29 @@ pub fn read_text<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Res
         }
     }
 }
+
+/// The `gml:id` an `xlink:href` names in this document (`#id`). A target in
+/// another document cannot be linked, so it is `None`.
+pub fn member_id(href: &str) -> Option<String> {
+    let id = href.strip_prefix('#')?;
+    (!id.is_empty() && !id.contains('#')).then(|| id.to_string())
+}
+
+/// Namespaces of standards, which no ADE's elements are in: every OGC
+/// namespace (CityGML, GML, WFS, …), every W3C one (XLink, XML Schema,
+/// SMIL, …), ISO/TC 211's, Schematron's and OASIS CIQ's (xAL 2 and 3).
+const NOT_ADE: &[&str] = &[
+    "http://www.opengis.net/",
+    "http://www.w3.org/",
+    "http://www.isotc211.org/",
+    "http://purl.oclc.org/dsdl/schematron",
+    "http://www.ascc.net/xml/schematron",
+    "urn:oasis:names:tc:ciq:",
+];
+
+/// Whether an element in the namespace `uri` belongs to an ADE: a bound
+/// namespace outside those of standards ([`NOT_ADE`]: OGC's, CityGML and
+/// GML among them, W3C's, ISO/TC 211's, Schematron's and xAL's).
+pub fn is_ade(uri: &[u8]) -> bool {
+    !uri.is_empty() && !NOT_ADE.iter().any(|ns| uri.starts_with(ns.as_bytes()))
+}

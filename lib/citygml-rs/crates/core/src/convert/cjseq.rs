@@ -7,9 +7,8 @@
 //! interns appearance in that order, so the output is deterministic.
 //!
 //! CityGML class names become CityJSON types through
-//! [`crate::vocabulary::cityjson_type`]; boundary surfaces keep their CityGML
-//! local name, which is the CityJSON semantic surface type for every surface
-//! the readers produce.
+//! [`crate::vocabulary::cityjson_type`], and boundary surface classes
+//! semantic surface types through [`crate::vocabulary::cityjson_surface`].
 //!
 //! What an ADE adds becomes what a CityJSON Extension adds: a class, a
 //! surface or a property of a CityGML object is named with a `+`
@@ -50,7 +49,8 @@ use crate::model::{
     Namespace, QName, Shape, Template, Texture, Value, XmlContent, XmlNode,
 };
 use crate::vocabulary::{
-    cityjson_definition, cityjson_type, known_ade_schema, module_prefix, relation_to_construction,
+    cityjson_definition, cityjson_surface, cityjson_type, known_ade_schema, module_prefix,
+    relation_to_construction,
 };
 use crate::xsd::{Name, ValueType};
 use crate::{Error, Result};
@@ -771,7 +771,7 @@ fn semantic_surfaces(g: &Geometry, object: &GmlObject) -> Result<SurfaceSubset> 
             Ok(SemanticsSurface {
                 thetype: SemanticSurfaceType::try_from(match &surface.class.ns {
                     Namespace::Other(_) => format!("+{}", surface.class.local),
-                    _ => surface.class.local.clone(),
+                    _ => cityjson_surface(&surface.class).to_string(),
                 })
                 .map_err(build_error)?,
                 parent: surface.parent.map(|p| SurfaceIndex(renumber[&p])),

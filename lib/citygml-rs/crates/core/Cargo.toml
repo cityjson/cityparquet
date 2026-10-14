@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 quick-xml = { workspace = true }
+memchr = { workspace = true }
 thiserror = { workspace = true }
 cjseq = { workspace = true, optional = true }
 serde = { version = "1", optional = true }

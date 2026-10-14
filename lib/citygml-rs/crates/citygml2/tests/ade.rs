@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use citygml_core::model::{Module, Namespace, QName, Shape, XmlAttribute, XmlContent, XmlNode};
-use citygml2::{Document, FeatureReader};
+use citygml2::{FeatureReader, ObjectStream, read_document};
 
 const URO: &str = "https://www.geospatial.jp/iur/uro/3.2";
 const URF: &str = "https://www.geospatial.jp/iur/urf/3.2";
@@ -182,7 +182,7 @@ fn an_ade_class_is_read_as_an_object() {
 /// with a `+`, and which XML attributes are the same on every occurrence.
 #[test]
 fn the_document_index_declares_each_ade_it_uses() {
-    let tran = Document::read(&data("53394529_tran_6697_op.gml")).unwrap();
+    let tran = read_document(&data("53394529_tran_6697_op.gml")).unwrap();
     let ades = tran.ade().ades();
     assert_eq!(ades.len(), 1);
     let ade = &ades[0];
@@ -211,7 +211,7 @@ fn the_document_index_declares_each_ade_it_uses() {
         )])
     );
 
-    let urf = Document::read(&data("533946_urf_6697_08_op.gml")).unwrap();
+    let urf = read_document(&data("533946_urf_6697_08_op.gml")).unwrap();
     let ades = urf.ade().ades();
     let prefixes: Vec<&str> = ades.iter().map(|a| a.prefix.as_str()).collect();
     assert_eq!(prefixes, ["urf", "uro"]);
@@ -234,7 +234,7 @@ fn the_document_index_declares_each_ade_it_uses() {
 #[test]
 fn an_ade_class_records_the_citygml_class_it_specialises() {
     let path = data("53394611_ubld_6697_op.gml");
-    let document = Document::read(&path).unwrap();
+    let document = read_document(&path).unwrap();
     let ade = document.ade().ade(URO).unwrap();
     assert_eq!(
         ade.parents,
@@ -275,7 +275,7 @@ fn a_schema_is_read_without_the_schemas_it_imports() {
         std::fs::create_dir_all(to.parent().unwrap()).unwrap();
         std::fs::copy(from, to).unwrap();
     }
-    let document = Document::read(&gml);
+    let document = read_document(&gml);
     std::fs::remove_dir_all(&dir).unwrap();
     let document = document.unwrap();
     let parents = &document.ade().ade(URF).unwrap().parents;
@@ -393,7 +393,7 @@ mod cityjson {
     /// stated once for the document, and the `+` names it adds.
     #[test]
     fn each_ade_is_declared_as_an_extension() {
-        let document = Document::read(&data("533946_urf_6697_08_op.gml")).unwrap();
+        let document = read_document(&data("533946_urf_6697_08_op.gml")).unwrap();
         let extensions = citygml_core::convert::cjseq::extensions(document.ade());
         let keys: Vec<&str> = extensions.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["urf", "uro"]);
@@ -420,7 +420,7 @@ mod cityjson {
             json!({"codeSpace": "../../codelists/Common_districtsAndZonesType.xml"})
         );
 
-        let document = Document::read(&data("53394529_tran_6697_op.gml")).unwrap();
+        let document = read_document(&data("53394529_tran_6697_op.gml")).unwrap();
         let extensions = citygml_core::convert::cjseq::extensions(document.ade());
         assert_eq!(extensions.len(), 1);
         let uro = serde_json::to_value(&extensions[0].1).unwrap();
@@ -431,7 +431,7 @@ mod cityjson {
 
         // A class specialising a CityGML class is declared the way a
         // CityJSON Extension declares one: by reference to CityJSON's schema.
-        let document = Document::read(&data("53394611_ubld_6697_op.gml")).unwrap();
+        let document = read_document(&data("53394611_ubld_6697_op.gml")).unwrap();
         let extensions = citygml_core::convert::cjseq::extensions(document.ade());
         let uro = serde_json::to_value(&extensions[0].1).unwrap();
         assert_eq!(
