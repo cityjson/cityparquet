@@ -1,6 +1,6 @@
 {
   "name": "@cityjson/cityparquet-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for CityParquet: the specification, the DuckDB extensions' function references, and a DuckDB engine to describe and query 3D city models",
   "license": "MIT OR Apache-2.0",
   "repository": {

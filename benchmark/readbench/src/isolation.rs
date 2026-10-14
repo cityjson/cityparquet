@@ -121,6 +121,16 @@ pub fn format_cpulist(cpus: &[u32]) -> String {
     out.join(",")
 }
 
+/// The CPUs the task may run on: the `Cpus_allowed_list` line of
+/// `/proc/self/status` (`"Cpus_allowed_list:\t0-31,64-95"`), which reflects
+/// both its scheduler affinity and its cgroup cpuset.
+pub fn parse_cpus_allowed_list(status: &str) -> Option<Vec<u32>> {
+    let value = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))?;
+    parse_cpulist(value).ok()
+}
+
 /// `MemFree` of one `/sys/devices/system/node/nodeN/meminfo`
 /// (`"Node 0 MemFree:  1234 kB"`), in bytes.
 pub fn parse_node_memfree(meminfo: &str) -> Option<u64> {
@@ -235,17 +245,30 @@ pub struct PinRecord {
     pub status: String,
     /// Memory binding to the node: `applied` or `not applied: <reason>`.
     pub memory_binding: String,
-    /// `"shared with the children: one-core node"` when the node has one core.
+    /// `"shared with the children: one-core node"` when the node has one
+    /// usable core.
     pub coordinator_note: Option<String>,
+    /// The CPUs the task may run on at start (`Cpus_allowed_list`), `null`
+    /// where `/proc` is absent.
+    pub allowed_cpus: Option<String>,
+    /// Set when the allowed set leaves only part of the node usable.
+    pub cores_note: Option<String>,
 }
 
 /// Builds the pinning argv prefix. Pure: the caller supplies the platform,
-/// the topology and the tools found on `PATH`.
+/// the topology, the tools found on `PATH` and the CPUs the task may run on
+/// (`None` where unknown, which leaves every node core usable).
+///
+/// A node's usable cores are its cores within `allowed`: the kernel trims an
+/// affinity to the task's cgroup cpuset and refuses one wholly outside it,
+/// so a core outside the allowed set is never requested or recorded. With `numactl` the children run under
+/// `numactl --all --physcpubind=<cores> --membind=<node>`.
 pub fn build_pinning(
     is_linux: bool,
     request: NumaRequest,
     nodes: &[NodeInfo],
     tools: Tools,
+    allowed: Option<&[u32]>,
 ) -> (Vec<String>, PinRecord) {
     let mut record = PinRecord {
         requested: request.to_string(),
@@ -256,6 +279,8 @@ pub fn build_pinning(
         status: String::new(),
         memory_binding: String::new(),
         coordinator_note: None,
+        allowed_cpus: allowed.map(format_cpulist),
+        cores_note: None,
     };
     let not = |record: &mut PinRecord, reason: &str| {
         record.status = format!("not applied: {reason}");
@@ -265,31 +290,66 @@ pub fn build_pinning(
         not(&mut record, "not Linux");
         return (Vec::new(), record);
     }
+    let usable: Vec<NodeInfo> = nodes
+        .iter()
+        .map(|n| NodeInfo {
+            cpus: match allowed {
+                Some(allowed) => n
+                    .cpus
+                    .iter()
+                    .copied()
+                    .filter(|c| allowed.contains(c))
+                    .collect(),
+                None => n.cpus.clone(),
+            },
+            ..n.clone()
+        })
+        .collect();
     let id = match request {
         NumaRequest::Off => {
             not(&mut record, "--numa-node off");
             return (Vec::new(), record);
         }
         NumaRequest::Node(id) => id,
-        NumaRequest::Auto => pick_auto_node(nodes).unwrap_or(0),
+        NumaRequest::Auto => {
+            let candidates: Vec<NodeInfo> = usable
+                .iter()
+                .filter(|n| !n.cpus.is_empty())
+                .cloned()
+                .collect();
+            pick_auto_node(&candidates).unwrap_or(0)
+        }
     };
-    let Some(node) = nodes.iter().find(|n| n.id == id) else {
+    let Some((node, cpus)) = nodes
+        .iter()
+        .zip(&usable)
+        .find(|(n, _)| n.id == id)
+        .map(|(n, u)| (n, &u.cpus))
+    else {
         not(&mut record, &format!("no topology for node {id}"));
         return (Vec::new(), record);
     };
-    let Some(split) = split_cores(&node.cpus) else {
-        not(&mut record, &format!("node {id} lists no cores"));
+    let Some(split) = split_cores(cpus) else {
+        let reason = match &record.allowed_cpus {
+            Some(set) if !node.cpus.is_empty() => {
+                format!("node {id} has no core in the task's allowed set {set}")
+            }
+            _ => format!("node {id} lists no cores"),
+        };
+        not(&mut record, &reason);
         return (Vec::new(), record);
     };
+    if cpus.len() < node.cpus.len() {
+        record.cores_note = Some(format!(
+            "node {id} trimmed to the task's allowed set: {} of {} cores usable",
+            cpus.len(),
+            node.cpus.len()
+        ));
+    }
     let child_cores = format_cpulist(&split.children);
     let prefix: Vec<String> = if tools.numactl {
         record.tool = Some("numactl".into());
         record.memory_binding = "applied".into();
-        let cpu = if split.shared {
-            format!("--cpunodebind={id}")
-        } else {
-            format!("--physcpubind={child_cores}")
-        };
         // `--all`: the coordinator has pinned itself to its own core
         // (`pin_self`) by the time it spawns, and the children inherit that
         // affinity. Without `--all`, libnuma checks the requested cores
@@ -298,7 +358,7 @@ pub fn build_pinning(
         vec![
             "numactl".into(),
             "--all".into(),
-            cpu,
+            format!("--physcpubind={child_cores}"),
             format!("--membind={id}"),
         ]
     } else if tools.taskset {
@@ -461,6 +521,11 @@ pub fn read_nodes() -> Vec<NodeInfo> {
     nodes
 }
 
+/// The CPUs this task may run on, `None` where `/proc` is absent (macOS).
+pub fn read_allowed_cpus() -> Option<Vec<u32>> {
+    parse_cpus_allowed_list(&std::fs::read_to_string("/proc/self/status").ok()?)
+}
+
 /// One `/proc` reading, `None` where `/proc` is absent (macOS).
 pub fn read_load() -> Option<LoadSample> {
     let load = parse_loadavg(&std::fs::read_to_string("/proc/loadavg").ok()?)?;
@@ -601,7 +666,7 @@ mod tests {
 
     #[test]
     fn pinning_prefers_numactl_then_taskset_then_none() {
-        let (p, r) = build_pinning(true, NumaRequest::Node(0), &epyc(), ALL);
+        let (p, r) = build_pinning(true, NumaRequest::Node(0), &epyc(), ALL, None);
         assert_eq!(
             p,
             s(&[
@@ -619,39 +684,48 @@ mod tests {
             numactl: false,
             ..ALL
         };
-        let (p, r) = build_pinning(true, NumaRequest::Auto, &epyc(), taskset_only);
+        let (p, r) = build_pinning(true, NumaRequest::Auto, &epyc(), taskset_only, None);
         assert_eq!(p, s(&["taskset", "-c", "33-63,96-127"]));
         assert_eq!(r.memory_binding, "not applied: numactl missing");
-        let (p, r) = build_pinning(true, NumaRequest::Auto, &epyc(), Tools::default());
+        let (p, r) = build_pinning(true, NumaRequest::Auto, &epyc(), Tools::default(), None);
         assert!(p.is_empty());
         assert_eq!(r.status, "not applied: neither numactl nor taskset found");
     }
 
     #[test]
     fn pinning_degrades_explicitly() {
-        let (p, r) = build_pinning(false, NumaRequest::Auto, &epyc(), ALL);
+        let (p, r) = build_pinning(false, NumaRequest::Auto, &epyc(), ALL, None);
         assert!(p.is_empty());
         assert_eq!(r.status, "not applied: not Linux");
-        let (_, r) = build_pinning(true, NumaRequest::Off, &epyc(), ALL);
+        let (_, r) = build_pinning(true, NumaRequest::Off, &epyc(), ALL, None);
         assert_eq!(r.status, "not applied: --numa-node off");
-        let (_, r) = build_pinning(true, NumaRequest::Node(7), &epyc(), ALL);
+        let (_, r) = build_pinning(true, NumaRequest::Node(7), &epyc(), ALL, None);
         assert_eq!(r.status, "not applied: no topology for node 7");
         let one = vec![NodeInfo {
             id: 0,
             cpus: vec![0],
             mem_free_bytes: None,
         }];
-        let (p, r) = build_pinning(true, NumaRequest::Auto, &one, ALL);
+        let (p, r) = build_pinning(true, NumaRequest::Auto, &one, ALL, None);
         assert_eq!(
             p,
-            s(&["numactl", "--all", "--cpunodebind=0", "--membind=0"])
+            s(&["numactl", "--all", "--physcpubind=0", "--membind=0"])
         );
+        assert!(r.coordinator_note.is_some());
+        // one usable core of a larger node: the children share that core,
+        // not the whole node
+        let (p, r) = build_pinning(true, NumaRequest::Auto, &epyc(), ALL, Some(&[5]));
+        assert_eq!(
+            p,
+            s(&["numactl", "--all", "--physcpubind=5", "--membind=0"])
+        );
+        assert_eq!((r.node, r.coordinator_core), (Some(0), Some(5)));
         assert!(r.coordinator_note.is_some());
     }
 
     #[test]
     fn composed_child_command_on_linux() {
-        let (pin, _) = build_pinning(true, NumaRequest::Node(0), &epyc(), ALL);
+        let (pin, _) = build_pinning(true, NumaRequest::Node(0), &epyc(), ALL, None);
         let argv = compose(
             &memory_prefix(8_000_000_000),
             &pin,
@@ -675,6 +749,76 @@ mod tests {
                 "--child",
             ])
         );
+    }
+
+    #[test]
+    fn cpus_allowed_list_from_proc_status() {
+        let status = "Name:\treadbench\nCpus_allowed:\tffffffff,ffffffff\n\
+                      Cpus_allowed_list:\t0-31,64-95\nMems_allowed_list:\t0-1\n";
+        assert_eq!(
+            parse_cpus_allowed_list(status),
+            Some(parse_cpulist("0-31,64-95").unwrap())
+        );
+        assert_eq!(parse_cpus_allowed_list("Name:\treadbench\n"), None);
+        assert_eq!(
+            parse_cpus_allowed_list("Cpus_allowed_list:\tgarbage\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn allowed_set_trims_the_node() {
+        let allowed = parse_cpulist("0-31").unwrap();
+        // node 1 has more free memory but no usable core: `auto` takes node 0
+        let (p, r) = build_pinning(true, NumaRequest::Auto, &epyc(), ALL, Some(&allowed));
+        assert_eq!(
+            p,
+            s(&["numactl", "--all", "--physcpubind=1-31", "--membind=0"])
+        );
+        assert_eq!(
+            (r.node, r.coordinator_core, r.child_cores.as_deref()),
+            (Some(0), Some(0), Some("1-31"))
+        );
+        assert_eq!(r.allowed_cpus.as_deref(), Some("0-31"));
+        assert_eq!(
+            r.cores_note.as_deref(),
+            Some("node 0 trimmed to the task's allowed set: 32 of 64 cores usable")
+        );
+    }
+
+    #[test]
+    fn auto_skips_a_node_with_no_usable_core() {
+        let mut nodes = epyc();
+        nodes[0].mem_free_bytes = Some(999);
+        let allowed = parse_cpulist("32-63").unwrap();
+        let (_, r) = build_pinning(true, NumaRequest::Auto, &nodes, ALL, Some(&allowed));
+        assert_eq!(
+            (r.node, r.coordinator_core, r.child_cores.as_deref()),
+            (Some(1), Some(32), Some("33-63"))
+        );
+    }
+
+    #[test]
+    fn explicit_node_outside_the_allowed_set_is_not_applied() {
+        let allowed = parse_cpulist("0-31").unwrap();
+        let (p, r) = build_pinning(true, NumaRequest::Node(1), &epyc(), ALL, Some(&allowed));
+        assert!(p.is_empty());
+        assert_eq!(
+            r.status,
+            "not applied: node 1 has no core in the task's allowed set 0-31"
+        );
+        assert_eq!(r.allowed_cpus.as_deref(), Some("0-31"));
+    }
+
+    #[test]
+    fn unconfined_task_needs_no_note() {
+        let allowed = parse_cpulist("0-127").unwrap();
+        let (p, r) = build_pinning(true, NumaRequest::Node(0), &epyc(), ALL, Some(&allowed));
+        let (p_none, r_none) = build_pinning(true, NumaRequest::Node(0), &epyc(), ALL, None);
+        assert_eq!(p, p_none);
+        assert_eq!(r.cores_note, None);
+        assert_eq!(r.allowed_cpus.as_deref(), Some("0-127"));
+        assert_eq!((r_none.allowed_cpus, r_none.cores_note), (None, None));
     }
 
     #[test]

@@ -711,6 +711,15 @@ usecase-energy-features input output="features.parquet":
 bench-prep *ARGS:
     uv run --project {{PLOT}} python benchmark/scripts/bench_suite.py prep "$@"
 
+# After a CHAIN_VERSION bump, the hosted datasets the new chain writes byte
+# for byte are copied from v<old>/ to v<new>/ inside the bucket, with their
+# manifest entries, instead of being rebuilt and uploaded
+# (benchmark/scripts/readbench_upload.md, "When the chain version changes").
+[doc("Copy datasets' hosted artefacts from v<from>/ to v<to>/ inside the bucket: --from N --to M [--artefacts a,b] DATASET... (needs the rclone credentials)")]
+[positional-arguments]
+corpus-carry-forward *ARGS:
+    uv run --project {{PLOT}} python benchmark/scripts/corpus_bucket.py carry-forward "$@"
+
 [doc("Run selected benchmark families; --profile quick|short|smoke keep their outputs separate; --memory-max defaults to 64000000000 (off disables)")]
 [positional-arguments]
 bench-run *ARGS:

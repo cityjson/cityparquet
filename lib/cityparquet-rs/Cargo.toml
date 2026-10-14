@@ -41,13 +41,12 @@ serde = { version = "1", features = ["derive"] }
 # lookup parses only the entry it asked for (D-RS-15).
 serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 thiserror = "2"
-# cjseq 0.5 is not on crates.io yet, so it comes from git, pinned to a commit
-# on the fork's `main`; crates.io refuses a crate with a git dependency, which
-# is what keeps `cityparquet` unpublished.
-cjseq = { git = "https://github.com/HideBa/cjseq", rev = "4e0e1c642eec05a4671e76b5e6e6b62d0ffd21ea" }
+# The exact pin makes each cjseq pre-release a deliberate step while its API
+# is still moving. The `cli` feature (clap, rand) is not needed.
+cjseq = { version = "=0.5.0-alpha.1", default-features = false }
 quick-xml = "0.39"
 # The CityGML readers, from this monorepo's `lib/citygml-rs` workspace. They
-# pin the same cjseq rev as above, so both resolve to one copy.
+# pin the same cjseq as above, so both resolve to one copy.
 citygml-core = { path = "../citygml-rs/crates/core", version = "0.1.0" }
 citygml2 = { path = "../citygml-rs/crates/citygml2", version = "0.1.0" }
 chrono = "0.4"

@@ -153,9 +153,9 @@ the spec rather than through each other's internals.
 `lib/cityparquet-rs`, `lib/citygml-rs` and `lib/citylake` are _not_ submodules: they live in this
 tree and are edited here.
 
-`cjseq` is a **git dependency** of `lib/cityparquet-rs` and `lib/citygml-rs`
-(each workspace `Cargo.toml`), pinned to the same rev in both, not vendored
-and not a submodule.
+`cjseq` is a crates.io dependency of `lib/cityparquet-rs` and `lib/citygml-rs`
+(each workspace `Cargo.toml`), pinned exactly (`=0.5.0-alpha.1`) in both while
+its API is moving; it is not vendored and not a submodule.
 
 ## Conventions
 

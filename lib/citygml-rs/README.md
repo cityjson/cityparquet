@@ -3,7 +3,7 @@
 Streaming CityGML readers for Rust.
 
 - [`citygml-core`](crates/core): the version-neutral model (`GmlObject`), GML
-  geometry, and the conversion to [cjseq](https://github.com/HideBa/cjseq)'s
+  geometry, and the conversion to [cjseq](https://crates.io/crates/cjseq)'s
   CityJSON types.
 - [`citygml2`](crates/citygml2): the CityGML 2.0 reader.
 

@@ -31,6 +31,19 @@
 //! `appearance` arrays are left as they are: the kept geometries' `material`
 //! and `texture` indices still resolve, and a dropped geometry's texture
 //! coordinates remain in the shared array.
+//!
+//! [`normalise`] is the whole corpus normalisation: [`keep_first_per_lod`],
+//! then [`remove_semantics_below_lod2`] on the geometries that remain. The
+//! second rule exists because CityGML 2.0's `_BoundarySurface` has
+//! `lod2MultiSurface`, `lod3MultiSurface` and `lod4MultiSurface` only: a
+//! LoD 0 or LoD 1 geometry cannot carry semantic surfaces there, and
+//! `citygml-tools from-cityjson -v 2.0` drops them (3DBAG's LoD 1.2 and 1.3
+//! solids carry semantics). Removing them from the source makes all five
+//! formats hold the same semantic surfaces. A geometry's LoD is read
+//! numerically, as `Lod::parse` reads it; a `GeometryInstance` and a
+//! geometry without a parseable `lod` keep whatever they carry, and the
+//! `geometry-templates` are left as they are, as [`keep_first_per_lod`]
+//! leaves them.
 
 use std::collections::HashSet;
 
@@ -38,21 +51,33 @@ use anyhow::{Context, Result, bail};
 use cityparquet_schema::types::Lod;
 use serde_json::Value;
 
-/// What [`keep_first_per_lod`] did to one feature or document.
+/// What [`keep_first_per_lod`] or [`normalise`] did to one feature or
+/// document.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Normalised {
     /// Geometries removed: a second (or later) geometry at a LoD an object
     /// already holds.
     pub dropped: usize,
+    /// Geometries below LoD 2 whose `semantics` member was removed
+    /// ([`normalise`] only).
+    pub semantics_removed: usize,
     pub geometries_before: usize,
     pub geometries_after: usize,
     pub vertices_before: usize,
     pub vertices_after: usize,
 }
 
+impl Normalised {
+    /// Whether either rule changed anything.
+    pub fn changed(&self) -> bool {
+        self.dropped > 0 || self.semantics_removed > 0
+    }
+}
+
 impl std::ops::AddAssign for Normalised {
     fn add_assign(&mut self, other: Self) {
         self.dropped += other.dropped;
+        self.semantics_removed += other.semantics_removed;
         self.geometries_before += other.geometries_before;
         self.geometries_after += other.geometries_after;
         self.vertices_before += other.vertices_before;
@@ -112,6 +137,66 @@ pub fn keep_first_per_lod_line(line: &str) -> Result<(String, Normalised)> {
     }
     let out = serde_json::to_string(&doc).context("serialising the feature")?;
     Ok((out, report))
+}
+
+/// The corpus normalisation of `doc`: [`keep_first_per_lod`], then
+/// [`remove_semantics_below_lod2`] on the remaining geometries. `doc` is
+/// untouched when neither rule changes anything.
+pub fn normalise(doc: &mut Value) -> Result<Normalised> {
+    let mut report = keep_first_per_lod(doc)?;
+    report.semantics_removed = remove_semantics_below_lod2(doc)?;
+    Ok(report)
+}
+
+/// [`normalise`] on one serialised feature (or document): the line as given
+/// when nothing changes, otherwise the compact re-serialisation.
+pub fn normalise_line(line: &str) -> Result<(String, Normalised)> {
+    let mut doc: Value = serde_json::from_str(line).context("parsing a CityJSON feature")?;
+    let report = normalise(&mut doc)?;
+    if !report.changed() {
+        return Ok((line.to_string(), report));
+    }
+    let out = serde_json::to_string(&doc).context("serialising the feature")?;
+    Ok((out, report))
+}
+
+/// Removes the `semantics` member of every geometry of `doc` whose LoD is
+/// below 2 and returns how many geometries lost it. Boundaries, vertices
+/// and every other member are unchanged.
+pub fn remove_semantics_below_lod2(doc: &mut Value) -> Result<usize> {
+    let objects = doc
+        .get_mut("CityObjects")
+        .and_then(Value::as_object_mut)
+        .context("a CityJSON document or feature has a `CityObjects` object")?;
+    let mut removed = 0;
+    for object in objects.values_mut() {
+        let Some(geometries) = object.get_mut("geometry").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for geometry in geometries {
+            if lod_major(geometry).is_some_and(|major| major < 2)
+                && let Some(members) = geometry.as_object_mut()
+                && members.remove("semantics").is_some()
+            {
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}
+
+/// The major LoD of a geometry, or `None` for a `GeometryInstance` and a
+/// geometry without a parseable `lod`.
+fn lod_major(geometry: &Value) -> Option<u8> {
+    if geometry.get("type").and_then(Value::as_str) == Some("GeometryInstance") {
+        return None;
+    }
+    let lod = match geometry.get("lod")? {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    Lod::parse(&lod).ok().map(|lod| lod.major())
 }
 
 /// The LoD column a geometry would be stored in by the CityParquet writer,

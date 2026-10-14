@@ -72,8 +72,8 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          # The library's gate needs no submodule: the city3d-stac crates come
-          # from crates.io and cjseq is a git dependency. The two DuckDB
+          # The library's gate needs no submodule: the city3d-stac crates and
+          # cjseq come from crates.io. The two DuckDB
           # extensions are not needed by this job and carry ~1.2 GB between
           # them.
           submodules: false

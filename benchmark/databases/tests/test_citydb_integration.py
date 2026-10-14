@@ -90,20 +90,26 @@ def test_append_object_adds_and_then_removes_everything_the_importer_wrote(syste
     """B18 through `citydb-tool import cityjson`, twice, so the untimed
     watermark reset between samples is exercised. v5 writes more `feature`
     rows than the file has CityObjects — a row per boundary surface — and
-    all of them must go again."""
+    all of them must go again, with any appearance rows the import wrote."""
     params = _params()
-    before = _feature_count(system)
+    before = _row_counts(system)
     m = system.run("append-object", params, repeat=2)
     assert len(m.times_s) == 2 and all(t > 0 for t in m.times_s)
     assert m.result_count == params.append.object_count
     assert "external-importer" in m.notes
-    assert _feature_count(system) == before
+    assert _row_counts(system) == before
 
 
-def _feature_count(system) -> int:
+def _row_counts(system) -> dict[str, int]:
+    """Every table the append writes to, including `surface_data_mapping`,
+    which the reset reaches only by cascade."""
+    from citybench.scenarios.sql_citydb import APPEND_RESET_TABLES
+    counts: dict[str, int] = {}
     with system._conn.cursor() as cur:
-        cur.execute(f"SELECT count(*) FROM {system._schema}.feature")
-        return int(cur.fetchone()[0])
+        for table in (*APPEND_RESET_TABLES, "surface_data_mapping"):
+            cur.execute(f"SELECT count(*) FROM {system._schema}.{table}")
+            counts[table] = int(cur.fetchone()[0])
+    return counts
 
 
 # --- Beyond the brief -----------------------------------------------------

@@ -1,8 +1,8 @@
 > The hosted corpus (`v<chain>/` on R2, one folder per format) is described in
 > `benchmark/README.md`, "The hosted corpus"; read it over HTTP with
-> `--transport http --key-layout bucket --base-url
-> https://other-data.open3d.city/cityparquet-paper/benchmark/v<chain>`. This
-> page describes the flat layout (`--key-layout flat`, the default): a prepared
+> `--transport http --key-layout bucket --base-url <BASE>/v<chain>`, where
+> `<BASE>` is `https://other-data.open3d.city/cityparquet-paper/benchmark`.
+> This page describes the flat layout (`--key-layout flat`, the default): a prepared
 > directory uploaded as it is.
 
 # Uploading readbench artefacts for HTTP transport
@@ -126,3 +126,49 @@ cargo run --release -p cityparquet-readbench -- run \
     --transport http --base-url "<BASE_URL>" \
     --repeat 7
 ```
+
+## When the chain version changes
+
+The hosted corpus keeps one folder per preparation-chain version, so a bump
+of `CHAIN_VERSION` in `readbench_prepare.sh` points `bench-prep` at an empty
+`v<new>/`. Each dataset then takes one of three paths, decided by which
+stages the bump changed for it (`stage_version` in the prepare script; the
+prepare log's `normalise` line says what the normalisation changed):
+
+- **No stage changed** (every artefact is what the new chain writes byte for
+  byte): carry the whole dataset forward inside the bucket. Nothing is
+  rebuilt and nothing passes through the machine:
+
+  ```sh
+  just corpus-carry-forward --from 8 --to 9 rotterdam_delfshaven vienna_102081 \
+      nyc_da13_buildings zurich_building_lod2 tokyo montreal
+  ```
+
+- **Some stages changed, the CityGML one did not**: carry the unchanged
+  `.gml` forward first, then rebuild and upload the rest. The carried
+  artefact's manifest record lets the upload recognise it by hash and skip
+  it, rather than re-uploading it or downloading it to hash it:
+
+  ```sh
+  just corpus-carry-forward --from 8 --to 9 --artefacts citygml 3dbag_n1000000
+  just bench-prep --rebuild-sources --datasets 3dbag_n1000000
+  ```
+
+- **Every stage changed**: `just bench-prep --rebuild-sources --datasets <id>`.
+
+`corpus-carry-forward` runs `rclone copyto
+r2:other-data/cityparquet-paper/benchmark/v<old>/<key>
+r2:other-data/cityparquet-paper/benchmark/v<new>/<key>` for every object of
+the selected artefacts (a server-side copy within one remote), checks every
+copied key by size, and merges the datasets' manifest entries, marked
+`carried_from`, into `v<new>/manifest.json`, which it writes last. A key that
+already exists in `v<new>/` with the same content is skipped; one with
+different content stops the copy before anything is sent. It needs the same
+`rclone` remote with write access as the uploading `bench-prep` modes, and
+reads the same `CITYPARQUET_CORPUS_*` variables (`benchmark/README.md`, "The
+hosted corpus"). An object larger than rclone's S3 copy cutoff (4.6 GiB by
+default) is copied in parts with `UploadPartCopy`.
+
+A prepared directory on any machine follows the same rule locally: the
+prepare script refuses the artefacts of a changed stage, naming them in an
+`rm -rf` line, and keeps the others.

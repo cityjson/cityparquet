@@ -52,12 +52,14 @@ Tokyo and Montréal.
 
 Every CityJSON/CityJSONSeq source is normalised before any artefact is built,
 so that each CityObject holds at most one geometry per LoD (the first in source
-order) and all five formats hold the same geometries (`READ_BENCHMARK.md`,
-Caveat 41). One dataset changes: `vienna_102081` loses 1,102 of its 2,204
-geometries (each LoD 2 object carries a MultiSurface and a Solid). The other
-five are used byte for byte, and the 3DBAG
-slice, already cut without LoD 1.2, needs no change either. A CityGML source
-would not be normalised; none is in the corpus.
+order) and no geometry below LoD 2 carries semantic surfaces, which CityGML 2.0
+cannot hold; all five formats then hold the same geometries and the same
+semantic surfaces (`READ_BENCHMARK.md`, Caveat 41). Of the six corpus datasets
+one changes: `vienna_102081` loses 1,102 of its 2,204 geometries (each LoD 2
+object carries a MultiSurface and a Solid). The other five are used byte for
+byte. The 3DBAG slice, already cut without LoD 1.2, keeps every geometry and
+loses the semantics of its LoD 1.3 solids. A CityGML source would not be
+normalised; none is in the corpus.
 
 The predicates are declared in `benchmark/readbench/src/params.rs`
 (`HAND_PICKED`, `HAND_PICKED_STATS`); a quantile is computed from the data when
@@ -104,7 +106,7 @@ profile, so it needs no cloud account:
 just bench-run --families network --network-profile all --network-repeat 3
 just bench-run --families network --network-profile typical --datasets rotterdam,vienna
 just bench-run --families network --network-target real --network-profile typical \
-  --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v8 --key-layout bucket
+  --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v9 --key-layout bucket
 ```
 
 The indexed formats (FlatCityBuf, CityParquet) are measured on every query.
