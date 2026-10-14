@@ -5,13 +5,16 @@
 //! `cjseq` feature, [`FeatureReader::features`] turns each into a
 //! `cjseq::CityJSONFeature` quantised against a caller-chosen transform.
 //! [`scan_preamble`] reads the document's declared CRS and extent, from which
-//! a caller chooses that transform, and [`read_templates`] the relative
-//! geometries its `ImplicitGeometry`s place, which a CityJSON header carries
-//! as `geometry-templates`.
+//! a caller chooses that transform. [`Document::read`] passes over the whole
+//! document once for what its objects need from elsewhere in it, and what a
+//! CityJSON header declares: the relative geometries its
+//! `ImplicitGeometry`s place (`geometry-templates`) and the ADEs it uses
+//! (`extensions`).
 //!
 //! The reader reads `bldg:Building` (with its parts, installations and
-//! boundary surfaces) and the 1st-level objects of the other modules it maps;
-//! [`FeatureReader::skipped_members`] reports the members it passes over.
+//! boundary surfaces), the 1st-level objects of the other modules it maps,
+//! and the objects of an ADE's classes; [`FeatureReader::skipped_members`]
+//! reports the members it passes over.
 
 pub mod ns;
 mod reader;
@@ -19,4 +22,4 @@ mod reader;
 #[cfg(feature = "cjseq")]
 pub use reader::Features;
 pub use reader::document::{Preamble, scan_preamble};
-pub use reader::{FeatureReader, read_templates};
+pub use reader::{Document, FeatureReader};

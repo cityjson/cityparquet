@@ -21,6 +21,7 @@ use cjseq::{CityJSONFeature, GeometryType};
 
 use crate::source::{Source, SourceFormat};
 use cityparquet_schema::crs::AxisOrder;
+use cityparquet_schema::extensions::NameKind;
 
 use crate::wkb_write::{VertexPool, geometry_bbox};
 
@@ -216,13 +217,9 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 /// and LoD schema and accumulating the dataset-level bbox, CRS, and transform.
 ///
 /// [`ScanResult::module_lods`] is resolved with an EMPTY [`ExtensionRegistry`]
-/// — matching `crate::package::extension_registry`'s present-day stub (no
-/// Extension/ADE schema parsing yet, tracked separately: spec
-/// `city.extensions` declaration storage). A genuine `+`-marked extension
-/// class therefore hard-errors here exactly as it already does at write time
-/// (see `extension_module_real_data.rs`'s
-/// `unresolvable_extension_type_is_a_clean_schema_error`), just one pass
-/// earlier — fail fast rather than fail during encode.
+/// — matching `crate::package::extension_registry` — so an extension class
+/// routes to a core module or to its extension's own file, exactly as at
+/// write time.
 ///
 /// Extension names are attributed here too (spec "Extensions"): a CityJSON
 /// `+` attribute is inferred under its namespace-prefixed column name, and a
@@ -346,8 +343,8 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
                 return Err(repeated_id(id, &feature));
             }
             let thetype = crate::cjtypes::object_type_name(&co.thetype);
-            naming.encode_name(&thetype, "city-object type")?;
-            let module_key = resolver.resolve(&thetype)?;
+            let stored_type = naming.encode_name(&thetype, NameKind::CityObjectType)?;
+            let module_key = resolver.resolve(&thetype, naming.namespace(&stored_type))?;
             // Every module actually encountered gets an entry, even one with
             // no analysis geometry at all — see the field's doc comment.
             module_lod_sets.entry(module_key.clone()).or_default();

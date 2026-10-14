@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::Path;
+use std::sync::Arc;
 
 use cityparquet_schema::{CityParquetError, Result};
 use cjseq::{CityJSONFeature, Transform};
@@ -52,6 +53,17 @@ impl FeatureReader {
         ))
     }
 
+    /// Open `path` with the document-wide facts read beforehand by
+    /// [`citygml2::Document::read`]: one pass over the file.
+    pub fn with_document(
+        path: &Path,
+        transform: &Transform,
+        document: Arc<citygml2::Document>,
+    ) -> Result<Self> {
+        let reader = citygml2::FeatureReader::with_document(path, document).map_err(error)?;
+        Ok(Self::wrap(reader, transform))
+    }
+
     fn wrap(reader: citygml2::FeatureReader, transform: &Transform) -> Self {
         Self {
             inner: reader.features(transform.clone()),
@@ -62,6 +74,12 @@ impl FeatureReader {
     /// by document-spelled name (`tran:Track` -> 3), so far.
     pub fn skipped_members(&self) -> &BTreeMap<String, usize> {
         self.inner.reader().skipped_members()
+    }
+
+    /// Every `cityObjectMember` object of an ADE's class, by
+    /// document-spelled name (`urf:UseDistrict` -> 3), so far.
+    pub fn ade_members(&self) -> &BTreeMap<String, usize> {
+        self.inner.reader().ade_members()
     }
 
     /// How many features have been emitted so far.

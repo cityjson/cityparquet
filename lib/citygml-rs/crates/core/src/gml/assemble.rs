@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::read::{AggregateMember, Collected, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use crate::model::{
     Address, Appearance, Attribute, BoundarySurface, Face, Geometry, GmlObject, GroupMember,
-    Instance, Line, MemberTarget, Polygon, QName, Shape,
+    Instance, Line, MemberTarget, Polygon, QName, Shape, XmlNode,
 };
 use crate::{Error, Result};
 
@@ -93,6 +93,7 @@ pub struct ObjectBuilder {
     /// polygons: `(surface index, LoD, target id)`.
     boundary_refs: Vec<(usize, String, String)>,
     attributes: Vec<Attribute>,
+    ade: Vec<XmlNode>,
     addresses: Vec<Address>,
     children: Vec<ObjectBuilder>,
     members: Vec<GroupMember>,
@@ -124,6 +125,7 @@ impl ObjectBuilder {
             boundary_polys: Vec::new(),
             boundary_refs: Vec::new(),
             attributes: Vec::new(),
+            ade: Vec::new(),
             addresses: Vec::new(),
             children: Vec::new(),
             members: Vec::new(),
@@ -256,6 +258,10 @@ impl ObjectBuilder {
 
     pub fn push_attribute(&mut self, attribute: Attribute) {
         self.attributes.push(attribute);
+    }
+
+    pub fn push_ade(&mut self, node: XmlNode) {
+        self.ade.push(node);
     }
 
     pub fn push_address(&mut self, address: Address) {
@@ -450,6 +456,7 @@ impl ObjectBuilder {
             id: self.id,
             class: self.class,
             attributes: self.attributes,
+            ade: self.ade,
             addresses: self.addresses,
             geometries,
             boundary_surfaces: self.surfaces,

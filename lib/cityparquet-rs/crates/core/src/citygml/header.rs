@@ -29,18 +29,32 @@ use super::crs::{self, CrsResolution};
 use super::reader::error;
 
 /// Build the CityJSON header for the document at `path`: transform and
-/// metadata, and the relative geometries its `ImplicitGeometry`s place as
-/// `geometry-templates`, with the appearance they index.
+/// metadata, the relative geometries its `ImplicitGeometry`s place as
+/// `geometry-templates` with the appearance they index, and the extensions
+/// its ADEs are declared as. Reads the whole document once for the templates
+/// and ADEs; [`parse_header_with`] takes a [`citygml2::Document`] already
+/// read.
 pub fn parse_header(path: &Path) -> Result<CityJSON> {
+    let document = citygml2::Document::read(path).map_err(error)?;
+    parse_header_with(path, &document)
+}
+
+/// [`parse_header`] with the document-wide facts read beforehand, so that
+/// the same [`citygml2::Document`] can be handed to
+/// [`super::FeatureReader::with_document`].
+pub fn parse_header_with(path: &Path, document: &citygml2::Document) -> Result<CityJSON> {
     let file = File::open(path)
         .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
     let mut header = parse_header_from(BufReader::new(file))?;
-    let templates = citygml2::read_templates(path).map_err(error)?;
     if let Some((templates, appearance)) =
-        citygml_core::convert::cjseq::geometry_templates(&templates).map_err(error)?
+        citygml_core::convert::cjseq::geometry_templates(document.templates()).map_err(error)?
     {
         header.geometry_templates = Some(templates);
         header.appearance = appearance;
+    }
+    let extensions = citygml_core::convert::cjseq::extensions(document.ade());
+    if !extensions.is_empty() {
+        header.extensions = Some(extensions.into_iter().collect());
     }
     Ok(header)
 }

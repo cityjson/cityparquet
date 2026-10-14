@@ -616,10 +616,11 @@ fn resolve_object_type_module_keys(
                 return Err(err(format!("row {row}: 'object_type' must not be null")));
             }
             let object_type = view.value(row);
-            if naming.is_extension_name(object_type) {
-                resolver.resolve(&naming.decode_name(object_type))
-            } else {
-                resolver.resolve(object_type)
+            match naming.namespace(object_type) {
+                Some(namespace) => {
+                    resolver.resolve(&naming.decode_name(object_type), Some(namespace))
+                }
+                None => resolver.resolve(object_type, None),
             }
         })
         .collect()
@@ -826,6 +827,15 @@ impl TableWriters {
                 "module {key:?} maps to reserved package file {name:?}; rename the module"
             )));
         }
+        if let ModuleKey::ExtensionDefault { namespace } = key
+            && cityparquet_schema::is_core_module_file(namespace)
+        {
+            return Err(err(format!(
+                "extension namespace '{namespace}' names a core module's file, '{name}', so \
+                 its own classes cannot be stored apart from that module's; rename the \
+                 extension"
+            )));
+        }
         match self.claimed_by.get(&name) {
             Some(claimant) if claimant == key => Ok(self.index[&name]),
             Some(ModuleKey::Core(_)) if matches!(key, ModuleKey::Core(_)) => {
@@ -923,19 +933,13 @@ impl TableWriters {
 /// The `source`'s parsed Extension/ADE declarations, for [`ModuleKeyResolver`]
 /// to route extension classes by (spec "extensions" — "The `ModuleKey`").
 ///
-/// **Stub.** `source.header().extensions` only carries each extension's
-/// `url`/`version` reference (`cjseq::CityJSON::extensions`), not the
-/// per-class `module`/`parent` declarations an Extension/ADE schema document
-/// itself defines — actually fetching and parsing those schema documents
-/// (and the equivalent for a CityGML ADE identity) is the `city.extensions`
-/// declaration-mapping work the spec describes, explicitly out of scope for
-/// this change (a later task owns it). Until then this always returns an
-/// empty [`ExtensionRegistry`], so a source with a genuine `+`-marked
-/// extension type resolves via [`cityparquet_schema::resolve_module_key`]'s
-/// hard-error path (spec: "A class with no resolvable `ModuleKey` ... is a
-/// hard error") rather than being silently misfiled. A `+`-marked class
-/// whose stripped name is a core class needs no registry entry: it routes to
-/// that core module's file (`extension_module_real_data.rs`).
+/// **Empty.** `source.header().extensions` carries each extension's
+/// reference and the names it adds, not the per-class `module`/`parent`
+/// declarations an Extension/ADE schema document defines; reading those
+/// documents is not implemented. Every extension class therefore resolves
+/// either to a core module (a `+`-marked class whose stripped name is a core
+/// class) or to its extension's own file, `<namespace>.parquet`, by the
+/// namespace its name is attributed to.
 fn extension_registry(_source: &Source) -> ExtensionRegistry {
     ExtensionRegistry::new()
 }

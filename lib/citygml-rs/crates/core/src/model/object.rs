@@ -1,4 +1,6 @@
-use super::{Address, Appearance, Attribute, Geometry, GroupIndex, GroupMember, ModelAppearance};
+use super::{
+    Address, Appearance, Attribute, Geometry, GroupIndex, GroupMember, ModelAppearance, XmlNode,
+};
 
 /// A CityGML thematic module. The same module keeps its name across
 /// versions; each version's reader maps its own namespace URIs onto these.
@@ -27,7 +29,8 @@ pub enum Namespace {
     Module(Module),
     /// GML itself.
     Gml,
-    /// Any other namespace, by its URI.
+    /// Any other namespace, by its URI: an ADE's, for a class or property
+    /// an ADE adds.
     Other(String),
 }
 
@@ -78,6 +81,10 @@ pub struct GmlObject {
     pub class: QName,
     /// Attributes in document order. A name may repeat.
     pub attributes: Vec<Attribute>,
+    /// The properties an ADE adds to the object (for an object of an ADE
+    /// class, every property in no CityGML namespace that is not its
+    /// geometry), verbatim and in document order.
+    pub ade: Vec<XmlNode>,
     /// The postal addresses, in document order.
     pub addresses: Vec<Address>,
     /// The geometries, in the order a conversion emits them.

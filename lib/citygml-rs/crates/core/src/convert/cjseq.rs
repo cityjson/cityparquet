@@ -10,24 +10,44 @@
 //! [`crate::vocabulary::cityjson_type`]; boundary surfaces keep their CityGML
 //! local name, which is the CityJSON semantic surface type for every surface
 //! the readers produce.
+//!
+//! What an ADE adds becomes what a CityJSON Extension adds: a class, a
+//! surface or a property of a CityGML object is named with a `+`
+//! (`+UseDistrict`, `+buildingDetailAttribute`), as is another ADE's
+//! property of an ADE object, and an ADE object's own properties are
+//! attributes without one. A property's XML becomes JSON:
+//! - an element is a key, its local name, and a repeated element an array;
+//! - the GML property and object elements both stay, so the XML can be
+//!   rebuilt without the schema;
+//! - an element in a namespace other than its parent's keeps its prefix
+//!   (`uro:DataQualityAttribute` inside a `urf:` property), or is named
+//!   `{uri}local` when the document was read without its ADE index;
+//! - an empty element is an empty object;
+//! - text is a string, or a number for a measure (an element with a `uom`);
+//! - an XML attribute is `@name` beside the text in `$`, unless it has no
+//!   prefix and every occurrence of its element in the document carries it
+//!   with one value,
+//!   when [`extensions`] states it once as `xmlAttributes`;
+//! - GML geometry inside an ADE property is left out.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use cjseq::{
     Appearance as CjAppearance, BorderColor, CityJSONFeature, CityObject, CityObjectAddress,
-    CityObjectType, Geometry as CjGeometry, GeometryTemplates, Lod, MaterialIndex, MaterialObject,
-    MaterialReference, SemanticSurfaceType, Semantics, SemanticsSurface, SurfaceIndex,
-    TemplateIndex, TextureFormat, TextureIndex, TextureObject, TextureReference, TexturedRing,
-    Transform, UvIndex, VertexIndex,
+    CityObjectType, Extension, Geometry as CjGeometry, GeometryTemplates, Lod, MaterialIndex,
+    MaterialObject, MaterialReference, SemanticSurfaceType, Semantics, SemanticsSurface,
+    SurfaceIndex, TemplateIndex, TextureFormat, TextureIndex, TextureObject, TextureReference,
+    TexturedRing, Transform, UvIndex, VertexIndex,
 };
 use serde_json::{Map, Value as Json};
 
 use super::FromGml;
 use crate::model::{
-    Address, Attribute, Face, Geometry, GmlObject, Material, MemberTarget, Module, QName, Shape,
-    Template, Texture, Value,
+    Address, AdeIndex, Attribute, Face, Geometry, GmlObject, Material, MemberTarget, Module,
+    Namespace, QName, Shape, Template, Texture, Value, XmlContent, XmlNode,
 };
-use crate::vocabulary::{cityjson_type, relation_to_construction};
+use crate::vocabulary::{cityjson_type, known_ade_schema, module_prefix, relation_to_construction};
 use crate::{Error, Result};
 
 /// What the CityJSON conversion needs besides the object.
@@ -38,6 +58,9 @@ pub struct FeatureContext {
     /// The object's 1-based position in the document, which names a
     /// top-level object that has no `gml:id`.
     pub index: usize,
+    /// The document's ADEs: which XML attributes are stated once for the
+    /// document, and the prefixes of their namespaces.
+    pub ade: Arc<AdeIndex>,
 }
 
 impl FromGml for CityJSONFeature {
@@ -52,14 +75,13 @@ impl FromGml for CityJSONFeature {
             format!("{ty}_{}", context.index)
         });
         feature.id = root_id.clone();
-        emit(
-            object,
-            &root_id,
-            None,
-            &mut vertices,
-            &mut appearance,
-            &mut feature,
-        )?;
+        let mut out = Out {
+            vertices: &mut vertices,
+            palettes: &mut appearance,
+            feature: &mut feature,
+            ade: &context.ade,
+        };
+        emit(object, &root_id, None, &mut out)?;
         feature.vertices = vertices.into_vertices();
         feature.appearance = appearance.into_appearance();
         Ok(feature)
@@ -92,6 +114,7 @@ pub fn geometry_templates(
             id: template.id.clone(),
             class: QName::module(Module::Core, "ImplicitGeometry"),
             attributes: Vec::new(),
+            ade: Vec::new(),
             addresses: Vec::new(),
             geometries: vec![template.geometry.clone()],
             boundary_surfaces: Vec::new(),
@@ -114,23 +137,24 @@ pub fn geometry_templates(
     )))
 }
 
-/// Add `object` (and, depth first, its children) to `feature` as City
+/// Where [`emit`] puts what it converts.
+struct Out<'a> {
+    vertices: &'a mut VertexPool,
+    palettes: &'a mut Palettes,
+    feature: &'a mut CityJSONFeature,
+    ade: &'a AdeIndex,
+}
+
+/// Add `object` (and, depth first, its children) to the feature as City
 /// Objects, linked by `parents` and `children`.
-fn emit(
-    object: &GmlObject,
-    my_id: &str,
-    parent_id: Option<&str>,
-    vertices: &mut VertexPool,
-    palettes: &mut Palettes,
-    feature: &mut CityJSONFeature,
-) -> Result<()> {
+fn emit(object: &GmlObject, my_id: &str, parent_id: Option<&str>, out: &mut Out<'_>) -> Result<()> {
     let mut geometries = object
         .geometries
         .iter()
-        .map(|g| geometry(g, object, vertices))
+        .map(|g| geometry(g, object, out.vertices))
         .collect::<Result<Vec<_>>>()?;
-    apply_materials(object, &mut geometries, palettes)?;
-    apply_textures(object, &mut geometries, palettes)?;
+    apply_materials(object, &mut geometries, out.palettes)?;
+    apply_textures(object, &mut geometries, out.palettes)?;
 
     let child_ids: Vec<String> = object
         .children
@@ -139,13 +163,18 @@ fn emit(
         .map(|(i, c)| c.id.clone().unwrap_or_else(|| format!("{my_id}_part_{i}")))
         .collect();
 
-    let type_name = cityjson_type(&object.class).ok_or_else(|| {
-        Error::invalid(format!(
-            "CityGML class {} has no CityJSON City Object type",
-            object.class.local
-        ))
-    })?;
-    let thetype = CityObjectType::try_from(type_name.to_string()).map_err(build_error)?;
+    let type_name = match &object.class.ns {
+        Namespace::Other(_) => format!("+{}", object.class.local),
+        _ => cityjson_type(&object.class)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "CityGML class {} has no CityJSON City Object type",
+                    object.class.local
+                ))
+            })?
+            .to_string(),
+    };
+    let thetype = CityObjectType::try_from(type_name).map_err(build_error)?;
     let mut co = CityObject::new(thetype);
     co.geometry = Some(geometries);
     let mut attrs = attributes(&object.attributes);
@@ -154,6 +183,7 @@ fn emit(
             .entry("relationToConstruction")
             .or_insert_with(|| Json::String(relation.to_string()));
     }
+    ade_attributes(object, out.ade, &mut attrs)?;
     if !attrs.is_empty() {
         co.attributes = Some(attrs);
     }
@@ -162,7 +192,7 @@ fn emit(
             object
                 .addresses
                 .iter()
-                .map(|a| address(a, vertices))
+                .map(|a| address(a, out.vertices))
                 .collect::<Result<_>>()?,
         );
     }
@@ -181,17 +211,238 @@ fn emit(
         co.children = Some(children);
         co.children_roles = roles;
     }
-    if feature.city_objects.contains_key(my_id) {
+    if out.feature.city_objects.contains_key(my_id) {
         return Err(Error::invalid(format!(
             "duplicate CityObject id {my_id:?} within one feature"
         )));
     }
-    feature.add_co(my_id.to_string(), co);
+    out.feature.add_co(my_id.to_string(), co);
 
     for (child, id) in object.children.iter().zip(&child_ids) {
-        emit(child, id, Some(my_id), vertices, palettes, feature)?;
+        emit(child, id, Some(my_id), out)?;
     }
     Ok(())
+}
+
+/// Nesting deeper than this inside one ADE property is refused rather than
+/// converted, since the conversion recurses.
+const MAX_ADE_DEPTH: usize = 128;
+
+/// Add `object`'s ADE properties to `attrs`: a CityGML object's as `+`
+/// attributes, an ADE object's own (in its class's namespace) without the
+/// `+`, and another ADE's on an ADE object under its prefix. A name two
+/// ADEs, or an ADE and CityGML, both give the object is an error, since
+/// CityJSON could not tell them apart.
+fn ade_attributes(object: &GmlObject, ade: &AdeIndex, attrs: &mut Map<String, Json>) -> Result<()> {
+    let own = match &object.class.ns {
+        Namespace::Other(uri) => Some(uri),
+        _ => None,
+    };
+    // The namespace each key added here came from.
+    let mut added: HashMap<String, &Namespace> = HashMap::new();
+    for node in &object.ade {
+        let key = match own {
+            None => format!("+{}", node.name.local),
+            Some(own) if node.name.ns == Namespace::Other(own.clone()) => node.name.local.clone(),
+            Some(_) => format!("+{}", node.name.local),
+        };
+        let Some(value) = xml_json(node, ade, 0)? else {
+            continue;
+        };
+        match added.get(&key) {
+            Some(ns) if **ns == node.name.ns => {}
+            Some(_) => {
+                return Err(Error::invalid(format!(
+                    "two ADEs give {} the property {key:?}, which CityJSON cannot tell apart",
+                    object.id.as_deref().unwrap_or(&object.class.local)
+                )));
+            }
+            None if attrs.contains_key(&key) => {
+                return Err(Error::invalid(format!(
+                    "the ADE property {key:?} of {} has the name of one of its CityGML \
+                     attributes",
+                    object.id.as_deref().unwrap_or(&object.class.local)
+                )));
+            }
+            None => {
+                added.insert(key.clone(), &node.name.ns);
+            }
+        }
+        accumulate(attrs, key, value);
+    }
+    Ok(())
+}
+
+/// A name with the prefix its namespace is bound to, or in Clark notation
+/// (`{uri}local`) when the index knows no prefix for it (a document read
+/// without one).
+fn qualified(name: &QName, ade: &AdeIndex) -> String {
+    let prefix = match &name.ns {
+        Namespace::Other(uri) => ade.prefix(uri),
+        Namespace::Module(module) => Some(module_prefix(*module)),
+        Namespace::Gml => Some("gml"),
+    };
+    match (prefix, &name.ns) {
+        (Some(prefix), _) => format!("{prefix}:{}", name.local),
+        (None, Namespace::Other(uri)) => format!("{{{uri}}}{}", name.local),
+        (None, _) => name.local.clone(),
+    }
+}
+
+/// Insert `value` under `key`, a repeated key accumulating into an array.
+fn accumulate(map: &mut Map<String, Json>, key: String, value: Json) {
+    match map.get_mut(&key) {
+        None => {
+            map.insert(key, value);
+        }
+        Some(Json::Array(existing)) => existing.push(value),
+        Some(slot) => {
+            let prev = slot.take();
+            *slot = Json::Array(vec![prev, value]);
+        }
+    }
+}
+
+/// An ADE element as JSON (see the module documentation), or `None` when
+/// nothing is left of it: GML, or an element holding only GML.
+fn xml_json(node: &XmlNode, ade: &AdeIndex, depth: usize) -> Result<Option<Json>> {
+    if depth > MAX_ADE_DEPTH {
+        return Err(Error::invalid(format!(
+            "ADE property nested deeper than {MAX_ADE_DEPTH}"
+        )));
+    }
+    if node.name.ns == Namespace::Gml {
+        return Ok(None);
+    }
+    let constant = match &node.name.ns {
+        Namespace::Other(uri) => ade.constant_attributes(uri, &node.name.local),
+        _ => None,
+    };
+    let mut map = Map::new();
+    for attribute in &node.attributes {
+        if constant.and_then(|c| c.get(&attribute.name)) != Some(&attribute.value) {
+            map.insert(
+                format!("@{}", attribute.name),
+                Json::String(attribute.value.clone()),
+            );
+        }
+    }
+    let value = match &node.content {
+        // Present but empty: an object, so the element is not lost.
+        XmlContent::Empty => return Ok(Some(Json::Object(map))),
+        XmlContent::Text(text) => match node.attribute("uom") {
+            Some(_) => text
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .map_or_else(|| Json::String(text.clone()), Json::from),
+            None => Json::String(text.clone()),
+        },
+        XmlContent::Children(children) => {
+            let mut kept = false;
+            for child in children {
+                let Some(value) = xml_json(child, ade, depth + 1)? else {
+                    continue;
+                };
+                kept = true;
+                let key = if child.name.ns == node.name.ns {
+                    child.name.local.clone()
+                } else {
+                    qualified(&child.name, ade)
+                };
+                accumulate(&mut map, key, value);
+            }
+            if !kept && map.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(Json::Object(map)));
+        }
+    };
+    if map.is_empty() {
+        return Ok(Some(value));
+    }
+    map.insert("$".to_string(), value);
+    Ok(Some(Json::Object(map)))
+}
+
+/// The CityJSON `extensions` member for a document's ADEs, one per ADE in
+/// the order the document first uses it, keyed by the prefix the document
+/// binds to it. Besides `url` and `version`, each carries:
+/// - `xmlns`, the ADE's namespace URI;
+/// - `xmlAttributes`, the XML attributes every occurrence of an element
+///   carries with one value, by element and attribute name;
+/// - `extraCityObjects`, `extraSemanticSurfaces` and `extraAttributes`, as a
+///   CityJSON Extension document has them, naming the `+` City Object types,
+///   semantic surface types and attributes (by City Object type) the ADE
+///   adds, each with an empty schema.
+///
+/// `url` is the schema `xsi:schemaLocation` names when it is absolute, a
+/// known ADE's published schema ([`known_ade_schema`]) when it is not, and
+/// else the location as written, or the namespace URI. `version` is the
+/// namespace URI's last path segment when that is a version number, else
+/// empty.
+pub fn extensions(ade: &AdeIndex) -> Vec<(String, Extension)> {
+    ade.ades()
+        .iter()
+        .map(|a| {
+            let absolute = a
+                .schema_location
+                .clone()
+                .filter(|l| l.starts_with("http://") || l.starts_with("https://"));
+            let url = absolute
+                .or_else(|| known_ade_schema(&a.namespace))
+                .or_else(|| a.schema_location.clone())
+                .unwrap_or_else(|| a.namespace.clone());
+            let version = a
+                .namespace
+                .rsplit('/')
+                .next()
+                .filter(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+                .unwrap_or_default()
+                .to_string();
+            let mut other = Map::new();
+            other.insert("xmlns".into(), Json::String(a.namespace.clone()));
+            if !a.constant_attributes.is_empty() {
+                other.insert(
+                    "xmlAttributes".into(),
+                    serde_json::to_value(&a.constant_attributes).unwrap_or_default(),
+                );
+            }
+            let names = |set: &std::collections::BTreeSet<String>| {
+                Json::Object(
+                    set.iter()
+                        .map(|n| (format!("+{n}"), Json::Object(Map::new())))
+                        .collect(),
+                )
+            };
+            if !a.classes.is_empty() {
+                other.insert("extraCityObjects".into(), names(&a.classes));
+            }
+            if !a.surfaces.is_empty() {
+                other.insert("extraSemanticSurfaces".into(), names(&a.surfaces));
+            }
+            if !a.properties.is_empty() {
+                let by_type: BTreeMap<&String, Json> = a
+                    .properties
+                    .iter()
+                    .map(|(ty, set)| (ty, names(set)))
+                    .collect();
+                other.insert(
+                    "extraAttributes".into(),
+                    serde_json::to_value(by_type).unwrap_or_default(),
+                );
+            }
+            (
+                a.prefix.clone(),
+                Extension {
+                    url,
+                    version,
+                    other,
+                },
+            )
+        })
+        .collect()
 }
 
 /// An object's `children`: its nested children, then the members a group
@@ -228,17 +479,7 @@ fn build_error(e: impl std::fmt::Display) -> Error {
 fn attributes(attributes: &[Attribute]) -> Map<String, Json> {
     let mut map = Map::new();
     for a in attributes {
-        let value = json(&a.value);
-        match map.get_mut(a.name.local()) {
-            None => {
-                map.insert(a.name.local().to_string(), value);
-            }
-            Some(Json::Array(existing)) => existing.push(value),
-            Some(slot) => {
-                let prev = slot.take();
-                *slot = Json::Array(vec![prev, value]);
-            }
-        }
+        accumulate(&mut map, a.name.local().to_string(), json(&a.value));
     }
     map
 }
@@ -462,8 +703,11 @@ fn semantic_surfaces(g: &Geometry, object: &GmlObject) -> Result<SurfaceSubset> 
                 .map(|c| SurfaceIndex(renumber[c]))
                 .collect();
             Ok(SemanticsSurface {
-                thetype: SemanticSurfaceType::try_from(surface.class.local.clone())
-                    .map_err(build_error)?,
+                thetype: SemanticSurfaceType::try_from(match &surface.class.ns {
+                    Namespace::Other(_) => format!("+{}", surface.class.local),
+                    _ => surface.class.local.clone(),
+                })
+                .map_err(build_error)?,
                 parent: surface.parent.map(|p| SurfaceIndex(renumber[&p])),
                 children: (!children.is_empty()).then_some(children),
                 other: Map::new(),

@@ -15,5 +15,5 @@ pub mod writer;
 pub use citygml_core::{
     Version as CityGmlVersion, sniff as sniff_citygml, sniff_from as sniff_citygml_from,
 };
-pub use header::{parse_header, parse_header_from};
+pub use header::{parse_header, parse_header_from, parse_header_with};
 pub use reader::FeatureReader;

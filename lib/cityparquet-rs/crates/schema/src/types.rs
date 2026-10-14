@@ -390,7 +390,7 @@ pub fn is_extension_type(cityjson_type: &str) -> bool {
 ///
 /// `Ord`/`PartialOrd` (a simple derive: `Core` variants order by
 /// [`CityGmlModule`], `Extension` variants by namespace then module, and every `Core` sorts
-/// before every `Extension`) exist so a caller can key a `BTreeMap<ModuleKey,
+/// before every `Extension`, which sorts before every `ExtensionDefault`) exist so a caller can key a `BTreeMap<ModuleKey,
 /// _>` — e.g. `crate::scan::ScanResult::module_lods` (in the `cityparquet`
 /// crate) — deterministically; no ordering is spec-mandated, this is purely
 /// a container convenience.
@@ -403,6 +403,11 @@ pub enum ModuleKey {
     /// the extension itself declares it (pre-snake_case; see
     /// [`module_file`]).
     Extension { namespace: String, module: String },
+    /// The extension's own file, named by its namespace alone: where a class
+    /// goes that its extension declares neither a module nor a specialised
+    /// class for (every class of a CityJSON Extension, whose schema has no
+    /// modules, and of a CityGML ADE whose schema is not read).
+    ExtensionDefault { namespace: String },
 }
 
 /// One extension (ADE / CityJSON Extension) class's declaration, as parsed
@@ -481,8 +486,9 @@ fn class_info_by_any_spelling(name: &str) -> Option<&'static ClassInfo> {
 /// Resolves `source_type`'s [`ModuleKey`] (spec "extensions" — "The
 /// `ModuleKey`"), given `source_type` **before** any CityJSON `+` is
 /// stripped (stripping happens inside, so callers never need to do it
-/// themselves) and the extension declarations parsed from the source's
-/// header.
+/// themselves), the namespace of the extension the class is attributed to
+/// (`None` for a core name), and the extension declarations parsed from the
+/// source's header.
 ///
 /// Resolution order:
 /// 1. A recognised core CityGML 3.0 class (`TAXONOMY`) → `Core(module)`.
@@ -493,8 +499,11 @@ fn class_info_by_any_spelling(name: &str) -> Option<&'static ClassInfo> {
 ///    the chain until a core class or a module-declaring ancestor is hit.
 ///    A parent cycle is a hard [`CityParquetError::Schema`] error, never
 ///    infinite recursion.
-/// 4. Anything else — not a core class, and not declared by any extension —
-///    is a hard [`CityParquetError::Schema`] error: routing is total, so an
+/// 4. An extension class declaring neither, or one the registry does not
+///    declare but `namespace` attributes to an extension →
+///    `ExtensionDefault`, the extension's own file.
+/// 5. Anything else — not a core class, and not an extension's — is a hard
+///    [`CityParquetError::Schema`] error: routing is total, so an
 ///    unresolvable class must reject the input rather than fall back
 ///    silently.
 ///
@@ -502,12 +511,22 @@ fn class_info_by_any_spelling(name: &str) -> Option<&'static ClassInfo> {
 /// per distinct `object_type` dictionary value) should reuse a
 /// [`ModuleKeyResolver`], which wraps this with a cache keyed by
 /// `source_type`.
-pub fn resolve_module_key(source_type: &str, extensions: &ExtensionRegistry) -> Result<ModuleKey> {
-    resolve_module_key_inner(strip_plus(source_type), extensions, &mut Vec::new())
+pub fn resolve_module_key(
+    source_type: &str,
+    namespace: Option<&str>,
+    extensions: &ExtensionRegistry,
+) -> Result<ModuleKey> {
+    resolve_module_key_inner(
+        strip_plus(source_type),
+        namespace,
+        extensions,
+        &mut Vec::new(),
+    )
 }
 
 fn resolve_module_key_inner(
     type_name: &str,
+    namespace: Option<&str>,
     extensions: &ExtensionRegistry,
     visiting: &mut Vec<String>,
 ) -> Result<ModuleKey> {
@@ -520,12 +539,17 @@ fn resolve_module_key_inner(
             visiting.join(" -> ")
         )));
     }
-    let decl = extensions.get(type_name).ok_or_else(|| {
-        CityParquetError::Schema(format!(
-            "class '{type_name}' has no resolvable module: it is not a recognised core \
-             CityGML 3.0 class, and no extension declares it"
-        ))
-    })?;
+    let Some(decl) = extensions.get(type_name) else {
+        return match namespace {
+            Some(namespace) => Ok(ModuleKey::ExtensionDefault {
+                namespace: namespace.to_string(),
+            }),
+            None => Err(CityParquetError::Schema(format!(
+                "class '{type_name}' has no resolvable module: it is not a recognised core \
+                 CityGML 3.0 class, and no extension declares it"
+            ))),
+        };
+    };
     if let Some(module) = decl.module.as_deref() {
         return Ok(ModuleKey::Extension {
             namespace: decl.namespace.clone(),
@@ -535,17 +559,18 @@ fn resolve_module_key_inner(
     match decl.parent.as_deref() {
         Some(parent) => {
             visiting.push(type_name.to_string());
-            resolve_module_key_inner(strip_plus(parent), extensions, visiting)
+            // A parent is resolved by its own declaration, never by the
+            // namespace of the class that names it.
+            resolve_module_key_inner(strip_plus(parent), None, extensions, visiting)
         }
-        None => Err(CityParquetError::Schema(format!(
-            "extension class '{type_name}' declares neither a module nor a parent, so its \
-             file cannot be resolved"
-        ))),
+        None => Ok(ModuleKey::ExtensionDefault {
+            namespace: decl.namespace.clone(),
+        }),
     }
 }
 
 /// Resolves [`ModuleKey`]s against a fixed [`ExtensionRegistry`], memoising
-/// by source-type string so a caller resolving the same distinct type more
+/// by source-type string and namespace so a caller resolving the same distinct type more
 /// than once (e.g. once per `object_type` dictionary value, across many
 /// batches of one conversion) pays the resolution cost only the first time.
 /// The obvious usage pattern: one resolver per conversion, `resolve` called
@@ -553,7 +578,7 @@ fn resolve_module_key_inner(
 #[derive(Debug, Default)]
 pub struct ModuleKeyResolver {
     extensions: ExtensionRegistry,
-    cache: HashMap<String, ModuleKey>,
+    cache: HashMap<(String, Option<String>), ModuleKey>,
 }
 
 impl ModuleKeyResolver {
@@ -564,17 +589,21 @@ impl ModuleKeyResolver {
         }
     }
 
-    /// Resolves `source_type`'s [`ModuleKey`], consulting (and populating)
-    /// the cache first. `source_type` may carry CityJSON's `+` marker or
-    /// not — both spellings of the same class share one cache entry, since
-    /// [`resolve_module_key`] treats them identically.
-    pub fn resolve(&mut self, source_type: &str) -> Result<ModuleKey> {
-        let key = strip_plus(source_type);
-        if let Some(cached) = self.cache.get(key) {
+    /// Resolves `source_type`'s [`ModuleKey`] (see [`resolve_module_key`]
+    /// for `namespace`), consulting (and populating) the cache first.
+    /// `source_type` may carry CityJSON's `+` marker or not — both spellings
+    /// of the same class share one cache entry, since [`resolve_module_key`]
+    /// treats them identically.
+    pub fn resolve(&mut self, source_type: &str, namespace: Option<&str>) -> Result<ModuleKey> {
+        let key = (
+            strip_plus(source_type).to_string(),
+            namespace.map(str::to_string),
+        );
+        if let Some(cached) = self.cache.get(&key) {
             return Ok(cached.clone());
         }
-        let resolved = resolve_module_key(key, &self.extensions)?;
-        self.cache.insert(key.to_string(), resolved.clone());
+        let resolved = resolve_module_key(&key.0, namespace, &self.extensions)?;
+        self.cache.insert(key, resolved.clone());
         Ok(resolved)
     }
 }
@@ -635,7 +664,10 @@ fn to_snake_case(s: &str) -> String {
 /// [`core_module_file`] table; an extension module's file is its
 /// namespace, an underscore and the module name run through
 /// [`to_snake_case`] (`energy_building_physics`), so it never collides with
-/// a core module file. Panics only if given `ModuleKey::Core(CityGmlModule::Core)`,
+/// a core module file. An extension's own file is its namespace alone
+/// (`energy`); a namespace holds no `_`, so it never equals an extension
+/// module's file, and a writer refuses one that equals a core module's
+/// ([`is_core_module_file`]). Panics only if given `ModuleKey::Core(CityGmlModule::Core)`,
 /// which [`resolve_module_key`] never produces (no `TAXONOMY` entry has that
 /// module) — see [`core_module_file`]'s doc comment.
 pub fn module_file(key: &ModuleKey) -> String {
@@ -646,7 +678,16 @@ pub fn module_file(key: &ModuleKey) -> String {
         ModuleKey::Extension { namespace, module } => {
             format!("{namespace}_{}", to_snake_case(module))
         }
+        ModuleKey::ExtensionDefault { namespace } => namespace.clone(),
     }
+}
+
+/// Whether `body` (a file name without `.parquet`) is a core module's file.
+pub fn is_core_module_file(body: &str) -> bool {
+    TAXONOMY
+        .iter()
+        .filter_map(|class| core_module_file(class.module))
+        .any(|file| file == body)
 }
 
 #[cfg(test)]
@@ -911,11 +952,11 @@ mod module_key_tests {
     fn core_class_resolves_without_consulting_extensions() {
         let extensions = ExtensionRegistry::new();
         assert_eq!(
-            resolve_module_key("Building", &extensions).unwrap(),
+            resolve_module_key("Building", None, &extensions).unwrap(),
             ModuleKey::Core(CityGmlModule::Building)
         );
         assert_eq!(
-            resolve_module_key("BuildingPart", &extensions).unwrap(),
+            resolve_module_key("BuildingPart", None, &extensions).unwrap(),
             ModuleKey::Core(CityGmlModule::Building)
         );
     }
@@ -928,15 +969,15 @@ mod module_key_tests {
     fn core_class_resolves_identically_by_either_spelling() {
         let extensions = ExtensionRegistry::new();
         assert_eq!(
-            resolve_module_key("TransportSquare", &extensions).unwrap(),
-            resolve_module_key("Square", &extensions).unwrap()
+            resolve_module_key("TransportSquare", None, &extensions).unwrap(),
+            resolve_module_key("Square", None, &extensions).unwrap()
         );
         assert_eq!(
-            resolve_module_key("GenericCityObject", &extensions).unwrap(),
-            resolve_module_key("GenericOccupiedSpace", &extensions).unwrap()
+            resolve_module_key("GenericCityObject", None, &extensions).unwrap(),
+            resolve_module_key("GenericOccupiedSpace", None, &extensions).unwrap()
         );
         assert_eq!(
-            resolve_module_key("Square", &extensions).unwrap(),
+            resolve_module_key("Square", None, &extensions).unwrap(),
             ModuleKey::Core(CityGmlModule::Transportation)
         );
     }
@@ -948,7 +989,7 @@ mod module_key_tests {
         let mut extensions = ExtensionRegistry::new();
         extensions.declare("ThermalZone", decl(Some("BuildingPhysics"), None));
         assert_eq!(
-            resolve_module_key("+ThermalZone", &extensions).unwrap(),
+            resolve_module_key("+ThermalZone", None, &extensions).unwrap(),
             ext("energy", "BuildingPhysics")
         );
     }
@@ -961,8 +1002,8 @@ mod module_key_tests {
         let mut extensions = ExtensionRegistry::new();
         extensions.declare("ThermalBoundary", decl(Some("BuildingPhysics"), None));
         assert_eq!(
-            resolve_module_key("ThermalBoundary", &extensions).unwrap(),
-            resolve_module_key("+ThermalBoundary", &extensions).unwrap()
+            resolve_module_key("ThermalBoundary", None, &extensions).unwrap(),
+            resolve_module_key("+ThermalBoundary", None, &extensions).unwrap()
         );
     }
 
@@ -976,7 +1017,7 @@ mod module_key_tests {
         // +NoiseBuilding specialises Building directly (core parent).
         extensions.declare("NoiseBuilding", decl(None, Some("Building")));
         assert_eq!(
-            resolve_module_key("+NoiseBuilding", &extensions).unwrap(),
+            resolve_module_key("+NoiseBuilding", None, &extensions).unwrap(),
             ModuleKey::Core(CityGmlModule::Building)
         );
 
@@ -984,7 +1025,7 @@ mod module_key_tests {
         // no module and specialises Building — two hops to a core module.
         extensions.declare("ExtraNoisyBuilding", decl(None, Some("+NoiseBuilding")));
         assert_eq!(
-            resolve_module_key("+ExtraNoisyBuilding", &extensions).unwrap(),
+            resolve_module_key("+ExtraNoisyBuilding", None, &extensions).unwrap(),
             ModuleKey::Core(CityGmlModule::Building)
         );
     }
@@ -997,7 +1038,7 @@ mod module_key_tests {
         extensions.declare("ThermalZone", decl(Some("BuildingPhysics"), None));
         extensions.declare("HeatedThermalZone", decl(None, Some("+ThermalZone")));
         assert_eq!(
-            resolve_module_key("+HeatedThermalZone", &extensions).unwrap(),
+            resolve_module_key("+HeatedThermalZone", None, &extensions).unwrap(),
             ext("energy", "BuildingPhysics")
         );
     }
@@ -1007,19 +1048,32 @@ mod module_key_tests {
     #[test]
     fn unresolvable_class_is_a_hard_error() {
         let extensions = ExtensionRegistry::new();
-        let e = resolve_module_key("+NoiseBuilding", &extensions).unwrap_err();
+        let e = resolve_module_key("+NoiseBuilding", None, &extensions).unwrap_err();
         assert!(matches!(e, CityParquetError::Schema(_)));
         assert!(e.to_string().contains("NoiseBuilding"));
     }
 
-    /// A declared class with neither a module nor a parent is equally
-    /// unresolvable.
+    /// spec "extensions": an extension class that declares neither a
+    /// module nor a parent, or that only the namespace it is attributed to
+    /// identifies, goes to its extension's own file.
     #[test]
-    fn declared_class_with_neither_module_nor_parent_is_a_hard_error() {
+    fn an_extension_class_without_module_or_parent_takes_its_extensions_file() {
+        let own = ModuleKey::ExtensionDefault {
+            namespace: "energy".to_string(),
+        };
         let mut extensions = ExtensionRegistry::new();
         extensions.declare("Empty", decl(None, None));
-        let e = resolve_module_key("+Empty", &extensions).unwrap_err();
-        assert!(matches!(e, CityParquetError::Schema(_)));
+        assert_eq!(
+            resolve_module_key("+Empty", None, &extensions).unwrap(),
+            own
+        );
+        assert_eq!(
+            resolve_module_key("+ThermalZone", Some("energy"), &ExtensionRegistry::new()).unwrap(),
+            own
+        );
+        assert_eq!(module_file(&own), "energy");
+        assert!(is_core_module_file("building"));
+        assert!(!is_core_module_file("energy"));
     }
 
     /// A parent cycle must be a hard error, never infinite recursion / stack
@@ -1029,7 +1083,7 @@ mod module_key_tests {
         let mut extensions = ExtensionRegistry::new();
         extensions.declare("A", decl(None, Some("+B")));
         extensions.declare("B", decl(None, Some("+A")));
-        let e = resolve_module_key("+A", &extensions).unwrap_err();
+        let e = resolve_module_key("+A", None, &extensions).unwrap_err();
         assert!(matches!(e, CityParquetError::Schema(_)));
         assert!(e.to_string().to_lowercase().contains("cycl"));
     }
@@ -1045,15 +1099,15 @@ mod module_key_tests {
         let mut extensions = ExtensionRegistry::new();
         extensions.declare("ThermalZone", decl(Some("BuildingPhysics"), None));
         let mut resolver = ModuleKeyResolver::new(extensions);
-        let first = resolver.resolve("+ThermalZone").unwrap();
+        let first = resolver.resolve("+ThermalZone", None).unwrap();
         assert_eq!(first, ext("energy", "BuildingPhysics"));
 
         // A repeat lookup of the identical string, and of its bare
         // (non-`+`) spelling, both hit the one cache entry the first call
         // populated (`strip_plus` makes them the same cache key) — proven
         // by the cache holding exactly one entry after both calls.
-        let second = resolver.resolve("+ThermalZone").unwrap();
-        let bare = resolver.resolve("ThermalZone").unwrap();
+        let second = resolver.resolve("+ThermalZone", None).unwrap();
+        let bare = resolver.resolve("ThermalZone", None).unwrap();
         assert_eq!(second, first);
         assert_eq!(bare, first);
         assert_eq!(resolver.cache.len(), 1);

@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use cityparquet_schema::{CityParquetError, Result};
 use cjseq::{Appearance, CityJSON, CityJSONFeature};
@@ -28,6 +29,10 @@ pub struct Source {
     /// Parsed whole document (CityJson format only), pre-sorted for
     /// deterministic feature emission.
     doc: Option<CityJSON>,
+    /// What a CityGML document says document-wide (CityModel appearance,
+    /// implicit-geometry templates, ADEs), read once when the source opens
+    /// and shared with every feature pass (CityGml format only).
+    citygml: Option<Arc<citygml2::Document>>,
     /// In-memory features + doc appearance, set by [`Source::from_parts`] for
     /// a synthetic source (the merge/partition pipeline). When present it is
     /// the sole feature source — `path`/`doc` are unused — so `features()`
@@ -78,12 +83,15 @@ impl Source {
         }
         match crate::citygml::sniff_citygml(path) {
             Some(crate::citygml::CityGmlVersion::V2_0) => {
-                let header = crate::citygml::parse_header(path)?;
+                let document =
+                    citygml2::Document::read(path).map_err(crate::citygml::reader::error)?;
+                let header = crate::citygml::parse_header_with(path, &document)?;
                 return Ok(Self {
                     path: path.to_path_buf(),
                     format: SourceFormat::CityGml,
                     header,
                     doc: None,
+                    citygml: Some(Arc::new(document)),
                     buffered: None,
                     chained: None,
                     crs_is_operator_supplied: false,
@@ -148,6 +156,7 @@ impl Source {
                 format: SourceFormat::CityJsonSeq,
                 header,
                 doc: None,
+                citygml: None,
                 buffered: None,
                 chained: None,
                 crs_is_operator_supplied: false,
@@ -167,6 +176,7 @@ impl Source {
                 format: SourceFormat::CityJson,
                 header,
                 doc: Some(doc),
+                citygml: None,
                 buffered: None,
                 chained: None,
                 crs_is_operator_supplied: false,
@@ -181,6 +191,7 @@ impl Source {
             format: SourceFormat::FlatCityBuf,
             header: crate::fcb::read_header(path)?,
             doc: None,
+            citygml: None,
             buffered: None,
             chained: None,
             crs_is_operator_supplied: false,
@@ -215,6 +226,7 @@ impl Source {
             format,
             header,
             doc: None,
+            citygml: None,
             buffered: Some(BufferedSource {
                 features,
                 doc_appearance,
@@ -238,6 +250,7 @@ impl Source {
             format: SourceFormat::CityJsonSeq,
             header,
             doc: None,
+            citygml: None,
             buffered: None,
             chained: Some(ChainedSource {
                 parts,
@@ -406,7 +419,11 @@ impl Source {
                 })
             }
             SourceFormat::CityGml => Ok(FeatureIter::CityGml(Box::new(
-                crate::citygml::FeatureReader::open(&self.path, &self.header.transform)?,
+                crate::citygml::FeatureReader::with_document(
+                    &self.path,
+                    &self.header.transform,
+                    self.citygml.clone().expect("citygml set"),
+                )?,
             ))),
             #[cfg(feature = "fcb")]
             SourceFormat::FlatCityBuf => Ok(FeatureIter::FlatCityBuf(Box::new(

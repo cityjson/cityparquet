@@ -33,17 +33,20 @@ implementation keeps only the first implicit geometry today.
 
 ## Other open questions
 
-### Extensions: attribution across several extensions, and ADE object-class metadata
+### Extensions: reading schema documents, and ADE object-class metadata
 
 An extension's identity is carried by its [namespace prefix](https://cityjson.github.io/cityparquet/specification/extensions):
 every name an extension adds — attribute columns, `object_type` values, semantic surface
 types and module files — carries it, and `city.extensions` maps it to the extension's
 schema document. Two parts remain open:
 
-- **Attributing names across several extensions.** When a CityJSON source declares
-  several extensions, attributing each `+` name to one of them needs the extensions'
-  schema documents (`extraAttributes`, `extraCityObjects`, `extraSemanticSurfaces`).
-  How a writer obtains and reads them is not yet settled.
+- **Reading the schema documents.** A `+` name is attributed among several extensions
+  by the `extra*` members a declaration lists, and an extension class with no declared
+  module goes to the extension's own file. Reading the schema documents themselves
+  would attribute names a declaration does not list, route a class by the module or the
+  class it specialises (a PLATEAU `uro:UndergroundBuilding` to `building.parquet`), and
+  type ADE values by their XSD types. How a writer obtains and reads them is not yet
+  settled.
 - **Full ADE object-class metadata.** Beyond the class name, its module file and the
   extension declaration, a richer scheme may be needed to carry an ADE's object-class
   information faithfully.

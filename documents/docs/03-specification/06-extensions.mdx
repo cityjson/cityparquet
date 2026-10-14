@@ -37,8 +37,10 @@ a namespace contains no `_`, the first `_` of a prefixed name always ends its na
 - **CityJSON Extension** — the extension's name, which is its key in the document's
   `extensions` member, lower-cased, with every character outside `[a-z0-9]` removed:
   `"Energy"` → `energy`, `"Noise"` → `noise`, `"Energy ADE"` → `energyade`.
-- **CityGML ADE** — the prefix the source document binds to the ADE's XML namespace,
-  normalised the same way.
+- **CityGML ADE** — the prefix the source document first binds to the ADE's XML
+  namespace, normalised the same way; `ade` when that leaves nothing or a digit first,
+  and numbered from 2 (`uro2`) when an ADE the document uses earlier has it, so that
+  every ADE of a document has its own.
 
 A writer **MAY** instead accept a namespace supplied by the operator for an extension;
 the result **MUST** still satisfy the two rules above. A writer **MUST** reject the input
@@ -53,6 +55,7 @@ start with a letter, or a namespace that collides with another extension's.
 | Extended semantic surface type (`geometry_properties_lod*.surfaces[].type`) | `+PartyWallSurface` | `energy_PartyWallSurface` |
 | Extended city-object class (`object_type`) | `+ThermalZone` | `energy_ThermalZone` |
 | Module an extension declares (a file name) | Building Physics module | `energy_building_physics.parquet` |
+| The extension's own file (a file name) | — | `energy.parquet` |
 
 Core module files and core names are **never** prefixed.
 
@@ -65,8 +68,8 @@ types into modules, so they follow the same
 `object_type` is its class name with the namespace prefix (`energy_ThermalZone`).
 
 **The `ModuleKey`.** Every class routes to a file via a single key: a core CityGML 3.0
-module (`Building`, `Transportation`, …), or an **owned extension module** — the module
-the extension itself declares for that class. This is one uniform mechanism, not a
+module (`Building`, `Transportation`, …), an **owned extension module** — the module
+the extension itself declares for that class — or the **extension's own file**. This is one uniform mechanism, not a
 special case bolted onto the by-module rule:
 
 - A class belonging to a **core module** gets the module's file, exactly as any core
@@ -81,6 +84,12 @@ special case bolted onto the by-module rule:
   own, but subclasses a core or extension class) routes to *that* class's module
   file — an extension class specialising `Building` lands in `building.parquet`,
   exactly as `BuildingPart` does. This holds recursively.
+- An extension class that declares **neither** a module of its own nor a class it
+  specialises — every class of a CityJSON Extension, whose schema has no modules, and
+  of a CityGML ADE whose schema the writer does not read — gets its extension's own
+  file, named by the namespace alone: the `urf` ADE's `UseDistrict` and
+  `FirePreventionDistrict` are both stored in `urf.parquet`. A namespace contains no
+  `_`, so this file never collides with an extension module's file.
 - **Routing is indifferent to CityJSON's `+` marker.** The `+` is a detail of CityJSON's
   own encoding of extension types, not a precondition for being one: an ADE class with
   no `+` and a resolvable declared module routes by that module like any other. A
@@ -89,9 +98,9 @@ special case bolted onto the by-module rule:
   `object_type` carries the prefix (`energy_Building`) and stays distinct from the core
   class's.
 - A class with **no resolvable `ModuleKey`** at all — not a recognised core CityGML
-  class, and not declared as belonging to any extension module, `+`-marked or not — is
-  a **hard error**. Routing is total: every class the writer encounters must resolve to
-  some file, or the input is rejected.
+  class, and not a class of any declared extension — is a **hard error**. Routing is
+  total: every class the writer encounters must resolve to some file, or the input is
+  rejected.
 
 The file of a row is therefore its class's module: the declaration does not record it a
 second time.
@@ -145,6 +154,8 @@ extension's schema document rather than embedding it:
 | `url` | ✔ | The extension's schema document — a JSON Schema for a CityJSON Extension, an XSD for a CityGML ADE. |
 | `version` |  | The extension's version, when the source states one. |
 | `xmlns` |  | CityGML ADE only: the ADE's XML namespace URI. |
+| `xmlAttributes` |  | CityGML ADE only: the XML attributes that every occurrence of an ADE element carries with one value, by element local name, then attribute name (`{"width": {"uom": "m"}}`); see [CityGML ADE content](#cityjson-form-of-citygml-ade-content). |
+| `extraCityObjects`, `extraSemanticSurfaces`, `extraRootProperties`, `extraAttributes` |  | The names the extension adds, as a CityJSON Extension document lists them (`extraAttributes` by City Object type), when the source states them with the declaration; kept verbatim. |
 
 A file that carries any extension name — a prefixed attribute column, `object_type`
 value or semantic surface type — **MUST** declare that name's namespace here. Every file
@@ -158,10 +169,12 @@ extension:
 - **A CityGML ADE name** belongs to the ADE whose XML namespace it is in.
 - **A CityJSON source that declares exactly one extension**: every `+` name belongs to
   that extension.
-- **A CityJSON source that declares several extensions**: the writer needs the
-  extensions' schema documents (their `extraAttributes`, `extraCityObjects` and
-  `extraSemanticSurfaces`) to attribute each `+` name. A name the writer cannot
-  attribute is a **hard error**.
+- **A CityJSON source that declares several extensions**: a `+` name belongs to the
+  one extension that lists it among the names of its kind — an attribute in
+  `extraAttributes`, a City Object type in `extraCityObjects`, a semantic surface type
+  in `extraSemanticSurfaces` — in its declaration, or in its schema document if the
+  writer reads it. A name that no declared extension lists as its kind, or that several
+  do, cannot be attributed and is a **hard error**.
 - **A `+` name in a CityJSON source that declares no extension** is a **hard error**:
   CityJSON requires every extension used in a document to be declared in its
   `extensions` member.
@@ -174,7 +187,9 @@ indistinguishable from an extension name. With the Energy ADE declared, a core
 attribute named `energy_label` is rejected.
 
 Likewise, an extension module whose file name equals a core module's file name (a
-namespace `water` with a module `Body` → `water_body.parquet`) is a **hard error**.
+namespace `water` with a module `Body` → `water_body.parquet`) is a **hard error**, and
+so is an extension's own file that does (a namespace `building` with a class of its
+own → `building.parquet`).
 
 ## Export
 
@@ -182,9 +197,46 @@ On export to CityJSON, a name that starts with a declared namespace prefix becom
 CityJSON's `+` form: `energy_heatCapacity` → `+heatCapacity`,
 `energy_ThermalZone` → `+ThermalZone`, `energy_PartyWallSurface` → `+PartyWallSurface`.
 The document's `extensions` member is rebuilt from `city.extensions`: each entry's
-`name` becomes the member key, with its `url` and `version`. A name with no declared
+`name` becomes the member key, with its `url`, `version` and every other field it
+carries. A name with no declared
 prefix is written unchanged. On export to CityGML, `xmlns` gives the XML namespace the
 ADE's names are written in.
+
+## CityJSON form of CityGML ADE content
+
+A CityGML ADE adds XML elements a CityJSON document has no member for. A writer reading
+CityGML gives them the CityJSON form below, and from there they follow the rules above.
+
+- **The extension.** Each ADE the document uses is declared under the prefix the
+  document binds to its namespace (`uro`, see [the namespace](#the-namespace)), with
+  `url` the schema document `xsi:schemaLocation` names for it when that is an absolute
+  URL, else the ADE's published schema when the writer knows it, else the location as
+  written, else the namespace URI; `version` the last segment of the namespace URI
+  when that is a version number, else empty (CityJSON requires the member); `xmlns`
+  the namespace URI; and its classes, semantic surfaces and attributes in
+  `extraCityObjects`, `extraSemanticSurfaces` and `extraAttributes`.
+- **Classes and surfaces.** An ADE element where a city object belongs (a
+  `cityObjectMember`, a nesting property, a `groupMember`) is a City Object of type
+  `+<local name>`; one directly inside a `boundedBy` is a semantic surface of type
+  `+<local name>`. Their own `lod*` geometry properties are geometry, their CityGML
+  properties attributes as for a core class, and their own ADE's properties attributes
+  named by local name without `+`.
+- **Extension properties.** An ADE element directly inside an object of a CityGML
+  class, or of another ADE's class, is the attribute `+<local name>`.
+- **Values.** An element's content becomes JSON: its child elements an object keyed by
+  local name, prefixed `<prefix>:` when the child is in another namespace than its
+  parent element, a repeated child an array; text a string, or a number when the
+  element has a `uom` attribute and its text is one; an empty element an empty object.
+  An XML attribute without a prefix that every occurrence of its element carries with
+  one value is stated once, in the declaration's `xmlAttributes`; an element with any
+  other attribute becomes `{"$": <value>, "@<attribute>": "…"}`. Text between child
+  elements, and GML geometry inside an ADE property, have no CityJSON form and are left
+  out.
+
+The Chiyoda-ku `urf` tile of PLATEAU thus becomes `+FirePreventionDistrict` and
+`+UseDistrict` City Objects in `urf.parquet`, with `object_type`
+`urf_FirePreventionDistrict`, and a `uro:roadStructureAttribute` of a `tran:Road` the
+column `uro_roadStructureAttribute` of `transportation.parquet`.
 
 ## Example
 
@@ -227,7 +279,8 @@ On export the `energy_` prefix becomes `+` again, and the `extensions` member is
 rebuilt from `city.extensions` under the key `Energy`.
 
 :::note[Open item]
-Attributing names across several extensions of one CityJSON source from their schema
-documents, and representing full ADE object-class metadata, are unresolved — see
+Reading the extensions' schema documents — to attribute names their declarations do not
+list, to route a class by the module or class its schema declares, and to type ADE
+values — and representing full ADE object-class metadata are unresolved — see
 [Open questions](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md).
 :::

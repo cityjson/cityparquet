@@ -17,7 +17,8 @@
     * cityObjectMembers 5-7 — the three members of
       plateau_urf_fragment.gml (Japan PLATEAU, Tokyo Chiyoda-ku, module
       `urf`; MLIT Japan), byte for byte, in document order. All three are
-      `urf:` ADE classes, which the reader does not map.
+      `urf:` ADE classes, which the reader reads but citygml-tools, which
+      makes the read benchmark's other formats, leaves out.
 
   The root element is railway_lod3_fragment.gml's own, verbatim, plus exactly
   three namespace bindings the PLATEAU members need and the Railway document
@@ -26,8 +27,8 @@
   urban-function extension) and `uro` (the PLATEAU urban-object extension). Nothing else was added, removed or reordered.
 
   The two halves use different coordinate reference systems, which is
-  harmless and deliberate: the urf members are skipped before any coordinate
-  of theirs is read, and the skipping is the whole point.
+  harmless and deliberate: the read benchmark refuses the document for its
+  urf members whatever their coordinates.
 
   Used by benchmark/readbench/tests/citygml_runner.rs to prove that
   `id-lookup` keeps draining the document after a miss, so the skipped-member

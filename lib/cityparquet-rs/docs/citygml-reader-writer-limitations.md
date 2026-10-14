@@ -106,8 +106,12 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
   one geometry per LoD. For the same reason a point or curve geometry
   (`lodNMultiCurve`, `lodNNetwork`) at a LoD that also has surfaces is
   dropped.
-- ADE elements: a text-only ADE property becomes a string attribute; ADE
-  classes and structured ADE properties are skipped.
+- ADE schemas are not read, so an ADE class goes to its ADE's own file
+  (`urf.parquet`) even when it specialises a CityGML class, and an ADE value is
+  a string unless it is a measure (has `uom`). GML geometry inside an ADE
+  property, text between an ADE element's child elements, an ADE property of
+  a boundary surface or of the CityModel, and ADE appearance are left out; the reader tallies the geometry by property
+  name (`ade_geometries`).
 - `MultiSolid` cannot be written (CityGML 2.0 `Building` has no `lodNMultiSolid`
   slot — a genuine format asymmetry, `multi_solids_skipped`).
 - XSD polish: canonical element ordering, `xs:date`/`gYear` lexical validity.

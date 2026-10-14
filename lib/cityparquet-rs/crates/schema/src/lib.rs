@@ -15,13 +15,14 @@ pub use attributes::{AttributeInferer, AttributeType};
 pub use error::{CityParquetError, Result};
 pub use extensions::ExtensionNaming;
 pub use metadata::{
-    CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, CrsState, ExtensionDeclaration,
-    ExtensionDeclarations, GEOPARQUET_VERSION, GeoColumnEntry, GeoMetadata, Orientation3d,
-    SourceFormat,
+    CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, CrsState, ExtensionAdds,
+    ExtensionDeclaration, ExtensionDeclarations, GEOPARQUET_VERSION, GeoColumnEntry, GeoMetadata,
+    Orientation3d, SourceFormat,
 };
 pub use model::CityParquetSchema;
 pub use types::{
     CityGmlModule, ClassInfo, ExtensionClassDecl, ExtensionRegistry, GeometryEncoding, Lod,
     ModuleKey, ModuleKeyResolver, TAXONOMY, cityjson_type_for_citygml_class, class_info,
-    geometry_column_name, is_extension_type, module_file, resolve_module_key, strip_plus,
+    geometry_column_name, is_core_module_file, is_extension_type, module_file, resolve_module_key,
+    strip_plus,
 };

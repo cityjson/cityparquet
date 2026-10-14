@@ -143,25 +143,3 @@ fn a_lod4_building_keeps_its_room_furniture_openings_address_and_terrain() {
     assert_eq!(terrain["geometry"][0]["type"], "CompositeSurface");
     assert_eq!(terrain["geometry"][0]["lod"], "3");
 }
-
-/// A member of a class the reader does not read is tallied by the element
-/// name the document spells, once per member however deep its subtree, so a
-/// caller can tell a document holding nothing it reads from an empty one.
-/// The PLATEAU urban-function file holds only `urf:` ADE classes.
-#[test]
-fn members_of_unread_classes_are_tallied_by_name() {
-    let mut reader = FeatureReader::open(&data("plateau/533946_urf_6697_08_op.gml")).unwrap();
-    assert!(reader.by_ref().next().is_none());
-    let tally: Vec<(&str, usize)> = reader
-        .skipped_members()
-        .iter()
-        .map(|(name, n)| (name.as_str(), *n))
-        .collect();
-    assert_eq!(
-        tally,
-        [
-            ("urf:FirePreventionDistrict", 641),
-            ("urf:UseDistrict", 1593)
-        ]
-    );
-}

@@ -74,8 +74,12 @@ impl Summary {
                     "type" | "geographicalExtent" | "parents" | "children" | "geometry" => {}
                     "attributes" => {
                         let set = self.attributes.entry(ty.clone()).or_default();
+                        // citygml-tools leaves an ADE's properties out unless
+                        // it is given the ADE, so `+` names are not compared.
                         for (name, value) in v.as_object().unwrap() {
-                            set.insert((name.clone(), json_type(value)));
+                            if !name.starts_with('+') {
+                                set.insert((name.clone(), json_type(value)));
+                            }
                         }
                     }
                     _ => *self.members.entry((ty.clone(), k.clone())).or_default() += 1,
@@ -311,8 +315,9 @@ fn implicit_geometries_agree_with_citygml_tools() {
         scale: [1e-3; 3],
         translate: [0.0; 3],
     };
+    let document = citygml2::Document::read(&gml).unwrap();
     let (geometry_templates, appearance) =
-        citygml_core::convert::cjseq::geometry_templates(&citygml2::read_templates(&gml).unwrap())
+        citygml_core::convert::cjseq::geometry_templates(document.templates())
             .unwrap()
             .expect("the trees' relative geometries");
     let header = serde_json::json!({

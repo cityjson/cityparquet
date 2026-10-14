@@ -28,10 +28,12 @@
 //!    handed to `--format citygml`, and the CSV would then publish another
 //!    format's cost under this format's name.
 //! 3. **A document containing a `cityObjectMember` whose type the reader does
-//!    not map** — see [`ensure_every_member_was_mapped`]. This is the same
-//!    failure mode as (1) wearing different clothes, and it is live on the real
-//!    corpus: a PLATEAU `trk`, `dem`, `lsld` or `urf` tile is composed entirely
-//!    of unmapped members and used to report `count = 0` with exit status 0.
+//!    not map to a CityJSON core type** — one it does not read, or an ADE
+//!    class it reads but citygml-tools, which makes every other format's
+//!    artefact, leaves out — see [`ensure_every_member_was_mapped`]. This is
+//!    the same failure mode as (1) wearing different clothes, and it is live
+//!    on the real corpus: a PLATEAU `urf` tile is composed entirely of ADE
+//!    members.
 //!
 //! **The appearance pre-pass is skipped.** `FeatureReader::open` re-reads the
 //! whole document up front to index its CityModel-level appearance; not one of
@@ -165,7 +167,9 @@ fn open_citygml(path: &Path, origin: &str) -> Result<Document> {
 }
 
 /// Refuses a document whose `cityObjectMember`s are not all of types the
-/// reader maps.
+/// reader maps to a CityJSON core type: `unmapped` holds the members it
+/// skipped and those of an ADE's class, which it reads but citygml-tools
+/// leaves out, and `emitted` the others.
 ///
 /// **Why this is fatal rather than a footnote.** The reader maps
 /// `bldg:Building` plus a fixed list of 1st-level non-building types and
@@ -189,9 +193,10 @@ fn open_citygml(path: &Path, origin: &str) -> Result<Document> {
 /// reader cannot fully read must fail loudly, never quietly return a number.
 fn ensure_every_member_was_mapped(
     emitted: usize,
-    skipped: &BTreeMap<String, usize>,
+    unmapped: &BTreeMap<String, usize>,
     origin: &str,
 ) -> Result<()> {
+    let skipped = unmapped;
     let skipped_total: usize = skipped.values().sum();
     if skipped_total == 0 {
         return Ok(());
@@ -204,10 +209,22 @@ fn ensure_every_member_was_mapped(
         .join(", ");
     bail!(
         "{skipped_total} of {total} cityObjectMembers in {origin} are of types \
-         this reader does not map ({detail}); a benchmark row must not report a \
-         count that omits them — convert the tile with citygml-tools and \
-         measure the CityJSON, or extend the reader's 1st-level type map"
+         this reader does not map to a CityJSON core type ({detail}); a \
+         benchmark row must not report a count that the other formats' \
+         artefacts, made by citygml-tools, do not share"
     )
+}
+
+/// `reader`'s members of a CityJSON core type, and the others by element
+/// name: what [`ensure_every_member_was_mapped`] judges.
+fn member_tally(reader: &FeatureReader) -> (usize, BTreeMap<String, usize>) {
+    let mut unmapped = reader.skipped_members().clone();
+    let mut ade = 0;
+    for (name, count) in reader.ade_members() {
+        *unmapped.entry(name.clone()).or_default() += count;
+        ade += count;
+    }
+    (reader.emitted_members() - ade, unmapped)
 }
 
 /// Streams every feature of `doc` through `visit`, then verifies that the
@@ -238,11 +255,8 @@ where
         members += 1;
         visit(feature)?;
     }
-    ensure_every_member_was_mapped(
-        reader.emitted_members(),
-        reader.skipped_members(),
-        &doc.origin,
-    )?;
+    let (emitted, unmapped) = member_tally(&reader);
+    ensure_every_member_was_mapped(emitted, &unmapped, &doc.origin)?;
     Ok(members)
 }
 
@@ -275,7 +289,8 @@ where
             return Ok(true);
         }
     }
-    ensure_every_member_was_mapped(reader.emitted_members(), reader.skipped_members(), origin)?;
+    let (emitted, unmapped) = member_tally(&reader);
+    ensure_every_member_was_mapped(emitted, &unmapped, origin)?;
     Ok(false)
 }
 

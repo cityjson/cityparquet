@@ -40,7 +40,7 @@ impl TemplateIndex {
 }
 
 /// The templates the up-front pass reads, with where each is.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Templates {
     pub index: TemplateIndex,
     pub templates: Vec<Template>,
@@ -87,6 +87,7 @@ impl Templates {
                 id: template.id.clone(),
                 class: QName::module(Module::Core, "ImplicitGeometry"),
                 attributes: Vec::new(),
+                ade: Vec::new(),
                 addresses: Vec::new(),
                 geometries: vec![template.geometry.clone()],
                 boundary_surfaces: Vec::new(),

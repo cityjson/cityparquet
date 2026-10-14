@@ -9,11 +9,11 @@
   Root CityModel + gml:Envelope + the tile's FIRST THREE cityObjectMembers,
   verbatim.
 
-  Every member is an `urf:` ADE class, which the reader does not map. A
-  reader that silently skips unmapped members therefore reports 0 objects for
-  a document that plainly holds three, in a fraction of the time a real read
-  would take. That silent zero is exactly what the readbench `citygml`
-  runner's skipped-member guard refuses.
+  Every member is an `urf:` ADE class, which the reader reads as an object
+  of the ADE's class and citygml-tools leaves out. The cityparquet-rs ADE
+  test converts it; the readbench `citygml` runner refuses it, because the
+  benchmark's other formats, made by citygml-tools, would not hold its
+  members.
 -->
 <core:CityModel xmlns:core="http://www.opengis.net/citygml/2.0" xmlns:gml="http://www.opengis.net/gml" xmlns:urf="https://www.geospatial.jp/iur/urf/3.2" xmlns:uro="https://www.geospatial.jp/iur/uro/3.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/citygml/2.0 http://schemas.opengis.net/citygml/2.0/cityGMLBase.xsd http://www.opengis.net/citygml/profiles/base/2.0 http://schemas.opengis.net/citygml/profiles/base/2.0/CityGML.xsd https://www.geospatial.jp/iur/uro/3.2 ../../schemas/iur/uro/3.2/urbanObject.xsd https://www.geospatial.jp/iur/urf/3.2 ../../schemas/iur/urf/3.2/urbanFunction.xsd">
   <gml:boundedBy>
