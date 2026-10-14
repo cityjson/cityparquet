@@ -161,7 +161,9 @@ becomes the column `energy_heatCapacity` (tagged with the `extension` role), a
 `+PartyWallSurface` semantic surface becomes the `geometry_properties` surface
 type `energy_PartyWallSurface`, and a `+`-marked class is stored in
 `object_type` as `energy_<Class>` (a `+`-marked core class still routes to its
-core module file, any other to its extension's own file, `<namespace>.parquet`).
+core module file, a class whose `extraCityObjects` schema refers to a
+definition of CityJSON's `cityobjects.schema.json` to that definition's module,
+any other to its extension's own file, `<namespace>.parquet`).
 An extension module file is named `<namespace>_<module>`
 (`energy_building_physics.parquet`). Core names are never prefixed.
 

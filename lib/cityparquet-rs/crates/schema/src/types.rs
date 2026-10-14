@@ -556,18 +556,43 @@ fn resolve_module_key_inner(
             module: module.to_string(),
         });
     }
-    match decl.parent.as_deref() {
+    let own_file = || ModuleKey::ExtensionDefault {
+        namespace: decl.namespace.clone(),
+    };
+    match decl.parent.as_deref().map(strip_plus) {
+        // Specialising any City Object is specialising none in particular.
+        Some(CITYJSON_ABSTRACT_CITY_OBJECT) | None => Ok(own_file()),
         Some(parent) => {
+            if let Some((_, module)) = CITYJSON_ABSTRACT.iter().find(|(name, _)| *name == parent) {
+                return Ok(ModuleKey::Core(*module));
+            }
+            // A parent that is no class this conversion knows (a CityJSON
+            // definition such as `ExtensionObject`) says nothing about the
+            // class's module.
+            if class_info_by_any_spelling(parent).is_none() && extensions.get(parent).is_none() {
+                return Ok(own_file());
+            }
             visiting.push(type_name.to_string());
             // A parent is resolved by its own declaration, never by the
             // namespace of the class that names it.
-            resolve_module_key_inner(strip_plus(parent), None, extensions, visiting)
+            resolve_module_key_inner(parent, None, extensions, visiting)
         }
-        None => Ok(ModuleKey::ExtensionDefault {
-            namespace: decl.namespace.clone(),
-        }),
     }
 }
+
+/// CityJSON's definition of any City Object, which a CityJSON Extension's
+/// class refers to when it specialises no class in particular.
+const CITYJSON_ABSTRACT_CITY_OBJECT: &str = "_AbstractCityObject";
+
+/// The abstract definitions of CityJSON's `cityobjects.schema.json` a class
+/// may specialise besides its City Object types, and their modules.
+const CITYJSON_ABSTRACT: &[(&str, CityGmlModule)] = &[
+    ("_AbstractBuilding", CityGmlModule::Building),
+    (
+        "_AbstractTransportationComplex",
+        CityGmlModule::Transportation,
+    ),
+];
 
 /// Resolves [`ModuleKey`]s against a fixed [`ExtensionRegistry`], memoising
 /// by source-type string and namespace so a caller resolving the same distinct type more
@@ -979,6 +1004,36 @@ mod module_key_tests {
         assert_eq!(
             resolve_module_key("Square", None, &extensions).unwrap(),
             ModuleKey::Core(CityGmlModule::Transportation)
+        );
+    }
+
+    /// spec "extensions": a class specialising one of CityJSON's abstract
+    /// definitions routes to its module, and one specialising any City
+    /// Object, or a definition naming no class, to its extension's own file.
+    #[test]
+    fn a_class_specialising_a_cityjson_definition_routes_by_it() {
+        let mut extensions = ExtensionRegistry::new();
+        extensions.declare(
+            "Underpass",
+            decl(None, Some("_AbstractTransportationComplex")),
+        );
+        extensions.declare("Zone", decl(None, Some("_AbstractCityObject")));
+        extensions.declare("Sensor", decl(None, Some("ExtensionObject")));
+        assert_eq!(
+            resolve_module_key("+Sensor", Some("energy"), &extensions).unwrap(),
+            ModuleKey::ExtensionDefault {
+                namespace: "energy".to_string()
+            }
+        );
+        assert_eq!(
+            resolve_module_key("+Underpass", Some("energy"), &extensions).unwrap(),
+            ModuleKey::Core(CityGmlModule::Transportation)
+        );
+        assert_eq!(
+            resolve_module_key("+Zone", Some("energy"), &extensions).unwrap(),
+            ModuleKey::ExtensionDefault {
+                namespace: "energy".to_string()
+            }
         );
     }
 

@@ -83,11 +83,19 @@ special case bolted onto the by-module rule:
 - An extension class that **specialises an existing class** (declares no module of its
   own, but subclasses a core or extension class) routes to *that* class's module
   file — an extension class specialising `Building` lands in `building.parquet`,
-  exactly as `BuildingPart` does. This holds recursively.
+  exactly as `BuildingPart` does. This holds recursively. A CityJSON Extension states
+  the class it specialises in its `extraCityObjects` schema, by an `allOf` member
+  whose `$ref` names a definition of CityJSON's `cityobjects.schema.json`
+  (`"$ref": "cityobjects.schema.json#/_AbstractBuilding"`): a City Object type routes
+  to its module, `_AbstractBuilding` to Building's, `_AbstractTransportationComplex` to
+  Transportation's, and `_AbstractCityObject` or another definition that names no class
+  in particular (`ExtensionObject`) to none. A CityGML ADE states it in its schema, by the element's `substitutionGroup`
+  (see [the CityJSON form of ADE content](#cityjson-form-of-citygml-ade-content)).
 - An extension class that declares **neither** a module of its own nor a class it
-  specialises — every class of a CityJSON Extension, whose schema has no modules, and
-  of a CityGML ADE whose schema the writer does not read — gets its extension's own
-  file, named by the namespace alone: the `urf` ADE's `UseDistrict` and
+  specialises — a CityJSON Extension class (CityJSON has no modules) whose schema names
+  no definition or only `_AbstractCityObject`, and a CityGML ADE class whose schema is
+  not read or substitutes it for no CityGML class CityJSON has a definition for — gets its
+  extension's own file, named by the namespace alone: the `urf` ADE's `UseDistrict` and
   `FirePreventionDistrict` are both stored in `urf.parquet`. A namespace contains no
   `_`, so this file never collides with an extension module's file.
 - **Routing is indifferent to CityJSON's `+` marker.** The `+` is a detail of CityJSON's
@@ -102,8 +110,8 @@ special case bolted onto the by-module rule:
   total: every class the writer encounters must resolve to some file, or the input is
   rejected.
 
-The file of a row is therefore its class's module: the declaration does not record it a
-second time.
+The file of a row is therefore its class's module: the declaration records the class an
+extension class specialises, never its file.
 
 🟡 Carrying full ADE object-class metadata (beyond the class name, its module file and
 the extension declaration below) remains an [open question](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md).
@@ -215,18 +223,37 @@ CityGML gives them the CityJSON form below, and from there they follow the rules
   when that is a version number, else empty (CityJSON requires the member); `xmlns`
   the namespace URI; and its classes, semantic surfaces and attributes in
   `extraCityObjects`, `extraSemanticSurfaces` and `extraAttributes`.
+- **The schema.** A writer reads an ADE's XML Schema when the document's
+  `xsi:schemaLocation` names it by a path relative to the document and that file
+  exists (the PLATEAU archive's `../../schemas/iur/uro/3.2/urbanObject.xsd`), with the
+  documents it includes or imports by a relative path. A schema named by URL need not
+  be fetched. Without its schema an ADE is read by position alone, as below.
 - **Classes and surfaces.** An ADE element where a city object belongs (a
   `cityObjectMember`, a nesting property, a `groupMember`) is a City Object of type
   `+<local name>`; one directly inside a `boundedBy` is a semantic surface of type
   `+<local name>`. Their own `lod*` geometry properties are geometry, their CityGML
   properties attributes as for a core class, and their own ADE's properties attributes
-  named by local name without `+`.
+  named by local name without `+`. When the schema is read, a class's
+  `extraCityObjects` entry names the CityGML class its element substitutes for, through
+  the ADE's own abstract classes, as the CityJSON definition it corresponds to:
+  `uro:UndergroundBuilding` substitutes for `bldg:_AbstractBuilding`, so it is
+  `{"allOf": [{"$ref": "cityobjects.schema.json#/_AbstractBuilding"}]}` and routes to
+  `building.parquet`. CityJSON has no abstract bridge, tunnel or water object, so a
+  class specialising one names `Bridge`, `Tunnel` or `WaterBody`; one that reaches only
+  the CityGML city object, or a CityGML class CityJSON has no definition for
+  (`veg:_VegetationObject`), names `_AbstractCityObject`. Without the schema the entry is
+  an empty object.
 - **Extension properties.** An ADE element directly inside an object of a CityGML
   class, or of another ADE's class, is the attribute `+<local name>`.
 - **Values.** An element's content becomes JSON: its child elements an object keyed by
   local name, prefixed `<prefix>:` when the child is in another namespace than its
-  parent element, a repeated child an array; text a string, or a number when the
-  element has a `uom` attribute and its text is one; an empty element an empty object.
+  parent element, a repeated child an array; an empty element an empty object. Text
+  takes the type the schema declares for the element in its context: an integer for
+  `xs:integer` and its restrictions, a number for `xs:double`, `xs:float`,
+  `xs:decimal` and the GML measures (`gml:MeasureType`, `gml:LengthType`, …), a
+  boolean for `xs:boolean`, else a string. Without a declared type it is a string, or
+  a number when the element has a `uom` attribute. Text that is not a value of its type
+  stays a string.
   An XML attribute without a prefix that every occurrence of its element carries with
   one value is stated once, in the declaration's `xmlAttributes`; an element with any
   other attribute becomes `{"$": <value>, "@<attribute>": "…"}`. Text between child
@@ -235,8 +262,11 @@ CityGML gives them the CityJSON form below, and from there they follow the rules
 
 The Chiyoda-ku `urf` tile of PLATEAU thus becomes `+FirePreventionDistrict` and
 `+UseDistrict` City Objects in `urf.parquet`, with `object_type`
-`urf_FirePreventionDistrict`, and a `uro:roadStructureAttribute` of a `tran:Road` the
-column `uro_roadStructureAttribute` of `transportation.parquet`.
+`urf_FirePreventionDistrict` and an `xs:integer` `floorAreaRate` column of type
+`BIGINT`; a `uro:roadStructureAttribute` of a `tran:Road` the column
+`uro_roadStructureAttribute` of `transportation.parquet`; and the `ubld` tile's
+`uro:UndergroundBuilding` a row of `building.parquet` with `object_type`
+`uro_UndergroundBuilding`.
 
 ## Example
 
@@ -279,8 +309,8 @@ On export the `energy_` prefix becomes `+` again, and the `extensions` member is
 rebuilt from `city.extensions` under the key `Energy`.
 
 :::note[Open item]
-Reading the extensions' schema documents — to attribute names their declarations do not
-list, to route a class by the module or class its schema declares, and to type ADE
-values — and representing full ADE object-class metadata are unresolved — see
+Fetching a schema named only by URL, reading a CityJSON Extension's schema document to
+attribute names its declaration does not list, routing an ADE class by a module of its
+own, and representing full ADE object-class metadata are unresolved — see
 [Open questions](https://github.com/cityjson/cityparquet/blob/main/documents/open-questions.md).
 :::

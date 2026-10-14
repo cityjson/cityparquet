@@ -3,8 +3,11 @@
 //! before it reads an object.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
 
-use super::QName;
+use super::{Module, QName};
+use crate::Result;
+use crate::xsd::{Name, SchemaSet};
 
 /// An element the model has no field for, with everything inside it: an ADE
 /// property of a city object, kept verbatim so that a conversion, not the
@@ -71,6 +74,11 @@ pub struct Ade {
     /// Its properties of city objects of a CityGML class, by the CityJSON
     /// type of the object they are found on.
     pub properties: BTreeMap<String, BTreeSet<String>>,
+    /// The CityGML class each of its [`Self::classes`] specialises, as its
+    /// schema's substitution groups say (`UndergroundBuilding` substitutes
+    /// for `bldg:_AbstractBuilding`), through any classes of its own. A
+    /// class whose schema was not read is not listed.
+    pub parents: BTreeMap<String, QName>,
     /// The unprefixed XML attributes of its elements (`codeSpace`, `uom`)
     /// that every occurrence of the element carries with one value, by
     /// element local name, then attribute name: what a
@@ -87,6 +95,8 @@ pub struct AdeIndex {
     /// Every namespace URI the document binds, to the first prefix it binds
     /// to it, or for an ADE to [`Ade::prefix`].
     prefixes: HashMap<String, String>,
+    /// The ADEs' schemas, as far as they were found.
+    schemas: SchemaSet,
 }
 
 impl AdeIndex {
@@ -108,6 +118,52 @@ impl AdeIndex {
     /// first the document binds to it, if it binds one.
     pub fn prefix(&self, namespace: &str) -> Option<&str> {
         self.prefixes.get(namespace).map(String::as_str)
+    }
+
+    /// The ADEs' schemas read by [`Self::read_schemas`].
+    pub fn schemas(&self) -> &SchemaSet {
+        &self.schemas
+    }
+
+    /// Read the schema of each ADE that `xsi:schemaLocation` names by a path
+    /// relative to `document` (PLATEAU's `../../schemas/iur/uro/3.2/…`),
+    /// when that file exists, and record the CityGML class each ADE class
+    /// specialises. `module` tells a CityGML module's namespace URI from
+    /// another. A schema named by URL is not fetched, so an ADE whose schema
+    /// is not at hand is read by position alone.
+    pub fn read_schemas(
+        &mut self,
+        document: &Path,
+        module: impl Fn(&str) -> Option<Module>,
+    ) -> Result<()> {
+        let dir = document.parent().unwrap_or(Path::new(""));
+        for ade in &self.ades {
+            if self.schemas.has_namespace(&ade.namespace) {
+                continue;
+            }
+            let Some(location) = ade
+                .schema_location
+                .as_deref()
+                .filter(|l| !l.contains("://"))
+            else {
+                continue;
+            };
+            let path = dir.join(location);
+            if path.is_file() {
+                self.schemas.read(&path)?;
+            }
+        }
+        for ade in &mut self.ades {
+            ade.parents = ade
+                .classes
+                .iter()
+                .filter_map(|class| {
+                    let parent = specialises(&self.schemas, &ade.namespace, class, &module)?;
+                    Some((class.clone(), parent))
+                })
+                .collect();
+        }
+        Ok(())
     }
 
     /// The attributes of `element` (an ADE element, by namespace URI and
@@ -282,6 +338,7 @@ impl AdeIndexBuilder {
                     classes: used.classes,
                     surfaces: used.surfaces,
                     properties: used.properties,
+                    parents: BTreeMap::new(),
                     constant_attributes,
                 }
             })
@@ -292,6 +349,31 @@ impl AdeIndexBuilder {
         AdeIndex {
             ades,
             prefixes: self.prefixes,
+            schemas: SchemaSet::default(),
         }
     }
+}
+
+/// The CityGML class the ADE class `local` of `namespace` specialises: the
+/// first element of a CityGML module along its chain of substitution
+/// groups, or `None` when the chain leaves the schemas read or reaches
+/// another namespace first (`gml:_Feature`).
+fn specialises(
+    schemas: &SchemaSet,
+    namespace: &str,
+    local: &str,
+    module: impl Fn(&str) -> Option<Module>,
+) -> Option<QName> {
+    let mut name: Name = (namespace.to_string(), local.to_string());
+    for _ in 0..64 {
+        let head = schemas.substitution_group(&name)?;
+        if let Some(m) = module(&head.0) {
+            return Some(QName::module(m, head.1.clone()));
+        }
+        if !schemas.has_namespace(&head.0) {
+            return None;
+        }
+        name = head.clone();
+    }
+    None
 }

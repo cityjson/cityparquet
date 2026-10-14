@@ -106,3 +106,43 @@ pub fn cityjson_type(class: &QName) -> Option<&'static str> {
         .find(|(m, local, _)| *m == module && *local == class.local)
         .map(|(_, _, cityjson)| *cityjson)
 }
+
+/// CityGML's abstract classes an ADE class substitutes for, and the
+/// definition of CityJSON's `cityobjects.schema.json` each corresponds to.
+/// A name is matched without its leading `_` (CityGML 2.0 writes
+/// `_AbstractBuilding`, CityGML 3.0 `AbstractBuilding`). CityJSON has no
+/// abstract bridge, tunnel or water object, so those take the class
+/// itself.
+const ABSTRACT: &[(Module, &str, &str)] = &[
+    (Module::Building, "AbstractBuilding", "_AbstractBuilding"),
+    (Module::Bridge, "AbstractBridge", "Bridge"),
+    (Module::Tunnel, "AbstractTunnel", "Tunnel"),
+    (
+        Module::Transportation,
+        "TransportationObject",
+        "_AbstractTransportationComplex",
+    ),
+    (
+        Module::Transportation,
+        "TransportationComplex",
+        "_AbstractTransportationComplex",
+    ),
+    (Module::WaterBody, "WaterObject", "WaterBody"),
+];
+
+/// The definition of CityJSON's `cityobjects.schema.json` an extension
+/// class specialising the CityGML class `class` refers to:
+/// `_AbstractBuilding` for `bldg:_AbstractBuilding`, the City Object type
+/// of a class CityJSON has one for, else `_AbstractCityObject`.
+pub fn cityjson_definition(class: &QName) -> &'static str {
+    let Namespace::Module(module) = class.ns else {
+        return "_AbstractCityObject";
+    };
+    let local = class.local.trim_start_matches('_');
+    ABSTRACT
+        .iter()
+        .find(|(m, name, _)| *m == module && *name == local)
+        .map(|(_, _, definition)| *definition)
+        .or_else(|| cityjson_type(class))
+        .unwrap_or("_AbstractCityObject")
+}

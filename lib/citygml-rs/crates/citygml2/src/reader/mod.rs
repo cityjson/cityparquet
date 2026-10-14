@@ -395,7 +395,9 @@ fn may_contain_in_chunks<const N: usize>(
 /// What one pass over a whole document finds ahead of its objects, which
 /// an object needs but may come after it in the document: the
 /// CityModel-level appearance, which groups reference which members, the
-/// relative geometries its `ImplicitGeometry`s place, and the ADEs it uses.
+/// relative geometries its `ImplicitGeometry`s place, and the ADEs it uses,
+/// with their schemas where the document names them by a relative path
+/// ([`AdeIndex::read_schemas`]).
 #[derive(Debug, Default)]
 pub struct Document {
     appearance: ModelAppearance,
@@ -636,11 +638,15 @@ fn read_index(path: &Path, full: bool) -> Result<Document> {
     if with_appearance {
         templates.scope_model_appearance(&appearance);
     }
+    let mut ade = ade.finish();
+    if with_ade {
+        ade.read_schemas(path, |uri| ns::module(uri.as_bytes()))?;
+    }
     Ok(Document {
         appearance,
         groups_of,
         templates,
-        ade: Arc::new(ade.finish()),
+        ade: Arc::new(ade),
     })
 }
 

@@ -106,9 +106,13 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
   one geometry per LoD. For the same reason a point or curve geometry
   (`lodNMultiCurve`, `lodNNetwork`) at a LoD that also has surfaces is
   dropped.
-- ADE schemas are not read, so an ADE class goes to its ADE's own file
-  (`urf.parquet`) even when it specialises a CityGML class, and an ADE value is
-  a string unless it is a measure (has `uom`). GML geometry inside an ADE
+- An ADE's schema is read only when `xsi:schemaLocation` names it by a path
+  relative to the document that resolves, as in the PLATEAU archive; one named
+  by URL is not fetched. Without its schema an ADE class goes to its ADE's own
+  file (`urf.parquet`) even when it specialises a CityGML class, and an ADE
+  value is a string unless it is a measure (has `uom`). With its schema, a
+  value that is not one of its declared type (`N/A` in an `xs:integer`) stays a
+  string, which makes its whole column a JSON column. GML geometry inside an ADE
   property, text between an ADE element's child elements, an ADE property of
   a boundary surface or of the CityModel, and ADE appearance are left out; the reader tallies the geometry by property
   name (`ade_geometries`).

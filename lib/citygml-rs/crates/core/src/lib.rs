@@ -12,6 +12,7 @@
 //!   with its `xlink:href`s resolved ([`gml::ObjectBuilder`]);
 //! - [`model`]: [`GmlObject`] and what it holds;
 //! - [`vocabulary`]: CityGML class names and their CityJSON counterparts;
+//! - [`xsd`]: what an ADE's XML Schema says about its elements;
 //! - [`convert`]: the conversions out of the model.
 
 pub mod convert;
@@ -21,6 +22,7 @@ pub mod model;
 pub mod sniff;
 pub mod vocabulary;
 pub mod xml;
+pub mod xsd;
 
 pub use error::{Error, Result};
 pub use model::GmlObject;

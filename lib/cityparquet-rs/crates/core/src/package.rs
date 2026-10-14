@@ -21,6 +21,7 @@ use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
 use cityparquet_schema::crs::AxisOrder;
+use cityparquet_schema::extensions::{class_registry, declarations_from_cityjson};
 use cityparquet_schema::{
     AttributeType, CityMetadata, CityParquetError, CityParquetSchema, ExtensionNaming,
     ExtensionRegistry, Lod, ModuleKey, ModuleKeyResolver, Result, geometry_column_name,
@@ -930,18 +931,21 @@ impl TableWriters {
     }
 }
 
-/// The `source`'s parsed Extension/ADE declarations, for [`ModuleKeyResolver`]
-/// to route extension classes by (spec "extensions" — "The `ModuleKey`").
-///
-/// **Empty.** `source.header().extensions` carries each extension's
-/// reference and the names it adds, not the per-class `module`/`parent`
-/// declarations an Extension/ADE schema document defines; reading those
-/// documents is not implemented. Every extension class therefore resolves
-/// either to a core module (a `+`-marked class whose stripped name is a core
-/// class) or to its extension's own file, `<namespace>.parquet`, by the
-/// namespace its name is attributed to.
-fn extension_registry(_source: &Source) -> ExtensionRegistry {
-    ExtensionRegistry::new()
+/// The extension classes the `source`'s declarations say specialise another
+/// class, for [`ModuleKeyResolver`] to route by (spec "extensions" — "The
+/// `ModuleKey`"): see [`class_registry`]. Any other extension class resolves
+/// either to a core module (a `+`-marked class whose stripped name is a
+/// core class) or to its extension's own file, `<namespace>.parquet`, by
+/// the namespace its name is attributed to.
+fn extension_registry(source: &Source) -> Result<ExtensionRegistry> {
+    let extensions = source
+        .header()
+        .extensions
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
+    let declarations = declarations_from_cityjson(extensions.as_ref())?;
+    class_registry(declarations.as_ref())
 }
 
 /// Validate an operator-supplied CRS ([`ConvertOptions::crs_override`]) before
@@ -1018,7 +1022,7 @@ fn write_package(
         tmp_dir,
         Arc::clone(&arrow_schema),
         props,
-        extension_registry(source),
+        extension_registry(source)?,
         module_lods_by_file(&scan_result.module_lods),
         module_geo_by_file(&scan_result.module_geo),
         city_metadata(scan_result, source)?,

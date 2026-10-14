@@ -41,12 +41,13 @@ types and module files — carries it, and `city.extensions` maps it to the exte
 schema document. Two parts remain open:
 
 - **Reading the schema documents.** A `+` name is attributed among several extensions
-  by the `extra*` members a declaration lists, and an extension class with no declared
-  module goes to the extension's own file. Reading the schema documents themselves
-  would attribute names a declaration does not list, route a class by the module or the
-  class it specialises (a PLATEAU `uro:UndergroundBuilding` to `building.parquet`), and
-  type ADE values by their XSD types. How a writer obtains and reads them is not yet
-  settled.
+  by the `extra*` members a declaration lists. A CityGML ADE's schema is read when the
+  document names it by a relative path that resolves (PLATEAU's archive layout): it
+  gives the CityGML class an ADE class specialises, which routes it, and the types of
+  ADE values. Still open: whether a writer fetches a schema named only by URL or keeps
+  a catalogue of known ones, whether it reads a CityJSON Extension's schema document
+  to attribute names a declaration does not list, and how the module an ADE declares
+  for a class is found, since an XSD states no module.
 - **Full ADE object-class metadata.** Beyond the class name, its module file and the
   extension declaration, a richer scheme may be needed to carry an ADE's object-class
   information faithfully.

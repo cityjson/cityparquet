@@ -4,15 +4,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use citygml_core::model::{Namespace, QName, Shape, XmlAttribute, XmlContent, XmlNode};
+use citygml_core::model::{Module, Namespace, QName, Shape, XmlAttribute, XmlContent, XmlNode};
 use citygml2::{Document, FeatureReader};
 
 const URO: &str = "https://www.geospatial.jp/iur/uro/3.2";
 const URF: &str = "https://www.geospatial.jp/iur/urf/3.2";
 
+/// A PLATEAU file, where the PLATEAU archive puts it: `udx/<type>/`.
 fn data(name: &str) -> PathBuf {
+    let ty = name.split('_').nth(1).unwrap();
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data/plateau")
+        .join("tests/data/plateau/udx")
+        .join(ty)
         .join(name)
 }
 
@@ -224,6 +227,64 @@ fn the_document_index_declares_each_ade_it_uses() {
     );
 }
 
+/// An ADE class whose schema substitutes it for a CityGML class records
+/// that class: `uro:UndergroundBuilding` substitutes for
+/// `bldg:_AbstractBuilding`. Its CityGML properties, read by name as any
+/// object's are, give it rooms of its own.
+#[test]
+fn an_ade_class_records_the_citygml_class_it_specialises() {
+    let path = data("53394611_ubld_6697_op.gml");
+    let document = Document::read(&path).unwrap();
+    let ade = document.ade().ade(URO).unwrap();
+    assert_eq!(
+        ade.parents,
+        BTreeMap::from([(
+            "UndergroundBuilding".to_string(),
+            QName::module(Module::Building, "_AbstractBuilding")
+        )])
+    );
+    let building = FeatureReader::open(&path)
+        .unwrap()
+        .find(|o| o.as_ref().unwrap().class == uro("UndergroundBuilding"))
+        .unwrap()
+        .unwrap();
+    let rooms = building
+        .children
+        .iter()
+        .filter(|c| c.class == QName::module(Module::Building, "Room"))
+        .count();
+    assert_eq!(rooms, 25);
+}
+
+/// A schema whose imports are missing still gives what it declares itself:
+/// the `urf` tile beside the `urf` schema alone, without the `uro` schema
+/// the `urf` one imports.
+#[test]
+fn a_schema_is_read_without_the_schemas_it_imports() {
+    let dir = std::env::temp_dir().join(format!("citygml2-ade-{}", std::process::id()));
+    let gml = dir.join("udx/urf/533946_urf_6697_08_op.gml");
+    let xsd = dir.join("schemas/iur/urf/3.2/urbanFunction.xsd");
+    for (from, to) in [
+        (data("533946_urf_6697_08_op.gml"), &gml),
+        (
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/data/plateau/schemas/iur/urf/3.2/urbanFunction.xsd"),
+            &xsd,
+        ),
+    ] {
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(from, to).unwrap();
+    }
+    let document = Document::read(&gml);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let document = document.unwrap();
+    let parents = &document.ade().ade(URF).unwrap().parents;
+    assert_eq!(
+        parents["UseDistrict"],
+        QName::module(Module::Core, "_CityObject")
+    );
+}
+
 #[cfg(feature = "cjseq")]
 mod cityjson {
     use serde_json::{Value, json};
@@ -288,8 +349,10 @@ mod cityjson {
     }
 
     /// An object of an ADE class is a `+` City Object whose own properties
-    /// are attributes without `+`; a measure (`uom`) is a number, and an
-    /// element of another ADE keeps its prefix.
+    /// are attributes without `+`, typed as the ADE's schema declares them
+    /// (`floorAreaRate` an `xs:integer`, `minimumSiteArea` a
+    /// `gml:MeasureType`, `prefecture` a `gml:CodeType`); an element of
+    /// another ADE keeps its prefix.
     #[test]
     fn an_ade_object_is_a_plus_city_object() {
         let features = features("533946_urf_6697_08_op.gml");
@@ -317,9 +380,9 @@ mod cityjson {
                     "thematicSrcDesc": "400"
                 }},
                 "location": "江戸川区北葛西三丁目",
-                "floorAreaRate": "60",
+                "floorAreaRate": 60,
                 "minimumSiteArea": 70.0,
-                "buildingCoverageRate": "30",
+                "buildingCoverageRate": 30,
                 "buildingHeightLimits": 10.0
             })
         );
@@ -341,9 +404,12 @@ mod cityjson {
         );
         assert_eq!(urf["version"], "3.2");
         assert_eq!(urf["xmlns"], URF);
+        // Both classes specialise `core:_CityObject`, through urf's own.
+        let city_object =
+            json!({"allOf": [{"$ref": "cityobjects.schema.json#/_AbstractCityObject"}]});
         assert_eq!(
             urf["extraCityObjects"],
-            json!({"+FirePreventionDistrict": {}, "+UseDistrict": {}})
+            json!({"+FirePreventionDistrict": city_object, "+UseDistrict": city_object})
         );
         assert_eq!(
             urf["xmlAttributes"]["minimumSiteArea"],
@@ -361,6 +427,16 @@ mod cityjson {
         assert_eq!(
             uro["extraAttributes"],
             json!({"Road": {"+roadStructureAttribute": {}, "+tranDataQualityAttribute": {}}})
+        );
+
+        // A class specialising a CityGML class is declared the way a
+        // CityJSON Extension declares one: by reference to CityJSON's schema.
+        let document = Document::read(&data("53394611_ubld_6697_op.gml")).unwrap();
+        let extensions = citygml_core::convert::cjseq::extensions(document.ade());
+        let uro = serde_json::to_value(&extensions[0].1).unwrap();
+        assert_eq!(
+            uro["extraCityObjects"],
+            json!({"+UndergroundBuilding": {"allOf": [{"$ref": "cityobjects.schema.json#/_AbstractBuilding"}]}})
         );
     }
 }

@@ -23,7 +23,9 @@
 //!   (`uro:DataQualityAttribute` inside a `urf:` property), or is named
 //!   `{uri}local` when the document was read without its ADE index;
 //! - an empty element is an empty object;
-//! - text is a string, or a number for a measure (an element with a `uom`);
+//! - text takes the type the ADE's schema declares for the element, when the
+//!   schema was read ([`crate::xsd::ValueType`]); else it is a string, or a
+//!   number for a measure (an element with a `uom`);
 //! - an XML attribute is `@name` beside the text in `$`, unless it has no
 //!   prefix and every occurrence of its element in the document carries it
 //!   with one value,
@@ -47,7 +49,10 @@ use crate::model::{
     Address, AdeIndex, Attribute, Face, Geometry, GmlObject, Material, MemberTarget, Module,
     Namespace, QName, Shape, Template, Texture, Value, XmlContent, XmlNode,
 };
-use crate::vocabulary::{cityjson_type, known_ade_schema, module_prefix, relation_to_construction};
+use crate::vocabulary::{
+    cityjson_definition, cityjson_type, known_ade_schema, module_prefix, relation_to_construction,
+};
+use crate::xsd::{Name, ValueType};
 use crate::{Error, Result};
 
 /// What the CityJSON conversion needs besides the object.
@@ -238,6 +243,11 @@ fn ade_attributes(object: &GmlObject, ade: &AdeIndex, attrs: &mut Map<String, Js
         Namespace::Other(uri) => Some(uri),
         _ => None,
     };
+    let schemas = ade.schemas();
+    // The type of an ADE object, whose content model declares its own
+    // properties; a property of a CityGML object is a global element.
+    let class_type =
+        own.and_then(|uri| schemas.element_type(&(uri.clone(), object.class.local.clone())));
     // The namespace each key added here came from.
     let mut added: HashMap<String, &Namespace> = HashMap::new();
     for node in &object.ade {
@@ -246,7 +256,8 @@ fn ade_attributes(object: &GmlObject, ade: &AdeIndex, attrs: &mut Map<String, Js
             Some(own) if node.name.ns == Namespace::Other(own.clone()) => node.name.local.clone(),
             Some(_) => format!("+{}", node.name.local),
         };
-        let Some(value) = xml_json(node, ade, 0)? else {
+        let ty = schema_name(&node.name).and_then(|n| schemas.child_type(class_type, &n));
+        let Some(value) = xml_json(node, ade, ty, 0)? else {
             continue;
         };
         match added.get(&key) {
@@ -303,9 +314,51 @@ fn accumulate(map: &mut Map<String, Json>, key: String, value: Json) {
     }
 }
 
-/// An ADE element as JSON (see the module documentation), or `None` when
-/// nothing is left of it: GML, or an element holding only GML.
-fn xml_json(node: &XmlNode, ade: &AdeIndex, depth: usize) -> Result<Option<Json>> {
+/// An element's name as a schema names it, for an ADE's element.
+fn schema_name(name: &QName) -> Option<Name> {
+    match &name.ns {
+        Namespace::Other(uri) => Some((uri.clone(), name.local.clone())),
+        _ => None,
+    }
+}
+
+/// The text of an element as JSON: as its schema type `ty` says when the
+/// ADE's schema declares one, else a number for a measure (an element with
+/// a `uom`) and a string otherwise. Text that does not parse as its type
+/// stays a string.
+fn text_json(node: &XmlNode, text: &str, ty: Option<&Name>, ade: &AdeIndex) -> Json {
+    let value_type = match ty.and_then(|ty| ade.schemas().value_type(ty)) {
+        Some(value_type) => value_type,
+        None if node.attribute("uom").is_some() => ValueType::Number,
+        None => ValueType::Text,
+    };
+    let trimmed = text.trim();
+    let parsed = match value_type {
+        ValueType::Integer => trimmed.parse::<i64>().ok().map(Json::from),
+        ValueType::Number => trimmed
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
+            .map(Json::from),
+        ValueType::Boolean => match trimmed {
+            "true" | "1" => Some(Json::Bool(true)),
+            "false" | "0" => Some(Json::Bool(false)),
+            _ => None,
+        },
+        ValueType::Text => None,
+    };
+    parsed.unwrap_or_else(|| Json::String(text.to_string()))
+}
+
+/// An ADE element of schema type `ty` as JSON (see the module
+/// documentation), or `None` when nothing is left of it: GML, or an element
+/// holding only GML.
+fn xml_json(
+    node: &XmlNode,
+    ade: &AdeIndex,
+    ty: Option<&Name>,
+    depth: usize,
+) -> Result<Option<Json>> {
     if depth > MAX_ADE_DEPTH {
         return Err(Error::invalid(format!(
             "ADE property nested deeper than {MAX_ADE_DEPTH}"
@@ -330,19 +383,13 @@ fn xml_json(node: &XmlNode, ade: &AdeIndex, depth: usize) -> Result<Option<Json>
     let value = match &node.content {
         // Present but empty: an object, so the element is not lost.
         XmlContent::Empty => return Ok(Some(Json::Object(map))),
-        XmlContent::Text(text) => match node.attribute("uom") {
-            Some(_) => text
-                .trim()
-                .parse::<f64>()
-                .ok()
-                .filter(|v| v.is_finite())
-                .map_or_else(|| Json::String(text.clone()), Json::from),
-            None => Json::String(text.clone()),
-        },
+        XmlContent::Text(text) => text_json(node, text, ty, ade),
         XmlContent::Children(children) => {
             let mut kept = false;
             for child in children {
-                let Some(value) = xml_json(child, ade, depth + 1)? else {
+                let child_ty =
+                    schema_name(&child.name).and_then(|n| ade.schemas().child_type(ty, &n));
+                let Some(value) = xml_json(child, ade, child_ty, depth + 1)? else {
                     continue;
                 };
                 kept = true;
@@ -375,7 +422,10 @@ fn xml_json(node: &XmlNode, ade: &AdeIndex, depth: usize) -> Result<Option<Json>
 /// - `extraCityObjects`, `extraSemanticSurfaces` and `extraAttributes`, as a
 ///   CityJSON Extension document has them, naming the `+` City Object types,
 ///   semantic surface types and attributes (by City Object type) the ADE
-///   adds, each with an empty schema.
+///   adds, each with an empty schema, except a class whose schema names the
+///   CityGML class it specialises ([`crate::model::Ade::parents`]): it refers
+///   to the corresponding definition of CityJSON's schema
+///   (`{"allOf": [{"$ref": "cityobjects.schema.json#/_AbstractBuilding"}]}`).
 ///
 /// `url` is the schema `xsi:schemaLocation` names when it is absolute, a
 /// known ADE's published schema ([`known_ade_schema`]) when it is not, and
@@ -417,7 +467,23 @@ pub fn extensions(ade: &AdeIndex) -> Vec<(String, Extension)> {
                 )
             };
             if !a.classes.is_empty() {
-                other.insert("extraCityObjects".into(), names(&a.classes));
+                let classes = a
+                    .classes
+                    .iter()
+                    .map(|class| {
+                        let schema = match a.parents.get(class) {
+                            Some(parent) => serde_json::json!({"allOf": [{
+                                "$ref": format!(
+                                    "cityobjects.schema.json#/{}",
+                                    cityjson_definition(parent)
+                                )
+                            }]}),
+                            None => Json::Object(Map::new()),
+                        };
+                        (format!("+{class}"), schema)
+                    })
+                    .collect();
+                other.insert("extraCityObjects".into(), Json::Object(classes));
             }
             if !a.surfaces.is_empty() {
                 other.insert("extraSemanticSurfaces".into(), names(&a.surfaces));

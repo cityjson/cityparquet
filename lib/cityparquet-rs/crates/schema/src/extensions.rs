@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::error::{CityParquetError, Result};
 use crate::metadata::{ExtensionAdds, ExtensionDeclaration, ExtensionDeclarations, XmlAttributes};
+use crate::types::{ExtensionClassDecl, ExtensionRegistry};
 
 /// Derives an extension's namespace from its source name (spec "Extensions",
 /// namespace derivation): the name lower-cased, with every character outside
@@ -340,6 +341,52 @@ impl ExtensionNaming {
             None => name.to_string(),
         }
     }
+}
+
+/// The extension classes `declarations` say specialise another class, for
+/// [`crate::types::ModuleKeyResolver`] to route by: each `extraCityObjects`
+/// entry whose schema refers, through `allOf`, to a definition of CityJSON's
+/// `cityobjects.schema.json`, the way a CityJSON Extension declares the
+/// class it builds on (`{"allOf": [{"$ref":
+/// "cityobjects.schema.json#/_AbstractBuilding"}, …]}`). A class with no
+/// such reference is not declared, and goes to its extension's own file. A
+/// class two extensions both list is an error: it could not be told which
+/// one's declaration routes it.
+pub fn class_registry(declarations: Option<&ExtensionDeclarations>) -> Result<ExtensionRegistry> {
+    let mut registry = ExtensionRegistry::new();
+    let mut listed: BTreeMap<&str, &str> = BTreeMap::new();
+    for (namespace, declaration) in declarations.into_iter().flatten() {
+        let Some(Value::Object(classes)) = &declaration.adds.extra_city_objects else {
+            continue;
+        };
+        for (class, schema) in classes {
+            if let Some(other) = listed.insert(class.trim_start_matches('+'), namespace) {
+                return Err(CityParquetError::Schema(format!(
+                    "the extensions '{other}' and '{namespace}' both list the class '{class}'"
+                )));
+            }
+            let parent = schema
+                .get("allOf")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|part| part.get("$ref").and_then(Value::as_str))
+                .find_map(|reference| reference.split_once("cityobjects.schema.json#/"))
+                .and_then(|(_, path)| path.split('/').next())
+                .map(str::to_string);
+            if let Some(parent) = parent {
+                registry.declare(
+                    class,
+                    ExtensionClassDecl {
+                        namespace: namespace.clone(),
+                        module: None,
+                        parent: Some(parent),
+                    },
+                );
+            }
+        }
+    }
+    Ok(registry)
 }
 
 #[cfg(test)]

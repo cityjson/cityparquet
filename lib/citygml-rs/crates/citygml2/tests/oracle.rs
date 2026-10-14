@@ -130,7 +130,10 @@ fn oracle(jsonl: &str) -> Summary {
 
 fn agrees(name: &str) {
     assert_eq!(
-        ours(&format!("plateau/{name}.gml")),
+        ours(&format!(
+            "plateau/udx/{}/{name}.gml",
+            name.split('_').nth(1).unwrap()
+        )),
         oracle(&format!("oracle/{name}.city.jsonl")),
         "{name}"
     );
