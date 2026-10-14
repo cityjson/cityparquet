@@ -22,7 +22,8 @@ pub(crate) fn error(e: citygml_core::Error) -> CityParquetError {
 }
 
 /// Streams the features of a CityGML document, with the reader of its
-/// version (see [`citygml2::FeatureReader`] for what it reads and skips).
+/// version (see [`citygml2::FeatureReader`] and [`citygml3::FeatureReader`]
+/// for what each reads and skips).
 pub struct FeatureReader {
     inner: Features<Box<dyn ObjectStream + Send>>,
 }
@@ -35,7 +36,7 @@ pub(crate) fn unsupported(version: &CityGmlVersion) -> CityParquetError {
         CityGmlVersion::Other(version) => version,
     };
     CityParquetError::Schema(format!(
-        "unsupported CityGML version {version} (only CityGML 2.0 is supported)"
+        "unsupported CityGML version {version} (only CityGML 2.0 and 3.0 are supported)"
     ))
 }
 
@@ -53,6 +54,7 @@ fn version(path: &Path) -> Result<CityGmlVersion> {
 pub fn read_document(path: &Path, version: &CityGmlVersion) -> Result<Document> {
     match version {
         CityGmlVersion::V2_0 => citygml2::read_document(path).map_err(error),
+        CityGmlVersion::V3_0 => citygml3::read_document(path).map_err(error),
         other => Err(unsupported(other)),
     }
 }
@@ -75,6 +77,9 @@ impl FeatureReader {
             CityGmlVersion::V2_0 => {
                 citygml2::read_document_without_appearance(path).map_err(error)?
             }
+            CityGmlVersion::V3_0 => {
+                citygml3::read_document_without_appearance(path).map_err(error)?
+            }
             other => return Err(unsupported(other)),
         };
         Self::with_document(path, &version, transform, Arc::new(document))
@@ -92,6 +97,7 @@ impl FeatureReader {
     ) -> Result<Self> {
         let objects: Box<dyn ObjectStream + Send> = match version {
             CityGmlVersion::V2_0 => Box::new(citygml2::FeatureReader::from_reader(input)),
+            CityGmlVersion::V3_0 => Box::new(citygml3::FeatureReader::from_reader(input)),
             other => return Err(unsupported(other)),
         };
         Ok(Self::wrap(objects, transform))
@@ -108,6 +114,9 @@ impl FeatureReader {
         let objects: Box<dyn ObjectStream + Send> = match version {
             CityGmlVersion::V2_0 => {
                 Box::new(citygml2::FeatureReader::with_document(path, document).map_err(error)?)
+            }
+            CityGmlVersion::V3_0 => {
+                Box::new(citygml3::FeatureReader::with_document(path, document).map_err(error)?)
             }
             other => return Err(unsupported(other)),
         };

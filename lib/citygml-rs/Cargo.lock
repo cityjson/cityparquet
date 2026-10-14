@@ -20,7 +20,16 @@ version = "0.1.0"
 dependencies = [
  "citygml-core",
  "cjseq",
- "memchr",
+ "quick-xml",
+ "serde_json",
+]
+
+[[package]]
+name = "citygml3"
+version = "0.1.0"
+dependencies = [
+ "citygml-core",
+ "cjseq",
  "quick-xml",
  "serde_json",
 ]

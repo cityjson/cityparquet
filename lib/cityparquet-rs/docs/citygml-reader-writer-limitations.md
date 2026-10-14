@@ -1,8 +1,9 @@
-# CityGML 2.0 reader/writer — supported scope & known limitations
+# CityGML reader/writer — supported scope & known limitations
 
-Status as of 2026-10-14. The CityGML 2.0 reader (the `citygml2` crate in
-`lib/citygml-rs`, adapted in `crates/core/src/citygml/`) and the writer
-round-trip 3D city models through the CityParquet package. This document
+Status as of 2026-10-14. The CityGML 2.0 and 3.0 readers (the `citygml2` and
+`citygml3` crates in `lib/citygml-rs`, chosen by the document's namespace and
+adapted in `crates/core/src/citygml/`) and the CityGML 2.0 writer round-trip
+3D city models through the CityParquet package. This document
 records what is supported and what remains, for the paper's scope section and
 future work. The **package round-trip is lossless** for everything listed as
 supported — where the emitted CityGML is not strictly XSD-valid, the lenient
@@ -62,6 +63,42 @@ attribute names and types, addresses and appearance palettes
   (`app:appearanceMember`), targeting polygons or the surface aggregates
   holding them; reversed `gml:OrientableSurface` texture UVs kept aligned.
 
+**CityGML 3.0 reader.** It shares the 2.0 reader's geometry assembly,
+appearance, implicit geometries, groups and ADE handling (`citygml-core`), and
+reads 3.0's encoding of the same content. On four PLATEAU files (building,
+bridge, transportation, vegetation) upgraded by `citygml-tools upgrade`, the
+LoD 4 and CompositeSolid samples and the LoD 3 Railway's trees upgraded the
+same way, and the OGC's storeys-and-units sample, the CityJSON it produces
+agrees with `citygml-tools to-cityjson` as the 2.0 reader's does
+(`lib/citygml-rs/crates/citygml3/tests/oracle.rs`), with two differences the
+test states: where citygml4j writes a solid and a MultiSurface at one LoD the
+reader keeps the solid, and a face a storey xlinks from a room's boundary
+surface is not tagged with that surface.
+
+- The 3.0 classes CityJSON has a type for, including OtherConstruction, the
+  generic spaces (→ GenericCityObject), Waterway, BuildingConstructiveElement
+  and its bridge and tunnel counterparts, Storey (→ BuildingStorey) and
+  BuildingUnit, nested in their building as rooms and parts are; a storey's
+  or unit's `xlink:href` to a room or unit nests nothing.
+- Geometry: the core module's `lodNSolid`, `lodNMultiSurface`,
+  `lodNMultiCurve` and `lod0Point`, GML 3.2 solids (`gml:Shell`), and
+  `lodNImplicitRepresentation` (`relativeGeometry`).
+- Boundary surfaces (`boundary`) with their `fillingSurface`s, a wall's doors
+  and windows, as child surfaces. A transportation object's spaces
+  (`trafficSpace`, `auxiliaryTrafficSpace`, `hole`, `section`,
+  `intersection`) are folded into it: their boundary surfaces (traffic and
+  auxiliary traffic areas, holes) and `marking`s become the object's own
+  semantic surfaces, as CityJSON and CityGML 2.0 model a road.
+- Attributes: as 2.0's, typed from the 3.0 schema; `gen:` generic attributes
+  by their `gen:name` and `gen:value`; a construction's `con:height` whose
+  status is `measured` as `measuredHeight`.
+- Addresses in xAL 3, each part named as xAL 2 names it (`thoroughfareName`,
+  `postcode`, …).
+- ADEs through the `adeOf<Class>` hooks: the hook's container element is
+  unwrapped, and its properties are the object's `+` attributes, declared on
+  the CityJSON type of the object; an ADE class specialising a CityGML class
+  goes to that class's table when its schema is read.
+
 **Writer (CityParquet → CityGML), scope W-M1…W-M5:**
 
 - `Building`/`BuildingPart` with LoD solids/CompositeSolid (`lod1Solid` to
@@ -116,6 +153,13 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
   property, text between an ADE element's child elements, an ADE property of
   a boundary surface or of the CityModel, and ADE appearance are left out; the reader tallies the geometry by property
   name (`ade_geometries`).
+- CityGML 3.0 only: a transportation space's own geometry and attributes, a
+  `gen:GenericAttributeSet`, a height whose status is not `measured`, a
+  constructive element's `con:filling` (a door or window as an object), the
+  dynamizer, point cloud and versioning modules, and `core:featureMember`
+  are not read. A `gen:GenericThematicSurface` is an untyped face, CityJSON
+  having no type for it. The `citygml-tools upgrade` of a PLATEAU file holds
+  no i-UR ADE content, since citygml-tools drops what it has no module for.
 - `MultiSolid` cannot be written (CityGML 2.0 `Building` has no `lodNMultiSolid`
   slot — a genuine format asymmetry, `multi_solids_skipped`).
 - XSD polish: canonical element ordering, `xs:date`/`gYear` lexical validity.

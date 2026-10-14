@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::read::{AggregateMember, Collected, RawSolid, RefTarget, SolidGeom, SurfaceRef};
+use super::read::{AggregateMember, Collected, RawSolid, RefTarget, SolidGeom, SurfaceRef, Xlink};
 use crate::model::{
     Address, Appearance, Attribute, BoundarySurface, Face, Geometry, GmlObject, GroupMember,
     Instance, Line, MemberTarget, Polygon, QName, Shape, XmlNode,
@@ -90,8 +90,8 @@ pub struct ObjectBuilder {
     /// index and LoD.
     boundary_polys: Vec<(usize, String, Polygon)>,
     /// Boundary-surface members that are `xlink:href`s rather than inline
-    /// polygons: `(surface index, LoD, target id)`.
-    boundary_refs: Vec<(usize, String, String)>,
+    /// polygons: `(surface index, LoD, reference)`.
+    boundary_refs: Vec<(usize, String, Xlink)>,
     attributes: Vec<Attribute>,
     ade: Vec<XmlNode>,
     addresses: Vec<Address>,
@@ -250,9 +250,9 @@ impl ObjectBuilder {
             }
             self.boundary_polys.push((surface, lod.to_string(), poly));
         }
-        for href in xlinks {
-            self.semantic_of_polygon.insert(href.clone(), surface);
-            self.boundary_refs.push((surface, lod.to_string(), href));
+        for xlink in xlinks {
+            self.semantic_of_polygon.insert(xlink.id.clone(), surface);
+            self.boundary_refs.push((surface, lod.to_string(), xlink));
         }
     }
 
@@ -489,7 +489,7 @@ impl ObjectBuilder {
             AggregateMember::Ref(id) => Some(id),
             AggregateMember::Polygon(_) => None,
         });
-        let boundary_refs = self.boundary_refs.iter().map(|(_, _, href)| href);
+        let boundary_refs = self.boundary_refs.iter().map(|(_, _, xlink)| &xlink.id);
         let mut pending: Vec<String> = solid_refs
             .chain(member_refs)
             .chain(boundary_refs)
@@ -599,7 +599,7 @@ impl ObjectBuilder {
             }
             faces.push(plain_face(poly, Some(*surface)));
         }
-        for (surface, ref_lod, href) in &self.boundary_refs {
+        for (surface, ref_lod, Xlink { id: href, reverse }) in &self.boundary_refs {
             if ref_lod != lod {
                 continue;
             }
@@ -615,7 +615,10 @@ impl ObjectBuilder {
                 continue;
             }
             for poly in &polys {
-                faces.push(plain_face(poly, Some(*surface)));
+                faces.push(Face {
+                    reversed: *reverse,
+                    ..plain_face(poly, Some(*surface))
+                });
             }
         }
         // A standalone face no boundary surface holds would otherwise vanish:

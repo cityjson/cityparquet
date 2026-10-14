@@ -12,7 +12,7 @@ Three crates, layered so the type system has no I/O dependencies:
 | Crate                    | Responsibility                                                                                                                           | Notable dependency line                                       |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | **`cityparquet-schema`** | The CityParquet spec _as code_: types, CityGML taxonomy, Arrow schema, profiles, manifest, metadata. No buffers, no Parquet.             | **zero** `arrow-array` / `parquet` deps — only `arrow-schema` |
-| **`cityparquet`**        | The Parquet read/write path: scan, encode, write, read, decode, export, compare, validate, WKB, appearance, sidecars, ordering, recipes. | `arrow-*`, `parquet`, `wkb`, `cjseq`, `citygml2`              |
+| **`cityparquet`**        | The Parquet read/write path: scan, encode, write, read, decode, export, compare, validate, WKB, appearance, sidecars, ordering, recipes. | `arrow-*`, `parquet`, `wkb`, `cjseq`, `citygml2`, `citygml3`  |
 | **`cityparquet-cli`**    | The `cityparquet` binary (convert/export/compare/collection/validate/bench) and the benchmark harness library.                           | `clap`, the two crates above                                  |
 
 The **schema/Parquet isolation** is enforced in CI: `just isolation` fails if
@@ -53,7 +53,7 @@ executable specification.
 CityJSON→package path. It is a **two-pass** design over a unified `Source`:
 
 ```
-Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 document, FlatCityBuf file)
+Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 or 3.0 document, FlatCityBuf file)
    │
    ├─ pass 1 ── scan ─────────► ScanResult { CityParquetSchema, dataset metadata }
    │            (LoDs, attribute columns, CRS, transform, dataset bbox;
@@ -73,8 +73,9 @@ Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 document, FlatCityBuf file
 ```
 
 - **`source`** — `Source` unifies whole-document CityJSON, streaming
-  CityJSONSeq, CityGML 2.0 (`citygml`, which synthesises a CityJSON header and
-  streams the features of the `citygml2` crate from `../citygml-rs`) and FlatCityBuf (`fcb`, behind the `fcb` feature, bridging
+  CityJSONSeq, CityGML 2.0 and 3.0 (`citygml`, which synthesises a CityJSON
+  header and streams the features of the `citygml2` or `citygml3` crate from
+  `../citygml-rs`, as the document's namespace says) and FlatCityBuf (`fcb`, behind the `fcb` feature, bridging
   `fcb_core`'s CityJSON types to `cjseq` through JSON) behind one feature
   iterator, so nothing downstream cares which input shape it got. Several
   inputs merge (`merge::merge_sources`) into one `Source` that reads them in

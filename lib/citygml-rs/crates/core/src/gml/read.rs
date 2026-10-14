@@ -142,8 +142,9 @@ pub fn read_solid<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Re
     Ok(RawSolid { shells })
 }
 
-/// A shell wrapper (`gml:exterior`/`gml:interior`), holding a
-/// `gml:CompositeSurface` (or `gml:Surface`) of surface members.
+/// A shell wrapper (`gml:exterior`/`gml:interior`), holding the surface
+/// members of a GML 3.2 `gml:Shell`, or of GML 3.1's `gml:CompositeSurface`
+/// (or `gml:Surface`).
 fn read_shell<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
@@ -158,7 +159,7 @@ fn read_shell<R: BufRead>(
             Event::Start(e) => {
                 let local = e.local_name();
                 match (gml, local.as_ref()) {
-                    (true, b"CompositeSurface") | (true, b"Surface") => {
+                    (true, b"Shell" | b"CompositeSurface" | b"Surface") => {
                         let end = local.as_ref().to_vec();
                         refs = read_surface_refs(reader, buf, end)?
                     }
@@ -345,13 +346,23 @@ fn orientation_reversed(e: &quick_xml::events::BytesStart) -> bool {
 pub struct Collected {
     /// Every inline `gml:Polygon`, with its `gml:id` if any, in document order.
     pub polygons: Vec<(Option<String>, Polygon)>,
-    /// The fragment ids of `gml:surfaceMember`s that are `xlink:href`
-    /// references rather than inline polygons.
-    pub xlinks: Vec<String>,
+    /// The `xlink:href` references in place of inline polygons: those of
+    /// `gml:surfaceMember`s, and those of the `gml:baseSurface` of a
+    /// `gml:OrientableSurface`, with its orientation.
+    pub xlinks: Vec<Xlink>,
     /// Every surface aggregate (`gml:CompositeSurface`, `gml:MultiSurface`)
     /// carrying a `gml:id`, with its members in document order — what an
     /// `xlink:href` to the aggregate stands for.
     pub aggregates: Vec<(String, Vec<AggregateMember>)>,
+}
+
+/// An `xlink:href` to a surface, by fragment id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Xlink {
+    pub id: String,
+    /// `true` inside a `gml:OrientableSurface orientation="-"` (or an odd
+    /// number of them).
+    pub reverse: bool,
 }
 
 /// One member of an identified surface aggregate. A member is recorded once,
@@ -392,6 +403,8 @@ pub fn collect_surfaces<R: BufRead>(
     let mut out = Collected::default();
     // Open identified aggregates: (depth inside them, id, members so far).
     let mut open: Vec<(usize, String, Vec<AggregateMember>)> = Vec::new();
+    // Open orientable surfaces: (depth inside them, reversed).
+    let mut orientable: Vec<(usize, bool)> = Vec::new();
     let mut depth = 1usize;
     loop {
         buf.clear();
@@ -415,19 +428,25 @@ pub fn collect_surfaces<R: BufRead>(
                     }
                     out.polygons.push((id, poly));
                 } else if gml
-                    && local.as_ref() == b"surfaceMember"
+                    && matches!(local.as_ref(), b"surfaceMember" | b"baseSurface")
                     && let Some(frag) = xlink_fragment(&e)?
                 {
-                    // An xlink surfaceMember (empty under expand_empty_elements):
-                    // record the fragment and consume through its End. It is
-                    // a member of the innermost enclosing identified aggregate.
+                    // An xlink surfaceMember, or the xlinked base surface of
+                    // an orientable surface (empty under
+                    // expand_empty_elements): record the fragment and consume
+                    // through its End. It is a member of the innermost
+                    // enclosing identified aggregate.
                     if let Some((_, _, members)) = open.last_mut() {
                         members.push(AggregateMember::Ref(frag.clone()));
                     }
-                    out.xlinks.push(frag);
+                    let reverse = orientable.iter().fold(false, |r, (_, flip)| r ^ flip);
+                    out.xlinks.push(Xlink { id: frag, reverse });
                     skip_element(reader, buf)?;
                 } else {
                     depth += 1;
+                    if gml && local.as_ref() == b"OrientableSurface" {
+                        orientable.push((depth, orientation_reversed(&e)));
+                    }
                     if gml
                         && matches!(local.as_ref(), b"CompositeSurface" | b"MultiSurface")
                         && let Some(id) = gml_id(&e)
@@ -443,6 +462,9 @@ pub fn collect_surfaces<R: BufRead>(
                 if open.last().is_some_and(|(d, _, _)| *d == depth) {
                     let (_, id, members) = open.pop().expect("checked above");
                     out.aggregates.push((id, members));
+                }
+                if orientable.last().is_some_and(|(d, _)| *d == depth) {
+                    orientable.pop();
                 }
                 depth -= 1;
                 if depth == 0 {

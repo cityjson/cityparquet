@@ -49,6 +49,7 @@ quick-xml = "0.39"
 # pin the same cjseq as above, so both resolve to one copy.
 citygml-core = { path = "../citygml-rs/crates/core", version = "0.1.0" }
 citygml2 = { path = "../citygml-rs/crates/citygml2", version = "0.1.0" }
+citygml3 = { path = "../citygml-rs/crates/citygml3", version = "0.1.0" }
 chrono = "0.4"
 flate2 = "1"
 object_store = { version = "0.13", features = ["http"] }

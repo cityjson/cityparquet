@@ -3,7 +3,7 @@
 
 use std::io::BufRead;
 
-use citygml_core::model::{Module, Value};
+use citygml_core::model::{Attribute, AttributeName, Module, Namespace, QName, Value};
 use citygml_core::reader::text::{AttrType, to_value};
 use citygml_core::xml::{read_text, xml_err};
 use citygml_core::{Error, Result};
@@ -33,6 +33,36 @@ const TYPED: &[(Module, &str, AttrType)] = &[
     (Module::Vegetation, "crownDiameter", AttrType::Float),
     (Module::Vegetation, "averageHeight", AttrType::Float),
 ];
+
+/// The installations whose CityGML 2.0 class says whether they are inside
+/// or outside the construction, which CityGML 3.0 and CityJSON say with a
+/// `relationToConstruction` attribute.
+const RELATION_TO_CONSTRUCTION: &[(Module, &str, &str)] = &[
+    (Module::Building, "BuildingInstallation", "outside"),
+    (Module::Building, "IntBuildingInstallation", "inside"),
+    (Module::Bridge, "BridgeInstallation", "outside"),
+    (Module::Bridge, "IntBridgeInstallation", "inside"),
+    (Module::Tunnel, "TunnelInstallation", "outside"),
+    (Module::Tunnel, "IntTunnelInstallation", "inside"),
+];
+
+/// The `relationToConstruction` attribute an installation's class implies,
+/// or `None` for another class.
+pub fn relation_to_construction(class: &QName) -> Option<Attribute> {
+    let Namespace::Module(module) = class.ns else {
+        return None;
+    };
+    let (_, _, relation) = RELATION_TO_CONSTRUCTION
+        .iter()
+        .find(|(m, local, _)| *m == module && *local == class.local)?;
+    Some(Attribute {
+        name: AttributeName::Property(QName::module(
+            Module::Construction,
+            "relationToConstruction",
+        )),
+        value: Value::String((*relation).to_string()),
+    })
+}
 
 /// How a property of `module` named `local` is typed.
 pub fn property_type(module: Module, local: &[u8]) -> AttrType {

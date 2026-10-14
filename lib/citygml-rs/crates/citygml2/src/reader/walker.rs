@@ -203,6 +203,7 @@ pub fn read_object<R: BufRead>(
         Namespace::Other(uri) => Some(uri.as_bytes().to_vec()),
         _ => None,
     };
+    let relation = attributes::relation_to_construction(&class);
     let mut b = ObjectBuilder::new(id, class);
     let mut pending = Pending::default();
     loop {
@@ -294,6 +295,9 @@ pub fn read_object<R: BufRead>(
         // A TIN without its LoD is at LoD 1, the LoD a relief has when its
         // LoD is not otherwise stated.
         b.add_tin(pending.tin.lod.unwrap_or_else(|| "1".into()), surfaces);
+    }
+    if let Some(relation) = relation {
+        b.push_attribute(relation);
     }
     Ok(b)
 }

@@ -109,30 +109,6 @@ const CLASSES: &[(Module, &str, &str)] = &[
     (Module::Relief, "TINRelief", "TINRelief"),
 ];
 
-/// The installations whose CityGML 2.0 class says whether they are inside
-/// or outside the construction, which CityJSON's single installation type
-/// does not: CityGML 3.0 says it with `relationToConstruction`.
-const RELATION_TO_CONSTRUCTION: &[(Module, &str, &str)] = &[
-    (Module::Building, "BuildingInstallation", "outside"),
-    (Module::Building, "IntBuildingInstallation", "inside"),
-    (Module::Bridge, "BridgeInstallation", "outside"),
-    (Module::Bridge, "IntBridgeInstallation", "inside"),
-    (Module::Tunnel, "TunnelInstallation", "outside"),
-    (Module::Tunnel, "IntTunnelInstallation", "inside"),
-];
-
-/// CityGML 3.0's `relationToConstruction` of an installation class whose
-/// name implies it, or `None`.
-pub fn relation_to_construction(class: &QName) -> Option<&'static str> {
-    let Namespace::Module(module) = class.ns else {
-        return None;
-    };
-    RELATION_TO_CONSTRUCTION
-        .iter()
-        .find(|(m, local, _)| *m == module && *local == class.local)
-        .map(|(_, _, relation)| *relation)
-}
-
 /// The CityJSON City Object type of a CityGML class, or `None` for a class
 /// CityJSON has no type for.
 pub fn cityjson_type(class: &QName) -> Option<&'static str> {

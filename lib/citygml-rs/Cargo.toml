@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-# Short directory names; the package names (`citygml-core`, `citygml2`) are
-# what crates.io sees.
-members = ["crates/core", "crates/citygml2"]
+# Short directory names; the package names (`citygml-core`, `citygml2`,
+# `citygml3`) are what crates.io sees.
+members = ["crates/core", "crates/citygml2", "crates/citygml3"]
 
 [workspace.package]
 version = "0.1.0"

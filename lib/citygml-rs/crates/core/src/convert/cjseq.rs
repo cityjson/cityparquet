@@ -50,7 +50,6 @@ use crate::model::{
 };
 use crate::vocabulary::{
     cityjson_definition, cityjson_surface, cityjson_type, known_ade_schema, module_prefix,
-    relation_to_construction,
 };
 use crate::xsd::{Name, ValueType};
 use crate::{Error, Result};
@@ -183,11 +182,6 @@ fn emit(object: &GmlObject, my_id: &str, parent_id: Option<&str>, out: &mut Out<
     let mut co = CityObject::new(thetype);
     co.geometry = Some(geometries);
     let mut attrs = attributes(&object.attributes);
-    if let Some(relation) = relation_to_construction(&object.class) {
-        attrs
-            .entry("relationToConstruction")
-            .or_insert_with(|| Json::String(relation.to_string()));
-    }
     ade_attributes(object, out.ade, &mut attrs)?;
     if !attrs.is_empty() {
         co.attributes = Some(attrs);

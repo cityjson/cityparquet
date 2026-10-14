@@ -6,6 +6,7 @@ Streaming CityGML readers for Rust.
   geometry, and the conversion to [cjseq](https://crates.io/crates/cjseq)'s
   CityJSON types.
 - [`citygml2`](crates/citygml2): the CityGML 2.0 reader.
+- [`citygml3`](crates/citygml3): the CityGML 3.0 reader, with the same API.
 
 ```rust
 use citygml2::FeatureReader;

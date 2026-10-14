@@ -9,7 +9,6 @@ repository.workspace = true
 [dependencies]
 citygml-core = { workspace = true }
 quick-xml = { workspace = true }
-memchr = { workspace = true }
 cjseq = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -6,12 +6,14 @@ repository of its own later, so nothing here may depend on `cityparquet-rs`.
 
 ## Crates
 
-| Directory         | Package        | What                                                                                                                                                                                                                                                                          |
-| ----------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `crates/core`     | `citygml-core` | Version-neutral: `GmlObject` and what it holds, GML 3.1/3.2 geometry and xlink assembly (`gml`), the CityGML-to-CityJSON class vocabulary, version sniffing, quick-xml helpers, what an ADE's XML Schema says about its elements (`xsd`), and the conversions out (`convert`) |
-| `crates/citygml2` | `citygml2`     | The CityGML 2.0 reader: walks the XML and fills a `GmlObject` per top-level city object                                                                                                                                                                                       |
+| Directory         | Package        | What                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crates/core`     | `citygml-core` | Version-neutral: `GmlObject` and what it holds, GML 3.1/3.2 geometry and xlink assembly (`gml`), what both readers share (`reader`: the up-front document pass, the feature stream, appearance, implicit geometries), the CityGML-to-CityJSON class vocabulary, version sniffing, quick-xml helpers, what an ADE's XML Schema says about its elements (`xsd`), and the conversions out (`convert`) |
+| `crates/citygml2` | `citygml2`     | The CityGML 2.0 reader: walks the XML and fills a `GmlObject` per top-level city object                                                                                                                                                                                                                                                                                                            |
+| `crates/citygml3` | `citygml3`     | The CityGML 3.0 reader, with the same API                                                                                                                                                                                                                                                                                                                                                          |
 
-A `citygml3` crate joins them for CityGML 3.0.
+`test-support/oracle.rs` is what both readers' oracle tests share, included
+by path.
 
 ## Design rules
 
