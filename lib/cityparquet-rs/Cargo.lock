@@ -325,6 +325,7 @@ dependencies = [
  "arrow-schema 58.3.0",
  "arrow-select 58.3.0",
  "flatbuffers 25.12.19",
+ "lz4_flex 0.13.1",
 ]
 
 [[package]]
@@ -875,6 +876,7 @@ dependencies = [
  "arrow-array 58.3.0",
  "arrow-buffer 58.3.0",
  "arrow-cast 58.3.0",
+ "arrow-ipc 58.3.0",
  "arrow-schema 58.3.0",
  "arrow-select 58.3.0",
  "async-trait",
@@ -955,7 +957,7 @@ dependencies = [
 [[package]]
 name = "cjseq"
 version = "0.5.0"
-source = "git+https://github.com/HideBa/cjseq?rev=0d92c4b51f4b32b9dc2aadf649b4b6caf8ad69f7#0d92c4b51f4b32b9dc2aadf649b4b6caf8ad69f7"
+source = "git+https://github.com/HideBa/cjseq?rev=4e0e1c642eec05a4671e76b5e6e6b62d0ffd21ea#4e0e1c642eec05a4671e76b5e6e6b62d0ffd21ea"
 dependencies = [
  "clap",
  "getrandom 0.2.17",

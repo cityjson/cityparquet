@@ -6,7 +6,7 @@ use cityparquet::merge::merge_sources;
 use cityparquet::package::{ConvertOptions, RowOrder, convert_source};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::recipe::{BloomPolicy, Codec, RecipePreset, WriterRecipe};
-use cityparquet::source::{Source, SourceFormat};
+use cityparquet::source::Source;
 use cityparquet::validate::validate_package;
 use cityparquet_cli::bench::{self, BenchOptions};
 use cityparquet_schema::Result as CpResult;
@@ -103,12 +103,22 @@ enum Commands {
 
         /// Row-emission order for the main table: "hilbert" (the default:
         /// features sorted by the Hilbert index of their centre, improving
-        /// bbox row-group pruning; a CityJSON or CityJSONSeq input is read
-        /// back in that order, a CityGML or FlatCityBuf input is held parsed
-        /// in memory) or "source" (stream features as the input yields them,
-        /// one at a time — the low-memory path for any input).
+        /// bbox row-group pruning; the sort holds up to --memory-budget of
+        /// encoded rows and spills sorted runs to disk beyond it) or "source"
+        /// (rows written as the input yields them, with no sort).
         #[arg(long, value_enum, default_value = "hilbert")]
         ordering: OrderingArg,
+
+        /// Encoded rows the Hilbert sort holds in memory before spilling a
+        /// sorted run to disk: bytes, or with a K, M or G suffix (binary).
+        #[arg(long, default_value = "2G", value_parser = parse_size)]
+        memory_budget: usize,
+
+        /// Directory to spill the Hilbert sort's runs in (default: the
+        /// package's scratch directory). The runs go in a directory of their
+        /// own inside it, removed when the conversion ends.
+        #[arg(long)]
+        spill_dir: Option<PathBuf>,
 
         /// Synthesise an LoD0 footprint into `geometry_lod0_0` for every
         /// object that lacks a source LoD0, derived from its higher-LoD
@@ -287,6 +297,24 @@ impl RecipeArg {
     }
 }
 
+/// A byte count, optionally with a binary `K`, `M` or `G` suffix
+/// (`--memory-budget`).
+fn parse_size(text: &str) -> Result<usize, String> {
+    let text = text.trim();
+    let (digits, shift) = match text.chars().last().map(|c| c.to_ascii_uppercase()) {
+        Some('K') => (&text[..text.len() - 1], 10),
+        Some('M') => (&text[..text.len() - 1], 20),
+        Some('G') => (&text[..text.len() - 1], 30),
+        _ => (text, 0),
+    };
+    let n: usize = digits
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{text}` is not a size (e.g. 512M, 2G)"))?;
+    n.checked_mul(1usize << shift)
+        .ok_or_else(|| format!("`{text}` is too large"))
+}
+
 /// CLI mirror of [`RowOrder`] (`--ordering`).
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum OrderingArg {
@@ -320,37 +348,14 @@ fn resolve_and_open(inputs: &[PathBuf]) -> CpResult<Vec<Source>> {
 }
 
 /// Collapse `sources` to one [`Source`]: the lone input directly, or — for
-/// several — a merged in-memory source ([`merge_sources`] enforces a shared
-/// CRS and requantises onto one transform).
-///
-/// An operator-supplied CRS is a property of the header, so it travels onto
-/// the merged source — but only when EVERY input got its CRS from `--crs`.
-/// `merge_sources` enforces one shared CRS across the inputs, so a single
-/// input that declared that CRS itself makes the merged CRS source-declared:
-/// the operator's value was, for that input, a no-op. Asking `any` instead
-/// would stamp a whole mixed batch `crs_source: "operator-supplied"` and strip
-/// the genuine `referenceSystem` out of the verbatim `source_metadata`,
-/// leaving a footer that denies a declaration the source did make.
+/// several — a merged source that reads them in turn ([`merge_sources`]
+/// enforces a shared CRS, requantises onto one transform, and carries the
+/// operator-supplied-CRS provenance only when every input had it).
 fn merge_to_one(sources: Vec<Source>) -> CpResult<Source> {
     if sources.len() == 1 {
         return Ok(sources.into_iter().next().expect("one source"));
     }
-    let crs_is_operator_supplied = sources.iter().all(Source::crs_is_operator_supplied);
-    let merged = merge_sources(&sources)?;
-    if merged.duplicate_ids > 0 {
-        eprintln!(
-            "warning: {} duplicate feature id(s) across inputs; all kept (a package with \
-             duplicate ids cannot faithfully round-trip through export)",
-            merged.duplicate_ids
-        );
-    }
-    Ok(Source::from_parts(
-        merged.header,
-        merged.features,
-        merged.doc_appearance,
-        SourceFormat::CityJsonSeq,
-    )
-    .with_crs_operator_supplied(crs_is_operator_supplied))
+    merge_sources(sources)
 }
 
 /// Build a [`PartitionSpec`] from the `--partition` method and its sizing flag,
@@ -456,6 +461,8 @@ fn main() -> std::process::ExitCode {
             no_bloom,
             bloom_fpp,
             ordering,
+            memory_budget,
+            spill_dir,
             lod0,
             crs,
             tolerate_invalid_appearance,
@@ -507,6 +514,8 @@ fn main() -> std::process::ExitCode {
                 batch_size,
                 recipe,
                 ordering,
+                memory_budget,
+                spill_dir,
                 generate_lod0: lod0,
                 lod0: cityparquet::lod0::Lod0Options::default(),
                 crs_override: None,
@@ -609,7 +618,7 @@ fn main() -> std::process::ExitCode {
                                 }
                             }
                             // Summed across partitions and printed once,
-                            // same shape as `partitions=`/`duplicate_ids=`
+                            // same shape as `partitions=`
                             // above: a dataset-level fact, not a
                             // per-partition one. Also appended to each
                             // partition's own line, since a dropped
@@ -631,9 +640,8 @@ fn main() -> std::process::ExitCode {
                                 );
                             }
                             println!(
-                                "partitions={} duplicate_ids={} invalid_appearance_refs_dropped={}",
+                                "partitions={} invalid_appearance_refs_dropped={}",
                                 report.partitions.len(),
-                                report.duplicate_ids,
                                 invalid_appearance_refs_dropped
                             );
                             for (label, r) in &report.partitions {
@@ -681,6 +689,13 @@ fn main() -> std::process::ExitCode {
                                      (--tolerate-invalid-appearance): a dangling index, or a \
                                      texture ring with fewer UVs than vertices, left untextured",
                                     report.invalid_appearance_refs_dropped
+                                );
+                            }
+                            if report.sort_runs > 0 {
+                                eprintln!(
+                                    "note: the Hilbert sort spilled {} sorted run(s) to disk \
+                                     (--memory-budget)",
+                                    report.sort_runs
                                 );
                             }
                             println!(

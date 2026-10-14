@@ -33,6 +33,9 @@ pub struct Source {
     /// the sole feature source — `path`/`doc` are unused — so `features()`
     /// yields from it directly rather than reopening any file.
     buffered: Option<BufferedSource>,
+    /// The inputs of a merged source ([`Source::chained`]), read one after
+    /// another; like `buffered`, the sole feature source when present.
+    chained: Option<ChainedSource>,
     /// Whether `header.metadata.reference_system` was declared by an OPERATOR
     /// ([`Source::set_reference_system`]) rather than carried by the source
     /// itself. The one place this fact lives: the writer's `crs_source`
@@ -47,6 +50,12 @@ pub struct Source {
 /// geometry-template `material`/`texture` maps resolve against.
 struct BufferedSource {
     features: Vec<CityJSONFeature>,
+    doc_appearance: Option<Appearance>,
+}
+
+/// The backing store for a merged [`Source`] (see [`Source::chained`]).
+struct ChainedSource {
+    parts: Vec<Source>,
     doc_appearance: Option<Appearance>,
 }
 
@@ -76,6 +85,7 @@ impl Source {
                     header,
                     doc: None,
                     buffered: None,
+                    chained: None,
                     crs_is_operator_supplied: false,
                 });
             }
@@ -134,6 +144,7 @@ impl Source {
                 header,
                 doc: None,
                 buffered: None,
+                chained: None,
                 crs_is_operator_supplied: false,
             })
         } else {
@@ -152,6 +163,7 @@ impl Source {
                 header,
                 doc: Some(doc),
                 buffered: None,
+                chained: None,
                 crs_is_operator_supplied: false,
             })
         }
@@ -165,6 +177,7 @@ impl Source {
             header: crate::fcb::read_header(path)?,
             doc: None,
             buffered: None,
+            chained: None,
             crs_is_operator_supplied: false,
         })
     }
@@ -199,6 +212,30 @@ impl Source {
             doc: None,
             buffered: Some(BufferedSource {
                 features,
+                doc_appearance,
+            }),
+            chained: None,
+            crs_is_operator_supplied: false,
+        }
+    }
+
+    /// One source reading `parts` one after another under `header`, which
+    /// carries their merged transform: a part whose own transform differs has
+    /// its vertices requantised onto it as its features are read. Built by
+    /// [`crate::merge::merge_sources`], which checks the parts agree first.
+    pub(crate) fn chained(
+        header: CityJSON,
+        parts: Vec<Source>,
+        doc_appearance: Option<Appearance>,
+    ) -> Self {
+        Self {
+            path: PathBuf::new(),
+            format: SourceFormat::CityJsonSeq,
+            header,
+            doc: None,
+            buffered: None,
+            chained: Some(ChainedSource {
+                parts,
                 doc_appearance,
             }),
             crs_is_operator_supplied: false,
@@ -304,6 +341,9 @@ impl Source {
         if let Some(buffered) = &self.buffered {
             return buffered.doc_appearance.as_ref();
         }
+        if let Some(chained) = &self.chained {
+            return chained.doc_appearance.as_ref();
+        }
         self.header.appearance.as_ref()
     }
 
@@ -312,6 +352,13 @@ impl Source {
     /// caller doing enough per feature to overlap with (a conversion). Every
     /// other source streams exactly as [`Source::features`] does.
     pub fn features_batched(&self) -> Result<FeatureIter<'_>> {
+        if let Some(chained) = &self.chained {
+            return Ok(FeatureIter::Chained(Box::new(ChainedFeatures::new(
+                &chained.parts,
+                &self.header.transform,
+                true,
+            ))));
+        }
         if self.buffered.is_none() && self.format == SourceFormat::CityJsonSeq {
             let file = File::open(&self.path).map_err(|e| {
                 CityParquetError::io_source(format!("cannot reopen {}", self.path.display()), e)
@@ -329,6 +376,13 @@ impl Source {
     pub fn features(&self) -> Result<FeatureIter<'_>> {
         if let Some(buffered) = &self.buffered {
             return Ok(FeatureIter::Buffered(buffered.features.iter()));
+        }
+        if let Some(chained) = &self.chained {
+            return Ok(FeatureIter::Chained(Box::new(ChainedFeatures::new(
+                &chained.parts,
+                &self.header.transform,
+                false,
+            ))));
         }
         match self.format {
             SourceFormat::CityJsonSeq => {
@@ -361,186 +415,6 @@ impl Source {
             ))),
         }
     }
-}
-
-impl Source {
-    /// The features [`Source::features`] yields, in the order `order` gives
-    /// as indices into that sequence — without holding them all parsed at
-    /// once where the source allows random access: a CityJSONSeq line is
-    /// re-read by its byte span, a CityJSON document feature built from the
-    /// parsed document by index, an in-memory one cloned. A CityGML or
-    /// FlatCityBuf source streams only front to back, so its features are
-    /// parsed once and handed out in order.
-    pub fn features_in_order(&self, order: Vec<usize>) -> Result<OrderedFeatures<'_>> {
-        let access = if let Some(buffered) = &self.buffered {
-            Access::Buffered(&buffered.features)
-        } else {
-            match self.format {
-                SourceFormat::CityJsonSeq => {
-                    let (file, spans) = seq_line_spans(&self.path)?;
-                    Access::Lines {
-                        file,
-                        spans,
-                        ready: Vec::new().into_iter(),
-                    }
-                }
-                SourceFormat::CityJson => {
-                    let doc = self.doc.as_ref().expect("doc set");
-                    Access::Doc(doc, feature_ids(doc))
-                }
-                SourceFormat::CityGml | SourceFormat::FlatCityBuf => {
-                    return Ok(OrderedFeatures::parsed(
-                        self.features()?.collect::<Result<Vec<_>>>()?,
-                        order,
-                    ));
-                }
-            }
-        };
-        Ok(OrderedFeatures {
-            order: order.into_iter(),
-            access,
-        })
-    }
-
-    /// Whether this source can only be read front to back — a CityGML or
-    /// FlatCityBuf file — so that reading its features in another order
-    /// means holding them all parsed.
-    pub(crate) fn reads_front_to_back(&self) -> bool {
-        self.buffered.is_none()
-            && matches!(
-                self.format,
-                SourceFormat::CityGml | SourceFormat::FlatCityBuf
-            )
-    }
-}
-
-impl OrderedFeatures<'static> {
-    /// `features` — every feature of a source, already parsed in its
-    /// [`Source::features`] order — handed out in `order`.
-    pub(crate) fn parsed(features: Vec<CityJSONFeature>, order: Vec<usize>) -> Self {
-        OrderedFeatures {
-            order: order.into_iter(),
-            access: Access::Parsed(features.into_iter().map(Some).collect()),
-        }
-    }
-}
-
-/// The byte span (start, length) of every feature line of a CityJSONSeq
-/// file — the lines [`FeatureIter::Seq`] parses: every line after the header
-/// line that is not blank, without its line terminator.
-fn seq_line_spans(path: &Path) -> Result<(File, Vec<(u64, usize)>)> {
-    let io = |e| CityParquetError::io_source(format!("cannot read {}", path.display()), e);
-    let file = File::open(path).map_err(io)?;
-    let mut reader = BufReader::with_capacity(1 << 20, &file);
-    let mut spans = Vec::new();
-    let mut line = Vec::new();
-    let mut at = 0u64;
-    let mut first = true;
-    loop {
-        line.clear();
-        let read = reader.read_until(b'\n', &mut line).map_err(io)?;
-        if read == 0 {
-            break;
-        }
-        let start = at;
-        at += read as u64;
-        if std::mem::take(&mut first) {
-            continue;
-        }
-        let mut len = line.len();
-        if line.ends_with(b"\n") {
-            len -= 1;
-            if line[..len].ends_with(b"\r") {
-                len -= 1;
-            }
-        }
-        if line[..len].iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        spans.push((start, len));
-    }
-    drop(reader);
-    Ok((file, spans))
-}
-
-/// The iterator [`Source::features_in_order`] returns.
-pub struct OrderedFeatures<'a> {
-    order: std::vec::IntoIter<usize>,
-    access: Access<'a>,
-}
-
-enum Access<'a> {
-    Lines {
-        file: File,
-        spans: Vec<(u64, usize)>,
-        ready: std::vec::IntoIter<Result<CityJSONFeature>>,
-    },
-    /// The document and its feature ids, in [`Source::features`] order.
-    Doc(&'a CityJSON, Vec<&'a str>),
-    Buffered(&'a [CityJSONFeature]),
-    /// Taken out as they are handed over, so each is moved, never cloned.
-    Parsed(Vec<Option<CityJSONFeature>>),
-}
-
-impl Iterator for OrderedFeatures<'_> {
-    type Item = Result<CityJSONFeature>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Access::Lines { file, spans, ready } = &mut self.access {
-            if let Some(next) = ready.next() {
-                return Some(next);
-            }
-            // The next batch of lines in order, read by their spans, then
-            // parsed across cores.
-            let mut batch = Vec::new();
-            let mut bytes = 0;
-            let mut failure = None;
-            while batch.len() < PARSE_BATCH_LINES && bytes < PARSE_BATCH_BYTES {
-                let Some(i) = self.order.next() else { break };
-                let Some(&(start, len)) = spans.get(i) else {
-                    failure = Some(err(format!("feature {i} is not in the source")));
-                    break;
-                };
-                match read_span(file, start, len) {
-                    Ok(line) => {
-                        bytes += line.len();
-                        batch.push(line);
-                    }
-                    Err(e) => {
-                        failure = Some(e);
-                        break;
-                    }
-                }
-            }
-            let mut parsed = parse_feature_lines(batch);
-            parsed.extend(failure.map(Err));
-            *ready = parsed.into_iter();
-            return ready.next();
-        }
-        let i = self.order.next()?;
-        let missing = || err(format!("feature {i} is not in the source"));
-        Some(match &mut self.access {
-            Access::Lines { .. } => unreachable!("handled above"),
-            Access::Doc(doc, ids) => match ids.get(i) {
-                Some(id) => doc_feature(doc, id),
-                None => Err(missing()),
-            },
-            Access::Buffered(features) => features.get(i).cloned().ok_or_else(missing),
-            Access::Parsed(features) => features
-                .get_mut(i)
-                .and_then(Option::take)
-                .ok_or_else(missing),
-        })
-    }
-}
-
-fn read_span(file: &mut File, start: u64, len: usize) -> Result<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let io = |e| CityParquetError::io_source("read error", e);
-    file.seek(SeekFrom::Start(start)).map_err(io)?;
-    let mut bytes = vec![0; len];
-    file.read_exact(&mut bytes).map_err(io)?;
-    String::from_utf8(bytes).map_err(|e| err(format!("invalid CityJSONFeature line: {e}")))
 }
 
 /// Up to how many feature lines, and bytes of them, are parsed together.
@@ -714,6 +588,66 @@ pub enum FeatureIter<'a> {
     /// on yield so the iterator can hand back owned `CityJSONFeature`s like
     /// every other arm while the buffer stays intact for re-iteration.
     Buffered(std::slice::Iter<'a, CityJSONFeature>),
+    /// A merged source's parts, one after another.
+    Chained(Box<ChainedFeatures<'a>>),
+}
+
+/// The features of a [`Source::chained`] source.
+pub struct ChainedFeatures<'a> {
+    parts: std::slice::Iter<'a, Source>,
+    merged: &'a cjseq::Transform,
+    batched: bool,
+    /// The part being read, with its own transform when that differs from
+    /// the merged one.
+    current: Option<(FeatureIter<'a>, Option<&'a cjseq::Transform>)>,
+}
+
+impl<'a> ChainedFeatures<'a> {
+    fn new(parts: &'a [Source], merged: &'a cjseq::Transform, batched: bool) -> Self {
+        Self {
+            parts: parts.iter(),
+            merged,
+            batched,
+            current: None,
+        }
+    }
+}
+
+impl Iterator for ChainedFeatures<'_> {
+    type Item = Result<CityJSONFeature>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some((features, own)) = &mut self.current {
+                match features.next() {
+                    Some(Ok(mut feature)) => {
+                        if let Some(own) = own {
+                            crate::merge::requantise_vertices(
+                                &mut feature.vertices,
+                                own,
+                                self.merged,
+                            );
+                        }
+                        return Some(Ok(feature));
+                    }
+                    Some(Err(e)) => return Some(Err(e)),
+                    None => self.current = None,
+                }
+            }
+            let part = self.parts.next()?;
+            let features = if self.batched {
+                part.features_batched()
+            } else {
+                part.features()
+            };
+            let own = &part.header().transform;
+            let differs = !crate::merge::transform_eq(own, self.merged);
+            match features {
+                Ok(features) => self.current = Some((features, differs.then_some(own))),
+                Err(e) => return Some(Err(e)),
+            }
+        }
+    }
 }
 
 impl Iterator for FeatureIter<'_> {
@@ -739,6 +673,7 @@ impl Iterator for FeatureIter<'_> {
             #[cfg(feature = "fcb")]
             FeatureIter::FlatCityBuf(reader) => reader.next(),
             FeatureIter::Buffered(iter) => iter.next().map(|f| Ok(f.clone())),
+            FeatureIter::Chained(features) => features.next(),
         }
     }
 }
@@ -770,58 +705,6 @@ mod tests {
         assert_eq!(mem.format(), SourceFormat::CityJsonSeq);
         // Re-iteration works (buffer is not consumed).
         assert_eq!(mem.features().unwrap().count(), 3);
-    }
-
-    /// `features_in_order` yields exactly the features `features()` does,
-    /// in the order asked for — for every kind of source: a CityJSONSeq
-    /// (read back line by line), a CityJSON document (by index), a CityGML
-    /// document (parsed and reordered) and an in-memory source.
-    #[test]
-    fn features_in_order_yields_the_features_in_the_given_order() {
-        let fixtures =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
-        let delft = Source::open(&fixtures.join("delft.city.jsonl")).unwrap();
-        let buffered = Source::from_parts(
-            delft.header().clone(),
-            delft
-                .features()
-                .unwrap()
-                .map(|f| f.unwrap())
-                .take(50)
-                .collect(),
-            None,
-            SourceFormat::CityJsonSeq,
-        );
-        for source in [
-            delft,
-            Source::open(&fixtures.join("lod3_railway.city.json")).unwrap(),
-            Source::open(&fixtures.join("b1_lod2_cs_w_sem.gml")).unwrap(),
-            buffered,
-        ] {
-            let forward: Vec<CityJSONFeature> =
-                source.features().unwrap().map(|f| f.unwrap()).collect();
-            // Reversed, with every other feature first, so no order is
-            // accidentally the natural one.
-            let order: Vec<usize> = (0..forward.len())
-                .rev()
-                .filter(|i| i % 2 == 0)
-                .chain((0..forward.len()).filter(|i| i % 2 == 1))
-                .collect();
-            let got: Vec<CityJSONFeature> = source
-                .features_in_order(order.clone())
-                .unwrap()
-                .map(|f| f.unwrap())
-                .collect();
-            assert_eq!(got.len(), forward.len(), "{:?}", source.format());
-            for (feature, &i) in got.iter().zip(&order) {
-                assert_eq!(
-                    serde_json::to_value(feature).unwrap(),
-                    serde_json::to_value(&forward[i]).unwrap(),
-                    "{:?} feature {i}",
-                    source.format()
-                );
-            }
-        }
     }
 
     #[test]

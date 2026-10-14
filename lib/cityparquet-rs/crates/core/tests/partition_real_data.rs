@@ -528,11 +528,53 @@ fn a_co_assigned_package_still_exports_the_two_features_separately() {
         2,
         "the parent and part must export as two features, not be fused into one"
     );
-    for (feature, expected) in features.iter().zip([&parent, &child]) {
-        let objects = feature["CityObjects"].as_object().unwrap();
-        assert_eq!(objects.len(), 1, "each feature still holds its one object");
-        assert!(objects.contains_key(expected), "feature ids are preserved");
-    }
+    // Feature order is not part of the contract: the parent names a child
+    // in another feature, so its family is written once the package is read.
+    let mut exported_ids: Vec<&String> = features
+        .iter()
+        .map(|feature| {
+            let objects = feature["CityObjects"].as_object().unwrap();
+            assert_eq!(objects.len(), 1, "each feature still holds its one object");
+            objects.keys().next().unwrap()
+        })
+        .collect();
+    exported_ids.sort();
+    let mut expected = vec![&parent, &child];
+    expected.sort();
+    assert_eq!(exported_ids, expected, "feature ids are preserved");
+}
+
+/// The same package exported to CityGML: the BuildingPart sits in a family of
+/// its own, yet it is still nested in its Building rather than dropped as an
+/// orphan, because the Building's family waits for the child it names.
+#[test]
+fn a_co_assigned_package_nests_the_part_in_its_building_in_citygml() {
+    use cityparquet::citygml::writer::{WriteOptions, write_package};
+
+    let out = tempfile::tempdir().unwrap();
+    let (_dir, path, parent, child) = delft_with_split_parent_and_part(0, true);
+    let src = Source::open(&path).unwrap();
+    let opts = ConvertOptions::new(path.clone(), out.path().to_path_buf());
+    let rep =
+        convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(2), &opts).unwrap();
+
+    let gml = out.path().join("repaired.gml");
+    let report = write_package(&WriteOptions {
+        package_dir: out.path().join(&rep.partitions[0].0),
+        output: gml.clone(),
+    })
+    .unwrap();
+    assert_eq!(report.building_parts_orphaned, 0);
+    assert_eq!(report.building_parts_written, 1);
+
+    let text = std::fs::read_to_string(&gml).unwrap();
+    let building = text
+        .find(&format!("gml:id=\"{parent}\""))
+        .expect("the Building is written");
+    let part = text
+        .find(&format!("gml:id=\"{child}\""))
+        .expect("the BuildingPart is written");
+    assert!(building < part, "the part is nested inside its Building");
 }
 
 /// A reference whose target is absent from the whole dataset (a partial-area

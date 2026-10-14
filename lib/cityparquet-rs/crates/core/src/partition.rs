@@ -18,7 +18,7 @@ use cjseq::{CityJSONFeature, Transform};
 
 use cityparquet_schema::{CityParquetError, Result};
 
-use crate::merge::merge_sources;
+use crate::merge::{merged_header, requantise_vertices};
 use crate::order::vertices_minmax;
 use crate::package::{CanonicalSchema, ConvertOptions, ConvertReport, convert_source_impl};
 use crate::scan::scan;
@@ -183,11 +183,10 @@ pub fn repair_reference_locality(
     let mut repair = LocalityRepair::default();
 
     // Object id -> the feature that holds it. First occurrence wins if the
-    // same OBJECT id appears in two features — which nothing else here
-    // detects: `MergedDataset::duplicate_ids` counts duplicate *feature* ids
-    // (`f.id`), a different thing. That input is pathological either way (the
-    // package ends up with two rows for one object), and first-wins does not
-    // make it worse: the union loop below walks every feature's objects, not
+    // same OBJECT id appears in two features — which the whole-dataset scan
+    // refuses before partitions are assigned, so it does not arise from
+    // `convert_partitioned`. For any other caller, first-wins does not make
+    // it worse: the union loop below walks every feature's objects, not
     // `owner`, so references FROM either copy are still joined. Only which
     // holder a referrer is pulled towards is affected, and both choices leave
     // the reference package-local.
@@ -268,12 +267,11 @@ pub fn repair_reference_locality(
 }
 
 /// Outcome of a partitioned conversion: one [`ConvertReport`] per partition
-/// package (keyed by its subdirectory label) plus the merge duplicate-id count
-/// and the [`LocalityRepair`] counts.
+/// package (keyed by its subdirectory label) plus the [`LocalityRepair`]
+/// counts.
 #[derive(Debug, Clone)]
 pub struct PartitionReport {
     pub partitions: Vec<(String, ConvertReport)>,
-    pub duplicate_ids: usize,
     /// See [`LocalityRepair::co_assigned_features`].
     pub co_assigned_features: usize,
     /// See [`LocalityRepair::unresolvable_refs`].
@@ -371,7 +369,29 @@ pub fn convert_partitioned(
     if let Some(spec) = &opts.crs_override {
         crate::package::validate_crs_override(spec)?;
     }
-    let merged = merge_sources(sources)?;
+    // Partitioning assigns every feature before writing any, so the merged
+    // features are held in memory here (unlike a plain merged convert).
+    let (header, doc_appearance) = merged_header(sources)?;
+    let features: Vec<cjseq::CityJSONFeature> = sources
+        .iter()
+        .map(|source| -> Result<Vec<cjseq::CityJSONFeature>> {
+            let own = &source.header().transform;
+            let differs = !crate::merge::transform_eq(own, &header.transform);
+            source
+                .features()?
+                .map(|feature| {
+                    let mut feature = feature?;
+                    if differs {
+                        requantise_vertices(&mut feature.vertices, own, &header.transform);
+                    }
+                    Ok(feature)
+                })
+                .collect()
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
     // The provenance of the merged header's CRS: `merge_sources` enforces one
     // shared CRS across the inputs, so the merged header's CRS is the
     // operator's only if EVERY input's was — one input that declared that CRS
@@ -387,9 +407,9 @@ pub fn convert_partitioned(
 
     // Canonical schema: one scan over the entire merged dataset.
     let full = Source::from_parts(
-        merged.header.clone(),
-        merged.features.clone(),
-        merged.doc_appearance.clone(),
+        header.clone(),
+        features.clone(),
+        doc_appearance.clone(),
         SourceFormat::CityJsonSeq,
     )
     .with_crs_operator_supplied(crs_is_operator_supplied);
@@ -423,16 +443,15 @@ pub fn convert_partitioned(
         })?;
     }
 
-    let mut groups = assign_partitions(&merged.features, spec, &merged.header.transform);
-    let repair = repair_reference_locality(&merged.features, &mut groups);
+    let mut groups = assign_partitions(&features, spec, &header.transform);
+    let repair = repair_reference_locality(&features, &mut groups);
     let mut partitions = Vec::with_capacity(groups.len());
     for (label, idxs) in groups {
-        let subset: Vec<CityJSONFeature> =
-            idxs.iter().map(|&i| merged.features[i].clone()).collect();
+        let subset: Vec<CityJSONFeature> = idxs.iter().map(|&i| features[i].clone()).collect();
         let sub_source = Source::from_parts(
-            merged.header.clone(),
+            header.clone(),
             subset,
-            merged.doc_appearance.clone(),
+            doc_appearance.clone(),
             SourceFormat::CityJsonSeq,
         )
         .with_crs_operator_supplied(crs_is_operator_supplied);
@@ -447,7 +466,6 @@ pub fn convert_partitioned(
 
     Ok(PartitionReport {
         partitions,
-        duplicate_ids: merged.duplicate_ids,
         co_assigned_features: repair.co_assigned_features,
         unresolvable_refs: repair.unresolvable_refs,
     })

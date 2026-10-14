@@ -544,7 +544,7 @@ duckdb -c "SELECT count(*) FROM read_parquet('$OUT/delft_parts/*/building.parque
 appearance references, then one line per partition:
 
 ```
-partitions=3 duplicate_ids=0 invalid_appearance_refs_dropped=0
+partitions=3 invalid_appearance_refs_dropped=0
 features-00000 1001 0
 features-00001 1000 0
 features-00002 230 0
@@ -1662,9 +1662,8 @@ just convert-all benchmark/runs/data/benchmark out/cityparquet
 
 One package directory per input, each in Hilbert order, the writer's default.
 Run it over `benchmark/runs/data/3dbag` as well for the 1M-object slice. Hilbert
-order holds a CityGML or FlatCityBuf input parsed in memory (a CityJSON or
-CityJSONSeq input is read back in that order instead); `--ordering source`
-streams any input one feature at a time.
+order sorts the encoded rows within `--memory-budget` (2G by default), spilling
+sorted runs to disk beyond it; `--ordering source` skips the sort.
 
 ### 5.3 Read benchmark
 

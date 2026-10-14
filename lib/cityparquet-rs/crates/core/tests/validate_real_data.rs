@@ -953,3 +953,43 @@ fn a_projective_implicit_transformation_matrix_is_reported() {
     .expect_err("the decoder must refuse a projective transformation matrix");
     assert!(format!("{err}").contains("0, 0, 0, 1"), "{err}");
 }
+
+/// The table's rows, all in one batch, reordered (and possibly repeated) by
+/// `order(row count)`.
+fn reorder_rows(c: &mut FileContent, order: impl FnOnce(usize) -> Vec<u64>) {
+    let all = arrow_select::concat::concat_batches(&c.schema, &c.batches).unwrap();
+    let indices = arrow_array::UInt64Array::from(order(all.num_rows()));
+    c.batches = vec![arrow_select::take::take_record_batch(&all, &indices).unwrap()];
+}
+
+/// spec 02 "Feature families are contiguous": rows sharing a `feature_id`
+/// MUST be contiguous within each object table. Delft's first building
+/// moved to the end of the table leaves its BuildingPart behind.
+#[test]
+fn a_feature_family_split_within_a_table_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        reorder_rows(c, |n| (1..n as u64).chain([0]).collect());
+    });
+    assert_error(&validate(&pkg), "value.feature-contiguity");
+}
+
+/// spec 02 "Reserved columns": `id` is unique across the package's object
+/// tables. Delft's first row written twice, next to itself so its family
+/// stays contiguous.
+#[test]
+fn a_repeated_object_id_is_reported() {
+    let (_dir, pkg) = convert_fixture("delft.city.jsonl");
+    rewrite(&pkg.join("building.parquet"), |c| {
+        reorder_rows(c, |n| [0].into_iter().chain(0..n as u64).collect());
+    });
+    let report = validate(&pkg);
+    assert_error(&report, "value.duplicate-id");
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.code == "value.feature-contiguity"),
+        "{report}"
+    );
+}

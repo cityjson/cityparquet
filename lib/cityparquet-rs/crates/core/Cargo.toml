@@ -12,6 +12,8 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
 arrow-select = { workspace = true }
+# Spill files of the external Hilbert sort (`sort.rs`).
+arrow-ipc = { workspace = true }
 parquet = { workspace = true }
 cjseq = { workspace = true }
 glob = { workspace = true }
@@ -29,6 +31,8 @@ futures = { version = "0.3", optional = true }
 futures-util = { version = "0.3", optional = true }
 async-trait = { workspace = true, optional = true }
 fcb_core = { workspace = true, optional = true }
+# The Hilbert sort's run directory (`sort.rs`).
+tempfile = { workspace = true }
 
 [dev-dependencies]
 wkb = { workspace = true }
@@ -39,7 +43,6 @@ fcb_core = { workspace = true }
 # Builds a GEOGRAPHY-annotated fixture; the writer never emits one.
 parquet-geospatial = { workspace = true }
 geo-traits = { workspace = true }
-tempfile = { workspace = true }
 jsonschema = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
