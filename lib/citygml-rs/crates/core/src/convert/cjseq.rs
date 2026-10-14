@@ -14,16 +14,18 @@
 use std::collections::HashMap;
 
 use cjseq::{
-    Appearance as CjAppearance, BorderColor, CityJSONFeature, CityObject, CityObjectType,
-    Geometry as CjGeometry, Lod, MaterialIndex, MaterialObject, MaterialReference,
+    Appearance as CjAppearance, BorderColor, CityJSONFeature, CityObject, CityObjectAddress,
+    CityObjectType, Geometry as CjGeometry, Lod, MaterialIndex, MaterialObject, MaterialReference,
     SemanticSurfaceType, Semantics, SemanticsSurface, SurfaceIndex, TextureFormat, TextureIndex,
     TextureObject, TextureReference, TexturedRing, Transform, UvIndex, VertexIndex,
 };
 use serde_json::{Map, Value as Json};
 
 use super::FromGml;
-use crate::model::{Attribute, Face, Geometry, GmlObject, Material, Shape, Texture, Value};
-use crate::vocabulary::cityjson_type;
+use crate::model::{
+    Address, Attribute, Face, Geometry, GmlObject, Material, Shape, Texture, Value,
+};
+use crate::vocabulary::{cityjson_type, relation_to_construction};
 use crate::{Error, Result};
 
 /// What the CityJSON conversion needs besides the object.
@@ -104,8 +106,23 @@ fn emit(
     let thetype = CityObjectType::try_from(type_name.to_string()).map_err(build_error)?;
     let mut co = CityObject::new(thetype);
     co.geometry = Some(geometries);
-    if !object.attributes.is_empty() {
-        co.attributes = Some(attributes(&object.attributes));
+    let mut attrs = attributes(&object.attributes);
+    if let Some(relation) = relation_to_construction(&object.class) {
+        attrs
+            .entry("relationToConstruction")
+            .or_insert_with(|| Json::String(relation.to_string()));
+    }
+    if !attrs.is_empty() {
+        co.attributes = Some(attrs);
+    }
+    if !object.addresses.is_empty() {
+        co.address = Some(
+            object
+                .addresses
+                .iter()
+                .map(|a| address(a, vertices))
+                .collect::<Result<_>>()?,
+        );
     }
     if let Some(p) = parent_id {
         co.parents = Some(vec![p.to_string()]);
@@ -135,11 +152,7 @@ fn build_error(e: impl std::fmt::Display) -> Error {
 fn attributes(attributes: &[Attribute]) -> Map<String, Json> {
     let mut map = Map::new();
     for a in attributes {
-        let value = match &a.value {
-            Value::String(s) => Json::String(s.clone()),
-            Value::Integer(i) => Json::from(*i),
-            Value::Double(f) => Json::from(*f),
-        };
+        let value = json(&a.value);
         match map.get_mut(a.name.local()) {
             None => {
                 map.insert(a.name.local().to_string(), value);
@@ -154,6 +167,79 @@ fn attributes(attributes: &[Attribute]) -> Map<String, Json> {
     map
 }
 
+fn json(value: &Value) -> Json {
+    match value {
+        Value::String(s) => Json::String(s.clone()),
+        Value::Integer(i) => Json::from(*i),
+        Value::Double(f) => Json::from(*f),
+        Value::Boolean(b) => Json::Bool(*b),
+        Value::List(items) => Json::Array(items.iter().map(json).collect()),
+    }
+}
+
+/// The CityJSON member an xAL leaf becomes: the names CityJSON's own
+/// example uses (`country`, `locality`, `thoroughfareName`,
+/// `thoroughfareNumber`, `postcode`), a few more in the same style, and
+/// otherwise the xAL name with its first letter lowered.
+fn address_key(xal: &str) -> String {
+    let known = match xal {
+        "CountryName" => "country",
+        "AdministrativeAreaName" => "administrativeArea",
+        "SubAdministrativeAreaName" => "subAdministrativeArea",
+        "LocalityName" => "locality",
+        "DependentLocalityName" => "dependentLocality",
+        "ThoroughfareName" => "thoroughfareName",
+        "ThoroughfareNumber" => "thoroughfareNumber",
+        "PostalCodeNumber" => "postcode",
+        "PostBoxNumber" => "postBox",
+        "BuildingName" => "buildingName",
+        "PremiseName" => "premiseName",
+        "PremiseNumber" => "premiseNumber",
+        "AddressLine" => "freeText",
+        _ => {
+            let mut chars = xal.chars();
+            return chars
+                .next()
+                .map_or_else(String::new, |c| c.to_lowercase().chain(chars).collect());
+        }
+    };
+    known.to_string()
+}
+
+/// One address: its xAL leaves as members, a repeated one accumulating into
+/// an array, and its location a LoD 1 MultiPoint.
+fn address(a: &Address, vertices: &mut VertexPool) -> Result<CityObjectAddress> {
+    let mut other = Map::new();
+    for (name, text) in &a.fields {
+        let key = address_key(name);
+        let value = Json::String(text.clone());
+        match other.get_mut(&key) {
+            None => {
+                other.insert(key, value);
+            }
+            Some(Json::Array(existing)) => existing.push(value),
+            Some(slot) => {
+                let prev = slot.take();
+                *slot = Json::Array(vec![prev, value]);
+            }
+        }
+    }
+    let location = if a.location.is_empty() {
+        None
+    } else {
+        Some(CjGeometry::MultiPoint {
+            lod: "1".parse().map_err(build_error)?,
+            boundaries: a
+                .location
+                .iter()
+                .map(|&p| vertices.push(p))
+                .collect::<Result<_>>()?,
+            semantics: None,
+        })
+    };
+    Ok(CityObjectAddress { location, other })
+}
+
 /// One geometry, without appearance (see [`apply_materials`] and
 /// [`apply_textures`]), its vertices pushed in face order.
 fn geometry(g: &Geometry, object: &GmlObject, vertices: &mut VertexPool) -> Result<CjGeometry> {
@@ -161,7 +247,37 @@ fn geometry(g: &Geometry, object: &GmlObject, vertices: &mut VertexPool) -> Resu
     let (surfaces, renumber) = semantic_surfaces(g, object)?;
     let semantic = |f: &Face| f.surface.map(|s| SurfaceIndex(renumber[&s]));
     Ok(match &g.shape {
+        Shape::MultiPoint(points) => CjGeometry::MultiPoint {
+            lod,
+            boundaries: points
+                .iter()
+                .map(|&p| vertices.push(p))
+                .collect::<Result<_>>()?,
+            semantics: None,
+        },
+        Shape::MultiLineString(lines) => CjGeometry::MultiLineString {
+            lod,
+            boundaries: lines
+                .iter()
+                .map(|line| line.iter().map(|&p| vertices.push(p)).collect())
+                .collect::<Result<_>>()?,
+            semantics: None,
+        },
         Shape::MultiSurface(faces) => CjGeometry::MultiSurface {
+            lod,
+            boundaries: faces
+                .iter()
+                .map(|f| vertices.surface(f))
+                .collect::<Result<_>>()?,
+            semantics: surfaces.map(|surfaces| Semantics {
+                surfaces,
+                values: Some(faces.iter().map(semantic).collect()),
+                other: Map::new(),
+            }),
+            material: None,
+            texture: None,
+        },
+        Shape::CompositeSurface(faces) => CjGeometry::CompositeSurface {
             lod,
             boundaries: faces
                 .iter()
@@ -321,7 +437,8 @@ fn apply_materials(
             continue;
         }
         match (cj, &g.shape) {
-            (CjGeometry::MultiSurface { material, .. }, Shape::MultiSurface(faces)) => {
+            (CjGeometry::MultiSurface { material, .. }, Shape::MultiSurface(faces))
+            | (CjGeometry::CompositeSurface { material, .. }, Shape::CompositeSurface(faces)) => {
                 *material = Some(
                     colouring
                         .iter()
@@ -455,7 +572,8 @@ fn apply_textures(
                 .collect()
         };
         match (cj, &g.shape) {
-            (CjGeometry::MultiSurface { texture, .. }, Shape::MultiSurface(faces)) => {
+            (CjGeometry::MultiSurface { texture, .. }, Shape::MultiSurface(faces))
+            | (CjGeometry::CompositeSurface { texture, .. }, Shape::CompositeSurface(faces)) => {
                 *texture = Some(
                     covering
                         .iter()

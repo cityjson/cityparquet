@@ -1,4 +1,4 @@
-use super::{Appearance, Attribute, Geometry, ModelAppearance};
+use super::{Address, Appearance, Attribute, Geometry, ModelAppearance};
 
 /// A CityGML thematic module. The same module keeps its name across
 /// versions; each version's reader maps its own namespace URIs onto these.
@@ -78,6 +78,8 @@ pub struct GmlObject {
     pub class: QName,
     /// Attributes in document order. A name may repeat.
     pub attributes: Vec<Attribute>,
+    /// The postal addresses, in document order.
+    pub addresses: Vec<Address>,
     /// The geometries, in the order a conversion emits them.
     pub geometries: Vec<Geometry>,
     /// The object's boundary surfaces, which [`super::Face::surface`]

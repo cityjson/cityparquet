@@ -4,12 +4,14 @@
 //! CityJSON crate, so replacing the intermediate model a tool converts to
 //! means writing one more [`crate::convert::FromGml`], not touching a reader.
 
+mod address;
 mod appearance;
 mod geometry;
 mod object;
 mod value;
 
+pub use address::Address;
 pub use appearance::{Appearance, Material, ModelAppearance, RingUvs, Texture};
-pub use geometry::{Face, Geometry, Polygon, Ring, Shape};
+pub use geometry::{Face, Geometry, Line, Polygon, Ring, Shape};
 pub use object::{BoundarySurface, GmlObject, Module, Namespace, QName};
 pub use value::{Attribute, AttributeName, Value};

@@ -21,6 +21,7 @@ dependencies = [
  "cjseq",
  "memchr",
  "quick-xml",
+ "serde_json",
 ]
 
 [[package]]

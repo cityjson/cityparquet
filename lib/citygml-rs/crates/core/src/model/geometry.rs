@@ -2,6 +2,9 @@
 /// duplicate point.
 pub type Ring = Vec<[f64; 3]>;
 
+/// A line's points, in order.
+pub type Line = Vec<[f64; 3]>;
+
 /// A polygon as GML writes it: an exterior ring and its holes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Polygon {
@@ -38,7 +41,11 @@ pub struct Face {
 /// How a geometry's faces are arranged.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Shape {
+    MultiPoint(Vec<[f64; 3]>),
+    MultiLineString(Vec<Line>),
     MultiSurface(Vec<Face>),
+    /// Faces that join edge to edge into one surface: a TIN.
+    CompositeSurface(Vec<Face>),
     /// Shells, exterior first.
     Solid(Vec<Vec<Face>>),
     /// Solids, each a list of shells.
@@ -46,10 +53,11 @@ pub enum Shape {
 }
 
 impl Shape {
-    /// Every face, in order.
+    /// Every face, in order; none for points and lines.
     pub fn faces(&self) -> Box<dyn Iterator<Item = &Face> + '_> {
         match self {
-            Shape::MultiSurface(faces) => Box::new(faces.iter()),
+            Shape::MultiPoint(_) | Shape::MultiLineString(_) => Box::new(std::iter::empty()),
+            Shape::MultiSurface(faces) | Shape::CompositeSurface(faces) => Box::new(faces.iter()),
             Shape::Solid(shells) => Box::new(shells.iter().flatten()),
             Shape::CompositeSolid(solids) => Box::new(solids.iter().flatten().flatten()),
         }

@@ -1,23 +1,30 @@
 //! Read one city object's subtree into an [`ObjectBuilder`].
 //!
-//! Two walkers, one per content model this reader knows:
+//! One walker reads every class: [`read_object`]. What it does with each
+//! child element depends on the element's namespace and name, never on the
+//! class being read, since CityGML 2.0 names its properties uniformly across
+//! modules:
 //!
-//! - [`read_building`] reads a `bldg:Building` or `bldg:BuildingPart`:
-//!   `lodNSolid`, `lod0FootPrint` / `lod0RoofEdge`, `lodNMultiSurface` (kept
-//!   as xlink targets), `boundedBy`, `consistsOfBuildingPart`, the two
-//!   installation properties, `app:appearance`, typed `bldg:` attributes and
-//!   `gen:` generic attributes.
-//! - [`read_generic_object`] reads every other mapped object: `lodN{Solid,
-//!   MultiSurface,Geometry}`, boundary surfaces (`boundedBy`, and a
-//!   transportation object's `trafficArea` / `auxiliaryTrafficArea`), nested
-//!   features in `outer*` / `interior*` / `consistsOf*` properties, `gen:`
-//!   attributes, and any other text-only module property as a string.
+//! - `lodNSolid`, `lodNMultiSurface`, `lodNGeometry`, and a building's
+//!   `lod0FootPrint` / `lod0RoofEdge`, are geometry;
+//! - `boundedBy`, and a transportation object's `trafficArea` /
+//!   `auxiliaryTrafficArea`, hold boundary surfaces;
+//! - `consistsOf…Part`, `outer…` / `interior…` and the room installation
+//!   properties nest sub-features, read as objects of their own when
+//!   [`NESTED`] names their class;
+//! - `address` is a postal address;
+//! - any other text-only property of a CityGML module is an attribute, typed
+//!   as [`attributes::property_type`] says;
+//! - `gml:name`, `gml:description`, `gen:` generic attributes and
+//!   `app:appearance` are read wherever they appear.
 
 use std::io::BufRead;
 
 use citygml_core::gml::ObjectBuilder;
-use citygml_core::gml::read::{self as gml, SolidGeom};
-use citygml_core::model::{Attribute, AttributeName, Module, Polygon, QName, Value};
+use citygml_core::gml::read::{self as gml, Collected, SolidGeom};
+use citygml_core::model::{
+    Address, Attribute, AttributeName, Line, Module, Namespace, Polygon, QName,
+};
 use citygml_core::xml::{
     NS_GML, get_attr_local, gml_id, ns_eq, ns_is, ns_of, skip_element, unescaped_text, xml_err,
 };
@@ -33,49 +40,94 @@ use crate::ns;
 /// attacker-controlled XML recursion.
 const MAX_PART_DEPTH: usize = 32;
 
-/// The CityGML 2.0 top-level classes this reader reads besides `Building`,
-/// by local name (unique across the 2.0 modules).
+/// The CityGML 2.0 top-level classes this reader reads.
 ///
-/// `ReliefFeature` is deliberately absent: a relief may be raster,
-/// breaklines, mass points or a TIN, and only a TIN maps cleanly to CityJSON.
-/// `Track` is absent too.
+/// A `ReliefFeature` is not an object of its own: CityJSON has no type for
+/// it, so the reader passes through it to its components (see
+/// [`is_container`]). Of those, only a `TINRelief` maps to CityJSON.
 const TOP_LEVEL: &[(&str, Module)] = &[
+    ("Building", Module::Building),
+    ("Bridge", Module::Bridge),
+    ("Tunnel", Module::Tunnel),
     ("WaterBody", Module::WaterBody),
     ("LandUse", Module::LandUse),
     ("CityFurniture", Module::CityFurniture),
     ("SolitaryVegetationObject", Module::Vegetation),
     ("PlantCover", Module::Vegetation),
-    ("Bridge", Module::Bridge),
-    ("Tunnel", Module::Tunnel),
     ("GenericCityObject", Module::Generics),
     ("CityObjectGroup", Module::CityObjectGroup),
     ("Road", Module::Transportation),
     ("Railway", Module::Transportation),
+    ("Track", Module::Transportation),
     ("Square", Module::Transportation),
+    ("TransportationComplex", Module::Transportation),
+    ("TINRelief", Module::Relief),
 ];
 
-/// The class of a top-level object other than a `Building`, by its local
-/// name, or `None` for one this reader does not read.
-pub fn top_level_class(local: &[u8]) -> Option<QName> {
-    lookup(TOP_LEVEL, local)
+/// The class of a top-level object, by its namespace and local name, or
+/// `None` for one this reader does not read.
+pub fn top_level_class(uri: &[u8], local: &[u8]) -> Option<QName> {
+    lookup(TOP_LEVEL, uri, local)
 }
 
-/// The CityGML 2.0 nested features read as objects of their own, by local
-/// name. Tunnel's counterparts are absent: no fixture exercises them.
-const NESTED: &[(&str, Module)] = &[
-    ("BuildingInstallation", Module::Building),
-    ("IntBuildingInstallation", Module::Building),
-    ("BridgeInstallation", Module::Bridge),
-    ("IntBridgeInstallation", Module::Bridge),
-    ("BridgeConstructionElement", Module::Bridge),
-    ("BridgePart", Module::Bridge),
+/// Whether an element is a feature the reader passes through rather than
+/// reads: a `dem:ReliefFeature`, whose `reliefComponent`s are read as
+/// top-level objects.
+pub fn is_container(uri: &[u8], local: &[u8]) -> bool {
+    ns::module(uri) == Some(Module::Relief) && local == b"ReliefFeature"
+}
+
+/// Whether an element is a container's member property, whose child is
+/// read, or recorded as skipped, as a `cityObjectMember`'s is.
+pub fn is_container_member(uri: &[u8], local: &[u8]) -> bool {
+    ns::module(uri) == Some(Module::Relief) && local == b"reliefComponent"
+}
+
+/// How a nested feature hangs off the object holding it.
+#[derive(Clone, Copy, PartialEq)]
+enum Nesting {
+    /// A part (`consistsOf…Part`): its polygons are its own.
+    Part,
+    /// Any other sub-feature: its polygons are also the parent's xlink
+    /// targets, since a parent's solid routinely composes faces defined in
+    /// one.
+    Child,
+}
+
+/// The CityGML 2.0 sub-features read as objects of their own.
+const NESTED: &[(&str, Module, Nesting)] = &[
+    ("BuildingPart", Module::Building, Nesting::Part),
+    ("BuildingInstallation", Module::Building, Nesting::Child),
+    ("IntBuildingInstallation", Module::Building, Nesting::Child),
+    ("Room", Module::Building, Nesting::Child),
+    ("BuildingFurniture", Module::Building, Nesting::Child),
+    ("BridgePart", Module::Bridge, Nesting::Part),
+    ("BridgeInstallation", Module::Bridge, Nesting::Child),
+    ("IntBridgeInstallation", Module::Bridge, Nesting::Child),
+    ("BridgeConstructionElement", Module::Bridge, Nesting::Child),
+    ("BridgeRoom", Module::Bridge, Nesting::Child),
+    ("BridgeFurniture", Module::Bridge, Nesting::Child),
+    ("TunnelPart", Module::Tunnel, Nesting::Part),
+    ("TunnelInstallation", Module::Tunnel, Nesting::Child),
+    ("IntTunnelInstallation", Module::Tunnel, Nesting::Child),
+    ("HollowSpace", Module::Tunnel, Nesting::Child),
+    ("TunnelFurniture", Module::Tunnel, Nesting::Child),
 ];
 
-fn lookup(table: &[(&str, Module)], local: &[u8]) -> Option<QName> {
+fn lookup(table: &[(&str, Module)], uri: &[u8], local: &[u8]) -> Option<QName> {
+    let module = ns::module(uri)?;
     table
         .iter()
-        .find(|(name, _)| name.as_bytes() == local)
+        .find(|(name, m)| *m == module && name.as_bytes() == local)
         .map(|(name, module)| QName::module(*module, *name))
+}
+
+fn nested_class(uri: &[u8], local: &[u8]) -> Option<(QName, Nesting)> {
+    let module = ns::module(uri)?;
+    NESTED
+        .iter()
+        .find(|(name, m, _)| *m == module && name.as_bytes() == local)
+        .map(|(name, module, nesting)| (QName::module(*module, *name), *nesting))
 }
 
 /// The name of an element: its local name in the namespace it is bound to.
@@ -83,117 +135,9 @@ fn qname(uri: &[u8], local: &[u8]) -> QName {
     QName::new(ns::namespace(uri), String::from_utf8_lossy(local))
 }
 
-/// Read a `bldg:Building` subtree (positioned after its `Start`).
-pub fn read_building<R: BufRead>(
-    reader: &mut NsReader<R>,
-    buf: &mut Vec<u8>,
-    id: Option<String>,
-) -> Result<ObjectBuilder> {
-    read_abstract_building(reader, buf, id, b"Building", 0)
-}
-
-/// Read an `_AbstractBuilding` subtree (a `bldg:Building` or
-/// `bldg:BuildingPart`, which share their content model), ending at
-/// `End(end_name)`.
-fn read_abstract_building<R: BufRead>(
-    reader: &mut NsReader<R>,
-    buf: &mut Vec<u8>,
-    id: Option<String>,
-    end_name: &[u8],
-    depth: usize,
-) -> Result<ObjectBuilder> {
-    if depth > MAX_PART_DEPTH {
-        return Err(Error::invalid(format!(
-            "bldg:consistsOfBuildingPart nested deeper than {MAX_PART_DEPTH}"
-        )));
-    }
-    let class = QName::module(Module::Building, String::from_utf8_lossy(end_name));
-    let mut b = ObjectBuilder::new(id, class);
-    // A `lod0RoofEdge`, kept aside until the whole subtree has been read.
-    let mut roof_edge: Option<(String, Vec<Polygon>)> = None;
-
-    loop {
-        buf.clear();
-        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
-        let bldg = ns_is(&rr, ns::BUILDING);
-        match ev {
-            Event::Start(e) => {
-                let local = e.local_name();
-                let name = local.as_ref().to_vec();
-                if bldg && let Some(lod) = lod_suffix(&name, b"Solid") {
-                    let geom = read_lod_solid(reader, buf, name)?;
-                    b.add_solid(lod, geom);
-                } else if bldg && let Some(lod) = lod_suffix(&name, b"FootPrint") {
-                    // CityGML 2.0 spells a building's LoD0 with two dedicated
-                    // elements rather than `lod0MultiSurface`: `lod0FootPrint`
-                    // (the ground outline) and `lod0RoofEdge` (the roof
-                    // outline). They are different geometry, and CityJSON
-                    // cannot say which a LoD0 MultiSurface is, so they are
-                    // never merged: the footprint is the LoD0 geometry, and a
-                    // roof edge is kept only for a building with no footprint
-                    // (held back until the subtree is read, since element
-                    // order is not guaranteed).
-                    let polys = surface_polygons(reader, buf)?;
-                    b.add_plain_surfaces(lod, polys);
-                } else if bldg && let Some(lod) = lod_suffix(&name, b"RoofEdge") {
-                    let polys = surface_polygons(reader, buf)?;
-                    if roof_edge.is_none() {
-                        roof_edge = Some((lod, polys));
-                    }
-                } else if bldg && lod_suffix(&name, b"MultiSurface").is_some() {
-                    // A building's standalone lodNMultiSurface: its polygons
-                    // may be xlink targets (an internal ceiling, say).
-                    b.register(gml::collect_surfaces(reader, buf)?);
-                } else if bldg && name == b"boundedBy" {
-                    read_bounded_by(reader, buf, &mut b, ns::BUILDING.as_bytes(), b"boundedBy")?;
-                } else if bldg && name == b"consistsOfBuildingPart" {
-                    read_consists_of_part(reader, buf, &mut b, depth)?;
-                } else if bldg
-                    && (name == b"outerBuildingInstallation"
-                        || name == b"interiorBuildingInstallation")
-                {
-                    read_child_object(reader, buf, &mut b, &name, ns::BUILDING.as_bytes(), depth)?;
-                } else if ns_is(&rr, ns::APPEARANCE) && name == b"appearance" {
-                    b.add_appearance(read_appearance(reader, buf, b"appearance")?);
-                } else if bldg && let Some(ty) = attributes::typed_building_attr(&name) {
-                    if let Some(value) = attributes::read_typed(reader, buf, ty)? {
-                        b.push_attribute(Attribute {
-                            name: AttributeName::Property(QName::module(
-                                Module::Building,
-                                String::from_utf8_lossy(&name),
-                            )),
-                            value,
-                        });
-                    }
-                } else if let (true, Some(ty)) =
-                    (ns_is(&rr, ns::GENERICS), attributes::generic_attr(&name))
-                {
-                    let attr_name = get_attr_local(&e, b"name");
-                    read_generic_attribute(reader, buf, &mut b, attr_name, ty)?;
-                } else {
-                    skip_element(reader, buf)?;
-                }
-            }
-            Event::End(e) if e.local_name().as_ref() == end_name => break,
-            Event::Eof => {
-                return Err(Error::invalid(
-                    "unexpected end of document inside a bldg:Building/BuildingPart",
-                ));
-            }
-            _ => {}
-        }
-    }
-    if let Some((lod, polys)) = roof_edge
-        && !b.has_plain_surfaces(&lod)
-    {
-        b.add_plain_surfaces(lod, polys);
-    }
-    Ok(b)
-}
-
-/// Read any other mapped object's subtree (positioned after its `Start`,
-/// ending at `End(end_name)`) as `class`.
-pub fn read_generic_object<R: BufRead>(
+/// Read an object of class `class` (positioned after its `Start`, ending at
+/// `End(end_name)`), `depth` levels below a top-level object.
+pub fn read_object<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     class: QName,
@@ -201,7 +145,13 @@ pub fn read_generic_object<R: BufRead>(
     end_name: &[u8],
     depth: usize,
 ) -> Result<ObjectBuilder> {
+    if depth > MAX_PART_DEPTH {
+        return Err(Error::invalid(format!(
+            "CityGML features nested deeper than {MAX_PART_DEPTH}"
+        )));
+    }
     let mut b = ObjectBuilder::new(id, class);
+    let mut pending = Pending::default();
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -209,51 +159,40 @@ pub fn read_generic_object<R: BufRead>(
             Event::Start(e) => {
                 let local = e.local_name();
                 let name = local.as_ref().to_vec();
-                // Geometry properties are in the object's own module
-                // namespace (never gml:), so they are matched by local name.
-                if let Some(lod) = lod_suffix(&name, b"Solid") {
-                    let geom = read_lod_solid(reader, buf, name)?;
-                    b.add_solid(lod, geom);
-                } else if let Some(lod) = lod_suffix(&name, b"MultiSurface") {
-                    let polys = surface_polygons(reader, buf)?;
-                    b.add_plain_surfaces(lod, polys);
-                } else if let Some(lod) = lod_suffix(&name, b"Geometry") {
-                    // `lodNGeometry` may wrap a solid or a surface collection.
-                    match read_lod_geometry(reader, buf, name)? {
-                        Some(LodGeom::Solid(geom)) => b.add_solid(lod, geom),
-                        Some(LodGeom::Surfaces(polys)) => b.add_plain_surfaces(lod, polys),
-                        None => {}
-                    }
-                } else if let (true, Some(ty)) =
-                    (ns_is(&rr, ns::GENERICS), attributes::generic_attr(&name))
+                let uri = ns_of(&rr).unwrap_or_default();
+                let module = ns::module(&uri);
+                if module == Some(Module::Appearance) && name == b"appearance" {
+                    b.add_appearance(read_appearance(reader, buf, b"appearance")?);
+                } else if let (Some(Module::Generics), Some(ty)) =
+                    (module, attributes::generic_attr(&name))
                 {
                     let attr_name = get_attr_local(&e, b"name");
                     read_generic_attribute(reader, buf, &mut b, attr_name, ty)?;
-                } else if ns_is(&rr, ns::APPEARANCE) && name == b"appearance" {
-                    b.add_appearance(read_appearance(reader, buf, b"appearance")?);
-                } else if !ns_is(&rr, NS_GML) && is_semantic_surface_property(&name) {
-                    // The object's own boundary surfaces, in the module
-                    // namespace the property itself is in.
-                    let Some(ns) = ns_of(&rr) else {
+                } else if ns_is(&rr, NS_GML) {
+                    if matches!(name.as_slice(), b"name" | b"description") {
+                        push_leaf(reader, buf, &mut b, &name, AttrType::Str, || {
+                            QName::new(Namespace::Gml, String::from_utf8_lossy(&name))
+                        })?;
+                    } else {
                         skip_element(reader, buf)?;
-                        continue;
-                    };
-                    read_bounded_by(reader, buf, &mut b, &ns, &name)?;
-                } else if !ns_is(&rr, NS_GML) && is_nesting_property(&name) {
-                    let ns = ns_of(&rr).unwrap_or_default();
-                    read_child_object(reader, buf, &mut b, &name, &ns, depth)?;
-                } else if !ns_is(&rr, NS_GML) {
-                    // Any other module property: a text-only leaf is kept as
-                    // a string attribute; a structured one is dropped.
-                    let uri = ns_of(&rr).unwrap_or_default();
-                    if let Some(text) = read_leaf_text(reader, buf, &name)? {
-                        b.push_attribute(Attribute {
-                            name: AttributeName::Property(qname(&uri, &name)),
-                            value: Value::String(text),
-                        });
                     }
+                } else if let Some(module) = module {
+                    read_module_property(
+                        reader,
+                        buf,
+                        &mut b,
+                        &mut pending,
+                        (&uri, module),
+                        &name,
+                        depth,
+                    )?;
                 } else {
-                    skip_element(reader, buf)?;
+                    // A property of another namespace (an ADE's): a text-only
+                    // one is kept as a string attribute; a structured one is
+                    // dropped.
+                    push_leaf(reader, buf, &mut b, &name, AttrType::Str, || {
+                        qname(&uri, &name)
+                    })?;
                 }
             }
             Event::End(e) if e.local_name().as_ref() == end_name => break,
@@ -266,7 +205,120 @@ pub fn read_generic_object<R: BufRead>(
             _ => {}
         }
     }
+    if let Some((lod, collected)) = pending.roof_edge
+        && !b.has_plain_surfaces(&lod)
+    {
+        b.add_surfaces(lod, collected);
+    }
+    if let Some(surfaces) = pending.tin.surfaces {
+        // A TIN without its LoD is at LoD 1, the LoD a relief has when its
+        // LoD is not otherwise stated.
+        b.add_tin(pending.tin.lod.unwrap_or_else(|| "1".into()), surfaces);
+    }
     Ok(b)
+}
+
+/// What an object's subtree holds that is only placed once the whole
+/// subtree has been read, since element order is not guaranteed.
+#[derive(Default)]
+struct Pending {
+    /// A building's `lod0RoofEdge`.
+    roof_edge: Option<(String, Collected)>,
+    /// A `TINRelief`'s `tin` and its `lod`.
+    tin: Tin,
+}
+
+#[derive(Default)]
+struct Tin {
+    lod: Option<String>,
+    surfaces: Option<Collected>,
+}
+
+/// A property in a CityGML module namespace `uri` (positioned after its
+/// `Start`).
+fn read_module_property<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    b: &mut ObjectBuilder,
+    pending: &mut Pending,
+    (uri, module): (&[u8], Module),
+    name: &[u8],
+    depth: usize,
+) -> Result<()> {
+    if let Some(lod) = lod_suffix(name, b"Solid") {
+        let geom = read_lod_solid(reader, buf, name.to_vec())?;
+        b.add_solid(lod, geom);
+    } else if let Some(lod) =
+        lod_suffix(name, b"MultiSurface").or_else(|| lod_suffix(name, b"FootPrint"))
+    {
+        // CityGML 2.0 spells a building's LoD0 with two dedicated elements
+        // rather than `lod0MultiSurface`: `lod0FootPrint` (the ground
+        // outline) and `lod0RoofEdge` (the roof outline). They are different
+        // geometry, and CityJSON cannot say which a LoD0 MultiSurface is, so
+        // they are never merged: the footprint is the LoD0 geometry, and a
+        // roof edge is kept only for a building with no footprint (held back
+        // until the subtree is read, since element order is not guaranteed).
+        b.add_surfaces(lod, gml::collect_surfaces(reader, buf)?);
+    } else if let Some(lod) = lod_suffix(name, b"RoofEdge") {
+        let collected = gml::collect_surfaces(reader, buf)?;
+        if pending.roof_edge.is_none() {
+            pending.roof_edge = Some((lod, collected));
+        }
+    } else if let Some(lod) = lod_suffix(name, b"Geometry") {
+        // `lodNGeometry` may wrap a solid or a surface collection.
+        match read_lod_geometry(reader, buf, name.to_vec())? {
+            Some(LodGeom::Solid(geom)) => b.add_solid(lod, geom),
+            Some(LodGeom::Surfaces(polys)) => b.add_plain_surfaces(lod, polys),
+            Some(LodGeom::Lines(lines)) => b.add_lines(lod, lines),
+            Some(LodGeom::Points(points)) => b.add_points(lod, points),
+            None => {}
+        }
+    } else if let Some(lod) =
+        lod_suffix(name, b"MultiCurve").or_else(|| lod_suffix(name, b"Network"))
+    {
+        // `lodNMultiCurve`, and a transportation object's `lodNNetwork`
+        // (a `gml:GeometricComplex` of curves).
+        b.add_lines(lod, gml::collect_lines(reader, buf)?);
+    } else if module == Module::Relief && name == b"lod" {
+        // A relief component's LoD is the LoD of its TIN, not an attribute.
+        if let Some(text) = read_leaf_text(reader, buf, name)? {
+            pending.tin.lod = Some(text.trim().to_string());
+        }
+    } else if module == Module::Relief && name == b"tin" {
+        pending.tin.surfaces = Some(gml::collect_surfaces(reader, buf)?);
+    } else if is_semantic_surface_property(name) {
+        read_bounded_by(reader, buf, b, uri, name)?;
+    } else if name == b"address" {
+        b.push_address(read_address(reader, buf)?);
+    } else if is_nesting_property(name) {
+        read_nested(reader, buf, b, name, uri, depth)?;
+    } else {
+        let ty = attributes::property_type(module, name);
+        push_leaf(reader, buf, b, name, ty, || {
+            QName::module(module, String::from_utf8_lossy(name))
+        })?;
+    }
+    Ok(())
+}
+
+/// A text-only property (positioned after its `Start`) as an attribute
+/// named `name()`, typed `ty`. An empty property, or one with child
+/// elements, adds nothing.
+fn push_leaf<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    b: &mut ObjectBuilder,
+    end: &[u8],
+    ty: AttrType,
+    name: impl FnOnce() -> QName,
+) -> Result<()> {
+    if let Some(text) = read_leaf_text(reader, buf, end)? {
+        b.push_attribute(Attribute {
+            name: AttributeName::Property(name()),
+            value: attributes::to_value(&text, ty),
+        });
+    }
+    Ok(())
 }
 
 /// A `gen:` generic attribute (positioned after its `Start`). One without a
@@ -289,7 +341,54 @@ fn read_generic_attribute<R: BufRead>(
     Ok(())
 }
 
-/// The polygons of a surface-collection property, without their xlinks.
+/// An `address` property (positioned after its `Start`): every leaf of its
+/// xAL subtree that holds text, and the points of its `multiPoint`.
+fn read_address<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Address> {
+    let mut address = Address::default();
+    // Open elements below the property: (local name, text, has a child).
+    let mut open: Vec<(String, String, bool)> = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                if let Some(parent) = open.last_mut() {
+                    parent.2 = true;
+                }
+                let local = e.local_name();
+                if ns_is(&rr, ns::CORE) && local.as_ref() == b"multiPoint" {
+                    address.location.extend(gml::collect_points(reader, buf)?);
+                } else {
+                    let name = String::from_utf8_lossy(local.as_ref()).into_owned();
+                    open.push((name, String::new(), false));
+                }
+            }
+            Event::Text(t) => {
+                if let Some(top) = open.last_mut() {
+                    top.1.push_str(&unescaped_text(&t)?);
+                }
+            }
+            Event::End(_) => {
+                let Some((name, text, has_child)) = open.pop() else {
+                    break;
+                };
+                let text = text.trim();
+                if !has_child && !text.is_empty() {
+                    address.fields.push((name, text.to_string()));
+                }
+            }
+            Event::Eof => {
+                return Err(Error::invalid(
+                    "unexpected end of document inside <address>",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(address)
+}
+
+/// The polygons of a surface-collection subtree, without their xlinks.
 fn surface_polygons<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
@@ -303,81 +402,46 @@ fn surface_polygons<R: BufRead>(
 /// Read a nesting property (positioned after its `Start`, ending at
 /// `End(prop_name)`).
 ///
-/// A child the [`NESTED`] table names, in the property's own namespace,
-/// becomes a child object of `b`. Anything else only has its polygons
-/// registered as `b`'s xlink targets: a parent's `lodNSolid` may compose its
-/// faces from them, and they are never geometry of their own, which would
-/// double the object.
-fn read_child_object<R: BufRead>(
+/// A child [`NESTED`] names, in the property's own namespace, becomes a part
+/// or child object of `b`. Anything else only has its polygons registered as
+/// `b`'s xlink targets: a parent's `lodNSolid` may compose its faces from
+/// them, and they are never geometry of their own, which would double the
+/// object.
+fn read_nested<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     b: &mut ObjectBuilder,
     prop_name: &[u8],
-    ns: &[u8],
+    uri: &[u8],
     depth: usize,
 ) -> Result<()> {
-    if depth > MAX_PART_DEPTH {
-        return Err(Error::invalid(format!(
-            "CityGML features nested deeper than {MAX_PART_DEPTH}"
-        )));
-    }
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
         match ev {
             Event::Start(e) => {
                 let local = e.local_name();
-                let class = ns_eq(&rr, ns)
-                    .then(|| lookup(NESTED, local.as_ref()))
+                let nested = ns_eq(&rr, uri)
+                    .then(|| nested_class(uri, local.as_ref()))
                     .flatten();
-                if let Some(class) = class {
+                if let Some((class, nesting)) = nested {
                     let end = local.as_ref().to_vec();
                     let id = gml_id(&e);
-                    let child = read_generic_object(reader, buf, class, id, &end, depth + 1)?;
-                    b.add_child(child);
+                    let child = read_object(reader, buf, class, id, &end, depth + 1)?;
+                    match nesting {
+                        Nesting::Part => b.add_part(child),
+                        Nesting::Child => b.add_child(child),
+                    }
                 } else {
                     b.register(gml::collect_surfaces(reader, buf)?);
                 }
             }
             Event::End(e) if e.local_name().as_ref() == prop_name => break,
             Event::Eof => {
-                return Err(Error::invalid(
-                    "unexpected end of document inside a BuildingInstallation property",
-                ));
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-/// A `bldg:consistsOfBuildingPart` (positioned after its `Start`): its
-/// `bldg:BuildingPart`, read as a part of `b`. An empty or xlink-only property
-/// adds nothing.
-fn read_consists_of_part<R: BufRead>(
-    reader: &mut NsReader<R>,
-    buf: &mut Vec<u8>,
-    b: &mut ObjectBuilder,
-    depth: usize,
-) -> Result<()> {
-    loop {
-        buf.clear();
-        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
-        match ev {
-            Event::Start(e) => {
-                if ns_is(&rr, ns::BUILDING) && e.local_name().as_ref() == b"BuildingPart" {
-                    let id = gml_id(&e);
-                    let part = read_abstract_building(reader, buf, id, b"BuildingPart", depth + 1)?;
-                    b.add_part(part);
-                } else {
-                    skip_element(reader, buf)?;
-                }
-            }
-            Event::End(e) if e.local_name().as_ref() == b"consistsOfBuildingPart" => break,
-            Event::Eof => {
-                return Err(Error::invalid(
-                    "unexpected end of document inside <bldg:consistsOfBuildingPart>",
-                ));
+                return Err(Error::invalid(format!(
+                    "unexpected end of document inside <{}>",
+                    String::from_utf8_lossy(prop_name)
+                )));
             }
             _ => {}
         }
@@ -412,31 +476,36 @@ fn is_semantic_surface_property(local: &[u8]) -> bool {
 }
 
 /// Whether a module property is one of CityGML 2.0's nesting properties: the
-/// places the schema puts a city object's sub-features, and so the only
-/// places a parent's `lodNSolid` can find the polygons it composes by
-/// `xlink:href`. Matched as a closed vocabulary rather than by descending
-/// into every unknown element, so an ADE subtree is skipped by bytes rather
-/// than parsed for geometry nothing will reference.
+/// places the schema puts a city object's sub-features (`consistsOf…Part`,
+/// `outer…` and `interior…`, and a room's or hollow space's installations),
+/// and so the only places a parent's `lodNSolid` can find the polygons it
+/// composes by `xlink:href`. Matched as a closed vocabulary rather than by
+/// descending into every unknown element, so an ADE subtree is skipped by
+/// bytes rather than parsed for geometry nothing will reference.
 fn is_nesting_property(local: &[u8]) -> bool {
     let Ok(name) = std::str::from_utf8(local) else {
         return false;
     };
-    name == "boundedBy"
-        || name.starts_with("outer")
+    name.starts_with("outer")
         || name.starts_with("interior")
         || name.starts_with("consistsOf")
+        || name.ends_with("RoomInstallation")
+        || name == "roomInstallation"
+        || name == "hollowSpaceInstallation"
 }
 
 /// The geometry a `lodNGeometry` property wraps.
 enum LodGeom {
     Solid(SolidGeom),
     Surfaces(Vec<Polygon>),
+    Lines(Vec<Line>),
+    Points(Vec<[f64; 3]>),
 }
 
 /// Inside a `lodNGeometry` (positioned after its `Start`, ending at
 /// `End(end)`): a `gml:Solid` / `CompositeSolid` is a solid, a
-/// `gml:MultiSurface` / `CompositeSurface` / `Polygon` a surface list. Points
-/// and curves are skipped, so they give `None`.
+/// `gml:MultiSurface` / `CompositeSurface` / `Polygon` a surface list, a
+/// curve or curve aggregate lines, and a `gml:Point` / `MultiPoint` points.
 fn read_lod_geometry<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
@@ -444,6 +513,8 @@ fn read_lod_geometry<R: BufRead>(
 ) -> Result<Option<LodGeom>> {
     let mut solid: Option<SolidGeom> = None;
     let mut polys: Vec<Polygon> = Vec::new();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut points: Vec<[f64; 3]> = Vec::new();
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -469,6 +540,17 @@ fn read_lod_geometry<R: BufRead>(
                         poly.id = id;
                         polys.push(poly);
                     }
+                    (
+                        true,
+                        b"LineString" | b"Curve" | b"MultiCurve" | b"CompositeCurve"
+                        | b"OrientableCurve",
+                    ) => {
+                        let local = local.as_ref().to_vec();
+                        lines.extend(gml::read_curve(reader, buf, &local)?);
+                    }
+                    (true, b"Point" | b"MultiPoint") => {
+                        points.extend(gml::collect_points(reader, buf)?);
+                    }
                     _ => skip_element(reader, buf)?,
                 }
             }
@@ -483,7 +565,9 @@ fn read_lod_geometry<R: BufRead>(
     }
     Ok(solid
         .map(LodGeom::Solid)
-        .or_else(|| (!polys.is_empty()).then_some(LodGeom::Surfaces(polys))))
+        .or_else(|| (!polys.is_empty()).then_some(LodGeom::Surfaces(polys)))
+        .or_else(|| (!lines.is_empty()).then_some(LodGeom::Lines(lines)))
+        .or_else(|| (!points.is_empty()).then_some(LodGeom::Points(points))))
 }
 
 /// Inside a `lodNSolid`: the wrapped `gml:Solid` or `gml:CompositeSolid`.
@@ -515,13 +599,13 @@ fn read_lod_solid<R: BufRead>(
             Event::End(e) if e.local_name().as_ref() == end.as_slice() => break,
             Event::Eof => {
                 return Err(Error::invalid(
-                    "unexpected end of document inside <bldg:lodNSolid>",
+                    "unexpected end of document inside <lodNSolid>",
                 ));
             }
             _ => {}
         }
     }
-    geom.ok_or_else(|| Error::invalid("bldg:lodNSolid without gml:Solid or gml:CompositeSolid"))
+    geom.ok_or_else(|| Error::invalid("lodNSolid without gml:Solid or gml:CompositeSolid"))
 }
 
 /// The boundary surface classes a semantic-surface subtree may nest
@@ -637,8 +721,8 @@ fn read_semantic_surface<R: BufRead>(
 }
 
 /// A leaf element's text (positioned after its `Start`, ending at
-/// `End(end)`): the trimmed text of a text-only leaf, or `None` for an empty
-/// one or one with child elements.
+/// `End(end)`), verbatim: `None` for an empty or blank one, or one with
+/// child elements.
 fn read_leaf_text<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
@@ -664,9 +748,5 @@ fn read_leaf_text<R: BufRead>(
             _ => {}
         }
     }
-    if has_child {
-        return Ok(None);
-    }
-    let t = text.trim();
-    Ok((!t.is_empty()).then(|| t.to_string()))
+    Ok((!has_child && !text.trim().is_empty()).then_some(text))
 }

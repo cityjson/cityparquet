@@ -1,6 +1,5 @@
-//! Streaming reader: one [`GmlObject`] per top-level city object, a
-//! `bldg:Building` (with its parts) or a mapped 1st-level object of another
-//! module.
+//! Streaming reader: one [`GmlObject`] per top-level city object of a class
+//! the walker reads, with its parts and sub-features.
 //!
 //! It holds one object subtree at a time, so memory is bounded by the largest
 //! single object; the `CityModel` and its `cityObjectMember`s are walked past
@@ -18,7 +17,7 @@ use std::path::Path;
 
 use citygml_core::gml::XlinkBudget;
 use citygml_core::model::{Appearance, ModelAppearance};
-use citygml_core::xml::{gml_id, ns_is, skip_element, xml_err};
+use citygml_core::xml::{gml_id, ns_is, ns_of, skip_element, xml_err};
 use citygml_core::{Error, GmlObject, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
@@ -128,17 +127,19 @@ impl FeatureReader {
             match ev {
                 Event::Start(e) => {
                     let local = e.local_name();
-                    if local.as_ref() == b"cityObjectMember" {
+                    let uri = ns_of(&rr).unwrap_or_default();
+                    if local.as_ref() == b"cityObjectMember"
+                        || walker::is_container_member(&uri, local.as_ref())
+                    {
                         self.inside_member = true;
                         continue;
                     }
-                    let is_building = ns_is(&rr, ns::BUILDING) && local.as_ref() == b"Building";
-                    let class = if is_building {
-                        None
-                    } else {
-                        walker::top_level_class(local.as_ref())
-                    };
-                    if !is_building && class.is_none() {
+                    if walker::is_container(&uri, local.as_ref()) {
+                        // Passed through: its members are what is read.
+                        self.inside_member = false;
+                        continue;
+                    }
+                    let Some(class) = walker::top_level_class(&uri, local.as_ref()) else {
                         if self.inside_member {
                             // A member of a class this reader does not read.
                             // Recorded, and descended into rather than
@@ -149,22 +150,11 @@ impl FeatureReader {
                             self.inside_member = false;
                         }
                         continue;
-                    }
-                    let id = gml_id(&e);
-                    let builder = match class {
-                        None => walker::read_building(&mut self.reader, &mut self.buf, id)?,
-                        Some(class) => {
-                            let end = local.as_ref().to_vec();
-                            walker::read_generic_object(
-                                &mut self.reader,
-                                &mut self.buf,
-                                class,
-                                id,
-                                &end,
-                                0,
-                            )?
-                        }
                     };
+                    let id = gml_id(&e);
+                    let end = local.as_ref().to_vec();
+                    let builder =
+                        walker::read_object(&mut self.reader, &mut self.buf, class, id, &end, 0)?;
                     self.index += 1;
                     self.inside_member = false;
                     let mut object = builder.finish(&self.xlink_budget)?;
@@ -175,7 +165,10 @@ impl FeatureReader {
                     // An empty `<cityObjectMember/>` never reaches an object,
                     // and a CityModel child after the last member is not a
                     // member.
-                    if e.local_name().as_ref() == b"cityObjectMember" {
+                    if matches!(
+                        e.local_name().as_ref(),
+                        b"cityObjectMember" | b"reliefComponent"
+                    ) {
                         self.inside_member = false;
                     }
                 }

@@ -13,14 +13,16 @@
 //! - a LoD with boundary-surface geometry and no solid gets one MultiSurface
 //!   of those faces, plus any standalone face at that LoD none of them holds;
 //! - a standalone `lodNMultiSurface` at a LoD with no boundary geometry is a
-//!   MultiSurface of its own, its faces untagged.
+//!   MultiSurface of its own, its faces untagged; at a LoD with a solid it is
+//!   only a set of xlink targets, since the solid is that LoD's geometry.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::read::{AggregateMember, Collected, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use crate::model::{
-    Appearance, Attribute, BoundarySurface, Face, Geometry, GmlObject, Polygon, QName, Shape,
+    Address, Appearance, Attribute, BoundarySurface, Face, Geometry, GmlObject, Line, Polygon,
+    QName, Shape,
 };
 use crate::{Error, Result};
 
@@ -65,6 +67,9 @@ pub struct ObjectBuilder {
     class: QName,
     /// Standalone `lodN{MultiSurface,Geometry}` surfaces, one list per LoD.
     plain_surfaces: Vec<(String, Vec<Polygon>)>,
+    /// Geometry that references nothing, so needs no resolution: points,
+    /// lines and TINs.
+    direct: Vec<Geometry>,
     /// One solid per distinct LoD.
     solids: Vec<(String, SolidGeom)>,
     /// Every identified polygon, by `gml:id`: the xlink targets.
@@ -88,8 +93,17 @@ pub struct ObjectBuilder {
     /// polygons: `(surface index, LoD, target id)`.
     boundary_refs: Vec<(usize, String, String)>,
     attributes: Vec<Attribute>,
+    addresses: Vec<Address>,
     children: Vec<ObjectBuilder>,
     appearance: Appearance,
+}
+
+/// An enclosing object's xlink targets, lent to the objects it holds.
+#[derive(Clone, Copy)]
+struct Targets<'a> {
+    polygons: &'a HashMap<String, Polygon>,
+    aggregates: &'a HashMap<String, Vec<AggregateMember>>,
+    aggregate_polygons: &'a [Polygon],
 }
 
 impl ObjectBuilder {
@@ -98,6 +112,7 @@ impl ObjectBuilder {
             id,
             class,
             plain_surfaces: Vec::new(),
+            direct: Vec::new(),
             solids: Vec::new(),
             polygons: HashMap::new(),
             aggregates: HashMap::new(),
@@ -108,6 +123,7 @@ impl ObjectBuilder {
             boundary_polys: Vec::new(),
             boundary_refs: Vec::new(),
             attributes: Vec::new(),
+            addresses: Vec::new(),
             children: Vec::new(),
             appearance: Appearance::default(),
         }
@@ -138,6 +154,61 @@ impl ObjectBuilder {
             }
         }
         self.plain_surfaces.push((lod, polys));
+    }
+
+    /// Record a standalone surface collection at `lod` (`lodNMultiSurface`,
+    /// `lod0FootPrint`): its identified polygons and aggregates become xlink
+    /// targets, and its polygons a MultiSurface unless the LoD has a solid
+    /// or boundary-surface geometry (see [`Self::finish`]).
+    pub fn add_surfaces(&mut self, lod: String, collected: Collected) {
+        let polys: Vec<Polygon> = self
+            .absorb(collected)
+            .into_iter()
+            .map(|(id, poly)| {
+                if let Some(id) = id {
+                    self.polygons.insert(id, poly.clone());
+                }
+                poly
+            })
+            .collect();
+        if !polys.is_empty() {
+            self.plain_surfaces.push((lod, polys));
+        }
+    }
+
+    /// Record the points of a `MultiPoint` at `lod`.
+    pub fn add_points(&mut self, lod: String, points: Vec<[f64; 3]>) {
+        if !points.is_empty() {
+            self.add_direct(lod, Shape::MultiPoint(points));
+        }
+    }
+
+    /// Record the lines of a curve geometry at `lod`.
+    pub fn add_lines(&mut self, lod: String, lines: Vec<Line>) {
+        if !lines.is_empty() {
+            self.add_direct(lod, Shape::MultiLineString(lines));
+        }
+    }
+
+    /// Record a TIN at `lod`: its triangles as one composite surface.
+    pub fn add_tin(&mut self, lod: String, collected: Collected) {
+        let faces: Vec<Face> = self
+            .absorb(collected)
+            .iter()
+            .map(|(_, poly)| plain_face(poly, None))
+            .collect();
+        if !faces.is_empty() {
+            self.add_direct(lod, Shape::CompositeSurface(faces));
+        }
+    }
+
+    /// Keep `shape` as a point, curve or TIN geometry at `lod`, unless that
+    /// LoD already has one. [`Self::finish`] keeps it only at a LoD no
+    /// surface or solid holds: a CityParquet object has one geometry per LoD.
+    fn add_direct(&mut self, lod: String, shape: Shape) {
+        if !self.direct.iter().any(|g| g.lod == lod) {
+            self.direct.push(Geometry { lod, shape });
+        }
     }
 
     /// Register harvested geometry as xlink targets only: every identified
@@ -178,6 +249,10 @@ impl ObjectBuilder {
 
     pub fn push_attribute(&mut self, attribute: Attribute) {
         self.attributes.push(attribute);
+    }
+
+    pub fn push_address(&mut self, address: Address) {
+        self.addresses.push(address);
     }
 
     /// Add an appearance property's materials and textures, in order.
@@ -224,7 +299,7 @@ impl ObjectBuilder {
     /// charging aggregate expansion to the document's `budget`.
     pub fn finish(self, budget: &XlinkBudget) -> Result<GmlObject> {
         budget.grant(self.source_polygons());
-        self.build(budget)
+        self.build(budget, &[])
     }
 
     /// Polygons harvested from this object's subtree, children included.
@@ -263,7 +338,9 @@ impl ObjectBuilder {
         collected.polygons
     }
 
-    fn build(self, budget: &XlinkBudget) -> Result<GmlObject> {
+    /// Build the object; `outer` holds the xlink targets of its enclosing
+    /// objects, nearest first.
+    fn build(self, budget: &XlinkBudget, outer: &[Targets<'_>]) -> Result<GmlObject> {
         let mut geometries = Vec::new();
         for (lod, geom) in &self.solids {
             geometries.push(self.solid_geometry(geom, lod, budget)?);
@@ -279,7 +356,7 @@ impl ObjectBuilder {
             .chain(self.boundary_refs.iter().map(|(_, lod, _)| lod))
             .collect();
         for (lod, polys) in &self.plain_surfaces {
-            if semantic_lods.contains(lod) {
+            if semantic_lods.contains(lod) || self.solids.iter().any(|(l, _)| l == lod) {
                 continue;
             }
             let faces = polys.iter().map(|p| plain_face(p, None)).collect();
@@ -313,20 +390,96 @@ impl ObjectBuilder {
                 });
             }
         }
+        // Points, lines and TINs, at a LoD no surface or solid holds.
+        for g in self.direct {
+            if !geometries.iter().any(|have: &Geometry| have.lod == g.lod) {
+                geometries.push(g);
+            }
+        }
+        let mut enclosing = Vec::with_capacity(outer.len() + 1);
+        enclosing.push(Targets {
+            polygons: &self.polygons,
+            aggregates: &self.aggregates,
+            aggregate_polygons: &self.aggregate_polygons,
+        });
+        enclosing.extend_from_slice(outer);
         let children = self
             .children
             .into_iter()
-            .map(|c| c.build(budget))
+            .map(|mut c| {
+                c.inherit(&enclosing);
+                c.build(budget, &enclosing)
+            })
             .collect::<Result<Vec<_>>>()?;
         Ok(GmlObject {
             id: self.id,
             class: self.class,
             attributes: self.attributes,
+            addresses: self.addresses,
             geometries,
             boundary_surfaces: self.surfaces,
             appearance: self.appearance,
             children,
         })
+    }
+
+    /// Take from the enclosing objects, nearest first, the xlink targets
+    /// this object references but does not define: a room's solid reuses its
+    /// building's wall polygons, reversed, or the building's identified
+    /// `gml:CompositeSurface`. Only what is referenced is copied, an
+    /// aggregate with the polygons and aggregates it holds.
+    fn inherit(&mut self, outer: &[Targets<'_>]) {
+        let solid_refs = self
+            .solids
+            .iter()
+            .flat_map(|(_, geom)| match geom {
+                SolidGeom::Solid(solid) => std::slice::from_ref(solid),
+                SolidGeom::Composite(solids) => solids.as_slice(),
+            })
+            .flat_map(|solid| solid.shells.iter().flatten())
+            .filter_map(|sref| match &sref.target {
+                RefTarget::Xlink(id) => Some(id),
+                RefTarget::Inline(_) => None,
+            });
+        let member_refs = self.aggregates.values().flatten().filter_map(|m| match m {
+            AggregateMember::Ref(id) => Some(id),
+            AggregateMember::Polygon(_) => None,
+        });
+        let boundary_refs = self.boundary_refs.iter().map(|(_, _, href)| href);
+        let mut pending: Vec<String> = solid_refs
+            .chain(member_refs)
+            .chain(boundary_refs)
+            .cloned()
+            .collect();
+        while let Some(id) = pending.pop() {
+            if self.polygons.contains_key(&id) || self.aggregates.contains_key(&id) {
+                continue;
+            }
+            for targets in outer {
+                if let Some(poly) = targets.polygons.get(&id) {
+                    self.polygons.insert(id, poly.clone());
+                    break;
+                }
+                if let Some(members) = targets.aggregates.get(&id) {
+                    let members = members
+                        .iter()
+                        .map(|m| match m {
+                            AggregateMember::Polygon(i) => {
+                                self.aggregate_polygons
+                                    .push(targets.aggregate_polygons[*i].clone());
+                                AggregateMember::Polygon(self.aggregate_polygons.len() - 1)
+                            }
+                            AggregateMember::Ref(r) => {
+                                pending.push(r.clone());
+                                m.clone()
+                            }
+                        })
+                        .collect();
+                    self.aggregates.insert(id, members);
+                    break;
+                }
+            }
+        }
     }
 
     fn solid_geometry(

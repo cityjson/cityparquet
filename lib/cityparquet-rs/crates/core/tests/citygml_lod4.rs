@@ -293,13 +293,13 @@ fn a_deep_chain_of_xlinked_aggregates_is_refused() {
 /// counted once. Wrapping one polygon in many nested identified aggregates
 /// adds tags, not polygons, and must not raise it: otherwise those wrappers
 /// would pay for a fan-out of the same order. Derived from the real fixture
-/// like the fan-out test, with one polygon wrapped 2 000 deep beside a
-/// 2^11-copy fan-out of it — far beyond the document's few dozen polygons,
-/// but within a budget that counted the polygon once per wrapper.
+/// like the fan-out test, with one polygon wrapped 3 000 deep beside a
+/// 2^13-copy fan-out of it — twice what the document's thousand polygons
+/// allow, but within a budget that counted the polygon once per wrapper.
 #[test]
 fn nested_aggregate_wrappers_do_not_raise_the_expansion_budget() {
-    const WRAPPERS: usize = 2_000;
-    const FAN_DEPTH: usize = 11;
+    const WRAPPERS: usize = 3_000;
+    const FAN_DEPTH: usize = 13;
     let mut members = String::from("<gml:surfaceMember>");
     for i in 0..WRAPPERS {
         members.push_str(&format!(

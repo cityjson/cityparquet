@@ -1,40 +1,58 @@
 # CityGML 2.0 reader/writer — supported scope & known limitations
 
-Status as of 2026-07-17. The native CityGML 2.0 reader (`crates/core/src/citygml/`)
-and writer round-trip 3D city models through the CityParquet package. This
-document records what is supported and what remains, for the paper's scope
-section and future work. The **package round-trip is lossless** for everything
-listed as supported — where the emitted CityGML is not strictly XSD-valid, the
-lenient reader still reads it back identically.
+Status as of 2026-10-14. The CityGML 2.0 reader (the `citygml2` crate in
+`lib/citygml-rs`, adapted in `crates/core/src/citygml/`) and the writer
+round-trip 3D city models through the CityParquet package. This document
+records what is supported and what remains, for the paper's scope section and
+future work. The **package round-trip is lossless** for everything listed as
+supported — where the emitted CityGML is not strictly XSD-valid, the lenient
+reader still reads it back identically.
 
 ## Supported
 
-**Reader (CityGML → CityJSON/CityParquet):**
+**Reader (CityGML → CityJSON/CityParquet).** On six PLATEAU files (building,
+bridge, city furniture, transportation, vegetation, water body) and a
+`tran:Track` fragment, the CityJSON it produces agrees with `citygml-tools
+to-cityjson` on objects per type, geometry types and LoDs, semantic surfaces,
+attribute names and types, addresses and appearance palettes
+(`lib/citygml-rs/crates/citygml2/tests/oracle.rs`).
 
-- `bldg:Building` with LoD1/LoD2 `gml:Solid`/`gml:CompositeSolid`, semantic
-  surfaces (`bldg:boundedBy`) referenced inline or by `xlink:href` (CG-1),
-  including nested `bldg:opening` Door/Window as their own semantic surfaces.
-- The boundedBy-only case (no `lodNSolid`) as a `MultiSurface` with semantics.
-- Every LoD the document spells, LoD 4 included (`lod4Solid`, `lod4MultiSurface`
-  → `geometry_lod4_0`). A shell member that is an `xlink:href` to an
-  identified `gml:CompositeSurface` or `gml:MultiSurface` stands for all of that
-  aggregate's polygons. Interior rooms and furniture are not read.
-- `BuildingPart` (`consistsOfBuildingPart`) and `{outer,interior}Building­Installation`
-  (`BuildingInstallation`/`IntBuildingInstallation`) as child objects (CG-5).
-- Generic 1st-level **non-building** objects (CG-7): WaterBody, LandUse,
-  CityFurniture, SolitaryVegetationObject, PlantCover, Bridge, Tunnel,
-  GenericCityObject, CityObjectGroup, Road, Railway, Square (→TransportSquare) —
-  with `lodNSolid`, `lodNMultiSurface`, and `lodNGeometry` (dispatched by inner
-  gml type), `gen:` generic attributes, and typed module leaf-text properties.
-- Materials (`app:X3DMaterial`) + textures (`app:ParameterizedTexture`), feature-
-  local and **CityModel-level** (`app:appearanceMember`, CG-3); reversed
-  `gml:OrientableSurface` texture UVs kept aligned (CG-2).
-- Building attributes (typed `bldg:` + `gen:` generics).
+- Every CityGML 2.0 class CityJSON has a type for: Building, BuildingPart,
+  installations, Room (→ BuildingRoom), BuildingFurniture; Bridge, BridgePart,
+  BridgeConstructionElement (→ BridgeConstructiveElement), installations,
+  BridgeRoom, BridgeFurniture; Tunnel, TunnelPart, installations, HollowSpace
+  (→ TunnelHollowSpace), TunnelFurniture; WaterBody, LandUse, CityFurniture,
+  SolitaryVegetationObject, PlantCover, GenericCityObject, CityObjectGroup;
+  Road, Railway, Square (→ TransportSquare), and Track and
+  TransportationComplex (→ Road, as CityJSON models them); TINRelief, read
+  through its `dem:ReliefFeature`.
+- Geometry: `lodNSolid` (`gml:Solid`/`gml:CompositeSolid`), `lodNMultiSurface`,
+  `lodNGeometry` (dispatched by inner GML type, points and curves included),
+  `lodNMultiCurve`, a transportation object's `lodNNetwork`, a building's
+  `lod0FootPrint`/`lod0RoofEdge`, and a TIN's `gml:TriangulatedSurface`. Every
+  LoD the document spells, LoD 4 included. A shell member that is an
+  `xlink:href` to an identified `gml:CompositeSurface` or `gml:MultiSurface`
+  stands for all of that aggregate's polygons, and a nested object (a room)
+  resolves xlinks to polygons its parent defines.
+- Semantic surfaces (`boundedBy`, `trafficArea`, `auxiliaryTrafficArea`)
+  referenced inline or by `xlink:href`, with a Door or Window inside a wall's
+  `opening` as that wall's child surface.
+- Attributes: `gml:name`, `gml:description`, every text-only property of a
+  CityGML module (numbers, booleans and number lists typed from a table of the
+  2.0 schema), `gen:` generic attributes, and `relationToConstruction` for an
+  installation (from its outer or interior class).
+- Addresses (`address`), xAL leaves mapped to CityJSON's address members, with
+  the `MultiPoint` location.
+- Materials (`app:X3DMaterial`, unnamed ones included) and textures
+  (`app:ParameterizedTexture`), feature-local and **CityModel-level**
+  (`app:appearanceMember`), targeting polygons or the surface aggregates
+  holding them; reversed `gml:OrientableSurface` texture UVs kept aligned.
 
 **Writer (CityParquet → CityGML), scope W-M1…W-M5:**
 
 - `Building`/`BuildingPart` with LoD solids/CompositeSolid (`lod1Solid` to
-  `lod4Solid`), semantic surfaces, attributes, materials, textures.
+  `lod4Solid`), semantic surfaces, attributes, materials, textures; a child
+  surface (a Door or Window) nested in its parent wall's `bldg:opening`.
 
 ## Deferred / not yet supported
 
@@ -43,22 +61,8 @@ lenient reader still reads it back identically.
 A CityObject's non-geometry members are encoded from **fixed columns**, so these
 need a new column + encoder/decoder work (not just reader/writer):
 
-- **`bldg:address` (CG-4)** — CityJSON free-form `address` array (xAL on the
-  CityGML side). No address column today.
 - **`ImplicitGeometry` ↔ CityJSON GeometryInstance / geometry-templates (CG-8)** —
   implicit-geometry plumbing.
-
-### Feasible as reader/writer only (NO Arrow-schema change)
-
-Geometry `semantics` is stored **verbatim as JSON**, so extra members round-trip
-for free:
-
-- **Openings under `bldg:opening` (CG-6, main item)** — CityJSON models openings
-  via semantic-surface `parent`/`children`. Today the reader flattens Door/Window
-  as sibling surfaces (no link) and the writer emits them as top-level
-  `bldg:{type}` (XSD-invalid, but package-lossless). Fix = reader records each
-  surface's parent index + emits `{type, parent?, children?}`; writer nests a
-  child surface under `bldg:opening`.
 
 ### Writer round-trip for the reader-only features above
 
@@ -71,17 +75,21 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
 
 ### Other documented limitations
 
-- Non-building **semantic surfaces / nested parts / appearance** on non-building
-  objects (reader reads geometry + attributes only).
-- `ReliefFeature` not mapped (only a TIN maps cleanly to `TINRelief`;
-  raster/breakline/mass-point reliefs would misclassify).
+- A `CityObjectGroup`'s members (`grp:groupMember`) are not linked to it.
+- `ImplicitGeometry` is not read (no fixture yet).
+- Raster, breakline and mass-point relief components have no CityJSON type
+  and are tallied as skipped members.
+- At a LoD with a solid, boundary-surface polygons that are not faces of the
+  solid (an opening in a room's wall) are dropped: a CityParquet object holds
+  one geometry per LoD. For the same reason a point or curve geometry
+  (`lodNMultiCurve`, `lodNNetwork`) at a LoD that also has surfaces is
+  dropped.
+- ADE elements: a text-only ADE property becomes a string attribute; ADE
+  classes and structured ADE properties are skipped.
 - `MultiSolid` cannot be written (CityGML 2.0 `Building` has no `lodNMultiSolid`
   slot — a genuine format asymmetry, `multi_solids_skipped`).
-- **Multi-LoD semantics**: the reader builds ONE building-wide `surfaces` array,
-  so at most one LoD per building carries `boundedBy` semantics.
 - XSD polish: canonical element ordering, `xs:date`/`gYear` lexical validity.
-- ADE / foreign elements sharing a standard local name (namespace-agnostic
-  object/geometry matching); `TexCoordGen` / texture UV seams; cross-building
+- `TexCoordGen` / texture UV seams; cross-building
   shared/external geometry; coordinate-magnitude CRS sniffing.
 
 ## Provenance

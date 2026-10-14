@@ -21,7 +21,7 @@ use std::io::BufRead;
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 
-use crate::model::{Polygon, Ring};
+use crate::model::{Line, Polygon, Ring};
 use crate::xml::{
     NS_GML, get_attr, gml_id, ns_is, read_text, skip_element, unexpected_eof, xlink_fragment,
     xml_err,
@@ -400,11 +400,14 @@ pub fn collect_surfaces<R: BufRead>(
         match ev {
             Event::Start(e) => {
                 let local = e.local_name();
-                if gml && local.as_ref() == b"Polygon" {
-                    // `read_polygon` consumes the whole Polygon subtree, so the
-                    // depth is unchanged by this branch.
+                if gml && matches!(local.as_ref(), b"Polygon" | b"Triangle" | b"PolygonPatch") {
+                    // A polygon, or a triangle or polygon patch of a
+                    // `gml:TriangulatedSurface` / `gml:Surface`, which GML
+                    // spells the same way. Reading it consumes the whole
+                    // subtree, so the depth is unchanged by this branch.
                     let id = gml_id(&e);
-                    let mut poly = read_polygon(reader, buf)?;
+                    let end = local.as_ref().to_vec();
+                    let mut poly = read_polygon_element(reader, buf, &end)?;
                     poly.id = id.clone();
                     poly.groups = open.iter().rev().map(|(_, id, _)| id.clone()).collect();
                     if let Some((_, _, members)) = open.last_mut() {
@@ -453,8 +456,111 @@ pub fn collect_surfaces<R: BufRead>(
     Ok(out)
 }
 
+/// Every coordinate inside the current element's subtree, from each
+/// `gml:pos` and `gml:posList` in document order: the points of a
+/// `gml:MultiPoint`. Call right after the subtree's `Start`; consumes through
+/// its matching `End`.
+pub fn collect_points<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<[f64; 3]>> {
+    let mut points = Vec::new();
+    let mut depth = 1usize;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                if ns_is(&rr, NS_GML) && matches!(e.local_name().as_ref(), b"pos" | b"posList") {
+                    let dim = srs_dimension(&e).unwrap_or(3);
+                    let text = read_text(reader, buf)?;
+                    points.extend(parse_coords(&text, dim)?);
+                } else {
+                    depth += 1;
+                }
+            }
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => return Err(eof("point collection")),
+            _ => {}
+        }
+    }
+    Ok(points)
+}
+
+/// Every line inside the current element's subtree: each `gml:LineString`,
+/// and each `gml:Curve` with its segments joined into one line. An `xlink`
+/// to a curve elsewhere is not followed. Call right after the subtree's
+/// `Start`; consumes through its matching `End`.
+pub fn collect_lines<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Vec<Line>> {
+    let mut lines = Vec::new();
+    let mut depth = 1usize;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                if ns_is(&rr, NS_GML) && is_line(e.local_name().as_ref()) {
+                    lines.extend(line_of(collect_points(reader, buf)?));
+                } else {
+                    depth += 1;
+                }
+            }
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => return Err(eof("curve collection")),
+            _ => {}
+        }
+    }
+    Ok(lines)
+}
+
+/// The lines of a GML curve element named `local` (positioned after its
+/// `Start`): a `gml:LineString` or `gml:Curve` is one line, and a curve
+/// aggregate (`gml:MultiCurve`, `gml:CompositeCurve`, …) each line inside it.
+pub fn read_curve<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    local: &[u8],
+) -> Result<Vec<Line>> {
+    if is_line(local) {
+        Ok(line_of(collect_points(reader, buf)?).into_iter().collect())
+    } else {
+        collect_lines(reader, buf)
+    }
+}
+
+fn is_line(local: &[u8]) -> bool {
+    matches!(local, b"LineString" | b"Curve")
+}
+
+/// A line from its points, a point repeated where two curve segments join
+/// dropped; `None` for fewer than two points.
+fn line_of(mut points: Vec<[f64; 3]>) -> Option<Line> {
+    points.dedup();
+    (points.len() >= 2).then_some(points)
+}
+
 /// A `gml:Polygon` (positioned after its `Start`): exterior ring + holes.
 pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Polygon> {
+    read_polygon_element(reader, buf, b"Polygon")
+}
+
+/// An element spelled as a `gml:Polygon` is (a `Triangle`, a
+/// `PolygonPatch`), ending at `End(end)`.
+fn read_polygon_element<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    end: &[u8],
+) -> Result<Polygon> {
     let mut exterior: Option<(Ring, Option<String>)> = None;
     let mut interiors: Vec<(Ring, Option<String>)> = Vec::new();
     loop {
@@ -474,7 +580,7 @@ pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> 
                     _ => skip_element(reader, buf)?,
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == b"Polygon" => break,
+            Event::End(e) if e.local_name().as_ref() == end => break,
             Event::Eof => return Err(eof("Polygon")),
             _ => {}
         }

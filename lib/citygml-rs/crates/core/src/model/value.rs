@@ -34,4 +34,7 @@ pub enum Value {
     String(String),
     Integer(i64),
     Double(f64),
+    Boolean(bool),
+    /// A list property (`storeyHeightsAboveGround`), each item typed.
+    List(Vec<Value>),
 }

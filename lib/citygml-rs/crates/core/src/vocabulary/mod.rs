@@ -5,4 +5,4 @@
 
 mod classes;
 
-pub use classes::cityjson_type;
+pub use classes::{cityjson_type, relation_to_construction};
