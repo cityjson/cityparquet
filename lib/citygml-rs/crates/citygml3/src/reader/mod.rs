@@ -291,6 +291,10 @@ fn read_index(path: &Path, full: bool) -> Result<Document> {
     // The groups the reader is inside, innermost last: a group may be
     // another group's nested member.
     let mut open_groups: Vec<Option<String>> = Vec::new();
+    // Whether each element the reader is inside is a `grp:Role`, innermost
+    // last: a member is the `groupMember` a role holds. The outer
+    // `groupMember` holds the role, and its `xlink:href` names a role.
+    let mut in_role: Vec<bool> = Vec::new();
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(&mut buf).map_err(xml_err)?;
@@ -333,7 +337,7 @@ fn read_index(path: &Path, full: bool) -> Result<Document> {
                     if ns_is(&rr, ns::CITY_OBJECT_GROUP) {
                         match local.as_ref() {
                             b"CityObjectGroup" => open_groups.push(gml_id(&e)),
-                            b"groupMember" => {
+                            b"groupMember" if in_role.last() == Some(&true) => {
                                 let member =
                                     get_attr_local(&e, b"href").and_then(|href| member_id(&href));
                                 if let (Some(member), Some(Some(group))) =
@@ -345,12 +349,14 @@ fn read_index(path: &Path, full: bool) -> Result<Document> {
                             _ => {}
                         }
                     }
+                    in_role.push(ns_is(&rr, ns::CITY_OBJECT_GROUP) && local.as_ref() == b"Role");
                     if with_ade {
                         ade.start(&ns_of(&rr).unwrap_or_default(), &e)?;
                     }
                 }
             }
             Event::End(e) => {
+                in_role.pop();
                 if implicit_lod.is_some()
                     && geometry::implicit_lod(e.local_name().as_ref()).is_some()
                 {

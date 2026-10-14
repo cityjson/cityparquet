@@ -3,8 +3,8 @@
 //! The pass sees every element, so it follows where each one sits without
 //! reading objects: an ADE element where a city object belongs is a class,
 //! one inside the element an `adeOf…` hook holds, or directly inside a city
-//! object, a property, and one directly inside a `boundary` a boundary
-//! surface. These are the positions the walker reads them in.
+//! object, a property, and one directly inside a `boundary` or a surface's
+//! `fillingSurface` a boundary surface. These are the positions the walker reads them in.
 
 use citygml_core::model::{AdeIndex, AdeIndexBuilder, Module, QName};
 use citygml_core::vocabulary::cityjson_type;
@@ -29,8 +29,11 @@ enum Frame {
     /// A transportation space whose boundary surfaces are its object's, or
     /// a property holding one.
     Space,
-    /// A property that holds boundary surfaces.
+    /// A property that holds boundary surfaces: a `boundary`, or a
+    /// surface's `con:fillingSurface`.
     Surfaces,
+    /// A boundary surface.
+    Surface,
     /// Anything else.
     Other,
 }
@@ -133,9 +136,14 @@ impl AdeScan {
                     if ade {
                         self.builder.surface(&uri_text, &local);
                     }
-                    Frame::Other
+                    Frame::Surface
                 }
-                Some(Frame::Hook(_) | Frame::Other) | None => Frame::Other,
+                Some(Frame::Surface)
+                    if module == Some(Module::Construction) && local == "fillingSurface" =>
+                {
+                    Frame::Surfaces
+                }
+                Some(Frame::Hook(_) | Frame::Surface | Frame::Other) | None => Frame::Other,
             }
         };
         self.frames.push(frame);

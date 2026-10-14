@@ -623,6 +623,21 @@ pub(crate) fn is_nesting_property(local: &[u8]) -> bool {
         || name == "hollowSpaceInstallation"
 }
 
+/// How deep boundary surfaces may nest in one another: a wall holds a door
+/// or window, which holds nothing. A guard against attacker-controlled
+/// recursion.
+const MAX_SURFACE_DEPTH: usize = 8;
+
+/// One level deeper than `depth`, or an error past [`MAX_SURFACE_DEPTH`].
+fn deeper_surface(depth: usize) -> Result<usize> {
+    if depth >= MAX_SURFACE_DEPTH {
+        return Err(Error::invalid(format!(
+            "boundary surfaces nest more than {MAX_SURFACE_DEPTH} levels deep"
+        )));
+    }
+    Ok(depth + 1)
+}
+
 /// The boundary surface classes a semantic-surface subtree may nest
 /// (`Door` and `Window` inside a wall's `opening` become surfaces of their
 /// own).
@@ -678,7 +693,7 @@ fn read_bounded_by<R: BufRead>(
                 if own_module || is_ade(&uri) {
                     let name = local.as_ref().to_vec();
                     let idx = b.push_boundary_surface(qname(&uri, &name), None);
-                    read_semantic_surface(reader, buf, b, idx, &name, (ns, &uri))?;
+                    read_semantic_surface(reader, buf, b, idx, &name, (ns, &uri), 0)?;
                 } else {
                     skip_element(reader, buf)?;
                 }
@@ -707,7 +722,9 @@ fn read_semantic_surface<R: BufRead>(
     surface: usize,
     end_name: &[u8],
     (ns, own): (&[u8], &[u8]),
+    depth: usize,
 ) -> Result<()> {
+    let depth = deeper_surface(depth)?;
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -722,9 +739,9 @@ fn read_semantic_surface<R: BufRead>(
                     b.add_boundary_geometry(surface, &lod, collected);
                 } else if own_module && SEMANTIC_SURFACES.contains(&name.as_slice()) {
                     let idx = b.push_boundary_surface(qname(ns, &name), Some(surface));
-                    read_semantic_surface(reader, buf, b, idx, &name, (ns, ns))?;
+                    read_semantic_surface(reader, buf, b, idx, &name, (ns, ns), depth)?;
                 } else if own_module && name == b"opening" {
-                    read_semantic_surface(reader, buf, b, surface, &name, (ns, own))?;
+                    read_semantic_surface(reader, buf, b, surface, &name, (ns, own), depth)?;
                 } else {
                     skip_element(reader, buf)?;
                 }

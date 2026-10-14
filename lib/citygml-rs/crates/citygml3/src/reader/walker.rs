@@ -191,6 +191,7 @@ const NESTING: &[&str] = &[
     "buildingConstructiveElement",
     "buildingSubdivision",
     "buildingUnit",
+    "storey",
     "bridgePart",
     "bridgeInstallation",
     "bridgeRoom",
@@ -882,10 +883,10 @@ fn read_boundary<R: BufRead>(
                 let name = local.as_ref().to_vec();
                 let uri = ns_of(&rr).unwrap_or_default();
                 if is_generic_surface(&uri, &name) {
-                    read_surface(reader, buf, b, None, &name)?;
+                    read_surface(reader, buf, b, None, &name, 0)?;
                 } else if ns::module(&uri).is_some() || is_ade(&uri) {
                     let idx = b.push_boundary_surface(qname(&uri, &name), None);
-                    read_surface(reader, buf, b, Some(idx), &name)?;
+                    read_surface(reader, buf, b, Some(idx), &name, 0)?;
                 } else {
                     skip_element(reader, buf)?;
                 }
@@ -903,6 +904,21 @@ fn read_boundary<R: BufRead>(
     Ok(())
 }
 
+/// How deep boundary surfaces may nest in one another: a wall holds a door
+/// or window, which holds nothing. A guard against attacker-controlled
+/// recursion.
+const MAX_SURFACE_DEPTH: usize = 8;
+
+/// One level deeper than `depth`, or an error past [`MAX_SURFACE_DEPTH`].
+fn deeper_surface(depth: usize) -> Result<usize> {
+    if depth >= MAX_SURFACE_DEPTH {
+        return Err(Error::invalid(format!(
+            "boundary surfaces nest more than {MAX_SURFACE_DEPTH} levels deep"
+        )));
+    }
+    Ok(depth + 1)
+}
+
 /// One boundary surface's subtree (surface `surface`, or the object itself
 /// when `None`, ending at `end_name`): the polygons of its `lodN`
 /// geometry, and the filling surfaces in its `con:fillingSurface`s, each a
@@ -913,7 +929,9 @@ fn read_surface<R: BufRead>(
     b: &mut ObjectBuilder,
     surface: Option<usize>,
     end_name: &[u8],
+    depth: usize,
 ) -> Result<()> {
+    let depth = deeper_surface(depth)?;
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -930,7 +948,7 @@ fn read_surface<R: BufRead>(
                         None => b.add_surfaces(lod, collected),
                     }
                 } else if construction && name == b"fillingSurface" {
-                    read_filling(reader, buf, b, surface)?;
+                    read_filling(reader, buf, b, surface, depth)?;
                 } else {
                     skip_element(reader, buf)?;
                 }
@@ -954,6 +972,7 @@ fn read_filling<R: BufRead>(
     buf: &mut Vec<u8>,
     b: &mut ObjectBuilder,
     parent: Option<usize>,
+    depth: usize,
 ) -> Result<()> {
     loop {
         buf.clear();
@@ -965,7 +984,7 @@ fn read_filling<R: BufRead>(
                 let uri = ns_of(&rr).unwrap_or_default();
                 if ns::module(&uri).is_some() || is_ade(&uri) {
                     let idx = b.push_boundary_surface(qname(&uri, &name), parent);
-                    read_surface(reader, buf, b, Some(idx), &name)?;
+                    read_surface(reader, buf, b, Some(idx), &name, depth)?;
                 } else {
                     skip_element(reader, buf)?;
                 }

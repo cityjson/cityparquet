@@ -28,6 +28,21 @@ use crate::xml::{
 };
 use crate::{Error, Result};
 
+/// How deep surface collections and orientable surfaces may nest inside one
+/// solid shell: a guard against attacker-controlled recursion. GML has no
+/// reason to nest them more than a few levels.
+const MAX_NESTING: usize = 64;
+
+/// One level deeper than `depth`, or an error past [`MAX_NESTING`].
+fn deeper(depth: usize) -> Result<usize> {
+    if depth >= MAX_NESTING {
+        return Err(Error::invalid(format!(
+            "GML surfaces nest more than {MAX_NESTING} levels deep"
+        )));
+    }
+    Ok(depth + 1)
+}
+
 /// One surface of a solid shell, before xlink resolution.
 #[derive(Debug, Clone)]
 pub struct SurfaceRef {
@@ -161,7 +176,7 @@ fn read_shell<R: BufRead>(
                 match (gml, local.as_ref()) {
                     (true, b"Shell" | b"CompositeSurface" | b"Surface") => {
                         let end = local.as_ref().to_vec();
-                        refs = read_surface_refs(reader, buf, end)?
+                        refs = read_surface_refs(reader, buf, end, 0)?
                     }
                     _ => skip_element(reader, buf)?,
                 }
@@ -180,7 +195,9 @@ fn read_surface_refs<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     end: Vec<u8>,
+    depth: usize,
 ) -> Result<Vec<SurfaceRef>> {
+    let depth = deeper(depth)?;
     let mut refs = Vec::new();
     loop {
         buf.clear();
@@ -199,7 +216,7 @@ fn read_surface_refs<R: BufRead>(
                         });
                         skip_element(reader, buf)?;
                     } else {
-                        refs.append(&mut read_surface_member_children(reader, buf)?);
+                        refs.append(&mut read_surface_member_children(reader, buf, depth)?);
                     }
                 } else {
                     skip_element(reader, buf)?;
@@ -218,6 +235,7 @@ fn read_surface_refs<R: BufRead>(
 fn read_surface_member_children<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
+    depth: usize,
 ) -> Result<Vec<SurfaceRef>> {
     let mut refs = Vec::new();
     loop {
@@ -239,11 +257,11 @@ fn read_surface_member_children<R: BufRead>(
                     }
                     (true, b"OrientableSurface") => {
                         let reverse = orientation_reversed(&e);
-                        refs.push(read_orientable_surface(reader, buf, reverse)?);
+                        refs.push(read_orientable_surface(reader, buf, reverse, depth)?);
                     }
                     (true, b"CompositeSurface") | (true, b"MultiSurface") => {
                         let end = local.as_ref().to_vec();
-                        refs.append(&mut read_surface_refs(reader, buf, end)?);
+                        refs.append(&mut read_surface_refs(reader, buf, end, depth)?);
                     }
                     _ => skip_element(reader, buf)?,
                 }
@@ -263,7 +281,9 @@ fn read_orientable_surface<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     reverse: bool,
+    depth: usize,
 ) -> Result<SurfaceRef> {
+    let depth = deeper(depth)?;
     let mut result: Option<SurfaceRef> = None;
     loop {
         buf.clear();
@@ -280,7 +300,7 @@ fn read_orientable_surface<R: BufRead>(
                         });
                         skip_element(reader, buf)?;
                     } else {
-                        let inner = read_base_surface_inline(reader, buf)?;
+                        let inner = read_base_surface_inline(reader, buf, depth)?;
                         result = Some(SurfaceRef {
                             reverse: reverse ^ inner.reverse,
                             target: inner.target,
@@ -303,6 +323,7 @@ fn read_orientable_surface<R: BufRead>(
 fn read_base_surface_inline<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
+    depth: usize,
 ) -> Result<SurfaceRef> {
     let mut result: Option<SurfaceRef> = None;
     loop {
@@ -324,7 +345,7 @@ fn read_base_surface_inline<R: BufRead>(
                     }
                     (true, b"OrientableSurface") => {
                         let reverse = orientation_reversed(&e);
-                        result = Some(read_orientable_surface(reader, buf, reverse)?);
+                        result = Some(read_orientable_surface(reader, buf, reverse, depth)?);
                     }
                     _ => skip_element(reader, buf)?,
                 }

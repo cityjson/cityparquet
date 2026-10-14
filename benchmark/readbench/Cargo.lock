@@ -483,7 +483,15 @@ version = "0.1.0"
 dependencies = [
  "citygml-core",
  "cjseq",
- "memchr",
+ "quick-xml",
+]
+
+[[package]]
+name = "citygml3"
+version = "0.1.0"
+dependencies = [
+ "citygml-core",
+ "cjseq",
  "quick-xml",
 ]
 
@@ -502,6 +510,7 @@ dependencies = [
  "city3d-stac-types",
  "citygml-core",
  "citygml2",
+ "citygml3",
  "cityparquet-schema",
  "cjseq",
  "futures",

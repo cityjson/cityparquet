@@ -156,10 +156,13 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
 - CityGML 3.0 only: a transportation space's own geometry and attributes, a
   `gen:GenericAttributeSet`, a height whose status is not `measured`, a
   constructive element's `con:filling` (a door or window as an object), the
-  dynamizer, point cloud and versioning modules, and `core:featureMember`
-  are not read. A `gen:GenericThematicSurface` is an untyped face, CityJSON
+  dynamizer, point cloud and versioning modules are not read. A city object in
+  a `core:featureMember` is read as one in a `cityObjectMember` is. A `gen:GenericThematicSurface` is an untyped face, CityJSON
   having no type for it. The `citygml-tools upgrade` of a PLATEAU file holds
   no i-UR ADE content, since citygml-tools drops what it has no module for.
+- A boundary surface's own properties (`gml:name`, generic attributes,
+  appearance, ADE properties) are not read; only its geometry and its
+  nested doors and windows are.
 - `MultiSolid` cannot be written (CityGML 2.0 `Building` has no `lodNMultiSolid`
   slot — a genuine format asymmetry, `multi_solids_skipped`).
 - XSD polish: canonical element ordering, `xs:date`/`gYear` lexical validity.
