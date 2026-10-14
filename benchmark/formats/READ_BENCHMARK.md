@@ -828,7 +828,15 @@ each cold number stands alone, one per format, one `full-read` only.
       the same treatment before its `citygml` row is content-equivalent to
       the others. Two geometries at the SAME LoD on one object are a
       different matter, and the whole corpus is normalised against them
-      before any artefact is built (Caveat 41).
+      before any artefact is built (Caveat 41). Semantic surfaces are the
+      third: CityGML 2.0's `_BoundarySurface` has `lod2MultiSurface`,
+      `lod3MultiSurface` and `lod4MultiSurface` but no `lod0MultiSurface`
+      or `lod1MultiSurface`, so a LoD 0 or LoD 1 geometry cannot carry
+      semantics there, and `citygml-tools` writes 3DBAG's LoD 1.3 solid
+      without the semantics every one of its faces carries. The same
+      normalisation therefore removes the semantics of every geometry below
+      LoD 2 (Caveat 41): all five artefacts of the slice hold semantic
+      surfaces at LoD 2.2 only.
 
     The synthesised artefact is verified after it is written, not trusted:
     `readbench_prepare.sh` re-reads it for a 2.0 declaration and for a
@@ -1330,7 +1338,8 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     parse-time gap against CityJSON therefore cannot be dismissed as
     whitespace.
 
-41. **The corpus holds at most one geometry per LoD and object.** Before any
+41. **The corpus holds at most one geometry per LoD and object, and no
+    semantic surfaces below LoD 2.** Before any
     artefact is built, `readbench_prepare.sh` normalises a CityJSON or
     CityJSONSeq source with `lod-normalise`
     (`benchmark/readbench/src/lod.rs`, `keep_first_per_lod`): each
@@ -1349,11 +1358,28 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     four formats. "The same LoD" is the writer's key exactly — the `lod`
     string as `Lod::parse` reads it, so `2` and `2.0` are one LoD — and a
     GeometryInstance never claims a LoD. The CityParquet stage then asserts
-    that the writer skipped nothing, and fails the dataset otherwise. On the
-    corpus, vienna_102081 loses 1,102 of its 2,204 geometries (each LoD 2
-    object carries a MultiSurface, kept, and a Solid, dropped; no vertex is
-    orphaned); the other five sources and the 3DBAG slice are unchanged. A
-    CityGML source is not normalised; none is in the corpus.
+    that the writer skipped nothing, and fails the dataset otherwise. The
+    same pass then removes the `semantics` member of every remaining
+    geometry whose LoD is below 2 (`remove_semantics_below_lod2`), because
+    CityGML 2.0 can hold semantic surfaces at LoD 2 to 4 only (Caveat 14):
+    without it, the CityGML artefact holds fewer semantic faces than the
+    other four. The LoD is the `lod` string as `Lod::parse` reads it, so
+    `1`, `1.0` and `1.3` are all below 2; boundaries, vertices, `material`
+    and `texture` are unchanged. A GeometryInstance keeps whatever it
+    carries and the `geometry-templates` are left as they are; no corpus
+    dataset has templates. `citygml-tools from-cityjson -v 2.0` writes the
+    same CityGML with or without these semantics (on a 3DBAG tile the two
+    documents are identical but for the random surface identifiers it mints
+    on every run), so the CityGML artefact does not depend on this rule.
+    `lod-normalise` reports both counts and the preparation log prints
+    them for every dataset. On the corpus, vienna_102081 loses 1,102 of its
+    2,204 geometries (each LoD 2 object carries a MultiSurface, kept, and a
+    Solid, dropped; no vertex is orphaned) and no semantics; the other five
+    sources carry no semantics below LoD 2 (Tokyo's LoD 0 and LoD 1
+    geometries and Montréal's LoD 0 ones have none) and are unchanged. The
+    3DBAG slice loses no geometry, and its LoD 1.3 solids lose their
+    semantics, about 5.8 million faces. A CityGML source is not normalised;
+    none is in the corpus.
 
 42. **Cross-format consistency covers what is returned, not only how
     many.** After the counts of Caveat 2, the coordinator's
@@ -1389,8 +1415,11 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     name no parent surface, and CityGML 2.0 can hold an opening only inside
     a wall or roof surface; `citygml-tools from-cityjson -v 2.0` writes the
     references but omits the polygons, and prints no warning, so its
-    synthesised CityGML holds about a quarter of the dataset's faces. No
-    corpus dataset carries Window or Door semantics, and none has a
+    synthesised CityGML holds about a quarter of the dataset's faces.
+    Content whose removal leaves what is measured intact is removed from
+    the source instead: a second geometry at one LoD, and semantic surfaces
+    below LoD 2 (Caveat 41). No corpus dataset carries Window or Door
+    semantics, and none has a
     dangling reference; as a consequence the corpus has no LoD 3 dataset
     with openings, and its only LoD 3 content is Tokyo's 21 LoD 3 solids
     and 103 LoD 3 installation geometries.

@@ -37,7 +37,7 @@ it without converting anything, the network benchmark reads the very same
 files over HTTP, and a run's evidence names the exact bytes it measured. It
 is public at `https://other-data.open3d.city`, under
 `cityparquet-paper/benchmark/v<chain>/`, one folder per preparation-chain
-version (`CHAIN_VERSION` in `scripts/readbench_prepare.sh`, currently 8):
+version (`CHAIN_VERSION` in `scripts/readbench_prepare.sh`, currently 9):
 
 ```
 v<chain>/manifest.json
@@ -130,11 +130,15 @@ uses and keeps it locally as `<id>.cityparquet+nobloom.parquet/`; the bloom
 run reuses that prepared variant while its chain stamp is current, rather
 than converting it again.
 
-The bucket holds chain 8 for the six city datasets (Rotterdam, Vienna, New
-York, Zurich, Tokyo and Montréal). The 3DBAG slice is added by
-`just bench-prep --rebuild-sources --datasets 3dbag_n1000000`, once, on a
-machine with the R2 token and enough memory for its CityGML synthesis; every
-other machine then downloads it with the default mode.
+The bucket holds the six city datasets (Rotterdam, Vienna, New York, Zurich,
+Tokyo and Montréal) and the 3DBAG slice. The slice is built by
+`just bench-prep --rebuild-sources --datasets 3dbag_n1000000` on a machine
+with the R2 token and enough memory for its CityGML synthesis; every other
+machine downloads it with the default mode. When the chain version changes,
+a dataset whose artefacts the new chain writes byte for byte, or one of its
+artefacts, is copied from `v<old>/` to `v<new>/` inside the bucket with
+`just corpus-carry-forward` rather than rebuilt (`scripts/readbench_upload.md`,
+"When the chain version changes").
 
 ## The network family
 
@@ -162,7 +166,7 @@ with `--network-profile fast,slow` or `all`, or give a custom one with
 formats that download whole files; latency penalises formats that make many
 range requests. The secondary target (`--network-target real --base-url <url>
 --key-layout bucket`) reads real object storage, such as the hosted corpus at
-`https://other-data.open3d.city/cityparquet-paper/benchmark/v8`; its result is a
+`https://other-data.open3d.city/cityparquet-paper/benchmark/v9`; its result is a
 snapshot of one network path at one time, not a repeatable measurement, and
 its params sidecar's `network` block (copied into the run manifest) says so
 (`snapshot`). That block records the base URL, the host and the addresses it
@@ -269,7 +273,7 @@ just bench-run --families network --profile short                     # typical
 just bench-run --families network --profile short --network-profile all
 just bench-run --families network --profile short --network-whole-file-scenarios all
 just bench-run --families network --datasets rotterdam --network-target real \
-  --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v8
+  --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v9
 ```
 
 ## Selecting work
@@ -458,12 +462,14 @@ it has no LoD 3 dataset with openings; Tokyo keeps 21 LoD 3 solids and 103
 LoD 3 installation geometries.
 For the same reason, preparation first normalises every CityJSON and
 CityJSONSeq source so that each CityObject holds at most one geometry per LoD,
-keeping the first in source order. CityParquet stores one geometry column per
-LoD, so this is a property of the corpus, and all five artefacts derive from
-the normalised source. Of the six corpus sources it changes Vienna only, and
-the other five pass through byte for byte; the 3DBAG
-slice is normalised the same way, and its preparation log reports how many
-geometries were dropped (Caveat 41).
+keeping the first in source order, and no geometry below LoD 2 carries
+semantic surfaces, which CityGML 2.0 cannot hold at LoD 0 or 1. CityParquet
+stores one geometry column per LoD, so the first rule is a property of the
+corpus too, and all five artefacts derive from the normalised source. Of the
+six corpus sources the normalisation changes Vienna only, which loses its
+duplicate LoD 2 geometries, and the other five pass through byte for byte;
+the 3DBAG slice loses the semantics of its LoD 1.3 solids. The preparation
+log reports both counts for every dataset (Caveat 41).
 
 The format comparison measures five formats: `citygml`, `cityjson`,
 `cityjsonseq`, `flatcitybuf` and `cityparquet`. CityParquet is one package per
