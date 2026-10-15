@@ -100,8 +100,16 @@ import lod4_building citygml $c2/lod4_building_v2.gml
 create_db railway_trees 25833 "urn:ogc:def:crs:EPSG::25833"
 import railway_trees citygml $c2/railway_trees_fragment.gml
 
-# The KIT LoD 3 railway scene citydb-tool ships, with its texture images.
+# The KIT LoD 3 railway scene citydb-tool ships, with its texture images,
+# also unpacked to target/citydb-test for the test that reads the file.
 create_db railway_scene 25833 "urn:ogc:def:crs:EPSG::25833"
 import railway_scene citygml /opt/citydb-tool/samples/datasets/railway_scene_lod3_v2.zip
+scene=$(cd "$crates/.." && pwd)/target/citydb-test/railway_scene
+rm -rf "$scene" && mkdir -p "$scene"
+tool=$("$CONTAINER" create "$TOOL_IMAGE")
+"$CONTAINER" cp "$tool:/opt/citydb-tool/samples/datasets/railway_scene_lod3_v2.zip" "$scene/scene.zip" >/dev/null
+"$CONTAINER" rm "$tool" >/dev/null
+python3 -m zipfile -e "$scene/scene.zip" "$scene"
+rm "$scene/scene.zip"
 
 echo "CITYDB_TEST_URL=postgresql://postgres:$PASSWORD@localhost:$PORT"

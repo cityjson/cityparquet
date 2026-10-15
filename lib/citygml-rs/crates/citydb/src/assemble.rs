@@ -50,7 +50,7 @@ use serde_json::Value as Json;
 use crate::appearance::appearance;
 use crate::catalogue::{Catalogue, Class, Ns};
 use crate::geometry::{self, Built, Surfaces};
-use crate::rows::{Batch, PropertyRow};
+use crate::rows::{Batch, FeatureRow, PropertyRow};
 
 /// How deep features may nest in one another: a guard against a cycle of
 /// containment.
@@ -263,17 +263,8 @@ impl<'a> Assembler<'a> {
         let batch = self.batch;
         let row = &batch.features[&id];
         let mut b = ObjectBuilder::new(row.objectid.clone(), class.name.clone());
-        for (name, value) in [
-            ("creationDate", &row.creation_date),
-            ("validFrom", &row.valid_from),
-            ("validTo", &row.valid_to),
-        ] {
-            if let Some(value) = value {
-                b.push_attribute(Attribute {
-                    name: AttributeName::Property(QName::module(Module::Core, name)),
-                    value: Value::String(value.clone()),
-                });
-            }
+        for attribute in stamps(row) {
+            b.push_attribute(attribute);
         }
         let mut pending = Pending::default();
         for p in self.properties(id) {
@@ -499,6 +490,11 @@ impl<'a> Assembler<'a> {
         };
         let generic = class.name == QName::module(Module::Generics, "GenericThematicSurface");
         let surface = (!generic).then(|| b.push_boundary_surface(class.name.clone(), parent));
+        if let Some(s) = surface {
+            for attribute in stamps(row) {
+                b.push_surface_attribute(s, attribute);
+            }
+        }
         for p in self.properties(id) {
             let ns = self.catalogue.namespace(p.namespace).cloned();
             match self.catalogue.datatype(p.datatype) {
@@ -769,6 +765,23 @@ fn scalar(p: &PropertyRow) -> Option<String> {
 
 /// Register the base polygons `bases` of reversed surfaces as xlink
 /// targets.
+/// A feature's creation date and validity, which the database keeps in
+/// columns of its own, as the attributes the XML readers read them as.
+fn stamps(row: &FeatureRow) -> impl Iterator<Item = Attribute> + '_ {
+    [
+        ("creationDate", &row.creation_date),
+        ("validFrom", &row.valid_from),
+        ("validTo", &row.valid_to),
+    ]
+    .into_iter()
+    .filter_map(|(name, value)| {
+        Some(Attribute {
+            name: AttributeName::Property(QName::module(Module::Core, name)),
+            value: Value::String(value.clone()?),
+        })
+    })
+}
+
 fn register(b: &mut ObjectBuilder, bases: Vec<(Option<String>, Polygon)>) {
     if !bases.is_empty() {
         b.register(Collected {
