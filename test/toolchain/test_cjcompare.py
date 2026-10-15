@@ -202,6 +202,19 @@ def test_moved_uv_fails_textures(railway, tmp_path):
     assert status(cjcompare.compare(str(RAILWAY), write(tmp_path, d)), "textures") == "fail"
 
 
+def test_every_failure_is_listed(railway, tmp_path):
+    # A caller that explains failures one by one (run.py against known.toml)
+    # must see each of them, not the first few examples.
+    d = copy.deepcopy(railway)
+    for uv in d["appearance"]["vertices-texture"][:50]:
+        uv[0] += 0.25
+    rep = cjcompare.compare(str(RAILWAY), write(tmp_path, d))
+    fails = rep["categories"]["textures"]["fail"]
+    assert fails > 8
+    listed = [f for f in rep["failures"] if f.startswith("fail:textures: ")]
+    assert len(listed) == fails
+
+
 def test_changed_image_fails_textures(railway, tmp_path):
     d = copy.deepcopy(railway)
     d["appearance"]["textures"][0]["image"] = "elsewhere.jpg"
@@ -217,12 +230,97 @@ def test_dropped_palettes_fail_appearance(railway, tmp_path):
     assert status(report, "materials") == "fail"
 
 
+def _reversed_faces(railway: dict) -> tuple[dict, str]:
+    """The railway with one textured MultiSurface's faces in reverse order,
+    each face keeping its semantics and appearance."""
+    oid, _ = first(
+        railway,
+        lambda c: any(
+            g["type"] == "MultiSurface" and len(g["boundaries"]) > 2 and "semantics" in g and "texture" in g
+            for g in c.get("geometry", [])
+        ),
+    )
+    d = copy.deepcopy(railway)
+    g = next(
+        g for g in d["CityObjects"][oid]["geometry"]
+        if g["type"] == "MultiSurface" and len(g["boundaries"]) > 2 and "semantics" in g and "texture" in g
+    )
+    g["boundaries"].reverse()
+    g["semantics"]["values"].reverse()
+    for theme in list(g.get("material", {}).values()) + list(g.get("texture", {}).values()):
+        if "values" in theme:
+            theme["values"].reverse()
+    return d, oid
+
+
+def test_reordered_faces_fail_unless_any_order(railway, tmp_path):
+    d, _ = _reversed_faces(railway)
+    path = write(tmp_path, d)
+    assert status(cjcompare.compare(str(RAILWAY), path), "coordinates") == "fail"
+    report = cjcompare.compare(str(RAILWAY), path, any_face_order=True)
+    assert report["ok"], report["failures"][:5]
+    assert status(report, "geometry") == "noted"
+
+
+def test_any_face_order_pairs_a_repeated_face_by_its_semantics(railway, tmp_path):
+    # A face repeated in a surface, once typed and once not: each copy pairs
+    # with its own, wherever the other side puts it.
+    src, oid = _reversed_faces(railway)
+    g = next(g for g in src["CityObjects"][oid]["geometry"] if g["type"] == "MultiSurface" and "texture" in g)
+    g.pop("texture", None)
+    g.pop("material", None)
+    g["boundaries"].append(copy.deepcopy(g["boundaries"][0]))
+    g["semantics"]["values"].append(None)
+    out = copy.deepcopy(src)
+    h = next(h for h in out["CityObjects"][oid]["geometry"] if h["type"] == "MultiSurface" and "semantics" in h and len(h["boundaries"]) == len(g["boundaries"]))
+    h["boundaries"].reverse()
+    h["semantics"]["values"].reverse()
+    report = cjcompare.compare(write(tmp_path, src, "src.city.json"), write(tmp_path, out), any_face_order=True)
+    assert report["ok"], report["failures"][:5]
+
+
+def test_any_face_order_still_sees_a_moved_vertex(railway, tmp_path):
+    d, oid = _reversed_faces(railway)
+    g = next(g for g in d["CityObjects"][oid]["geometry"] if g["type"] == "MultiSurface" and "texture" in g)
+    d["vertices"].append([x + 500 for x in d["vertices"][g["boundaries"][0][0][0]]])
+    g["boundaries"][0][0][0] = len(d["vertices"]) - 1
+    report = cjcompare.compare(str(RAILWAY), write(tmp_path, d), any_face_order=True)
+    assert status(report, "coordinates") == "fail"
+
+
 def test_changed_template_matrix_fails_templates(railway, tmp_path):
     oid, _ = first(railway, lambda c: any(g["type"] == "GeometryInstance" for g in c.get("geometry", [])))
     d = copy.deepcopy(railway)
     g = next(g for g in d["CityObjects"][oid]["geometry"] if g["type"] == "GeometryInstance")
     g["transformationMatrix"][0] *= 2
     assert status(cjcompare.compare(str(RAILWAY), write(tmp_path, d)), "templates") == "fail"
+
+
+def _moved_reference_point(railway: dict, translation: tuple[float, float, float]) -> dict:
+    """The railway with one instance's reference point moved a metre along
+    each axis and `translation` added to its matrix's translation."""
+    oid, _ = first(railway, lambda c: any(g["type"] == "GeometryInstance" for g in c.get("geometry", [])))
+    d = copy.deepcopy(railway)
+    g = next(g for g in d["CityObjects"][oid]["geometry"] if g["type"] == "GeometryInstance")
+    v = d["vertices"][g["boundaries"][0]]
+    d["vertices"].append([v[0] + 1000, v[1] + 1000, v[2] + 1000])
+    g["boundaries"] = [len(d["vertices"]) - 1]
+    for axis, i in enumerate((3, 7, 11)):
+        g["transformationMatrix"][i] += translation[axis]
+    return d
+
+
+def test_reference_point_moved_into_the_translation_is_noted(railway, tmp_path):
+    # The same placement, split between the reference point and the matrix
+    # another way (citydb-tool's exporter does this).
+    report = cjcompare.compare(str(RAILWAY), write(tmp_path, _moved_reference_point(railway, (-1.0, -1.0, -1.0))))
+    assert report["ok"], report["failures"]
+    assert status(report, "templates") == "noted"
+
+
+def test_moved_placement_fails_templates(railway, tmp_path):
+    report = cjcompare.compare(str(RAILWAY), write(tmp_path, _moved_reference_point(railway, (0.0, 0.0, 0.0))))
+    assert status(report, "templates") == "fail"
 
 
 def test_changed_template_vertex_fails_templates(railway, tmp_path):

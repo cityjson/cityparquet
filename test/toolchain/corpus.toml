@@ -437,6 +437,10 @@ reason = "no CityGML 3.0 reader yet (the citygml3 crate is planned in the CityGM
 #                    3DCityDB's create-db.sql takes it
 # vertex_precision   decimals citydb-tool's CityJSON export keeps (3 for
 #                    metres; 9 for degrees, the step cityparquet uses)
+# any_face_order     compare a surface's faces paired by geometry, not by
+#                    position (cjcompare --any-face-order): citydb-tool's
+#                    exporter reorders them, where the direct reader keeps
+#                    the order the source file has
 #
 # The published Ingolstadt.gml (ingolstadt-gml3) is not XML: it holds the
 # text of a Python bytes literal (b'<?xml ...), which citydb-tool refuses, so
@@ -453,6 +457,10 @@ exercises = "CityJSON import: solids with semantics, LoD 0, 1.2, 1.3 and 2.2 (ci
 dataset = "ingolstadt"
 srid = 32632
 srs_name = "urn:ogc:def:crs:EPSG::32632"
+# The buildings' faces: of the 4368 pairs of consecutive faces building
+# 4018215 has in Ingolstadt.city.json, citydb-tool's export keeps 4302
+# together and the direct reader 4366.
+any_face_order = true
 exercises = "CityJSON import: LoD 3 buildings with openings and installations"
 
 [[citydb]]

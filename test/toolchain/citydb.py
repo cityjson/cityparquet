@@ -230,6 +230,9 @@ def run_dataset(r, entry: dict, corpus: dict[str, dict], corpus_dir: Path, root:
     cp = r.tools.cityparquet
     env = dict(r.env, PGPASSWORD=PASSWORD)
     db1, db2 = f"{ds['id']}_1".replace("-", "_"), f"{ds['id']}_2".replace("-", "_")
+    # citydb-tool's exporter writes some surfaces' faces in another order
+    # than it imported them (corpus.toml, `any_face_order`).
+    reorders = bool(entry.get("any_face_order"))
 
     def sh(args: list) -> tuple[int, str, float, int | None]:
         """A command, its output, wall time and peak resident memory (KiB)."""
@@ -298,7 +301,7 @@ def run_dataset(r, entry: dict, corpus: dict[str, dict], corpus_dir: Path, root:
         r.record(rec, "rs export (package)", "pass" if rc == 0 else "fail", out[-1500:], seconds=secs)
         theirs, export_secs = tool_export(db1, "db1.city.jsonl", "citydb-tool export (DB1)")
         if rc == 0 and theirs is not None:
-            r.compare(rec, "C2 reader = citydb-tool (DB1)", plain(theirs), plain(ours), uv_tol=UV_TOL)
+            r.compare(rec, "C2 reader = citydb-tool (DB1)", plain(theirs), plain(ours), uv_tol=UV_TOL, any_face_order=reorders)
 
         if theirs is not None:
             # C6: the same package by way of citydb-tool's CityJSON export.
@@ -323,7 +326,7 @@ def run_dataset(r, entry: dict, corpus: dict[str, dict], corpus_dir: Path, root:
             # package's grid: within a step of DB1's is the same position.
             step = json.loads(ours.open(encoding="utf-8").readline())["transform"]["scale"]
             tol = ",".join(repr(x) for x in step)
-            r.compare(rec, "C3 database round trip (citydb-tool exports)", plain(theirs), plain(again), tol, uv_tol=UV_TOL)
+            r.compare(rec, "C3 database round trip (citydb-tool exports)", plain(theirs), plain(again), tol, uv_tol=UV_TOL, any_face_order=reorders)
 
         pkg2 = d / "pkg2"
         ok, _, _ = convert(db2, pkg2, "rs convert (DB2)")

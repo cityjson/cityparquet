@@ -212,11 +212,12 @@ class Run:
         self.results = open(out / "results.jsonl", "a", encoding="utf-8")
         self.env = dict(os.environ, CITYJSON_EXTENSION=str(tools.cityjson_ext), THREE_D_EXTENSION=str(tools.three_d_ext))
 
-    def record(self, ds: dict, step: str, status: str, detail: str = "", **extra) -> dict:
+    def record(self, ds: dict, step: str, status: str, detail: str = "", failures: list[str] | None = None, **extra) -> dict:
         if status == "fail":
             # Known only when every failure line is explained: one known issue
-            # must not hide an unexplained failure in the same step.
-            lines = [l for l in detail.splitlines() if l.startswith("fail:")] or [detail]
+            # must not hide an unexplained failure in the same step. `failures`
+            # is every line when the detail shows only a sample of them.
+            lines = failures or [l for l in detail.splitlines() if l.startswith("fail:")] or [detail]
             ids = []
             for line in lines:
                 hit = next(
@@ -262,7 +263,15 @@ class Run:
     # -- the comparisons ---------------------------------------------------
 
     def compare(
-        self, ds: dict, step: str, source: Path, output: Path, tol: str | None = None, pair: bool = False, uv_tol: str | None = None
+        self,
+        ds: dict,
+        step: str,
+        source: Path,
+        output: Path,
+        tol: str | None = None,
+        pair: bool = False,
+        uv_tol: str | None = None,
+        any_face_order: bool = False,
     ) -> dict:
         if not output.exists():
             return self.record(ds, step, "skip", f"{output.name} was not written")
@@ -274,6 +283,8 @@ class Run:
             args += ["--uv-tol", uv_tol]
         if pair:
             args.append("--pair-unmatched")
+        if any_face_order:
+            args.append("--any-face-order")
         rc, out, secs = self.sh(args)
         if rc == 2 or not rep_path.exists():
             return self.record(ds, step, "fail", f"comparator error: {out[-1500:]}", seconds=secs)
@@ -289,6 +300,7 @@ class Run:
             step,
             status,
             detail,
+            failures=rep["failures"],
             seconds=secs,
             categories=cats,
             objects=[rep["objects_source"], rep["objects_output"]],
@@ -300,14 +312,14 @@ class Run:
     def rs_compare(self, ds: dict, step: str, source: Path, output: Path) -> dict:
         if not output.exists():
             return self.record(ds, step, "skip", f"{output.name} was not written")
-        rc, out, secs = self.sh([self.tools.cityparquet, "compare", source, output])
+        rc, out, secs = self.sh([self.tools.cityparquet, "compare", "--all", source, output])
         if rc == 0:
             return self.record(ds, step, "pass", "", seconds=secs)
         # One `fail:` line per difference, each cut short, so that known.toml
-        # can account for every one of them.
-        lines = [l for l in out.splitlines() if l.strip()]
-        detail = "\n".join(f"fail:{l[:300]}" for l in lines[:40]) + (f"\n({len(lines) - 40} more)" if len(lines) > 40 else "")
-        return self.record(ds, step, "fail", detail, seconds=secs)
+        # can account for every one of them; the detail shows the first 40.
+        lines = [f"fail:{l[:300]}" for l in out.splitlines() if l.strip()]
+        detail = "\n".join(lines[:40]) + (f"\n({len(lines) - 40} more)" if len(lines) > 40 else "")
+        return self.record(ds, step, "fail", detail, failures=lines, seconds=secs)
 
     def gml_to_cityjson(self, gml: Path, outdir: Path) -> Path | None:
         outdir.mkdir(parents=True, exist_ok=True)
