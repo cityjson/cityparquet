@@ -50,6 +50,7 @@ quick-xml = "0.39"
 citygml-core = { path = "../citygml-rs/crates/core", version = "0.1.0" }
 citygml2 = { path = "../citygml-rs/crates/citygml2", version = "0.1.0" }
 citygml3 = { path = "../citygml-rs/crates/citygml3", version = "0.1.0" }
+citygml-citydb = { path = "../citygml-rs/crates/citydb", version = "0.1.0" }
 chrono = "0.4"
 flate2 = "1"
 object_store = { version = "0.13", features = ["http"] }

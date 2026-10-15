@@ -3,7 +3,7 @@
 Rust reference implementation of **CityParquet** — a cloud-native, columnar
 Parquet encoding for 3D city models, with an Arrow in-memory representation. It
 reads and writes CityJSON, CityJSONSeq and CityGML 2.0 and 3.0, and reads
-FlatCityBuf. Part of the CityParquet + CityLake research stack
+FlatCityBuf and 3DCityDB v5 databases. Part of the CityParquet + CityLake research stack
 (TU Delft 3D Geoinformation).
 
 CityParquet stores a city model as a **directory of Parquet files** — one row
@@ -84,7 +84,7 @@ Run via `cargo run -p cityparquet-cli -- <command>` (add `--release` for
 realistic timing). Six subcommands: `convert`, `export`, `compare`,
 `collection`, `validate` and `bench`.
 
-### convert — CityJSON/Seq, CityGML or FlatCityBuf → CityParquet package
+### convert — CityJSON/Seq, CityGML, FlatCityBuf or 3DCityDB → CityParquet package
 
 ```bash
 cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite
@@ -100,6 +100,21 @@ inputs merge into one dataset. The format is sniffed from the content.
   [docs/citygml-reader-writer-limitations.md](docs/citygml-reader-writer-limitations.md).
 - **FlatCityBuf input** is behind the `fcb` cargo feature (on for the CLI): the
   file is read front to back, its header standing in for the CityJSON one.
+- **A 3DCityDB v5 database** is an `INPUT` given as a `postgresql://` URL, on
+  its own, behind the `citydb` cargo feature (on for the CLI). It is read by
+  the `citygml-citydb` crate (`../citygml-rs`) inside one read-only
+  transaction: its current top-level features, a batch at a time, with their
+  appearance and implicit geometries. What the URL leaves out (host, user,
+  password, database, `sslmode`) comes from the `PG*` environment variables and
+  `~/.pgpass`, as for libpq; a password inside the URL works, with a warning.
+  The reference system is the database's SRID, the extent its features'
+  envelope. What the reader leaves out (a texture without an image, a class
+  with no CityJSON type) is counted on stderr, one `warning:` line per name.
+
+  ```bash
+  PGPASSWORD=… cityparquet convert postgresql://alice@db.example.org/citydb \
+      --citydb-schema citydb -o delft
+  ```
 
 Writes `OUTPUT_DIR/` containing one object table per CityGML module (e.g.
 `building.parquet`, `transportation.parquet`) + `metadata.json`,
@@ -121,6 +136,7 @@ Collection.
 | `--bloom-fpp`                   | `0.01`        | target false-positive probability of every bloom filter, strictly between 0 and 1                                                                                                                                                      |
 | `--batch-size`                  | `4096`        | encode batch size                                                                                                                                                                                                                      |
 | `--lod0`                        | off           | synthesise an LoD0 footprint into `geometry_lod0_0` for every object without a source LoD0 (ground surfaces first, else downward-facing faces)                                                                                         |
+| `--citydb-schema`               | `citydb`      | the schema of a database input's 3DCityDB instance                                                                                                                                                                                     |
 | `--crs`                         | unset         | operator-supplied CRS (`EPSG:25832` or bare `25832`) for a source that declares none; ignored for a source that declares its own                                                                                                       |
 | `--tolerate-invalid-appearance` | off           | drop a material/texture index that falls outside its local definitions array, and leave untextured a texture ring with fewer UVs than vertices, instead of aborting; counted in the report's trailing field and warned about on stderr |
 | `--partition`                   | unset         | split the output into one package per partition: `count` (+`--number N`), `features` (+`--feature-num M`), or `box` (+`--cell-size METRES`). Omit to write one package                                                                 |

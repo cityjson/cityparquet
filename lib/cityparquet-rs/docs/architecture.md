@@ -53,7 +53,7 @@ executable specification.
 CityJSON→package path. It is a **two-pass** design over a unified `Source`:
 
 ```
-Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 or 3.0 document, FlatCityBuf file)
+Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 or 3.0 document, FlatCityBuf file, 3DCityDB v5 database)
    │
    ├─ pass 1 ── scan ─────────► ScanResult { CityParquetSchema, dataset metadata }
    │            (LoDs, attribute columns, CRS, transform, dataset bbox;
@@ -76,7 +76,11 @@ Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 or 3.0 document, FlatCityB
   CityJSONSeq, CityGML 2.0 and 3.0 (`citygml`, which synthesises a CityJSON
   header and streams the features of the `citygml2` or `citygml3` crate from
   `../citygml-rs`, as the document's namespace says) and FlatCityBuf (`fcb`, behind the `fcb` feature, bridging
-  `fcb_core`'s CityJSON types to `cjseq` through JSON) behind one feature
+  `fcb_core`'s CityJSON types to `cjseq` through JSON) and 3DCityDB v5
+  (`Source::open_citydb`, behind the `citydb` feature: the `citygml-citydb`
+  crate assembles the database's rows into the same model objects the
+  CityGML readers yield, read in one read-only transaction so both passes see
+  one snapshot) behind one feature
   iterator, so nothing downstream cares which input shape it got. Several
   inputs merge (`merge::merge_sources`) into one `Source` that reads them in
   turn, requantising each onto the merged transform as it streams.

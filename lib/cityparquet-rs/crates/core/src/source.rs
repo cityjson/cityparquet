@@ -1,7 +1,8 @@
 //! Unified feature access over CityJSON documents, CityJSONSeq streams,
-//! CityGML 2.0 documents (via [`crate::citygml`], which synthesises a
-//! CityJSON header and streams `bldg:Building`s as features) and, with the
-//! `fcb` feature, FlatCityBuf files (via `crate::fcb`).
+//! CityGML 2.0 and 3.0 documents (via [`crate::citygml`], which synthesises
+//! a CityJSON header and streams top-level city objects as features), with
+//! the `fcb` feature FlatCityBuf files (via `crate::fcb`), and with the
+//! `citydb` feature 3DCityDB v5 databases (via `citygml-citydb`).
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
@@ -20,6 +21,8 @@ pub enum SourceFormat {
     CityJsonSeq,
     CityGml,
     FlatCityBuf,
+    /// A 3DCityDB v5 database ([`Source::open_citydb`]).
+    CityDb,
 }
 
 pub struct Source {
@@ -44,6 +47,11 @@ pub struct Source {
     /// The inputs of a merged source ([`Source::chained`]), read one after
     /// another; like `buffered`, the sole feature source when present.
     chained: Option<ChainedSource>,
+    /// The database a [`SourceFormat::CityDb`] source reads, connected and
+    /// inside its read-only transaction for as long as the source lives, so
+    /// that every pass sees the same snapshot.
+    #[cfg(feature = "citydb")]
+    citydb: Option<citygml_citydb::CityDb>,
     /// Whether `header.metadata.reference_system` was declared by an OPERATOR
     /// ([`Source::set_reference_system`]) rather than carried by the source
     /// itself. The one place this fact lives: the writer's `crs_source`
@@ -95,6 +103,8 @@ impl Source {
                 citygml: Some((version, Arc::new(document))),
                 buffered: None,
                 chained: None,
+                #[cfg(feature = "citydb")]
+                citydb: None,
                 crs_is_operator_supplied: false,
             });
         }
@@ -148,6 +158,8 @@ impl Source {
                 citygml: None,
                 buffered: None,
                 chained: None,
+                #[cfg(feature = "citydb")]
+                citydb: None,
                 crs_is_operator_supplied: false,
             })
         } else {
@@ -168,6 +180,8 @@ impl Source {
                 citygml: None,
                 buffered: None,
                 chained: None,
+                #[cfg(feature = "citydb")]
+                citydb: None,
                 crs_is_operator_supplied: false,
             })
         }
@@ -183,6 +197,8 @@ impl Source {
             citygml: None,
             buffered: None,
             chained: None,
+            #[cfg(feature = "citydb")]
+            citydb: None,
             crs_is_operator_supplied: false,
         })
     }
@@ -193,6 +209,65 @@ impl Source {
             "{} is a FlatCityBuf file; reading one needs the `fcb` feature",
             path.display()
         )))
+    }
+
+    /// Open the 3DCityDB v5 database `config` names, inside a read-only
+    /// transaction that lasts as long as the source.
+    ///
+    /// The header is the database's own: its reference system is
+    /// `EPSG:<srid>` of `database_srs` (none for SRID 0, which `--crs` can
+    /// then supply), its extent the envelope of its top-level features, and
+    /// the transform steps by the reference system's units from the extent's
+    /// lower corner, as for a CityGML document. The geometry templates are
+    /// the relative geometries its implicit geometries place.
+    #[cfg(feature = "citydb")]
+    pub fn open_citydb(config: &citygml_citydb::Config) -> Result<Self> {
+        use crate::citygml::reader::error;
+        let db = citygml_citydb::CityDb::connect(config).map_err(error)?;
+        let extent = db.extent().map_err(error)?;
+        let srid = db.srs().srid;
+        let code = (srid > 0).then(|| srid.to_string());
+        let scale = match code
+            .as_deref()
+            .and_then(|c| cityparquet_schema::crs::resolve_to_projjson(c).ok())
+        {
+            Some(projjson) => cityparquet_schema::crs::axis_scale(&projjson)?,
+            None => [cityparquet_schema::crs::MM; 3],
+        };
+        let mut header = CityJSON::new();
+        header.transform = cjseq::Transform {
+            scale,
+            translate: extent.map_or([0.0; 3], |e| [e[0], e[1], e[2]]),
+        };
+        if extent.is_some() || code.is_some() {
+            header.metadata = Some(cjseq::Metadata {
+                geographical_extent: extent,
+                identifier: None,
+                point_of_contact: None,
+                reference_date: None,
+                reference_system: code.as_deref().map(crate::citygml::crs::reference_system),
+                title: None,
+                other: serde_json::Map::new(),
+            });
+        }
+        let document = db.document().map_err(error)?;
+        if let Some((templates, appearance)) =
+            citygml_core::convert::cjseq::geometry_templates(document.templates()).map_err(error)?
+        {
+            header.geometry_templates = Some(templates);
+            header.appearance = appearance;
+        }
+        Ok(Self {
+            path: PathBuf::from(db.name()),
+            format: SourceFormat::CityDb,
+            header,
+            doc: None,
+            citygml: None,
+            buffered: None,
+            chained: None,
+            citydb: Some(db),
+            crs_is_operator_supplied: false,
+        })
     }
 
     /// Build an in-memory source from already-parsed parts: a `header`
@@ -221,6 +296,8 @@ impl Source {
                 doc_appearance,
             }),
             chained: None,
+            #[cfg(feature = "citydb")]
+            citydb: None,
             crs_is_operator_supplied: false,
         }
     }
@@ -245,6 +322,8 @@ impl Source {
                 parts,
                 doc_appearance,
             }),
+            #[cfg(feature = "citydb")]
+            citydb: None,
             crs_is_operator_supplied: false,
         }
     }
@@ -293,14 +372,14 @@ impl Source {
         }
         metadata.reference_system = Some(rs);
         self.crs_is_operator_supplied = true;
-        // A CityGML source has not been quantised yet — `parse_header` only
+        // A CityGML or database source has not been quantised yet — `parse_header` only
         // chose a transform, and `features()` applies it when the document is
         // streamed — so an operator-supplied CRS must re-derive the step from
         // the units it declares, or a degree-valued override would be read at
         // a metre-sized one. A CityJSON/Seq source is the opposite case: its
         // vertices are ALREADY integers against its own `transform`, and
         // changing the scale would silently reinterpret every one of them.
-        if self.format == SourceFormat::CityGml
+        if matches!(self.format, SourceFormat::CityGml | SourceFormat::CityDb)
             && let Some(rs) = self.header.metadata.as_ref().and_then(|m| {
                 m.reference_system
                     .as_ref()
@@ -428,6 +507,17 @@ impl Source {
                 "{}: reading FlatCityBuf needs the `fcb` feature",
                 self.path.display()
             ))),
+            #[cfg(feature = "citydb")]
+            SourceFormat::CityDb => {
+                let db = self.citydb.as_ref().expect("citydb set");
+                Ok(FeatureIter::CityDb(Box::new(
+                    db.features(self.header.transform.clone())
+                        .map_err(crate::citygml::reader::error)?,
+                )))
+            }
+            // Only `Source::open_citydb` makes one.
+            #[cfg(not(feature = "citydb"))]
+            SourceFormat::CityDb => Err(err("reading 3DCityDB needs the `citydb` feature".into())),
         }
     }
 }
@@ -599,6 +689,8 @@ pub enum FeatureIter<'a> {
     CityGml(Box<crate::citygml::FeatureReader>),
     #[cfg(feature = "fcb")]
     FlatCityBuf(Box<crate::fcb::FcbFeatures>),
+    #[cfg(feature = "citydb")]
+    CityDb(Box<citygml_citydb::Features<'a>>),
     /// In-memory features (an [`Source::from_parts`] source); each is cloned
     /// on yield so the iterator can hand back owned `CityJSONFeature`s like
     /// every other arm while the buffer stays intact for re-iteration.
@@ -610,6 +702,8 @@ pub enum FeatureIter<'a> {
 /// The features of a [`Source::chained`] source.
 pub struct ChainedFeatures<'a> {
     parts: std::slice::Iter<'a, Source>,
+    /// What the parts read so far left out ([`FeatureIter::left_out`]).
+    left_out: std::collections::BTreeMap<String, usize>,
     merged: &'a cjseq::Transform,
     batched: bool,
     /// The part being read, with its own transform when that differs from
@@ -621,6 +715,7 @@ impl<'a> ChainedFeatures<'a> {
     fn new(parts: &'a [Source], merged: &'a cjseq::Transform, batched: bool) -> Self {
         Self {
             parts: parts.iter(),
+            left_out: std::collections::BTreeMap::new(),
             merged,
             batched,
             current: None,
@@ -646,7 +741,12 @@ impl Iterator for ChainedFeatures<'_> {
                         return Some(Ok(feature));
                     }
                     Some(Err(e)) => return Some(Err(e)),
-                    None => self.current = None,
+                    None => {
+                        for (name, n) in features.left_out() {
+                            *self.left_out.entry(name).or_insert(0) += n;
+                        }
+                        self.current = None;
+                    }
                 }
             }
             let part = self.parts.next()?;
@@ -687,8 +787,37 @@ impl Iterator for FeatureIter<'_> {
             FeatureIter::CityGml(reader) => reader.next(),
             #[cfg(feature = "fcb")]
             FeatureIter::FlatCityBuf(reader) => reader.next(),
+            #[cfg(feature = "citydb")]
+            FeatureIter::CityDb(features) => {
+                Some(features.next()?.map_err(crate::citygml::reader::error))
+            }
             FeatureIter::Buffered(iter) => iter.next().map(|f| Ok(f.clone())),
             FeatureIter::Chained(features) => features.next(),
+        }
+    }
+}
+
+impl FeatureIter<'_> {
+    /// What the source's reader has left out so far, by name: members of a
+    /// class it does not read (`tran:Track`), and for a database also
+    /// properties, appearances and geometries the model has no place for
+    /// (`app:GeoreferencedTexture`). Empty for a source that leaves nothing
+    /// out. Complete once the stream is drained.
+    pub fn left_out(&self) -> std::collections::BTreeMap<String, usize> {
+        match self {
+            FeatureIter::CityGml(reader) => reader.skipped_members().clone(),
+            #[cfg(feature = "citydb")]
+            FeatureIter::CityDb(features) => {
+                use citygml_core::reader::ObjectStream;
+                let objects = features.reader();
+                let mut left_out = objects.dropped().clone();
+                for (name, n) in objects.skipped_members() {
+                    *left_out.entry(name.clone()).or_insert(0) += n;
+                }
+                left_out
+            }
+            FeatureIter::Chained(features) => features.left_out.clone(),
+            _ => std::collections::BTreeMap::new(),
         }
     }
 }

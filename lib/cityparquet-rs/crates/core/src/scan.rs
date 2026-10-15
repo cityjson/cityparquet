@@ -66,6 +66,9 @@ pub struct ScanResult {
     /// [`scan`] rejects any that does not (§9, CityJSON 2.0 §3).
     pub lods: Vec<Lod>,
     pub object_count: usize,
+    /// What the source's reader left out, by name
+    /// ([`crate::source::FeatureIter::left_out`]).
+    pub source_left_out: std::collections::BTreeMap<String, usize>,
     /// Union of every analysis geometry's bbox, `None` if none contributed one
     /// (`GeometryInstance`s produce no WKB, so they contribute nothing here).
     pub dataset_bbox: Option<[f64; 6]>,
@@ -197,6 +200,7 @@ fn to_schema_source_format(format: SourceFormat) -> SchemaSourceFormat {
         SourceFormat::CityGml => SchemaSourceFormat::CityGml,
         // spec 05: an other-source token for a format the spec does not enumerate.
         SourceFormat::FlatCityBuf => SchemaSourceFormat::Other("FlatCityBuf".to_string()),
+        SourceFormat::CityDb => SchemaSourceFormat::Other("3DCityDB".to_string()),
     }
 }
 
@@ -334,7 +338,8 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     };
 
     let mut ids: std::collections::HashSet<u128> = std::collections::HashSet::new();
-    for feature in source.features_batched()? {
+    let mut features = source.features_batched()?;
+    for feature in features.by_ref() {
         let feature: CityJSONFeature = feature?;
         let pool = VertexPool::new(&feature.vertices, &header.transform, axis_order);
 
@@ -584,10 +589,12 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         .map(|(key, set)| (key, set.into_iter().collect()))
         .collect();
 
+    let source_left_out = features.left_out();
     Ok(ScanResult {
         schema,
         lods,
         object_count,
+        source_left_out,
         dataset_bbox,
         crs_url,
         axis_order,

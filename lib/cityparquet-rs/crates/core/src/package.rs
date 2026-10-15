@@ -232,6 +232,11 @@ pub struct ConvertReport {
     /// Sorted runs the Hilbert sort spilled to disk; `0` when the rows fit
     /// in [`ConvertOptions::memory_budget`] (and under [`RowOrder::Source`]).
     pub sort_runs: usize,
+    /// What the source's reader left out, by name: members of a class it
+    /// does not read (`tran:Track`), and for a 3DCityDB database also
+    /// properties, appearances and geometries with no CityJSON form
+    /// (`app:GeoreferencedTexture`).
+    pub source_left_out: std::collections::BTreeMap<String, usize>,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -1503,6 +1508,7 @@ pub(crate) fn convert_source_impl(
         dropped_colliding_members: written.dropped_colliding_members,
         dropped_colliding_member_diagnostics: written.dropped_colliding_member_diagnostics,
         sort_runs: written.sort_runs,
+        source_left_out: scan_result.source_left_out.clone(),
     })
 }
 

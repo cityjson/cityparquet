@@ -27,9 +27,17 @@ enum Commands {
         /// Input files, directories, or glob patterns (CityJSON, CityJSONSeq,
         /// CityGML 2.0 or 3.0, FlatCityBuf). Multiple inputs are merged into one
         /// dataset; directories contribute their immediate
-        /// .json/.jsonl/.gml/.fcb children.
+        /// .json/.jsonl/.gml/.fcb children. A `postgresql://` URL is a
+        /// 3DCityDB v5 database, converted on its own; what the URL leaves
+        /// out comes from the PG* environment variables and ~/.pgpass, as
+        /// for libpq (`sslmode` goes in the URL).
         #[arg(value_name = "INPUTS", required = true, num_args = 1..)]
         inputs: Vec<PathBuf>,
+
+        /// The schema of a 3DCityDB database input's instance (default
+        /// citydb)
+        #[arg(long, value_name = "SCHEMA")]
+        citydb_schema: Option<String>,
 
         /// Output directory for the CityParquet package (parent directory of
         /// per-partition packages when --partition is given)
@@ -395,6 +403,38 @@ fn resolve_and_open(inputs: &[PathBuf]) -> CpResult<Vec<Source>> {
     Ok(sources)
 }
 
+/// `input` as a database URL, when it is one (`postgresql://` or
+/// `postgres://`).
+fn database_url(input: &std::path::Path) -> Option<&str> {
+    input
+        .to_str()
+        .filter(|s| s.starts_with("postgresql://") || s.starts_with("postgres://"))
+}
+
+/// Open the 3DCityDB database at `url`, its instance in `schema`.
+#[cfg(feature = "citydb")]
+fn open_database(url: &str, schema: Option<&str>) -> CpResult<Source> {
+    use cityparquet::citydb::{Config, has_password};
+    if has_password(url) {
+        eprintln!(
+            "warning: the database URL carries a password, which other users of this machine \
+             can see on the command line; PGPASSWORD or ~/.pgpass keeps it off it"
+        );
+    }
+    let mut config = Config::new(url);
+    if let Some(schema) = schema {
+        config.schema = schema.to_string();
+    }
+    Source::open_citydb(&config)
+}
+
+#[cfg(not(feature = "citydb"))]
+fn open_database(_url: &str, _schema: Option<&str>) -> CpResult<Source> {
+    Err(cityparquet::CityParquetError::Schema(
+        "reading a 3DCityDB database needs the `citydb` feature".to_string(),
+    ))
+}
+
 /// Collapse `sources` to one [`Source`]: the lone input directly, or — for
 /// several — a merged source that reads them in turn ([`merge_sources`]
 /// enforces a shared CRS, requantises onto one transform, and carries the
@@ -495,6 +535,7 @@ fn main() -> std::process::ExitCode {
     match cli.command {
         Commands::Convert {
             inputs,
+            citydb_schema,
             output,
             partition,
             number,
@@ -581,7 +622,23 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
 
-            let mut sources = match resolve_and_open(&inputs) {
+            let opened = match inputs.iter().find_map(|i| database_url(i)) {
+                Some(_) if inputs.len() > 1 => {
+                    eprintln!(
+                        "error: a database is converted on its own: give its URL as the only input"
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+                Some(url) => open_database(url, citydb_schema.as_deref()).map(|s| vec![s]),
+                None if citydb_schema.is_some() => {
+                    eprintln!(
+                        "error: --citydb-schema applies only to a database input (postgresql://…)"
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+                None => resolve_and_open(&inputs),
+            };
+            let mut sources = match opened {
                 Ok(sources) => sources,
                 Err(e) => {
                     eprintln!("error: {}", render_error(&e));
@@ -738,6 +795,9 @@ fn main() -> std::process::ExitCode {
                                      texture ring with fewer UVs than vertices, left untextured",
                                     report.invalid_appearance_refs_dropped
                                 );
+                            }
+                            for (name, n) in &report.source_left_out {
+                                eprintln!("warning: left out by the reader: {n} × {name}");
                             }
                             if report.sort_runs > 0 {
                                 eprintln!(
