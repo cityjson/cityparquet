@@ -456,7 +456,10 @@ fn compare_all_prints_every_difference() {
         .parse()
         .unwrap();
     let all = run(true);
-    assert!(!all.contains("more)"), "--all prints no truncation notice");
+    assert!(
+        !all.contains("more)") && !all.contains("truncated"),
+        "--all prints no truncation notice"
+    );
     assert_eq!(all.lines().count(), 20 + more);
 }
 
