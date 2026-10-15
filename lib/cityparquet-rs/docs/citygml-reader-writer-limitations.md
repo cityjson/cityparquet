@@ -146,6 +146,10 @@ since `grp:groupMember` only refers.
   without.
 - Raster, breakline and mass-point relief components have no CityJSON type
   and are tallied as skipped members.
+- A polygon written inline inside a reversed `gml:OrientableSurface` in a
+  MultiSurface, a boundary surface or a MultiSolid is read in its own
+  orientation; only an `xlink:href` or a solid's shell member there is read
+  reversed.
 - At a LoD with a solid, boundary-surface polygons that are not faces of the
   solid (an opening in a room's wall) are dropped: a CityParquet object holds
   one geometry per LoD. The readers keep a point or curve geometry
