@@ -19,6 +19,35 @@ pub fn known_ade_schema(namespace: &str) -> Option<String> {
         .then(|| format!("https://www.geospatial.jp/iur/schemas/{name}/{version}/{file}"))
 }
 
+/// Every module, for looking a prefix up.
+const MODULES: &[Module] = &[
+    Module::Core,
+    Module::Appearance,
+    Module::Bridge,
+    Module::Building,
+    Module::CityFurniture,
+    Module::CityObjectGroup,
+    Module::Construction,
+    Module::Dynamizer,
+    Module::Generics,
+    Module::LandUse,
+    Module::PointCloud,
+    Module::Relief,
+    Module::Transportation,
+    Module::Tunnel,
+    Module::Vegetation,
+    Module::Versioning,
+    Module::WaterBody,
+];
+
+/// The module whose [`module_prefix`] is `prefix`.
+pub fn module_of_prefix(prefix: &str) -> Option<Module> {
+    MODULES
+        .iter()
+        .copied()
+        .find(|&m| module_prefix(m) == prefix)
+}
+
 /// The prefix CityGML's own documents bind to a module's namespace, for
 /// naming a CityGML element found inside an ADE property.
 pub fn module_prefix(module: Module) -> &'static str {

@@ -6,5 +6,5 @@
 mod ade;
 mod classes;
 
-pub use ade::{known_ade_schema, module_prefix};
+pub use ade::{known_ade_schema, module_of_prefix, module_prefix};
 pub use classes::{cityjson_definition, cityjson_surface, cityjson_type};

@@ -21,6 +21,7 @@ dependencies = [
  "citygml-core",
  "cjseq",
  "quick-xml",
+ "serde",
  "serde_json",
 ]
 

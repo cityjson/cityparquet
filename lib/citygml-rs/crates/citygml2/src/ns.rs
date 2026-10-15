@@ -32,6 +32,15 @@ const MODULES: &[(&str, Module)] = &[
     (WATER_BODY, Module::WaterBody),
 ];
 
+/// The namespace URI of a CityGML 2.0 module, or `None` for a module
+/// CityGML 2.0 does not have.
+pub fn uri(module: Module) -> Option<&'static str> {
+    MODULES
+        .iter()
+        .find(|(_, m)| *m == module)
+        .map(|(ns, _)| *ns)
+}
+
 /// The module a CityGML 2.0 namespace URI names.
 pub fn module(uri: &[u8]) -> Option<Module> {
     MODULES

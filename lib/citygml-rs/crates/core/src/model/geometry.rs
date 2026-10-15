@@ -48,8 +48,10 @@ pub enum Shape {
     CompositeSurface(Vec<Face>),
     /// Shells, exterior first.
     Solid(Vec<Vec<Face>>),
-    /// Solids, each a list of shells.
+    /// Solids that share faces, each a list of shells.
     CompositeSolid(Vec<Vec<Vec<Face>>>),
+    /// Solids that need not touch, each a list of shells.
+    MultiSolid(Vec<Vec<Vec<Face>>>),
     /// A [`Template`] placed by an `ImplicitGeometry`.
     Instance(Instance),
 }
@@ -89,7 +91,9 @@ impl Shape {
             }
             Shape::MultiSurface(faces) | Shape::CompositeSurface(faces) => Box::new(faces.iter()),
             Shape::Solid(shells) => Box::new(shells.iter().flatten()),
-            Shape::CompositeSolid(solids) => Box::new(solids.iter().flatten().flatten()),
+            Shape::CompositeSolid(solids) | Shape::MultiSolid(solids) => {
+                Box::new(solids.iter().flatten().flatten())
+            }
         }
     }
 }

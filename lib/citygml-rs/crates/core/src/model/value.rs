@@ -37,4 +37,6 @@ pub enum Value {
     Boolean(bool),
     /// A list property (`storeyHeightsAboveGround`), each item typed.
     List(Vec<Value>),
+    /// A set of named values (`gen:genericAttributeSet`), in document order.
+    Set(Vec<Attribute>),
 }

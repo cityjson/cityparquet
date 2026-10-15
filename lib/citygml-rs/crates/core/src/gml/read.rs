@@ -535,6 +535,55 @@ pub fn collect_points<R: BufRead>(
     Ok(points)
 }
 
+/// A `gml:boundedBy` (positioned after its `Start`; consumes through its
+/// matching `End`) as `[minx, miny, minz, maxx, maxy, maxz]`: its
+/// `gml:Envelope`'s corners, when both are three numbers. A `gml:Null`, a
+/// two-dimensional envelope or a missing or unreadable corner gives `None`,
+/// since the envelope only restates what the geometry says.
+pub fn read_envelope<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Option<[f64; 6]>> {
+    let (mut lower, mut upper) = (None, None);
+    let mut depth = 1usize;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                let corner = match e.local_name().as_ref() {
+                    b"lowerCorner" => Some(&mut lower),
+                    b"upperCorner" => Some(&mut upper),
+                    _ => None,
+                };
+                match corner {
+                    Some(corner) if ns_is(&rr, NS_GML) => {
+                        let text = read_text(reader, buf)?;
+                        *corner = text
+                            .split_whitespace()
+                            .map(str::parse)
+                            .collect::<std::result::Result<Vec<f64>, _>>()
+                            .ok()
+                            .and_then(|v| <[f64; 3]>::try_from(v).ok());
+                    }
+                    _ => depth += 1,
+                }
+            }
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => return Err(eof("envelope")),
+            _ => {}
+        }
+    }
+    Ok(lower
+        .zip(upper)
+        .map(|(l, u)| [l[0], l[1], l[2], u[0], u[1], u[2]]))
+}
+
 /// Every line inside the current element's subtree: each `gml:LineString`,
 /// and each `gml:Curve` with its segments joined into one line. An `xlink`
 /// to a curve elsewhere is not followed. Call right after the subtree's

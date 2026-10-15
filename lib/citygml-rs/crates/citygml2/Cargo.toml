@@ -13,6 +13,7 @@ cjseq = { workspace = true, optional = true }
 
 [dev-dependencies]
 cjseq = { workspace = true }
+serde = "1"
 serde_json = { workspace = true }
 
 [features]

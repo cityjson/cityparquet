@@ -298,6 +298,10 @@ pub fn read_object<R: BufRead>(
                         push_leaf(reader, buf, &mut b, &name, AttrType::Str, || {
                             QName::new(Namespace::Gml, String::from_utf8_lossy(&name))
                         })?;
+                    } else if name == b"boundedBy" {
+                        if let Some(extent) = gml::read_envelope(reader, buf)? {
+                            b.set_extent(extent);
+                        }
                     } else {
                         skip_element(reader, buf)?;
                     }
@@ -396,7 +400,11 @@ fn read_module_property<R: BufRead>(
         (Module::Core, b"appearance") => {
             b.add_appearance(read_appearance(reader, buf, b"appearance", ns::APPEARANCE)?);
         }
-        (Module::Core, b"genericAttribute") => read_generic_attribute(reader, buf, b)?,
+        (Module::Core, b"genericAttribute") => {
+            if let Some(attribute) = read_generic_attribute(reader, buf)? {
+                b.push_attribute(attribute);
+            }
+        }
         (Module::Relief, b"lod") => {
             // A relief component's LoD is the LoD of its TIN, not an
             // attribute.
@@ -483,8 +491,8 @@ fn push_leaf<R: BufRead>(
 fn read_generic_attribute<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
-    b: &mut ObjectBuilder,
-) -> Result<()> {
+) -> Result<Option<Attribute>> {
+    let mut attribute = None;
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -496,7 +504,7 @@ fn read_generic_attribute<R: BufRead>(
                 match ty {
                     Some(ty) => {
                         if let Some((name, value)) = attributes::read_generic(reader, buf, ty)? {
-                            b.push_attribute(Attribute {
+                            attribute = Some(Attribute {
                                 name: AttributeName::Generic(name),
                                 value,
                             });
@@ -514,7 +522,7 @@ fn read_generic_attribute<R: BufRead>(
             _ => {}
         }
     }
-    Ok(())
+    Ok(attribute)
 }
 
 /// A construction's `height` property (positioned after its `Start`): the
@@ -949,6 +957,14 @@ fn read_surface<R: BufRead>(
                     }
                 } else if construction && name == b"fillingSurface" {
                     read_filling(reader, buf, b, surface, depth)?;
+                } else if let Some(surface) = surface {
+                    let gml = ns_is(&rr, NS_GML);
+                    let module = ns_of(&rr).and_then(|uri| ns::module(&uri));
+                    if let Some(attribute) =
+                        read_surface_attribute(reader, buf, &name, gml, module)?
+                    {
+                        b.push_surface_attribute(surface, attribute);
+                    }
                 } else {
                     skip_element(reader, buf)?;
                 }
@@ -963,6 +979,41 @@ fn read_surface<R: BufRead>(
         }
     }
     Ok(())
+}
+
+/// A boundary surface's property (positioned after its `Start`, named
+/// `name`, in GML's namespace when `gml`, else in CityGML module `module`)
+/// as an attribute: `gml:name` and `gml:description`, a generic attribute,
+/// or a module's property that holds text (a `TrafficArea`'s `function`).
+/// Anything else, an ADE's property included, is skipped.
+fn read_surface_attribute<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    name: &[u8],
+    gml: bool,
+    module: Option<Module>,
+) -> Result<Option<Attribute>> {
+    let (qname, ty) = match module {
+        _ if gml && matches!(name, b"name" | b"description") => (
+            QName::new(Namespace::Gml, String::from_utf8_lossy(name)),
+            AttrType::Str,
+        ),
+        Some(Module::Core) if name == b"genericAttribute" => {
+            return read_generic_attribute(reader, buf);
+        }
+        Some(module) if !gml => (
+            QName::module(module, String::from_utf8_lossy(name)),
+            attributes::property_type(module, name),
+        ),
+        _ => {
+            skip_element(reader, buf)?;
+            return Ok(None);
+        }
+    };
+    Ok(read_leaf_text(reader, buf, name)?.map(|text| Attribute {
+        name: AttributeName::Property(qname),
+        value: to_value(&text, ty),
+    }))
 }
 
 /// A `con:fillingSurface` (positioned after its `Start`): its door or window

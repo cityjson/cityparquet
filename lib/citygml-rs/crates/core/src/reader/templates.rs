@@ -91,6 +91,7 @@ impl Templates {
                 attributes: Vec::new(),
                 ade: Vec::new(),
                 addresses: Vec::new(),
+                extent: None,
                 geometries: vec![template.geometry.clone()],
                 boundary_surfaces: Vec::new(),
                 appearance: Default::default(),

@@ -95,6 +95,7 @@ pub struct ObjectBuilder {
     attributes: Vec<Attribute>,
     ade: Vec<XmlNode>,
     addresses: Vec<Address>,
+    extent: Option<[f64; 6]>,
     children: Vec<ObjectBuilder>,
     members: Vec<GroupMember>,
     appearance: Appearance,
@@ -127,10 +128,16 @@ impl ObjectBuilder {
             attributes: Vec::new(),
             ade: Vec::new(),
             addresses: Vec::new(),
+            extent: None,
             children: Vec::new(),
             members: Vec::new(),
             appearance: Appearance::default(),
         }
+    }
+
+    /// The object's own envelope (`gml:boundedBy`).
+    pub fn set_extent(&mut self, extent: [f64; 6]) {
+        self.extent = Some(extent);
     }
 
     /// Keep `geom` as the solid at `lod`, unless that LoD already has one.
@@ -234,8 +241,19 @@ impl ObjectBuilder {
     /// (a `Door` in a wall's opening) if any; returns its index, for
     /// [`Self::add_boundary_geometry`].
     pub fn push_boundary_surface(&mut self, class: QName, parent: Option<usize>) -> usize {
-        self.surfaces.push(BoundarySurface { class, parent });
+        self.surfaces.push(BoundarySurface {
+            class,
+            parent,
+            attributes: Vec::new(),
+        });
         self.surfaces.len() - 1
+    }
+
+    /// Add an attribute to boundary surface `surface`.
+    pub fn push_surface_attribute(&mut self, surface: usize, attribute: Attribute) {
+        if let Some(s) = self.surfaces.get_mut(surface) {
+            s.attributes.push(attribute);
+        }
     }
 
     /// The geometry of boundary surface `surface` at `lod`. Its identified
@@ -458,6 +476,7 @@ impl ObjectBuilder {
             attributes: self.attributes,
             ade: self.ade,
             addresses: self.addresses,
+            extent: self.extent,
             geometries,
             boundary_surfaces: self.surfaces,
             appearance: self.appearance,

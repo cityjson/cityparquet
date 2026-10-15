@@ -73,6 +73,9 @@ pub struct BoundarySurface {
     /// The surface this one is nested in: a wall, for the `Door` or `Window`
     /// in one of its openings.
     pub parent: Option<usize>,
+    /// Its properties that hold a value (a `TrafficArea`'s `function`, a
+    /// wall's `gml:name`) and its generic attributes, in document order.
+    pub attributes: Vec<Attribute>,
 }
 
 /// One city object as CityGML describes it, with its geometry resolved: every
@@ -95,6 +98,9 @@ pub struct GmlObject {
     pub ade: Vec<XmlNode>,
     /// The postal addresses, in document order.
     pub addresses: Vec<Address>,
+    /// The object's own `gml:boundedBy` envelope as `[minx, miny, minz,
+    /// maxx, maxy, maxz]`, when it gives a three-dimensional one.
+    pub extent: Option<[f64; 6]>,
     /// The geometries, in the order a conversion emits them.
     pub geometries: Vec<Geometry>,
     /// The object's boundary surfaces, which [`super::Face::surface`]

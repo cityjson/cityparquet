@@ -227,6 +227,10 @@ pub fn read_object<R: BufRead>(
                         push_leaf(reader, buf, &mut b, &name, AttrType::Str, || {
                             QName::new(Namespace::Gml, String::from_utf8_lossy(&name))
                         })?;
+                    } else if name == b"boundedBy" {
+                        if let Some(extent) = gml::read_envelope(reader, buf)? {
+                            b.set_extent(extent);
+                        }
                     } else {
                         skip_element(reader, buf)?;
                     }
@@ -424,6 +428,60 @@ fn push_leaf<R: BufRead>(
         });
     }
     Ok(())
+}
+
+/// What [`read_surface_attribute`] needs of a property's start tag.
+struct SurfaceProperty {
+    uri: Vec<u8>,
+    /// Whether the property is in GML's namespace.
+    gml: bool,
+    /// Its `name` attribute, which names a generic attribute.
+    generic_name: Option<String>,
+    /// Whether it is in the module of the surface's owner.
+    own_module: bool,
+}
+
+/// A boundary surface's property (positioned after its `Start`, named
+/// `name`) as an attribute: `gml:name` and `gml:description`, a generic
+/// attribute, a `core:` property, or one of its own module's (a
+/// `TrafficArea`'s `function`). Anything else, an ADE's property included,
+/// is skipped; so is a property holding elements.
+fn read_surface_attribute<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    name: &[u8],
+    property: SurfaceProperty,
+) -> Result<Option<Attribute>> {
+    let module = ns::module(&property.uri);
+    let leaf = |reader: &mut NsReader<R>, buf: &mut Vec<u8>, ty, qname: QName| {
+        Ok::<_, Error>(read_leaf_text(reader, buf, name)?.map(|text| Attribute {
+            name: AttributeName::Property(qname),
+            value: to_value(&text, ty),
+        }))
+    };
+    if property.gml && matches!(name, b"name" | b"description") {
+        let qname = QName::new(Namespace::Gml, String::from_utf8_lossy(name));
+        return leaf(reader, buf, AttrType::Str, qname);
+    }
+    if let (Some(Module::Generics), Some(ty)) = (module, attributes::generic_attr(name)) {
+        let value = attributes::read_generic(reader, buf, ty)?;
+        return Ok(value
+            .zip(property.generic_name)
+            .map(|(value, name)| Attribute {
+                name: AttributeName::Generic(name),
+                value,
+            }));
+    }
+    match module {
+        Some(module) if property.own_module || module == Module::Core => {
+            let qname = QName::module(module, String::from_utf8_lossy(name));
+            leaf(reader, buf, attributes::property_type(module, name), qname)
+        }
+        _ => {
+            skip_element(reader, buf)?;
+            Ok(None)
+        }
+    }
 }
 
 /// A `gen:` generic attribute (positioned after its `Start`). One without a
@@ -742,8 +800,16 @@ fn read_semantic_surface<R: BufRead>(
                     read_semantic_surface(reader, buf, b, idx, &name, (ns, ns), depth)?;
                 } else if own_module && name == b"opening" {
                     read_semantic_surface(reader, buf, b, surface, &name, (ns, own), depth)?;
-                } else {
-                    skip_element(reader, buf)?;
+                } else if let Some(attribute) = {
+                    let property = SurfaceProperty {
+                        uri: ns_of(&rr).unwrap_or_default(),
+                        gml: ns_is(&rr, NS_GML),
+                        generic_name: get_attr_local(&e, b"name"),
+                        own_module,
+                    };
+                    read_surface_attribute(reader, buf, &name, property)?
+                } {
+                    b.push_surface_attribute(surface, attribute);
                 }
             }
             Event::End(e) if e.local_name().as_ref() == end_name => break,

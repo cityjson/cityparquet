@@ -20,6 +20,9 @@ pub struct Summary {
     pub geometries: BTreeMap<(String, String, String), usize>,
     /// Semantic surfaces per (object type, surface type).
     pub surfaces: BTreeMap<(String, String), usize>,
+    /// Attribute names and JSON types per semantic surface type. The `id`
+    /// citygml-tools gives a surface from its `gml:id` is not compared.
+    pub surface_attributes: BTreeMap<String, BTreeSet<(String, &'static str)>>,
     /// Attribute names and JSON types per object type.
     pub attributes: BTreeMap<String, BTreeSet<(String, &'static str)>>,
     /// City Object members other than the ones above (`address`), per
@@ -84,8 +87,14 @@ impl Summary {
                 );
                 *self.geometries.entry(key).or_default() += 1;
                 for s in g["semantics"]["surfaces"].as_array().into_iter().flatten() {
-                    let key = (ty.clone(), s["type"].as_str().unwrap().to_string());
-                    *self.surfaces.entry(key).or_default() += 1;
+                    let surface = s["type"].as_str().unwrap().to_string();
+                    let set = self.surface_attributes.entry(surface.clone()).or_default();
+                    for (name, value) in s.as_object().unwrap() {
+                        if !matches!(name.as_str(), "type" | "parent" | "children" | "id") {
+                            set.insert((name.clone(), json_type(value)));
+                        }
+                    }
+                    *self.surfaces.entry((ty.clone(), surface)).or_default() += 1;
                 }
                 for member in ["material", "texture"] {
                     if g.get(member).is_some() {

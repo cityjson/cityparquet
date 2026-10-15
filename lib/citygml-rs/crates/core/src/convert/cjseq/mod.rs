@@ -9,6 +9,8 @@
 //! CityGML class names become CityJSON types through
 //! [`crate::vocabulary::cityjson_type`], and boundary surface classes
 //! semantic surface types through [`crate::vocabulary::cityjson_surface`].
+//! A boundary surface's attributes become its semantic surface's members,
+//! and an object's own envelope its `geographicalExtent`.
 //!
 //! What an ADE adds becomes what a CityJSON Extension adds: a class, a
 //! surface or a property of a CityGML object is named with a `+`
@@ -30,6 +32,10 @@
 //!   with one value,
 //!   when [`extensions`] states it once as `xmlAttributes`;
 //! - GML geometry inside an ADE property is left out.
+
+mod to_gml;
+
+pub use to_gml::{ExtensionNs, Extensions, GmlContext, ncname, template_lods, templates_to_gml};
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -120,6 +126,7 @@ pub fn geometry_templates(
             attributes: Vec::new(),
             ade: Vec::new(),
             addresses: Vec::new(),
+            extent: None,
             geometries: vec![template.geometry.clone()],
             boundary_surfaces: Vec::new(),
             appearance: template.appearance.clone(),
@@ -180,6 +187,7 @@ fn emit(object: &GmlObject, my_id: &str, parent_id: Option<&str>, out: &mut Out<
     };
     let thetype = CityObjectType::try_from(type_name).map_err(build_error)?;
     let mut co = CityObject::new(thetype);
+    co.geographical_extent = object.extent;
     co.geometry = Some(geometries);
     let mut attrs = attributes(&object.attributes);
     ade_attributes(object, out.ade, &mut attrs)?;
@@ -544,6 +552,16 @@ fn attributes(attributes: &[Attribute]) -> Map<String, Json> {
     map
 }
 
+/// A boundary surface's attributes as its semantic surface's members,
+/// less any named like a member CityJSON gives the surface itself.
+fn surface_attributes(list: &[Attribute]) -> Map<String, Json> {
+    let mut map = attributes(list);
+    for reserved in ["type", "parent", "children"] {
+        map.remove(reserved);
+    }
+    map
+}
+
 fn json(value: &Value) -> Json {
     match value {
         Value::String(s) => Json::String(s.clone()),
@@ -551,6 +569,7 @@ fn json(value: &Value) -> Json {
         Value::Double(f) => Json::from(*f),
         Value::Boolean(b) => Json::Bool(*b),
         Value::List(items) => Json::Array(items.iter().map(json).collect()),
+        Value::Set(members) => Json::Object(attributes(members)),
     }
 }
 
@@ -692,9 +711,8 @@ fn geometry(g: &Geometry, object: &GmlObject, vertices: &mut impl Vertices) -> R
             template: TemplateIndex(instance.template),
             transformation_matrix: instance.matrix,
         },
-        Shape::CompositeSolid(solids) => CjGeometry::CompositeSolid {
-            lod,
-            boundaries: solids
+        Shape::CompositeSolid(solids) | Shape::MultiSolid(solids) => {
+            let boundaries = solids
                 .iter()
                 .map(|solid| {
                     solid
@@ -702,8 +720,8 @@ fn geometry(g: &Geometry, object: &GmlObject, vertices: &mut impl Vertices) -> R
                         .map(|s| s.iter().map(|f| vertices.surface(f)).collect())
                         .collect()
                 })
-                .collect::<Result<_>>()?,
-            semantics: surfaces.map(|surfaces| Semantics {
+                .collect::<Result<_>>()?;
+            let semantics = surfaces.map(|surfaces| Semantics {
                 surfaces,
                 values: Some(
                     solids
@@ -719,10 +737,25 @@ fn geometry(g: &Geometry, object: &GmlObject, vertices: &mut impl Vertices) -> R
                         .collect(),
                 ),
                 other: Map::new(),
-            }),
-            material: None,
-            texture: None,
-        },
+            });
+            if matches!(g.shape, Shape::MultiSolid(_)) {
+                CjGeometry::MultiSolid {
+                    lod,
+                    boundaries,
+                    semantics,
+                    material: None,
+                    texture: None,
+                }
+            } else {
+                CjGeometry::CompositeSolid {
+                    lod,
+                    boundaries,
+                    semantics,
+                    material: None,
+                    texture: None,
+                }
+            }
+        }
     })
 }
 
@@ -770,7 +803,7 @@ fn semantic_surfaces(g: &Geometry, object: &GmlObject) -> Result<SurfaceSubset> 
                 .map_err(build_error)?,
                 parent: surface.parent.map(|p| SurfaceIndex(renumber[&p])),
                 children: (!children.is_empty()).then_some(children),
-                other: Map::new(),
+                other: surface_attributes(&surface.attributes),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -848,7 +881,8 @@ fn apply_materials(
                         .collect(),
                 );
             }
-            (CjGeometry::CompositeSolid { material, .. }, Shape::CompositeSolid(solids)) => {
+            (CjGeometry::CompositeSolid { material, .. }, Shape::CompositeSolid(solids))
+            | (CjGeometry::MultiSolid { material, .. }, Shape::MultiSolid(solids)) => {
                 *material = Some(
                     colouring
                         .iter()
@@ -984,7 +1018,8 @@ fn apply_textures(
                         .collect::<Result<_>>()?,
                 );
             }
-            (CjGeometry::CompositeSolid { texture, .. }, Shape::CompositeSolid(solids)) => {
+            (CjGeometry::CompositeSolid { texture, .. }, Shape::CompositeSolid(solids))
+            | (CjGeometry::MultiSolid { texture, .. }, Shape::MultiSolid(solids)) => {
                 *texture = Some(
                     covering
                         .iter()

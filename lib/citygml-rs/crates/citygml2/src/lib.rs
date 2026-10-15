@@ -18,6 +18,7 @@
 
 pub mod ns;
 mod reader;
+pub mod writer;
 
 pub use citygml_core::reader::{Document, ObjectStream, Preamble, scan_preamble};
 #[cfg(feature = "cjseq")]
