@@ -39,7 +39,7 @@ fn source_with_crs(path: &std::path::Path) -> Source {
             title: None,
             other: Default::default(),
         })
-        .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
+        .reference_system = Some(cityparquet::citygml::crs::Crs::Epsg("7415".into()).reference_system());
     let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
     Source::from_parts(
         header,

@@ -33,9 +33,11 @@
 //!   when [`extensions`] states it once as `xmlAttributes`;
 //! - GML geometry inside an ADE property is left out.
 
+mod header;
 mod to_gml;
 mod writer;
 
+pub use header::{header_from, header_with};
 pub use to_gml::{ExtensionNs, Extensions, GmlContext, ncname, template_lods, templates_to_gml};
 pub use writer::{Document, Report, Writer, WriterOptions};
 

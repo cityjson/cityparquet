@@ -106,7 +106,7 @@ pub enum CityGmlVersion {
 }
 
 /// How a `.gml` export writes its document. The features the package
-/// rebuilds are written by the `citygml2` or `citygml3` writer, which
+/// rebuilds are written by the version's writer, through `citygml`, which
 /// leaves out what the version cannot hold and counts it in
 /// [`ExportReport::citygml`].
 #[derive(Debug, Clone, Default)]
@@ -153,7 +153,7 @@ pub struct ExportReport {
     pub parked_features: usize,
     /// For a `.gml` output, what the document holds and what its version
     /// could not; `None` for the others.
-    pub citygml: Option<citygml_core::convert::cjseq::Report>,
+    pub citygml: Option<citygml::Report>,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -750,7 +750,7 @@ fn reference_system(meta: &CityMetadata) -> Result<Option<ReferenceSystem>> {
         _ => None,
     };
     match (authority, code.as_deref()) {
-        (Some("EPSG"), Some(code)) => Ok(Some(crate::citygml::crs::reference_system(code))),
+        (Some("EPSG"), Some(code)) => Ok(Some(crate::citygml::crs::Crs::Epsg(code.to_string()).reference_system())),
         // OGC:CRS84 / CRS84h are the only non-EPSG CRSs in the vendored table;
         // rebuild their registered OGC CRS URLs (versions per the OGC
         // definitions server) so a lon/lat package without source_metadata
@@ -1957,8 +1957,7 @@ enum OutputKind {
     /// A document has one vertex pool, so every feature is collected first.
     Doc(OutputFile, Box<CityJSON>, Vec<CityJSONFeature>),
     /// A CityGML document, written a feature at a time.
-    Gml2(Box<citygml2::writer::Writer<OutputFile>>),
-    Gml3(Box<citygml3::writer::Writer<OutputFile>>),
+    Gml(Box<citygml::Writer<OutputFile>>),
 }
 
 /// Features serialised per parallel chunk of a CityJSONSeq export.
@@ -2001,21 +2000,19 @@ impl OutputWriter {
             }
             OutputFormat::Doc => OutputKind::Doc(file, Box::new(header), Vec::new()),
             OutputFormat::Gml => {
-                let options = citygml_core::convert::cjseq::WriterOptions {
+                let options = citygml::WriterOptions {
                     ade_xmlns: opts.citygml.ade_xmlns.clone(),
                     ade_schemas: opts.citygml.ade_schemas.clone(),
                     ..Default::default()
                 };
-                match opts.citygml.version {
-                    CityGmlVersion::V2_0 => OutputKind::Gml2(Box::new(
-                        citygml2::writer::Writer::new(file, &header, options)
-                            .map_err(crate::citygml::reader::error)?,
-                    )),
-                    CityGmlVersion::V3_0 => OutputKind::Gml3(Box::new(
-                        citygml3::writer::Writer::new(file, &header, options)
-                            .map_err(crate::citygml::reader::error)?,
-                    )),
-                }
+                let version = match opts.citygml.version {
+                    CityGmlVersion::V2_0 => citygml::Version::V2_0,
+                    CityGmlVersion::V3_0 => citygml::Version::V3_0,
+                };
+                OutputKind::Gml(Box::new(
+                    citygml::Writer::new(&version, file, &header, options)
+                        .map_err(crate::citygml::reader::error)?,
+                ))
             }
         });
         Ok(writer)
@@ -2030,10 +2027,7 @@ impl OutputWriter {
                 }
             }
             OutputKind::Doc(_, _, features) => features.push(feature),
-            OutputKind::Gml2(w) => w
-                .write_feature(&feature)
-                .map_err(crate::citygml::reader::error)?,
-            OutputKind::Gml3(w) => w
+            OutputKind::Gml(w) => w
                 .write_feature(&feature)
                 .map_err(crate::citygml::reader::error)?,
         }
@@ -2057,11 +2051,11 @@ impl OutputWriter {
     }
 
     /// Ends the output; a CityGML document's report.
-    fn finish(mut self) -> Result<Option<citygml_core::convert::cjseq::Report>> {
+    fn finish(mut self) -> Result<Option<citygml::Report>> {
         self.finish_inner()
     }
 
-    fn finish_inner(&mut self) -> Result<Option<citygml_core::convert::cjseq::Report>> {
+    fn finish_inner(&mut self) -> Result<Option<citygml::Report>> {
         self.flush_seq()?;
         let (mut file, report) = match self.kind.take().expect("finished once") {
             OutputKind::Seq(file, _) => (file, None),
@@ -2074,11 +2068,7 @@ impl OutputWriter {
                 write!(file, "{}", serde_json::to_string(&doc)?).map_err(write_error)?;
                 (file, None)
             }
-            OutputKind::Gml2(w) => {
-                let (file, report) = w.finish().map_err(crate::citygml::reader::error)?;
-                (file, Some(report))
-            }
-            OutputKind::Gml3(w) => {
+            OutputKind::Gml(w) => {
                 let (file, report) = w.finish().map_err(crate::citygml::reader::error)?;
                 (file, Some(report))
             }
