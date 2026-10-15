@@ -17,7 +17,8 @@ pub struct Polygon {
     /// `ring="#id"` names.
     pub ring_ids: Vec<Option<String>>,
     /// The `gml:id`s of the identified surface aggregates (`CompositeSurface`,
-    /// `MultiSurface`) the polygon is read inside, innermost first: a
+    /// `MultiSurface`, a TIN's `TriangulatedSurface` or `Tin`) the polygon is
+    /// read inside, innermost first: a
     /// material targeting one of them colours the polygon.
     pub groups: Vec<String>,
 }

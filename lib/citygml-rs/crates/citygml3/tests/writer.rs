@@ -226,6 +226,7 @@ fn plateau_vegetation_survives_the_writer() {
 #[test]
 fn a_lod3_building_and_relief_survive_the_writer() {
     survives("lod4_building_v2.gml", &[]);
+    survives("tin_relief_fragment.gml", &[]);
 }
 
 #[test]

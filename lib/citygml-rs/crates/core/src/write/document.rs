@@ -470,6 +470,7 @@ impl<W: Write> Base<W> {
             lods: vec![BTreeSet::new(); o.boundary_surfaces.len()],
             targets: HashSet::new(),
             rings: HashMap::new(),
+            tin: None,
         };
         for (g, geometry) in o.geometries.iter().enumerate() {
             let Some(n) = lod_number(&geometry.lod) else {
@@ -561,6 +562,36 @@ impl<W: Write> Base<W> {
                 tags.push(tag);
             }
             plan.tags[g] = tags;
+        }
+        // A TIN's triangles carry no `gml:id`, so a material colours them
+        // through the `gml:TriangulatedSurface`'s, which it can when it
+        // colours every triangle.
+        if let Some(g) = plan
+            .property
+            .iter()
+            .position(|p| p.as_deref() == Some("tin"))
+        {
+            let triangles: Vec<Option<String>> = o.geometries[g]
+                .shape
+                .faces()
+                .map(|f| f.polygon.id.clone())
+                .collect();
+            for id in triangles.iter().flatten() {
+                plan.targets.remove(id);
+            }
+            plan.rings
+                .retain(|_, polygon| !triangles.contains(&Some(polygon.clone())));
+            let tin = self.fresh_id();
+            if let Some(all) = triangles.into_iter().collect::<Option<HashSet<String>>>() {
+                for m in &mut o.appearance.materials {
+                    if all.iter().all(|t| m.targets.contains(t)) {
+                        m.targets.retain(|t| !all.contains(t));
+                        m.targets.push(tin.clone());
+                    }
+                }
+            }
+            plan.targets.insert(tin.clone());
+            plan.tin = Some(tin);
         }
         if untagged > 0 {
             for _ in 0..untagged {
@@ -725,6 +756,9 @@ pub struct Plan {
     pub targets: HashSet<String>,
     /// Ring `gml:id` -> the `gml:id` of its polygon, for the rings written.
     pub rings: HashMap<String, String>,
+    /// The `gml:id` of the `gml:TriangulatedSurface` a relief's TIN is
+    /// written as.
+    pub tin: Option<String>,
 }
 
 impl Plan {
