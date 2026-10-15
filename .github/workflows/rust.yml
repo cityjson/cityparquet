@@ -115,6 +115,17 @@ jobs:
         working-directory: lib/cityparquet-rs
         run: just fixtures
 
+      # The writer tests validate every document they write with
+      # citygml-tools when CITYGML_TOOLS names it (the pin of
+      # benchmark/scripts/fetch_tools.sh; Java 17 is on the runner).
+      - name: Fetch citygml-tools
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/citygml-tools.zip" \
+            https://github.com/citygml4j/citygml-tools/releases/download/v2.5.0/citygml-tools-2.5.0.zip
+          echo "bb2949fbc6c3ec44ec85c25a0bcdfe9accde9cbdb9e26ec773889779694710b1  $RUNNER_TEMP/citygml-tools.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/citygml-tools.zip" -d "$RUNNER_TEMP"
+          echo "CITYGML_TOOLS=$RUNNER_TEMP/citygml-tools-2.5.0/citygml-tools" >> "$GITHUB_ENV"
+
       - name: just check
         working-directory: lib/cityparquet-rs
         run: just check
@@ -143,8 +154,19 @@ jobs:
         working-directory: lib/citygml-rs
         run: rustup component add rustfmt clippy
 
-      # Self-contained: its tests read the CityGML files committed under each
-      # crate's tests/data, so nothing is fetched.
+      # The writer tests validate every document they write with
+      # citygml-tools when CITYGML_TOOLS names it (the pin of
+      # benchmark/scripts/fetch_tools.sh; Java 17 is on the runner).
+      - name: Fetch citygml-tools
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/citygml-tools.zip" \
+            https://github.com/citygml4j/citygml-tools/releases/download/v2.5.0/citygml-tools-2.5.0.zip
+          echo "bb2949fbc6c3ec44ec85c25a0bcdfe9accde9cbdb9e26ec773889779694710b1  $RUNNER_TEMP/citygml-tools.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/citygml-tools.zip" -d "$RUNNER_TEMP"
+          echo "CITYGML_TOOLS=$RUNNER_TEMP/citygml-tools-2.5.0/citygml-tools" >> "$GITHUB_ENV"
+
+      # Its tests read the CityGML files committed under each crate's
+      # tests/data.
       - name: just check
         working-directory: lib/citygml-rs
         run: just check

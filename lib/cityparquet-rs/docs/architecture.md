@@ -162,11 +162,12 @@ parked_features` counts these. A run that re-opens, or rows for a family
 already written, are refused, so export also keeps one 128-bit hash per
 feature written. CityJSONSeq output is written as families
 complete; a CityJSON document collects every feature, since it has one
-vertex pool. The CityGML writer uses the same assembler and spills its
-members to a temporary file, because the envelope precedes them; a
-BuildingPart that a non-conforming package files in a family of its own waits
-until its Building's family, parked for naming a child it lacks, claims it.
-Output goes to a hidden partial file renamed into place on success.
+vertex pool. CityGML output passes each feature to a `citygml2` or `citygml3`
+writer (`OutputWriter` in `export.rs`), which writes it as it comes, the
+envelope taken from the header's extent, and reports what the version cannot
+hold when it finishes. A BuildingPart that a non-conforming package files in
+a family of its own is held by the writer until its Building comes, or the
+Building until the part does, and written inside it. Output goes to a hidden partial file renamed into place on success.
 
 Its correctness hinges on **manifest authority**:
 

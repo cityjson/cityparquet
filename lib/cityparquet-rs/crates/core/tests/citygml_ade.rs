@@ -46,11 +46,7 @@ fn round_trip(source: &Path, dir: &Path) -> (PathBuf, PathBuf) {
     let report = validate_package(&pkg).unwrap();
     assert!(report.is_conformant(), "{report}");
     let out = dir.join("out.city.jsonl");
-    export(&ExportOptions {
-        package_dir: pkg.clone(),
-        output: out.clone(),
-    })
-    .unwrap();
+    export(&ExportOptions::new(pkg.clone(), out.clone())).unwrap();
     let cmp = compare_datasets(source, &out, &CompareOptions::default()).unwrap();
     assert!(cmp.equal, "{:#?}", cmp.differences);
     (pkg, out)

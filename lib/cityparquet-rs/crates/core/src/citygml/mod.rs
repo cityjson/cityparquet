@@ -3,14 +3,13 @@
 //! Reading is the `lib/citygml-rs` crates': this module sniffs the version,
 //! synthesises the CityJSON header (CRS and quantisation transform,
 //! [`parse_header`]) and adapts the reader of that version's feature stream
-//! ([`FeatureReader`]) to this crate's errors. [`writer`] writes a package
-//! back out as CityGML 2.0.
+//! ([`FeatureReader`]) to this crate's errors. Writing CityGML is
+//! [`crate::export`]'s, through the same crates' writers.
 
 pub mod crs;
 
 mod header;
 pub mod reader;
-pub mod writer;
 
 pub use citygml_core::reader::Document;
 pub use citygml_core::{

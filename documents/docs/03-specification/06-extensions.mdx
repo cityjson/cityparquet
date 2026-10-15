@@ -164,6 +164,7 @@ extension's schema document rather than embedding it:
 | `xmlns` |  | CityGML ADE only: the ADE's XML namespace URI. |
 | `xmlAttributes` |  | CityGML ADE only: the XML attributes that every occurrence of an ADE element carries with one value, by element local name, then attribute name (`{"width": {"uom": "m"}}`); see [CityGML ADE content](#cityjson-form-of-citygml-ade-content). |
 | `extraCityObjects`, `extraSemanticSurfaces`, `extraRootProperties`, `extraAttributes` |  | The names the extension adds, as a CityJSON Extension document lists them (`extraAttributes` by City Object type), when the source states them with the declaration; kept verbatim. |
+| `substitutionGroups`, `containers`, `propertyOrder` |  | CityGML ADE only, when the ADE's XML Schema was read: the CityGML element each ADE attribute, class and container substitutes for, as `{namespace URI}local`; the element a CityGML 3.0 `adeOf…` hook holds each attribute in; and the order of the attributes and geometry properties of each extended class and container. Where a CityGML writer puts the ADE's elements; kept verbatim. |
 
 A file that carries any extension name — a prefixed attribute column, `object_type`
 value or semantic surface type — **MUST** declare that name's namespace here. Every file
@@ -208,7 +209,8 @@ The document's `extensions` member is rebuilt from `city.extensions`: each entry
 `name` becomes the member key, with its `url`, `version` and every other field it
 carries. A name with no declared
 prefix is written unchanged. On export to CityGML, `xmlns` gives the XML namespace the
-ADE's names are written in.
+ADE's names are written in, and `substitutionGroups`, `containers` and `propertyOrder`
+where its elements go.
 
 ## CityJSON form of CityGML ADE content
 
@@ -221,8 +223,10 @@ CityGML gives them the CityJSON form below, and from there they follow the rules
   URL, else the ADE's published schema when the writer knows it, else the location as
   written, else the namespace URI; `version` the last segment of the namespace URI
   when that is a version number, else empty (CityJSON requires the member); `xmlns`
-  the namespace URI; and its classes, semantic surfaces and attributes in
-  `extraCityObjects`, `extraSemanticSurfaces` and `extraAttributes`.
+  the namespace URI; its classes, semantic surfaces and attributes in
+  `extraCityObjects`, `extraSemanticSurfaces` and `extraAttributes`; and, when its
+  schema was read, what the schema says of where its elements go in
+  `substitutionGroups`, `containers` and `propertyOrder`.
 - **The schema.** A writer reads an ADE's XML Schema when the document's
   `xsi:schemaLocation` names it by a path relative to the document and that file
   exists (the PLATEAU archive's `../../schemas/iur/uro/3.2/urbanObject.xsd`), with the

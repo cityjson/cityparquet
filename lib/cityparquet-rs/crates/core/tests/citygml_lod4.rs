@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
-use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::validate::validate_package;
@@ -103,11 +102,7 @@ fn a_citygml_lod4_solid_round_trips_through_the_package() {
     // Package -> CityGML keeps the LoD4 solid as `bldg:lod4Solid`, and that
     // document reads back to the same LoD4 geometry.
     let gml = dir.path().join("written.gml");
-    write_package(&WriteOptions {
-        package_dir: pkg.clone(),
-        output: gml.clone(),
-    })
-    .unwrap();
+    export(&ExportOptions::new(pkg.clone(), gml.clone())).unwrap();
     assert!(
         std::fs::read_to_string(&gml)
             .unwrap()
@@ -120,11 +115,7 @@ fn a_citygml_lod4_solid_round_trips_through_the_package() {
     // Package -> CityJSON writes the LoD as "4.0" and counts it, so the CLI
     // can warn that CityJSON 2.0 defines no LoD 4.
     let json = dir.path().join("exported.city.json");
-    let exported = export(&ExportOptions {
-        package_dir: pkg,
-        output: json.clone(),
-    })
-    .unwrap();
+    let exported = export(&ExportOptions::new(pkg, json.clone())).unwrap();
     assert!(
         std::fs::read_to_string(&json)
             .unwrap()

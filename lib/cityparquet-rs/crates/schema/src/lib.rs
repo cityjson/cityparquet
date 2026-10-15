@@ -15,7 +15,7 @@ pub use attributes::{AttributeInferer, AttributeType};
 pub use error::{CityParquetError, Result};
 pub use extensions::ExtensionNaming;
 pub use metadata::{
-    CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, CrsState, ExtensionAdds,
+    AdeLayout, CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, CrsState, ExtensionAdds,
     ExtensionDeclaration, ExtensionDeclarations, GEOPARQUET_VERSION, GeoColumnEntry, GeoMetadata,
     Orientation3d, SourceFormat,
 };

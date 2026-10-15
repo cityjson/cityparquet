@@ -29,11 +29,7 @@ fn implicit_geometries_round_trip_through_a_package() {
     assert!(report.is_conformant(), "{report}");
 
     let out = dir.path().join("out.city.jsonl");
-    export(&ExportOptions {
-        package_dir: pkg,
-        output: out.clone(),
-    })
-    .unwrap();
+    export(&ExportOptions::new(pkg, out.clone())).unwrap();
     let text = std::fs::read_to_string(&out).unwrap();
     let mut lines = text
         .lines()

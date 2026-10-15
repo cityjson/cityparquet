@@ -1,13 +1,13 @@
 # CityGML reader/writer — supported scope & known limitations
 
-Status as of 2026-10-14. The CityGML 2.0 and 3.0 readers (the `citygml2` and
+Status as of 2026-10-15. The CityGML 2.0 and 3.0 readers (the `citygml2` and
 `citygml3` crates in `lib/citygml-rs`, chosen by the document's namespace and
-adapted in `crates/core/src/citygml/`) and the CityGML 2.0 writer round-trip
-3D city models through the CityParquet package. This document
-records what is supported and what remains, for the paper's scope section and
-future work. The **package round-trip is lossless** for everything listed as
-supported — where the emitted CityGML is not strictly XSD-valid, the lenient
-reader still reads it back identically.
+adapted in `crates/core/src/citygml/`) and the same crates' CityGML 2.0 and
+3.0 writers, driven by `export`, round-trip 3D city models through the
+CityParquet package. This document records what is supported and what
+remains, for the paper's scope section and future work. The **package
+round-trip is lossless** for everything listed as supported, and the CityGML
+written is valid against the CityGML schemas and its ADEs'.
 
 ## Supported
 
@@ -49,6 +49,7 @@ attribute names and types, addresses and appearance palettes
   child in its feature; one referenced by `xlink:href` stays a feature of its
   own and names the group among its `parents`, wherever it sits in the
   document (the reader indexes the groups in its up-front pass).
+- `gen:GenericAttributeSet`, as an attribute holding its members.
 - `ImplicitGeometry` (`lodNImplicitRepresentation`): each relative geometry
   becomes a CityJSON template in the header's `geometry-templates`, coloured
   and textured by the CityModel-level appearance that targets it, and each
@@ -99,25 +100,30 @@ surface is not tagged with that surface.
   the CityJSON type of the object; an ADE class specialising a CityGML class
   goes to that class's table when its schema is read.
 
-**Writer (CityParquet → CityGML), scope W-M1…W-M5:**
+**Writers (CityParquet → CityGML 2.0 or 3.0).** `export` rebuilds each
+feature as CityJSON and writes it with the `citygml2` writer, or the
+`citygml3` one under `--citygml-version 3.0`: every class the version has,
+each property in its content model's order, boundary surfaces with their
+openings, implicit geometries and their templates, materials and textures,
+addresses, group members (referred to by `xlink:href` across features), and
+ADE properties and classes under their namespaces, in CityGML 3.0 in the
+`adeOf…` hook and container the package's extension declaration names. On
+the PLATEAU tiles with their i-UR ADEs, the CityGML 3.0 samples and the OGC
+Test ADE, a LoD 4 building, building parts, appearances and 3DBAG's Delft
+tile, the document is valid in `citygml-tools validate` and reads back equal
+to the source (`crates/core/tests/citygml_export.rs`).
 
-- `Building`/`BuildingPart` with LoD solids/CompositeSolid (`lod1Solid` to
-  `lod4Solid`), semantic surfaces, attributes, materials, textures; a child
-  surface (a Door or Window) nested in its parent wall's `bldg:opening`.
+What a version cannot hold is left out and counted in the export report
+(`ExportReport::citygml`), which the CLI prints as warnings: a geometry at a
+whole LoD its object already has one of that kind at (3DBAG's LoD 1.2 and 1.3
+are both LoD 1), a boolean generic attribute (written as text), a semantic
+surface's LoD 1 faces in CityGML 2.0 (kept untagged), a LoD 4 geometry in
+CityGML 3.0 (written at LoD 3 when its object has none there), a class the
+version lacks, and an ADE property for another CityGML version. In CityGML
+3.0 a member a group holds is written after it as an object of its own,
+since `grp:groupMember` only refers.
 
 ## Deferred / not yet supported
-
-### Writer round-trip for the reader-only features above
-
-The reader ingests these but the CityGML **writer** does not yet emit them (they
-still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
-
-- Non-building 1st-level objects (CG-7 writer side; `non_building_skipped`).
-- BuildingInstallation emission (CG-5 writer side).
-- CityModel-level appearance / non-building appearance emission.
-- `ImplicitGeometry` emission.
-
-### Other documented limitations
 
 - A group's `grp:parent` and `grp:geometry` are not read. A member read from a
   stream (`FeatureReader::from_reader`, one pass) does not name the groups that
@@ -140,9 +146,10 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
   and are tallied as skipped members.
 - At a LoD with a solid, boundary-surface polygons that are not faces of the
   solid (an opening in a room's wall) are dropped: a CityParquet object holds
-  one geometry per LoD. For the same reason a point or curve geometry
-  (`lodNMultiCurve`, `lodNNetwork`) at a LoD that also has surfaces is
-  dropped.
+  one geometry per LoD. The readers keep a point or curve geometry
+  (`lodNMultiCurve`, `lodNNetwork`) beside the surfaces of its LoD, but a
+  package stores only the first geometry of a LoD and counts the rest
+  (`skipped_same_lod_geometries`).
 - An ADE's schema is read only when `xsi:schemaLocation` names it by a path
   relative to the document that resolves, as in the PLATEAU archive; one named
   by URL is not fetched. Without its schema an ADE class goes to its ADE's own
@@ -154,7 +161,7 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
   a boundary surface or of the CityModel, and ADE appearance are left out; the reader tallies the geometry by property
   name (`ade_geometries`).
 - CityGML 3.0 only: a transportation space's own geometry and attributes, a
-  `gen:GenericAttributeSet`, a height whose status is not `measured`, a
+  height whose status is not `measured`, a
   constructive element's `con:filling` (a door or window as an object), the
   dynamizer, point cloud and versioning modules are not read. A city object in
   a `core:featureMember` is read as one in a `cityObjectMember` is. A `gen:GenericThematicSurface` is an untyped face, CityJSON
@@ -163,9 +170,9 @@ still round-trip CityGML→parquet→**CityJSON**, just not →CityGML):
 - A boundary surface's own properties (`gml:name`, generic attributes,
   appearance, ADE properties) are not read; only its geometry and its
   nested doors and windows are.
-- `MultiSolid` cannot be written (CityGML 2.0 `Building` has no `lodNMultiSolid`
-  slot — a genuine format asymmetry, `multi_solids_skipped`).
-- XSD polish: canonical element ordering, `xs:date`/`gYear` lexical validity.
+- A `MultiSolid` is written only by a CityGML 2.0 class with a
+  `lodNMultiSolid` or `lodNGeometry` property; elsewhere, and in CityGML 3.0,
+  it is left out and counted.
 - `TexCoordGen` / texture UV seams; cross-building
   shared/external geometry; coordinate-magnitude CRS sniffing.
 

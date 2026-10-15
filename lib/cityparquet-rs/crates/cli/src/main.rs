@@ -1,6 +1,5 @@
-use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
-use cityparquet::export::{ExportOptions, export};
+use cityparquet::export::{CityGmlVersion, ExportOptions, export};
 use cityparquet::inputs::resolve_inputs;
 use cityparquet::merge::merge_sources;
 use cityparquet::package::{ConvertOptions, RowOrder, convert_source};
@@ -168,6 +167,21 @@ enum Commands {
         /// Output file (.city.jsonl for Seq, .city.json for doc, .gml for CityGML)
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
+
+        /// The CityGML version a .gml output is written in: 2.0 or 3.0
+        #[arg(long, default_value = "2.0", value_parser = parse_citygml_version)]
+        citygml_version: CityGmlVersion,
+
+        /// The XML namespace of an extension whose declaration names none,
+        /// as NAME=URI; repeatable
+        #[arg(long, value_name = "NAME=URI", value_parser = parse_pair)]
+        ade_xmlns: Vec<(String, String)>,
+
+        /// Where an ADE's XML Schema is, by its namespace, as URI=LOCATION,
+        /// for the document's xsi:schemaLocation in place of the declared
+        /// one; repeatable
+        #[arg(long, value_name = "URI=LOCATION", value_parser = parse_pair)]
+        ade_schema: Vec<(String, String)>,
     },
 
     /// Compare two CityJSON/CityJSONSeq datasets for semantic equality
@@ -299,6 +313,40 @@ impl RecipeArg {
 
 /// A byte count, optionally with a binary `K`, `M` or `G` suffix
 /// (`--memory-budget`).
+fn parse_citygml_version(text: &str) -> Result<CityGmlVersion, String> {
+    match text {
+        "2.0" => Ok(CityGmlVersion::V2_0),
+        "3.0" => Ok(CityGmlVersion::V3_0),
+        other => Err(format!(
+            "CityGML {other} is not written; expected 2.0 or 3.0"
+        )),
+    }
+}
+
+/// `KEY=VALUE`, split at the first `=`.
+fn parse_pair(text: &str) -> Result<(String, String), String> {
+    match text.split_once('=') {
+        Some((key, value)) if !key.is_empty() && !value.is_empty() => {
+            Ok((key.to_string(), value.to_string()))
+        }
+        _ => Err(format!("expected KEY=VALUE, got {text:?}")),
+    }
+}
+
+/// The pairs `flag` was given, by key; a key given twice is refused.
+fn unique_pairs(
+    flag: &str,
+    pairs: Vec<(String, String)>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for (key, value) in pairs {
+        if out.insert(key.clone(), value).is_some() {
+            return Err(format!("{flag} {key} given twice"));
+        }
+    }
+    Ok(out)
+}
+
 fn parse_size(text: &str) -> Result<usize, String> {
     let text = text.trim();
     let (digits, shift) = match text.chars().last().map(|c| c.to_ascii_uppercase()) {
@@ -725,70 +773,56 @@ fn main() -> std::process::ExitCode {
         Commands::Export {
             package_dir,
             output,
+            citygml_version,
+            ade_xmlns,
+            ade_schema,
         } => {
-            // A `.gml` output goes to the native CityGML 2.0 writer; every
-            // other extension is CityJSON/CityJSONSeq via `export`.
-            if output.extension().and_then(|e| e.to_str()) == Some("gml") {
-                let opts = WriteOptions {
-                    package_dir,
-                    output,
-                };
-                match write_package(&opts) {
-                    Ok(report) => {
-                        println!(
-                            "{} buildings written; {} non-building skipped, {} without geometry, \
-                             {} composite solids written, {} multi-solids skipped, \
-                             {} lod columns skipped, {} attributes written, {} attributes skipped",
-                            report.buildings_written,
-                            report.non_building_skipped,
-                            report.buildings_without_solid_skipped,
-                            report.composite_solids_written,
-                            report.multi_solids_skipped,
-                            report.lod_columns_skipped,
-                            report.attributes_written,
-                            report.attributes_skipped,
-                        );
-                        std::process::ExitCode::SUCCESS
-                    }
-                    Err(e) => {
-                        eprintln!("error: {}", render_error(&e));
-                        std::process::ExitCode::FAILURE
-                    }
+            let mut opts = ExportOptions::new(package_dir, output);
+            opts.citygml.version = citygml_version;
+            match (
+                unique_pairs("--ade-xmlns", ade_xmlns),
+                unique_pairs("--ade-schema", ade_schema),
+            ) {
+                (Ok(xmlns), Ok(schemas)) => {
+                    opts.citygml.ade_xmlns = xmlns;
+                    opts.citygml.ade_schemas = schemas;
                 }
-            } else {
-                let opts = ExportOptions {
-                    package_dir,
-                    output,
-                };
-
-                match export(&opts) {
-                    Ok(report) => {
-                        println!(
-                            "{} {} {} {}",
-                            report.feature_count,
-                            report.object_count,
-                            report.instance_geometries_dropped,
-                            report.appearance_refs_dropped
-                        );
-                        if !report.lod4_geometries.is_empty() {
-                            let count: usize = report.lod4_geometries.values().sum();
-                            let labels = report
-                                .lod4_geometries
-                                .keys()
-                                .map(|l| format!("\"{l}\""))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            eprintln!(
-                                "warning: {count} geometries are LoD 4, written as {labels}; \
-                                 CityJSON 2.0 defines LoDs 0 to 3 only"
-                            );
+                (Err(e), _) | (_, Err(e)) => {
+                    eprintln!("error: {e}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            }
+            match export(&opts) {
+                Ok(report) => {
+                    println!(
+                        "{} {} {} {}",
+                        report.feature_count,
+                        report.object_count,
+                        report.instance_geometries_dropped,
+                        report.appearance_refs_dropped
+                    );
+                    if let Some(citygml) = &report.citygml {
+                        for (what, count) in citygml.losses.iter() {
+                            eprintln!("warning: CityGML: {what}: {count}");
                         }
-                        std::process::ExitCode::SUCCESS
+                    } else if !report.lod4_geometries.is_empty() {
+                        let count: usize = report.lod4_geometries.values().sum();
+                        let labels = report
+                            .lod4_geometries
+                            .keys()
+                            .map(|l| format!("\"{l}\""))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        eprintln!(
+                            "warning: {count} geometries are LoD 4, written as {labels}; \
+                             CityJSON 2.0 defines LoDs 0 to 3 only"
+                        );
                     }
-                    Err(e) => {
-                        eprintln!("error: {}", render_error(&e));
-                        std::process::ExitCode::FAILURE
-                    }
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: {}", render_error(&e));
+                    std::process::ExitCode::FAILURE
                 }
             }
         }

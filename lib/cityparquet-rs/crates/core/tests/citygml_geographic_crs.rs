@@ -153,8 +153,6 @@ fn package_xy_bounds(pkg: &std::path::Path) -> (f64, f64) {
 
 #[test]
 fn the_citygml_writer_emits_the_axis_order_its_srs_name_declares() {
-    use cityparquet::citygml::writer::{WriteOptions, write_package};
-
     let tmp = tempfile::tempdir().unwrap();
     let pkg = tmp.path().join("pkg");
     let out_gml = tmp.path().join("out.gml");
@@ -163,10 +161,10 @@ fn the_citygml_writer_emits_the_axis_order_its_srs_name_declares() {
         pkg.clone(),
     ))
     .unwrap();
-    write_package(&WriteOptions {
-        package_dir: pkg,
-        output: out_gml.clone(),
-    })
+    cityparquet::export::export(&cityparquet::export::ExportOptions::new(
+        pkg,
+        out_gml.clone(),
+    ))
     .unwrap();
 
     let gml = std::fs::read_to_string(&out_gml).unwrap();

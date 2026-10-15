@@ -35,11 +35,7 @@ fn a_group_and_a_member_it_references_keep_their_link_in_separate_features() {
     assert!(report.is_conformant(), "{report}");
 
     let out = dir.path().join("out.city.jsonl");
-    export(&ExportOptions {
-        package_dir: pkg,
-        output: out.clone(),
-    })
-    .unwrap();
+    export(&ExportOptions::new(pkg, out.clone())).unwrap();
     let features: Vec<serde_json::Value> = std::fs::read_to_string(&out)
         .unwrap()
         .lines()

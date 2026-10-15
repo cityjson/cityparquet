@@ -14,7 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::error::{CityParquetError, Result};
-use crate::metadata::{ExtensionAdds, ExtensionDeclaration, ExtensionDeclarations, XmlAttributes};
+use crate::metadata::{
+    AdeLayout, ExtensionAdds, ExtensionDeclaration, ExtensionDeclarations, XmlAttributes,
+};
 use crate::types::{ExtensionClassDecl, ExtensionRegistry};
 
 /// Derives an extension's namespace from its source name (spec "Extensions",
@@ -38,8 +40,8 @@ pub fn derive_namespace(name: &str) -> Result<String> {
 }
 
 /// Reads a CityJSON document's `extensions` member (a map from extension
-/// name to `{url, version}`, and for a CityGML ADE `xmlns` and
-/// `xmlAttributes`) into the `city.extensions` footer object, keyed by
+/// name to `{url, version}`, and for a CityGML ADE `xmlns`, `xmlAttributes`
+/// and the [`AdeLayout`] members) into the `city.extensions` footer object, keyed by
 /// derived namespace. `None` (no member) stays `None`; an empty object
 /// stays an empty map. A declaration without a string `url`, an empty or
 /// ill-formed namespace, and two extensions deriving the same namespace are
@@ -86,6 +88,8 @@ pub fn declarations_from_cityjson(
             .transpose()?;
         let adds = serde_json::from_value::<ExtensionAdds>(declaration.clone())
             .map_err(|e| CityParquetError::Schema(format!("extension '{name}': {e}")))?;
+        let layout = serde_json::from_value::<AdeLayout>(declaration.clone())
+            .map_err(|e| CityParquetError::Schema(format!("extension '{name}': {e}")))?;
         let namespace = derive_namespace(name)?;
         if let Some(other) = declarations.get(&namespace) {
             return Err(CityParquetError::Schema(format!(
@@ -102,6 +106,7 @@ pub fn declarations_from_cityjson(
                 xmlns,
                 xml_attributes,
                 adds,
+                layout,
             },
         );
     }
@@ -110,8 +115,8 @@ pub fn declarations_from_cityjson(
 
 /// Rebuilds a CityJSON `extensions` member from `city.extensions`: each
 /// declaration's `name` becomes the key, carrying its `url` and, when
-/// present, its `version`, `xmlns`, `xmlAttributes` and the members naming
-/// what it adds.
+/// present, its `version`, `xmlns`, `xmlAttributes`, the members naming
+/// what it adds and those saying where a CityGML writer puts it.
 pub fn cityjson_extensions_member(declarations: &ExtensionDeclarations) -> Value {
     let members = declarations
         .values()
@@ -130,7 +135,7 @@ pub fn cityjson_extensions_member(declarations: &ExtensionDeclarations) -> Value
                     serde_json::to_value(attributes).unwrap_or_default(),
                 );
             }
-            for (member, value) in d.adds.members() {
+            for (member, value) in d.adds.members().into_iter().chain(d.layout.members()) {
                 if let Some(value) = value {
                     entry.insert(member.to_string(), value.clone());
                 }

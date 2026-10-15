@@ -87,11 +87,7 @@ fn json_columns_written_as_plain_utf8_by_another_writer_read_back_the_same_model
     }
 
     let exported = dir.path().join("delft.city.jsonl");
-    export(&ExportOptions {
-        package_dir: pkg,
-        output: exported.clone(),
-    })
-    .expect("a plain-UTF8 JSON column must read");
+    export(&ExportOptions::new(pkg, exported.clone())).expect("a plain-UTF8 JSON column must read");
     let report = compare_datasets(
         &fixture("delft.city.jsonl"),
         &exported,

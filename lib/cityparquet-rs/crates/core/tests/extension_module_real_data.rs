@@ -89,10 +89,10 @@ fn an_extension_class_takes_its_extensions_own_file() {
     assert!(report.is_conformant(), "{report}");
 
     let exported = out.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: out.path().to_path_buf(),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        out.path().to_path_buf(),
+        exported.clone(),
+    ))
     .expect("export");
     let source = Source::open(&exported).unwrap();
     let feature = source.features().unwrap().next().unwrap().unwrap();
@@ -144,10 +144,10 @@ fn extension_marked_core_class_routes_to_the_core_file_with_a_prefixed_type() {
     );
 
     let exported = out.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: out.path().to_path_buf(),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        out.path().to_path_buf(),
+        exported.clone(),
+    ))
     .expect("export");
     let source = Source::open(&exported).unwrap();
     let feature = source.features().unwrap().next().unwrap().unwrap();

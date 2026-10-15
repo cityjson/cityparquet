@@ -277,6 +277,38 @@ pub struct ExtensionDeclaration {
     /// "Attributing names to an extension"). Kept verbatim.
     #[serde(flatten)]
     pub adds: ExtensionAdds,
+    /// Where a CityGML writer puts the ADE's elements, when the source
+    /// states it (CityGML ADEs only). Kept verbatim.
+    #[serde(flatten)]
+    pub layout: AdeLayout,
+}
+
+/// The members of an [`ExtensionDeclaration`] saying where a CityGML writer
+/// puts an ADE's elements: `substitutionGroups`, the CityGML element each
+/// property, class and container substitutes for; `containers`, the element
+/// a CityGML 3.0 `adeOf…` hook holds each property in; and `propertyOrder`,
+/// the order of the properties of each class and container. Each kept
+/// verbatim.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdeLayout {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub substitution_groups: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub containers: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub property_order: Option<Value>,
+}
+
+impl AdeLayout {
+    /// The three members, by their names in the declaration.
+    pub fn members(&self) -> [(&'static str, Option<&Value>); 3] {
+        [
+            ("substitutionGroups", self.substitution_groups.as_ref()),
+            ("containers", self.containers.as_ref()),
+            ("propertyOrder", self.property_order.as_ref()),
+        ]
+    }
 }
 
 /// The members of an [`ExtensionDeclaration`] naming what the extension
@@ -580,6 +612,7 @@ mod tests {
                 xmlns: None,
                 xml_attributes: None,
                 adds: ExtensionAdds::default(),
+                layout: AdeLayout::default(),
             },
         );
         city.extensions = Some(decls);

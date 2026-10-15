@@ -2,8 +2,8 @@
 
 Rust reference implementation of **CityParquet** — a cloud-native, columnar
 Parquet encoding for 3D city models, with an Arrow in-memory representation. It
-reads CityJSON, CityJSONSeq, CityGML 2.0 and 3.0 and FlatCityBuf, and writes CityJSON,
-CityJSONSeq and (for buildings) CityGML 2.0. Part of the CityParquet + CityLake research stack
+reads and writes CityJSON, CityJSONSeq and CityGML 2.0 and 3.0, and reads
+FlatCityBuf. Part of the CityParquet + CityLake research stack
 (TU Delft 3D Geoinformation).
 
 CityParquet stores a city model as a **directory of Parquet files** — one row
@@ -94,10 +94,9 @@ cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite
 (`.gml`) or FlatCityBuf (`.fcb`) file, a directory of them, or a glob; several
 inputs merge into one dataset. The format is sniffed from the content.
 
-- **CityGML input is version 2.0 only**; another version is refused by name.
-  The reader covers buildings (solids, semantic surfaces and openings, parts,
-  installations, appearance, every LoD up to 4) and the geometry and attributes
-  of the other thematic modules but relief; what it does not read is listed in
+- **CityGML input is version 2.0 or 3.0**, read by the `citygml2` and
+  `citygml3` crates (`../citygml-rs`): every class of either version, its
+  appearance, implicit geometries and ADEs. What they do not read is listed in
   [docs/citygml-reader-writer-limitations.md](docs/citygml-reader-writer-limitations.md).
 - **FlatCityBuf input** is behind the `fcb` cargo feature (on for the CLI): the
   file is read front to back, its header standing in for the CityJSON one.
@@ -192,10 +191,10 @@ cargo run -p cityparquet-cli -- export PACKAGE_DIR OUTPUT.city.jsonl
 ```
 
 The format follows the extension: `.city.jsonl` → CityJSONSeq, `.city.json` →
-a CityJSON document, `.gml` → CityGML 2.0. CityJSON export prints
+a CityJSON document, `.gml` → CityGML. Every export prints
 `feature_count object_count instance_geometries_dropped
-appearance_refs_dropped`, and warns when it writes LoD 4 geometry (as `"4.0"`;
-CityJSON 2.0 defines LoDs 0 to 3 only).
+appearance_refs_dropped`. CityJSON export warns when it writes LoD 4 geometry
+(as `"4.0"`; CityJSON 2.0 defines LoDs 0 to 3 only).
 
 Export streams: each table is read front to back and a feature is written once
 its rows are complete, so only features spanning tables (a CityObjectGroup and
@@ -203,11 +202,20 @@ its members) are held until their other tables are read. A package whose
 feature rows are not contiguous within a table is refused. A `.city.json`
 document still collects every feature, since it has one vertex pool.
 
-**CityGML export is limited to `Building` and `BuildingPart`**: their solids
-(`lod1Solid` to `lod4Solid`, CompositeSolid included), semantic surfaces,
-attributes and appearance. Every other object is skipped and counted in the
-printed report (`non_building_skipped`, …), and a MultiSolid has no CityGML 2.0
-building slot. See
+CityGML is written by the `citygml2` and `citygml3` writers, each property
+where its version's schema puts it, so citygml-tools accepts the document as
+valid. Flags for a `.gml` output:
+
+| Flag                         | Meaning                                                                                                        |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `--citygml-version 2.0\|3.0` | the version written (2.0 by default)                                                                           |
+| `--ade-xmlns NAME=URI`       | the XML namespace of an extension whose declaration names none; repeatable                                     |
+| `--ade-schema URI=LOCATION`  | where an ADE's XML Schema is, for the document's `xsi:schemaLocation` in place of the declared one; repeatable |
+
+What the target version cannot hold is left out and counted, one
+`warning: CityGML: WHAT: COUNT` line per kind: a class the version lacks
+(`BuildingStorey` in 2.0), a LoD 4 geometry in 3.0 (written as LoD 3 when the
+object has none), a second geometry of one kind at a LoD. See
 [docs/citygml-reader-writer-limitations.md](docs/citygml-reader-writer-limitations.md).
 
 ### compare — semantic equality of two datasets

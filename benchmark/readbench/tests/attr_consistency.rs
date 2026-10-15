@@ -479,17 +479,14 @@ fn every_format_computes_the_same_four_attr_stats_aggregates_on_delft() {
     convert(&ConvertOptions::new(delft.clone(), package.clone())).unwrap();
 
     let doc = tmp.path().join("delft.city.json");
-    cityparquet::export::export(&cityparquet::export::ExportOptions {
-        package_dir: package.clone(),
-        output: doc.clone(),
-    })
+    cityparquet::export::export(&cityparquet::export::ExportOptions::new(package.clone(), doc.clone()))
     .unwrap();
 
     let gml = tmp.path().join("delft.gml");
-    cityparquet::citygml::writer::write_package(&cityparquet::citygml::writer::WriteOptions {
-        package_dir: package.clone(),
-        output: gml.clone(),
-    })
+    cityparquet::export::export(&cityparquet::export::ExportOptions::new(
+        package.clone(),
+        gml.clone(),
+    ))
     .unwrap();
 
     let mut artefacts: Vec<(&str, PathBuf)> = vec![

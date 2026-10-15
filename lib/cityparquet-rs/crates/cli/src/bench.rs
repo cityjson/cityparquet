@@ -421,10 +421,10 @@ fn run_variant(
     } else {
         let export_dir = tempfile::tempdir().map_err(CityParquetError::from)?;
         let export_path = export_dir.path().join("roundtrip.city.jsonl");
-        let equal = export(&ExportOptions {
-            package_dir: out_dir.path().to_path_buf(),
-            output: export_path.clone(),
-        })
+        let equal = export(&ExportOptions::new(
+            out_dir.path().to_path_buf(),
+            export_path.clone(),
+        ))
         .ok()
         .and_then(|_| compare_datasets(&opts.input, &export_path, &CompareOptions::default()).ok())
         .map(|report| report.equal)

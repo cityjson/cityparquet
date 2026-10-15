@@ -72,14 +72,56 @@ use crate::sidecar::{
 use crate::stac::properties::PackageTables;
 use crate::wkb_read::{DecodedKind, wkb_to_geometry};
 
-/// Options controlling one package -> CityJSON/CityJSONSeq export.
+/// Options controlling one package -> CityJSON, CityJSONSeq or CityGML
+/// export.
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
     pub package_dir: PathBuf,
     /// Output path; `.city.jsonl` writes CityJSONSeq (header line + one
     /// feature per line), `.city.json` writes a single whole CityJSON
-    /// document via `cjseq::cjseq_to_cj`.
+    /// document via `cjseq::cjseq_to_cj`, and `.gml` a CityGML document, as
+    /// [`ExportOptions::citygml`] says.
     pub output: PathBuf,
+    /// How a `.gml` output is written; ignored for the others.
+    pub citygml: CityGmlOptions,
+}
+
+impl ExportOptions {
+    /// An export of `package_dir` to `output`, a `.gml` one as CityGML 2.0.
+    pub fn new(package_dir: PathBuf, output: PathBuf) -> Self {
+        Self {
+            package_dir,
+            output,
+            citygml: CityGmlOptions::default(),
+        }
+    }
+}
+
+/// The CityGML version a `.gml` export writes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CityGmlVersion {
+    #[default]
+    V2_0,
+    V3_0,
+}
+
+/// How a `.gml` export writes its document. The features the package
+/// rebuilds are written by the `citygml2` or `citygml3` writer, which
+/// leaves out what the version cannot hold and counts it in
+/// [`ExportReport::citygml`].
+#[derive(Debug, Clone, Default)]
+pub struct CityGmlOptions {
+    pub version: CityGmlVersion,
+    /// The XML namespace of an extension, by its name, for one whose
+    /// declaration names none (an extension that did not come from a
+    /// CityGML ADE). A document using an extension with no namespace is
+    /// refused.
+    pub ade_xmlns: BTreeMap<String, String>,
+    /// Where the XML Schema of an ADE is, by its namespace URI, for the
+    /// document's `xsi:schemaLocation`, in place of its declaration's `url`.
+    /// A CityGML reader finds a schema named by a relative path or a local
+    /// file, and fetches none named by URL.
+    pub ade_schemas: BTreeMap<String, String>,
 }
 
 /// Outcome of one [`export`] call.
@@ -109,6 +151,9 @@ pub struct ExportReport {
     /// or an extension child, each in its own module's table. Every other
     /// family is written as soon as its run in its table ends.
     pub parked_features: usize,
+    /// For a `.gml` output, what the document holds and what its version
+    /// could not; `None` for the others.
+    pub citygml: Option<citygml_core::convert::cjseq::Report>,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -129,14 +174,17 @@ pub(crate) fn table_display_name(path: &std::path::Path) -> &str {
 enum OutputFormat {
     Seq,
     Doc,
+    Gml,
 }
 
 fn output_format(output: &std::path::Path) -> Result<OutputFormat> {
     match output.extension().and_then(|e| e.to_str()) {
         Some("jsonl") => Ok(OutputFormat::Seq),
         Some("json") => Ok(OutputFormat::Doc),
+        Some("gml") => Ok(OutputFormat::Gml),
         other => Err(err(format!(
-            "unsupported export output extension {other:?}: expected .city.jsonl or .city.json"
+            "unsupported export output extension {other:?}: expected .city.jsonl, .city.json \
+             or .gml"
         ))),
     }
 }
@@ -680,9 +728,9 @@ pub(crate) fn source_metadata_from_other(meta: &CityMetadata) -> Option<Value> {
 /// exact obligation is a **spec** question — is an absent `crs` over
 /// coordinates a file to reject, to read as CRS84, or to treat as unknown? A
 /// spec clarification is being added; this comment is the placeholder its
-/// resolution replaces. Referenced from the two sibling CRS consumers that
-/// inherit the same gap: `crate::citygml::writer`'s `srsName` and
-/// `crate::stac`'s `epsg_crs`.
+/// resolution replaces. A CityGML export's `srsName` is this function's
+/// result, so it shares the gap, as does the sibling CRS consumer
+/// `crate::stac`'s `epsg_crs`, which references this comment.
 fn reference_system(meta: &CityMetadata) -> Result<Option<ReferenceSystem>> {
     let Some(crs) = meta.crs.known() else {
         return Ok(None);
@@ -1554,7 +1602,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         appearance_refs_dropped: 0,
         lod4_geometries: BTreeMap::new(),
     };
-    let mut out = OutputWriter::create(format, &opts.output, header)?;
+    let mut out = OutputWriter::create(format, opts, header)?;
     let mut feature_count = 0usize;
     let mut emit = |feature_id: String, entries: Vec<Entry>| -> Result<()> {
         feature_count += 1;
@@ -1633,7 +1681,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         families.end_table(&mut emit)?;
     }
     let parked_features = families.finish(&mut emit)?;
-    out.finish()?;
+    let citygml = out.finish()?;
     let FeatureBuilder {
         instance_geometries_dropped,
         appearance_refs_dropped,
@@ -1648,6 +1696,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         appearance_refs_dropped,
         lod4_geometries,
         parked_features,
+        citygml,
     })
 }
 
@@ -1894,22 +1943,34 @@ impl FamilyRow for Entry {
 struct OutputWriter {
     partial: PathBuf,
     output: PathBuf,
-    file: std::io::BufWriter<fs::File>,
-    kind: OutputKind,
+    /// `None` before it is started and once finished.
+    kind: Option<OutputKind>,
+    /// Whether the partial file is in place as the output.
+    renamed: bool,
 }
+
+type OutputFile = std::io::BufWriter<fs::File>;
 
 enum OutputKind {
     /// Features waiting to be serialised, a chunk at a time across cores.
-    Seq(Vec<CityJSONFeature>),
+    Seq(OutputFile, Vec<CityJSONFeature>),
     /// A document has one vertex pool, so every feature is collected first.
-    Doc(Box<CityJSON>, Vec<CityJSONFeature>),
+    Doc(OutputFile, Box<CityJSON>, Vec<CityJSONFeature>),
+    /// A CityGML document, written a feature at a time.
+    Gml2(Box<citygml2::writer::Writer<OutputFile>>),
+    Gml3(Box<citygml3::writer::Writer<OutputFile>>),
 }
 
 /// Features serialised per parallel chunk of a CityJSONSeq export.
 const SEQ_CHUNK: usize = 1024;
 
+fn write_error(e: std::io::Error) -> CityParquetError {
+    CityParquetError::io_source("write error", e)
+}
+
 impl OutputWriter {
-    fn create(format: OutputFormat, output: &std::path::Path, header: CityJSON) -> Result<Self> {
+    fn create(format: OutputFormat, opts: &ExportOptions, header: CityJSON) -> Result<Self> {
+        let output = opts.output.as_path();
         if let Some(parent) = output.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -1925,42 +1986,63 @@ impl OutputWriter {
         let file = fs::File::create(&partial).map_err(|e| {
             CityParquetError::io_source(format!("cannot create {}", partial.display()), e)
         })?;
+        // From here the partial file is removed again on any error.
         let mut writer = Self {
             partial,
             output: output.to_path_buf(),
-            file: std::io::BufWriter::new(file),
-            kind: OutputKind::Seq(Vec::new()),
+            kind: None,
+            renamed: false,
         };
-        match format {
+        let mut file = std::io::BufWriter::new(file);
+        writer.kind = Some(match format {
             OutputFormat::Seq => {
-                let line = serde_json::to_string(&header)?;
-                writer.line(&line)?;
+                writeln!(file, "{}", serde_json::to_string(&header)?).map_err(write_error)?;
+                OutputKind::Seq(file, Vec::new())
             }
-            OutputFormat::Doc => writer.kind = OutputKind::Doc(Box::new(header), Vec::new()),
-        }
+            OutputFormat::Doc => OutputKind::Doc(file, Box::new(header), Vec::new()),
+            OutputFormat::Gml => {
+                let options = citygml_core::convert::cjseq::WriterOptions {
+                    ade_xmlns: opts.citygml.ade_xmlns.clone(),
+                    ade_schemas: opts.citygml.ade_schemas.clone(),
+                    ..Default::default()
+                };
+                match opts.citygml.version {
+                    CityGmlVersion::V2_0 => OutputKind::Gml2(Box::new(
+                        citygml2::writer::Writer::new(file, &header, options)
+                            .map_err(crate::citygml::reader::error)?,
+                    )),
+                    CityGmlVersion::V3_0 => OutputKind::Gml3(Box::new(
+                        citygml3::writer::Writer::new(file, &header, options)
+                            .map_err(crate::citygml::reader::error)?,
+                    )),
+                }
+            }
+        });
         Ok(writer)
     }
 
-    fn line(&mut self, line: &str) -> Result<()> {
-        writeln!(self.file, "{line}").map_err(|e| CityParquetError::io_source("write error", e))
-    }
-
     fn write(&mut self, feature: CityJSONFeature) -> Result<()> {
-        match &mut self.kind {
-            OutputKind::Seq(pending) => {
+        match self.kind.as_mut().expect("written before it is finished") {
+            OutputKind::Seq(_, pending) => {
                 pending.push(feature);
                 if pending.len() == SEQ_CHUNK {
                     self.flush_seq()?;
                 }
             }
-            OutputKind::Doc(_, features) => features.push(feature),
+            OutputKind::Doc(_, _, features) => features.push(feature),
+            OutputKind::Gml2(w) => w
+                .write_feature(&feature)
+                .map_err(crate::citygml::reader::error)?,
+            OutputKind::Gml3(w) => w
+                .write_feature(&feature)
+                .map_err(crate::citygml::reader::error)?,
         }
         Ok(())
     }
 
     fn flush_seq(&mut self) -> Result<()> {
         use rayon::prelude::*;
-        let OutputKind::Seq(pending) = &mut self.kind else {
+        let Some(OutputKind::Seq(file, pending)) = &mut self.kind else {
             return Ok(());
         };
         let lines = pending
@@ -1969,48 +2051,56 @@ impl OutputWriter {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         pending.clear();
         for line in lines {
-            self.line(&line)?;
+            writeln!(file, "{line}").map_err(write_error)?;
         }
         Ok(())
     }
 
-    fn finish(mut self) -> Result<()> {
-        let result = self.finish_inner();
-        if result.is_err() {
-            let _ = fs::remove_file(&self.partial);
-        }
-        result
+    /// Ends the output; a CityGML document's report.
+    fn finish(mut self) -> Result<Option<citygml_core::convert::cjseq::Report>> {
+        self.finish_inner()
     }
 
-    fn finish_inner(&mut self) -> Result<()> {
+    fn finish_inner(&mut self) -> Result<Option<citygml_core::convert::cjseq::Report>> {
         self.flush_seq()?;
-        if let OutputKind::Doc(header, features) =
-            std::mem::replace(&mut self.kind, OutputKind::Seq(Vec::new()))
-        {
-            let doc = cjseq::cjseq_to_cj(*header, features).map_err(|e| {
-                err(format!(
-                    "cannot collect the features into one document: {e}"
-                ))
-            })?;
-            write!(self.file, "{}", serde_json::to_string(&doc)?)
-                .map_err(|e| CityParquetError::io_source("write error", e))?;
-        }
+        let (mut file, report) = match self.kind.take().expect("finished once") {
+            OutputKind::Seq(file, _) => (file, None),
+            OutputKind::Doc(mut file, header, features) => {
+                let doc = cjseq::cjseq_to_cj(*header, features).map_err(|e| {
+                    err(format!(
+                        "cannot collect the features into one document: {e}"
+                    ))
+                })?;
+                write!(file, "{}", serde_json::to_string(&doc)?).map_err(write_error)?;
+                (file, None)
+            }
+            OutputKind::Gml2(w) => {
+                let (file, report) = w.finish().map_err(crate::citygml::reader::error)?;
+                (file, Some(report))
+            }
+            OutputKind::Gml3(w) => {
+                let (file, report) = w.finish().map_err(crate::citygml::reader::error)?;
+                (file, Some(report))
+            }
+        };
         // Explicit: `BufWriter`'s `Drop` swallows flush errors, so a full disk
         // would otherwise truncate the export silently.
-        self.file
-            .flush()
-            .map_err(|e| CityParquetError::io_source("write error", e))?;
+        file.flush().map_err(write_error)?;
         fs::rename(&self.partial, &self.output).map_err(|e| {
             CityParquetError::io_source(format!("cannot create {}", self.output.display()), e)
-        })
+        })?;
+        self.renamed = true;
+        Ok(report)
     }
 }
 
 impl Drop for OutputWriter {
-    /// An export that failed before [`OutputWriter::finish`] leaves no
+    /// An export that failed, starting the output included, leaves no
     /// partial file behind.
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.partial);
+        if !self.renamed {
+            let _ = fs::remove_file(&self.partial);
+        }
     }
 }
 
