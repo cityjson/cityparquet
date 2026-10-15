@@ -37,6 +37,11 @@ pub(crate) struct FeatureRow {
     pub(crate) creation_date: Option<String>,
     pub(crate) valid_from: Option<String>,
     pub(crate) valid_to: Option<String>,
+    /// The columns with a value the model has no place for
+    /// (`gml:identifier`). The database's own bookkeeping
+    /// (`last_modification_date`, `updating_person`), which citydb-tool
+    /// stamps on every feature it imports, is not among them.
+    pub(crate) left_out: Vec<&'static str>,
 }
 
 /// One row of `property`.
@@ -58,6 +63,9 @@ pub(crate) struct PropertyRow {
     pub(crate) address: Option<i64>,
     pub(crate) feature: Option<i64>,
     pub(crate) relation: Option<i32>,
+    /// What the property states that the model has no place for: a unit
+    /// of measure, a code space, mixed content.
+    pub(crate) left_out: Vec<&'static str>,
 }
 
 /// One row of `geometry_data`, as WKB and its GML structure.
@@ -93,6 +101,8 @@ pub(crate) struct SurfaceData {
     pub(crate) border_color: Option<String>,
     pub(crate) image_uri: Option<String>,
     pub(crate) mime_type: Option<String>,
+    /// Whether the database holds the image's bytes.
+    pub(crate) has_image_data: bool,
 }
 
 /// Everything one batch reads.
@@ -143,7 +153,9 @@ pub(crate) fn load(session: &mut Session, roots: &[i64]) -> Result<Batch> {
         "{TREE} SELECT f.id, f.objectclass_id, f.objectid, \
                 ST_XMin(f.envelope), ST_YMin(f.envelope), ST_ZMin(f.envelope), \
                 ST_XMax(f.envelope), ST_YMax(f.envelope), ST_ZMax(f.envelope), \
-                {}, {}, {} \
+                {}, {}, {}, \
+                f.identifier IS NOT NULL OR f.identifier_codespace IS NOT NULL, \
+                f.lineage IS NOT NULL, f.reason_for_update IS NOT NULL \
          FROM tree JOIN {{s}}.feature f ON f.id = tree.id \
          WHERE f.termination_date IS NULL",
         date_time("f.creation_date"),
@@ -162,6 +174,15 @@ pub(crate) fn load(session: &mut Session, roots: &[i64]) -> Result<Batch> {
                 creation_date: row.get(9),
                 valid_from: row.get(10),
                 valid_to: row.get(11),
+                left_out: [
+                    (12, "gml:identifier"),
+                    (13, "citydb:lineage"),
+                    (14, "citydb:reasonForUpdate"),
+                ]
+                .into_iter()
+                .filter(|&(i, _)| row.get(i))
+                .map(|(_, what)| what)
+                .collect(),
             },
         );
     }
@@ -173,7 +194,9 @@ pub(crate) fn load(session: &mut Session, roots: &[i64]) -> Result<Batch> {
                 val_geometry_id, val_implicitgeom_id, \
                 ST_X(val_implicitgeom_refpoint), ST_Y(val_implicitgeom_refpoint), \
                 ST_Z(val_implicitgeom_refpoint), \
-                val_address_id, val_feature_id, val_relation_type \
+                val_address_id, val_feature_id, val_relation_type, \
+                val_uom IS NOT NULL, val_codespace IS NOT NULL, \
+                val_content IS NOT NULL OR val_content_mime_type IS NOT NULL \
          FROM {{s}}.property WHERE feature_id = ANY($1) ORDER BY id",
         timestamp("val_timestamp")
     );
@@ -200,6 +223,11 @@ pub(crate) fn load(session: &mut Session, roots: &[i64]) -> Result<Batch> {
             address: row.get(18),
             feature: row.get(19),
             relation: row.get(20),
+            left_out: [(21, "uom"), (22, "codeSpace"), (23, "content")]
+                .into_iter()
+                .filter(|&(i, _)| row.get(i))
+                .map(|(_, what)| what)
+                .collect(),
         };
         match parent {
             Some(parent) => batch.children.entry(parent).or_default().push(property),
@@ -277,7 +305,7 @@ pub(crate) fn load_mappings(
                 sd.x3d_shininess, sd.x3d_transparency, sd.x3d_ambient_intensity, \
                 sd.x3d_specular_color, sd.x3d_diffuse_color, sd.x3d_emissive_color, \
                 sd.x3d_is_smooth, sd.tex_texture_type, sd.tex_wrap_mode, sd.tex_border_color, \
-                ti.image_uri, ti.mime_type \
+                ti.image_uri, ti.mime_type, ti.image_data IS NOT NULL \
          FROM {s}.surface_data_mapping m \
          JOIN {s}.surface_data sd ON sd.id = m.surface_data_id \
          JOIN {s}.objectclass oc ON oc.id = sd.objectclass_id \
@@ -312,6 +340,7 @@ pub(crate) fn load_mappings(
             border_color: row.get(16),
             image_uri: row.get(17),
             mime_type: row.get(18),
+            has_image_data: row.get(19),
         });
     }
     Ok(())

@@ -77,6 +77,12 @@ pub(crate) fn appearance<'a>(
                     .entry("app:ParameterizedTexture without an image".into())
                     .or_insert(0) += 1;
             } else {
+                if surface_data.get(&key.0).is_some_and(|sd| sd.has_image_data) {
+                    // The model names an image; its bytes have no place.
+                    *dropped
+                        .entry("app:ParameterizedTexture image data".into())
+                        .or_insert(0) += 1;
+                }
                 out.textures.push(texture);
             }
         }

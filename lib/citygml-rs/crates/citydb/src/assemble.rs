@@ -170,10 +170,15 @@ impl<'a> Assembler<'a> {
             return Ok(Vec::new());
         };
         if class.name == QName::module(Module::Relief, "ReliefFeature") {
-            // Passed through: its components are what is read.
+            // Passed through: its components are what is read, and its
+            // appearances are read from what they map onto their geometry.
             let mut out = Vec::new();
             for p in self.properties(id) {
                 if p.name != "reliefComponent" || p.relation != Some(1) {
+                    if self.catalogue.datatype(p.datatype) != "AppearanceProperty" {
+                        let name = format!("dem:ReliefFeature {}", self.prefixed(p));
+                        self.tally.drop(name);
+                    }
                     continue;
                 }
                 let Some(component) = p.feature else { continue };
@@ -263,6 +268,12 @@ impl<'a> Assembler<'a> {
         let batch = self.batch;
         let row = &batch.features[&id];
         let mut b = ObjectBuilder::new(row.objectid.clone(), class.name.clone());
+        for what in &row.left_out {
+            self.tally.drop((*what).to_string());
+        }
+        for p in self.properties(id) {
+            self.left_out(p);
+        }
         for attribute in stamps(row) {
             b.push_attribute(attribute);
         }
@@ -300,6 +311,18 @@ impl<'a> Assembler<'a> {
             &mut self.tally.dropped,
         ));
         Ok(b)
+    }
+
+    /// Counts what `p` and the properties below it state that the model
+    /// has no place for (`bldg:class codeSpace`).
+    fn left_out(&mut self, p: &PropertyRow) {
+        for what in &p.left_out {
+            let name = format!("{} {what}", self.prefixed(p));
+            self.tally.drop(name);
+        }
+        for child in self.children(p.id) {
+            self.left_out(child);
+        }
     }
 
     fn property(
@@ -434,10 +457,13 @@ impl<'a> Assembler<'a> {
             return Ok(());
         }
         let Some(row) = self.batch.features.get(&target) else {
-            // A terminated feature.
+            // A terminated feature, which the reader skips.
+            self.tally
+                .drop(format!("{} (terminated)", self.prefixed(p)));
             return Ok(());
         };
         let Some(class) = self.catalogue.class(row.class).cloned() else {
+            self.tally.drop(format!("objectclass {}", row.class));
             return Ok(());
         };
         let name = p.name.as_str();
@@ -591,9 +617,12 @@ impl<'a> Assembler<'a> {
                 return Ok(());
             }
             let Some(row) = self.batch.features.get(&target) else {
+                self.tally
+                    .drop(format!("{} (terminated)", self.prefixed(member)));
                 return Ok(());
             };
             let Some(class) = self.catalogue.class(row.class).cloned() else {
+                self.tally.drop(format!("objectclass {}", row.class));
                 return Ok(());
             };
             if self.reads(&class) || nesting(&class).is_some() {
@@ -608,6 +637,10 @@ impl<'a> Assembler<'a> {
             }
         } else if let Some(Some(id)) = self.batch.referenced.get(&target) {
             b.add_member_ref(id.clone(), role);
+        } else {
+            // A member held elsewhere without an id to link it by.
+            self.tally
+                .drop(format!("{} without an id", self.prefixed(member)));
         }
         Ok(())
     }

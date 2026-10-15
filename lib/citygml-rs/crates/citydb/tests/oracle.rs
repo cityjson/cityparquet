@@ -359,6 +359,9 @@ enum Lost {
     /// Material ids: citydb-tool copies a CityModel-level appearance to
     /// each feature it targets, each copy under an id of its own.
     MaterialIds,
+    /// Image bytes: the database holds each texture's image, which the
+    /// model has no place for, so the reader keeps the name and counts it.
+    ImageData,
 }
 
 /// `v` without texture image names, on both sides.
@@ -430,6 +433,12 @@ fn compare(database: &str, file: &str, version: Version, lost: &[Lost]) {
             *f = without_textures(f.take());
         }
         expected_templates = without_textures(expected_templates);
+    }
+    if lost.contains(&Lost::ImageData) {
+        assert!(
+            dropped.get("app:ParameterizedTexture image data") > Some(&0),
+            "{database}: no texture image counted as left out: {dropped:?}"
+        );
     }
     if lost.contains(&Lost::Ade) {
         for f in expected.values_mut() {
@@ -557,6 +566,43 @@ fn plateau_2_0_buildings() {
         "plateau_bldg",
         "plateau/udx/bldg/53394519_bldg_6697_op.gml",
         &[Lost::Textures, Lost::Ade],
+    );
+}
+
+/// What the database holds beyond the model is counted, not dropped
+/// silently: the PLATEAU buildings' code spaces and their measured
+/// heights' unit of measure, one of each per building.
+#[test]
+fn code_spaces_and_units_are_counted() {
+    let Some(db) = common::database("plateau_bldg") else {
+        return;
+    };
+    let (features, _, dropped) = from_database(&db);
+    for what in [
+        "bldg:class codeSpace",
+        "bldg:usage codeSpace",
+        "con:value uom",
+    ] {
+        assert_eq!(
+            dropped.get(what),
+            Some(&features.len()),
+            "{what}: {dropped:?}"
+        );
+    }
+}
+
+/// A ReliefFeature is passed through to its components, which are what
+/// CityJSON has; its own properties are counted.
+#[test]
+fn a_relief_feature_s_own_properties_are_counted() {
+    let Some(db) = common::database("railway_scene") else {
+        return;
+    };
+    let (_, _, dropped) = from_database(&db);
+    assert_eq!(
+        dropped.get("dem:ReliefFeature dem:lod"),
+        Some(&1),
+        "{dropped:?}"
     );
 }
 
@@ -751,6 +797,11 @@ fn the_railway_scene() {
         "railway_scene",
         file,
         Version::V2,
-        &[Lost::ImageNames, Lost::MaterialIds, Lost::Envelopes],
+        &[
+            Lost::ImageNames,
+            Lost::ImageData,
+            Lost::MaterialIds,
+            Lost::Envelopes,
+        ],
     );
 }
