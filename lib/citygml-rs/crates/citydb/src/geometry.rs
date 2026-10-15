@@ -272,12 +272,16 @@ impl Tree<'_> {
 
     /// The ids of the identified surface aggregates holding `node`,
     /// innermost first, as the XML readers record them: what a material
-    /// targeting a whole `gml:MultiSurface` colours.
+    /// targeting a whole `gml:MultiSurface`, or a TIN's
+    /// `gml:TriangulatedSurface`, colours.
     fn groups(&self, node: &Node) -> Vec<String> {
         let aggregate = |n: &Node| {
-            matches!(n.kind, COMPOSITE_SURFACE | MULTI_SURFACE)
-                .then(|| n.id.clone())
-                .flatten()
+            matches!(
+                n.kind,
+                COMPOSITE_SURFACE | MULTI_SURFACE | TRIANGULATED_SURFACE
+            )
+            .then(|| n.id.clone())
+            .flatten()
         };
         let mut groups = Vec::new();
         let mut parent = node.parent;

@@ -102,14 +102,6 @@ summary = "the PLATEAU bridge's X3DMaterials target polygons its solid shares by
 reference = "lib/citygml-rs/crates/citydb/tests/oracle.rs, plateau_2_0_bridges"
 
 [[issue]]
-id = "citygml-tin-material"
-dataset = "^citydb:railway-scene$"
-step = "^C2 "
-match = "^fail:materials: UUID_5aa70b07-6bbf-427b-8222-d72ed77dbfa9 CompositeSurface@lod3\\.0 face \\d+ theme 'visual': \\{.*\\} vs None$"
-summary = "an X3DMaterial whose target is a gml:TriangulatedSurface (the railway scene's TINRelief) colours no face in the CityGML crates, for the file and the database alike; citydb-tool's exporter applies it to the whole geometry"
-reference = "raised with the CityGML reader thread"
-
-[[issue]]
 id = "keep-links-group-members"
 dataset = "^citydb:railway-scene$"
 step = "^C2 "
