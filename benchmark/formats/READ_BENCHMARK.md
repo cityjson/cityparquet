@@ -1453,6 +1453,9 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
   issue concurrently); the FlatCityBuf arm reads through
   `http-range-client`'s buffered client, one ranged `GET` at a time, for
   the header, the spatial or attribute index and then the features.
+  No client sets a request timeout, because a whole-object `GET` of a
+  large file over the simulated link takes minutes; the `object_store`
+  clients keep a 5 s connect timeout.
   Because the text formats' bytes and requests are the same for every
   query, and their time nearly so (within 0.92–1.15× of read all in the
   end-to-end runs on Rotterdam and Vienna, with the transfer 83–94 % of

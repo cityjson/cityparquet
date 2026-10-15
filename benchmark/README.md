@@ -176,7 +176,9 @@ object_store does not expose those two headers, so they come from a one-byte
 ranged `GET` per object, outside the measured section; the first of these
 probes can itself fill the CDN's cache. Every request, measured or probe, sends
 the corpus downloader's User-Agent (`cityparquet-bench-prep/1`), so the
-benchmark reads with the identity that prepared its inputs.
+benchmark reads with the identity that prepared its inputs. No measured
+client sets a request timeout, because a whole-file cell over the simulated
+link takes minutes; the object_store clients keep a 5 s connect timeout.
 
 **Measured and derived cells.** The indexed formats (`flatcitybuf`,
 `cityparquet`) are measured on every query. The three text formats
