@@ -10,6 +10,9 @@ mod document;
 mod schema;
 
 #[cfg(feature = "cjseq")]
-pub use cityjson::{Report, Writer, WriterOptions};
-pub use document::{Ade, ContentOf, DocumentWriter, Head, RESERVED_PREFIXES};
+pub use citygml_core::convert::cjseq::{Report, WriterOptions};
+pub use citygml_core::write::document::{Ade, ContentOf, Head, RESERVED_PREFIXES};
+#[cfg(feature = "cjseq")]
+pub use cityjson::Writer;
+pub use document::DocumentWriter;
 pub use schema::Vocabulary2;

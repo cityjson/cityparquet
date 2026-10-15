@@ -34,8 +34,10 @@
 //! - GML geometry inside an ADE property is left out.
 
 mod to_gml;
+mod writer;
 
 pub use to_gml::{ExtensionNs, Extensions, GmlContext, ncname, template_lods, templates_to_gml};
+pub use writer::{Document, Report, Writer, WriterOptions};
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;

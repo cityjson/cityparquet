@@ -5,6 +5,7 @@
 //! (`gml`, `xlink`, `xAL`, each module's), so an element is written as the
 //! `prefix:local` string it is.
 
+pub mod document;
 pub mod gml;
 pub mod xal;
 

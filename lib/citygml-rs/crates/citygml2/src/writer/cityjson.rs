@@ -1,47 +1,18 @@
 //! CityJSON to a CityGML 2.0 document: a header, then its features one at
 //! a time, in any order.
 
-use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::Arc;
 
 use citygml_core::Result;
-use citygml_core::convert::cjseq::{Extensions, GmlContext, template_lods, templates_to_gml};
-use citygml_core::convert::{Losses, ToGml, Vocabulary};
-use citygml_core::model::QName;
+use citygml_core::convert::Losses;
+use citygml_core::convert::cjseq::{Document, Report, WriterOptions};
+use citygml_core::model::{GmlObject, Template};
 use cjseq::{CityJSON, CityJSONFeature};
 
-use super::{Ade, DocumentWriter, Head, RESERVED_PREFIXES, Vocabulary2};
+type Shared<W> = citygml_core::convert::cjseq::Writer<W, DocumentWriter<W>>;
 
-/// How a document is written.
-#[derive(Debug, Clone, Default)]
-pub struct WriterOptions {
-    /// The document's `srsName`. Without one, the header's
-    /// `referenceSystem` is written, an EPSG CRS as its
-    /// `urn:ogc:def:crs:EPSG::<code>` URN.
-    pub srs_name: Option<String>,
-    /// The XML namespace of a CityJSON Extension, by its name in the
-    /// header, where its declaration gives none or a different one. A
-    /// document using an Extension with no namespace is refused.
-    pub ade_xmlns: BTreeMap<String, String>,
-    /// Where the XML Schema of an ADE is, by its namespace URI, for the
-    /// document's `xsi:schemaLocation`, where its Extension's `url` names
-    /// none or another. A reader finds a schema named by a relative path or
-    /// a local file, and fetches none named by URL.
-    pub ade_schemas: BTreeMap<String, String>,
-}
-
-/// What a finished document holds, and what CityGML 2.0 could not.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Report {
-    /// Features written.
-    pub features: usize,
-    /// Top-level city objects written: a feature's root, and any object its
-    /// parent's class could not hold.
-    pub objects: usize,
-    /// What was left out, by a description of it.
-    pub losses: Losses,
-}
+use super::{ContentOf, DocumentWriter, Head, Vocabulary2};
 
 /// A CityGML 2.0 document written from a CityJSON header and its features.
 ///
@@ -49,146 +20,40 @@ pub struct Report {
 /// `xlink:href`s; the header's geometry templates are the relative
 /// geometries the features' `GeometryInstance`s place, coloured by the
 /// header's appearance.
-pub struct Writer<W: Write> {
-    document: DocumentWriter<W>,
-    context: GmlContext,
-    features: usize,
-    losses: Losses,
-}
+pub struct Writer<W: Write>(Shared<W>);
 
 impl<W: Write> Writer<W> {
     /// Start a document on `out` for the features of `header`.
     pub fn new(out: W, header: &CityJSON, options: WriterOptions) -> Result<Self> {
-        let extensions = Arc::new(Extensions::new(
-            header.extensions.iter().flatten(),
-            &options.ade_xmlns,
-        ));
-        let mut losses = Losses::default();
-        let (templates, lods) = match &header.geometry_templates {
-            Some(t) => {
-                let (templates, template_losses) = templates_to_gml(t, header.appearance.as_ref())?;
-                losses.merge(template_losses);
-                (templates, template_lods(t))
-            }
-            None => (Vec::new(), Arc::from(Vec::new())),
-        };
-        let metadata = header.metadata.as_ref();
-        let srs_name = options.srs_name.clone().or_else(|| {
-            let crs = metadata?.reference_system.as_ref()?;
-            Some(match (crs.authority(), crs.code()) {
-                (Some("EPSG"), Some(code)) => format!("urn:ogc:def:crs:EPSG::{code}"),
-                _ => crs.to_url(),
-            })
-        });
-        let head = Head {
-            srs_name,
-            envelope: metadata.and_then(|m| m.geographical_extent),
-            ades: ades(&extensions, &options.ade_schemas),
-            layout: extensions.layout(),
-        };
-        let vocabulary: Arc<dyn Vocabulary> = Arc::new(Vocabulary2);
-        let content_of = {
-            let extensions = Arc::clone(&extensions);
-            let vocabulary = Arc::clone(&vocabulary);
-            Box::new(move |class: &QName| {
-                let base = extensions.base_type(&format!("+{}", class.local))?;
-                vocabulary.class(base, &|_| None).map(|c| c.name)
-            })
-        };
-        Ok(Self {
-            document: DocumentWriter::new(out, head, templates, content_of)?,
-            context: GmlContext {
-                transform: header.transform.clone(),
-                index: 0,
-                vocabulary,
-                extensions,
-                template_lods: lods,
-            },
-            features: 0,
-            losses,
-        })
+        Shared::new(out, header, options, Arc::new(Vocabulary2)).map(Self)
     }
 
     /// Write `feature`'s objects.
     pub fn write_feature(&mut self, feature: &CityJSONFeature) -> Result<()> {
-        self.features += 1;
-        self.context.index = self.features;
-        let model = feature.to_gml(&self.context)?;
-        self.losses.merge(model.losses);
-        for object in model.objects {
-            self.document.write(object)?;
-        }
-        Ok(())
+        self.0.write_feature(feature)
     }
 
     /// End the document. Gives back what it was written to, and what it
     /// holds.
     pub fn finish(self) -> Result<(W, Report)> {
-        let objects = self.document.objects();
-        let (out, document_losses) = self.document.finish()?;
-        let mut losses = self.losses;
-        losses.merge(document_losses);
-        Ok((
-            out,
-            Report {
-                features: self.features,
-                objects,
-                losses,
-            },
-        ))
+        self.0.finish()
     }
 }
 
-/// The ADEs of `extensions` that have an XML namespace, each bound to the
-/// Extension's name when that is a prefix the document leaves free, and
-/// with its schema: the one `schemas` gives, else the Extension's `url`
-/// when that is an XML Schema.
-fn ades(extensions: &Extensions, schemas: &BTreeMap<String, String>) -> Vec<Ade> {
-    let mut out: Vec<Ade> = Vec::new();
-    for e in extensions.iter() {
-        let Some(uri) = &e.xmlns else {
-            continue;
-        };
-        if out.iter().any(|a| a.uri == *uri) {
-            continue;
-        }
-        let free = |p: &str| {
-            is_prefix(p)
-                && !RESERVED_PREFIXES.contains(&p)
-                && citygml_core::vocabulary::module_of_prefix(p).is_none()
-                && !out.iter().any(|a| a.prefix == p)
-        };
-        let prefix = if free(&e.prefix) {
-            e.prefix.clone()
-        } else {
-            (1..)
-                .map(|n| format!("ade{n}"))
-                .find(|p| free(p))
-                .expect("a free prefix")
-        };
-        let schema = schemas.get(uri).cloned().or_else(|| {
-            e.url
-                .to_ascii_lowercase()
-                .ends_with(".xsd")
-                .then(|| e.url.clone())
-        });
-        out.push(Ade {
-            prefix,
-            uri: uri.clone(),
-            schema,
-        });
+impl<W: Write> Document<W> for DocumentWriter<W> {
+    fn start(out: W, head: Head, templates: Vec<Template>, content_of: ContentOf) -> Result<Self> {
+        Self::new(out, head, templates, content_of)
     }
-    out
-}
 
-/// Whether `p` can be an XML namespace prefix: an NCName of ASCII letters,
-/// digits, `-`, `_` and `.`, not beginning with a digit, `-` or `.`, nor
-/// with `xml`.
-fn is_prefix(p: &str) -> bool {
-    let mut chars = p.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        && !p.to_ascii_lowercase().starts_with("xml")
+    fn write(&mut self, object: GmlObject) -> Result<()> {
+        DocumentWriter::write(self, object)
+    }
+
+    fn objects(&self) -> usize {
+        DocumentWriter::objects(self)
+    }
+
+    fn finish(self) -> Result<(W, Losses)> {
+        DocumentWriter::finish(self)
+    }
 }
