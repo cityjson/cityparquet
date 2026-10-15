@@ -1,0 +1,28 @@
+[package]
+name = "citygml-citydb"
+description = "3DCityDB v5 reader: a database's city objects as CityGML model objects"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+citygml-core = { workspace = true }
+cjseq = { workspace = true, optional = true }
+serde_json = { workspace = true }
+postgres = "0.19"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-postgres-rustls = { version = "0.14", features = ["ring"] }
+webpki-roots = "1"
+
+[dev-dependencies]
+serde = "1"
+citygml2 = { path = "../citygml2" }
+citygml3 = { path = "../citygml3" }
+cjseq = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = ["cjseq"]
+# `CityDb::features`, which yields cjseq `CityJSONFeature`s.
+cjseq = ["dep:cjseq", "citygml-core/cjseq"]
