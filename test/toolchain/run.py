@@ -4,11 +4,13 @@
         test/toolchain/run.py fetch  [--profile quick]
     uv run ... test/toolchain/run.py run    [--profile quick] [--only ID,...] [--keep]
     uv run ... test/toolchain/run.py report RUN_DIR
+    uv run ... test/toolchain/run.py citydb [--only ID,...] [--keep]
 
 `fetch` downloads the corpus (corpus.toml) and checks every byte. `run`
 pushes each dataset through every tool chain, compares everything that comes
 back with the source, and writes `results.jsonl` and `report.md` into a new
-run directory. `report` rewrites the report from a run's results.
+run directory. `report` rewrites the report from a run's results. `citydb`
+loads sources into 3DCityDB v5 and reads them back (citydb.py).
 
 The tools come from the environment, each with a default in this tree:
 
@@ -79,6 +81,11 @@ class Tools:
 def load_corpus() -> list[dict]:
     with open(HERE / "corpus.toml", "rb") as f:
         return tomllib.load(f)["dataset"]
+
+
+def load_citydb() -> list[dict]:
+    with open(HERE / "corpus.toml", "rb") as f:
+        return tomllib.load(f).get("citydb", [])
 
 
 def load_known() -> list[dict]:
@@ -254,13 +261,17 @@ class Run:
 
     # -- the comparisons ---------------------------------------------------
 
-    def compare(self, ds: dict, step: str, source: Path, output: Path, tol: str | None = None, pair: bool = False) -> dict:
+    def compare(
+        self, ds: dict, step: str, source: Path, output: Path, tol: str | None = None, pair: bool = False, uv_tol: str | None = None
+    ) -> dict:
         if not output.exists():
             return self.record(ds, step, "skip", f"{output.name} was not written")
         rep_path = output.with_suffix(output.suffix + ".compare.json")
         args = [self.python, HERE / "cjcompare.py", source, output, "--json", rep_path]
         if tol:
             args += ["--tol", tol]
+        if uv_tol:
+            args += ["--uv-tol", uv_tol]
         if pair:
             args.append("--pair-unmatched")
         rc, out, secs = self.sh(args)
@@ -664,6 +675,47 @@ def run(profile: str, only: set[str] | None, keep: bool) -> int:
     return 1 if any(x["status"] == "fail" for x in rows) else 0
 
 
+def run_citydb(only: set[str] | None, keep: bool) -> int:
+    import citydb
+
+    tools = Tools.from_env()
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = work_dir() / f"citydb-{stamp}"
+    out.mkdir(parents=True)
+    python = sys.executable
+    env = environment(tools, python)
+    env["profile"] = "citydb"
+    env["citydb"] = {"pg_image": citydb.PG_IMAGE, "tool_image": citydb.TOOL_IMAGE}
+    (out / "environment.json").write_text(json.dumps(env, indent=1))
+    print(f"run directory {out}")
+    r = Run(out, tools, python)
+    corpus = {d["id"]: d for d in load_corpus()}
+    corpus_dir = work_dir() / "corpus"
+    entries = [e for e in load_citydb() if not only or e.get("id", e.get("dataset")) in only]
+    listed = []
+    for e in entries:
+        ds, src, _, _ = citydb.source_of(e, corpus, corpus_dir, ROOT)
+        size = src.stat().st_size if src is not None and src.exists() else ds.get("bytes", 0)
+        listed.append(
+            {"id": f"citydb:{ds['id']}", "format": ds["format"], "kind": ds.get("kind", "real"), "bytes": size,
+             "exercises": f"EPSG:{e['srid']}; {e['exercises']}"}
+        )
+    why = None if "cityparquet" not in r.missing else "cityparquet binary not found"
+    why = why or citydb.available()
+    if why:
+        for e, d in zip(entries, listed):
+            r.record(d, "3DCityDB", "skip", why)
+    else:
+        with citydb.Server() as server:
+            for e in entries:
+                citydb.run_dataset(r, e, corpus, corpus_dir, ROOT, server, keep)
+    (out / "corpus.json").write_text(json.dumps(listed, indent=1))
+    r.results.close()
+    write_report(out)
+    rows = [json.loads(l) for l in (out / "results.jsonl").read_text().splitlines()]
+    return 1 if any(x["status"] == "fail" for x in rows) else 0
+
+
 def write_report(out: Path) -> None:
     import report
 
@@ -680,6 +732,9 @@ def main() -> int:
     rp.add_argument("--profile", choices=PROFILES, default="quick")
     rp.add_argument("--only", help="comma-separated dataset ids")
     rp.add_argument("--keep", action="store_true", help="keep every derived file, not only those of a dataset that failed")
+    cd = sub.add_parser("citydb", help="load sources into 3DCityDB v5 and read them back")
+    cd.add_argument("--only", help="comma-separated entry ids")
+    cd.add_argument("--keep", action="store_true", help="keep every derived file")
     rr = sub.add_parser("report")
     rr.add_argument("run_dir", type=Path)
     a = p.parse_args()
@@ -687,6 +742,8 @@ def main() -> int:
         return fetch(a.profile)
     if a.cmd == "run":
         return run(a.profile, set(a.only.split(",")) if a.only else None, a.keep)
+    if a.cmd == "citydb":
+        return run_citydb(set(a.only.split(",")) if a.only else None, a.keep)
     write_report(a.run_dir)
     return 0
 

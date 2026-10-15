@@ -35,7 +35,16 @@ tc fetch --profile quick        # pinned by sha256; a mismatch stops, it never r
 tc run --profile quick          # writes run-<time>/results.jsonl and report.md
 tc run --only rotterdam,delft-fcb --keep   # rerun a few, keep their outputs
 tc report RUN_DIR               # rewrite report.md from results.jsonl
+tc citydb [--only ID,...]       # the 3DCityDB v5 family: needs docker or podman
 ```
+
+The `citydb` family loads each `[[citydb]]` source into 3DCityDB with
+citydb-tool and checks the direct database reader (`cityparquet convert
+postgresql://…`) against citydb-tool's own export, and the package's way
+back into a second database. Its steps are named `C2` to `C6`; a failing
+step there is the citydb reader in `lib/citygml-rs/crates/citydb`, the
+CityGML crates it maps through, or a citydb-tool asymmetry (`known.toml`
+records the understood ones).
 
 `quick` takes about ten minutes on four cores; `full` adds the large city
 models and `xl` the whole Helsinki CityJSONSeq. DuckDB is pinned to the
