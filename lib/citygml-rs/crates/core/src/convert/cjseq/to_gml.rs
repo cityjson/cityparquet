@@ -666,11 +666,15 @@ impl<'a> Conv<'a> {
                 .children
                 .iter()
                 .flatten()
-                .filter(|c| self.parent.get(c.as_str()) != Some(&id))
+                .filter(|c| {
+                    feature.city_objects.contains_key(c.as_str())
+                        && self.parent.get(c.as_str()) != Some(&id)
+                })
                 .count();
+            // A child in another feature is the writer's to place.
             for _ in 0..elsewhere {
                 self.losses
-                    .note("links to children outside their parent's feature");
+                    .note("links to children another parent in their feature holds");
             }
         }
         object.children = children;

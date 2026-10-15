@@ -532,3 +532,184 @@ fn what_xml_cannot_hold_is_left_out_and_counted() {
         Some(&parts)
     );
 }
+
+/// A 3DBAG feature split in two, its Building in one feature and a
+/// BuildingPart in another (the vertices and appearance in both), in the
+/// order given.
+fn split(feature: &Value, part_first: bool) -> Vec<CityJSONFeature> {
+    let id = feature["id"].as_str().unwrap();
+    let objects = feature["CityObjects"].as_object().unwrap();
+    let (part_id, _) = objects
+        .iter()
+        .find(|(_, o)| o["type"] == "BuildingPart")
+        .unwrap();
+    let mut building = feature.clone();
+    building["CityObjects"]
+        .as_object_mut()
+        .unwrap()
+        .remove(part_id);
+    let mut part = feature.clone();
+    part["id"] = part_id.clone().into();
+    part["CityObjects"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|k, _| k == part_id);
+    assert_ne!(id, part_id);
+    let mut features = vec![building, part];
+    if part_first {
+        features.reverse();
+    }
+    features
+        .into_iter()
+        .map(|f| serde_json::from_value(f).unwrap())
+        .collect()
+}
+
+/// A part whose parent is in another feature is written inside its
+/// parent, whichever of the two comes first, as if they were one feature.
+#[test]
+fn a_part_in_a_feature_of_its_own_is_written_inside_its_parent() {
+    let (header, features) = oracle::read_seq(&data("3dbag/delft_100.city.jsonl"));
+    let header: CityJSON = serde_json::from_value(header).unwrap();
+    let feature = features
+        .into_iter()
+        .find(|f| {
+            let objects = f["CityObjects"].as_object().unwrap();
+            objects.len() == 2 && objects.values().any(|o| o["type"] == "BuildingPart")
+        })
+        .unwrap();
+    let whole: CityJSONFeature = serde_json::from_value(feature.clone()).unwrap();
+    let out = scratch("a_part_whole");
+    let expected = write(&header, std::slice::from_ref(&whole), &out, BTreeMap::new());
+    let (_, expected_back) = read(&out, &header.transform);
+    for part_first in [false, true] {
+        let out = scratch(&format!("a_part_split_{part_first}"));
+        let report = write(&header, &split(&feature, part_first), &out, BTreeMap::new());
+        assert_eq!(report.objects, 1, "part first: {part_first}");
+        assert_eq!(report.losses, expected.losses, "part first: {part_first}");
+        let (_, back) = read(&out, &header.transform);
+        let canonical_all = |fs: &[CityJSONFeature]| -> Vec<Value> {
+            fs.iter().map(|f| canonical(&json(f))).collect()
+        };
+        same_features(
+            "a part in a feature of its own",
+            &canonical_all(&expected_back),
+            &canonical_all(&back),
+        );
+    }
+}
+
+/// A part whose parent is in no feature is written on its own at the end,
+/// and counted.
+#[test]
+fn a_part_whose_parent_never_comes_is_written_on_its_own() {
+    let (header, features) = oracle::read_seq(&data("3dbag/delft_100.city.jsonl"));
+    let header: CityJSON = serde_json::from_value(header).unwrap();
+    let feature = features
+        .into_iter()
+        .find(|f| f["CityObjects"].as_object().unwrap().len() == 2)
+        .unwrap();
+    let part = split(&feature, true).remove(0);
+    let out = scratch("a_part_alone");
+    let report = write(&header, std::slice::from_ref(&part), &out, BTreeMap::new());
+    assert_eq!(report.objects, 1);
+    assert_eq!(
+        count(
+            &report.losses,
+            "parts whose parent was not written as their parent (written on their own)"
+        ),
+        1,
+        "{:?}",
+        report.losses
+    );
+    // The part is in the document, where a reader finds it but, like
+    // CityJSON, does not take it for an object.
+    let mut reader = FeatureReader::open(&out).unwrap();
+    assert_eq!(reader.by_ref().map(Result::unwrap).count(), 0);
+    assert_eq!(reader.skipped_members().get("bldg:BuildingPart"), Some(&1));
+}
+
+/// A 3DBAG feature whose BuildingPart is put under a BuildingStorey (a
+/// copy of the part, with no geometry), a type CityGML 2.0 has no class
+/// for: Building, storey and part.
+fn with_storey(feature: &Value) -> (Value, [String; 3]) {
+    let mut feature = feature.clone();
+    let id = feature["id"].as_str().unwrap().to_string();
+    let objects = feature["CityObjects"].as_object_mut().unwrap();
+    let part = objects
+        .iter()
+        .find(|(_, o)| o["type"] == "BuildingPart")
+        .map(|(k, _)| k.clone())
+        .unwrap();
+    let storey = format!("{part}-storey");
+    let mut s = objects[&part].clone();
+    s["type"] = "BuildingStorey".into();
+    s.as_object_mut().unwrap().remove("geometry");
+    s.as_object_mut().unwrap().remove("attributes");
+    s["children"] = serde_json::json!([part]);
+    objects.insert(storey.clone(), s);
+    objects[&part]["parents"] = serde_json::json!([storey]);
+    objects[&id]["children"] = serde_json::json!([storey]);
+    (feature, [id, storey, part])
+}
+
+/// The feature `with_storey` gives, split into one feature per object.
+fn one_per_object(feature: &Value, ids: &[String; 3]) -> Vec<Value> {
+    ids.iter()
+        .map(|id| {
+            let mut f = feature.clone();
+            f["id"] = id.clone().into();
+            f["CityObjects"]
+                .as_object_mut()
+                .unwrap()
+                .retain(|k, _| k == id);
+            f
+        })
+        .collect()
+}
+
+/// A part whose parent has no class in the version takes that parent's
+/// place in its grandparent, across features as within one, whatever the
+/// order the three come in.
+#[test]
+fn a_part_under_a_classless_parent_in_another_feature_lands_in_its_grandparent() {
+    let (header, features) = oracle::read_seq(&data("3dbag/delft_100.city.jsonl"));
+    let header: CityJSON = serde_json::from_value(header).unwrap();
+    let feature = features
+        .into_iter()
+        .find(|f| f["CityObjects"].as_object().unwrap().len() == 2)
+        .unwrap();
+    let (whole, ids) = with_storey(&feature);
+    let whole: CityJSONFeature = serde_json::from_value(whole.clone()).unwrap();
+    let out = scratch("a_storey_whole");
+    let expected = write(&header, std::slice::from_ref(&whole), &out, BTreeMap::new());
+    let (_, expected_back) = read(&out, &header.transform);
+    let (whole, _) = with_storey(&feature);
+    let parts = one_per_object(&whole, &ids);
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let features: Vec<CityJSONFeature> = order
+            .iter()
+            .map(|&i| serde_json::from_value(parts[i].clone()).unwrap())
+            .collect();
+        let out = scratch(&format!("a_storey_{order:?}"));
+        let report = write(&header, &features, &out, BTreeMap::new());
+        assert_eq!(report.objects, 1, "order {order:?}");
+        assert_eq!(report.losses, expected.losses, "order {order:?}");
+        let (_, back) = read(&out, &header.transform);
+        let canonical_all = |fs: &[CityJSONFeature]| -> Vec<Value> {
+            fs.iter().map(|f| canonical(&json(f))).collect()
+        };
+        same_features(
+            &format!("a storey, order {order:?}"),
+            &canonical_all(&expected_back),
+            &canonical_all(&back),
+        );
+    }
+}
