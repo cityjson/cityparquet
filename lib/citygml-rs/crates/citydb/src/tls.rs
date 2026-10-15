@@ -26,7 +26,7 @@ pub(crate) fn connect(resolved: &Resolved) -> Result<postgres::Client> {
 }
 
 /// Where the connection goes, without its password.
-fn describe(resolved: &Resolved) -> String {
+pub(crate) fn describe(resolved: &Resolved) -> String {
     let config = &resolved.postgres;
     let host = match config.get_hosts().first() {
         Some(postgres::config::Host::Tcp(host)) => host.clone(),

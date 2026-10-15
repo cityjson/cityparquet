@@ -65,6 +65,7 @@ pub struct CityDb {
     catalogue: Catalogue,
     srs: Srs,
     version: String,
+    name: String,
     batch_features: usize,
     /// What every pass shares, read on the first.
     prepared: Mutex<Option<Arc<Prepared>>>,
@@ -137,6 +138,7 @@ impl CityDb {
             catalogue,
             srs,
             version,
+            name: format!("{}, schema {schema:?}", tls::describe(&resolved)),
             batch_features: config.batch_features.max(1),
             prepared: Mutex::new(None),
         })
@@ -150,6 +152,19 @@ impl CityDb {
     /// The 3DCityDB version of the instance (`5.1.2`).
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// The database, its host and user, and the schema, for messages: never
+    /// the password.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// What every pass over the database shares, as the CityGML readers'
+    /// document pass gives it: the geometry templates the database's
+    /// implicit geometries place, and which groups reference which members.
+    pub fn document(&self) -> Result<Arc<citygml_core::reader::Document>> {
+        Ok(self.prepared()?.document.clone())
     }
 
     /// The 3D extent of the top-level features the reader yields, `[minx,
