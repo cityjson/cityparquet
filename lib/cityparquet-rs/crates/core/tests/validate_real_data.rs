@@ -852,11 +852,8 @@ fn an_attribute_column_named_like_a_reserved_column_is_reported() {
     );
     let out = _dir.path().join("export.city.jsonl");
     assert!(
-        cityparquet::export::export(&cityparquet::export::ExportOptions {
-            package_dir: pkg.clone(),
-            output: out,
-        })
-        .is_err(),
+        cityparquet::export::export(&cityparquet::export::ExportOptions::new(pkg.clone(), out))
+            .is_err(),
         "the decoder must refuse an attribute column named like a reserved one"
     );
 
@@ -946,10 +943,10 @@ fn a_projective_implicit_transformation_matrix_is_reported() {
 
     // spec 04 "Placement": a reader MUST treat a projective matrix as
     // invalid input, so export refuses the package.
-    let err = cityparquet::export::export(&cityparquet::export::ExportOptions {
-        package_dir: pkg.clone(),
-        output: _dir.path().join("export.city.jsonl"),
-    })
+    let err = cityparquet::export::export(&cityparquet::export::ExportOptions::new(
+        pkg.clone(),
+        _dir.path().join("export.city.jsonl"),
+    ))
     .expect_err("the decoder must refuse a projective transformation matrix");
     assert!(format!("{err}").contains("0, 0, 0, 1"), "{err}");
 }

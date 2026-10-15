@@ -710,7 +710,10 @@ fn export_package_to_gml_writes_citygml() {
     );
 
     let text = std::fs::read_to_string(&gml).unwrap();
-    assert!(text.contains("<CityModel"), "output must be a CityModel");
+    assert!(
+        text.contains("<core:CityModel"),
+        "output must be a CityModel"
+    );
     assert!(
         text.contains("<bldg:Building"),
         "output must contain a Building"
@@ -720,7 +723,7 @@ fn export_package_to_gml_writes_citygml() {
     assert_eq!(
         stdout.split_whitespace().next(),
         Some("3"),
-        "report line should start with buildings_written=3, got {stdout:?}"
+        "report line should start with feature_count=3, got {stdout:?}"
     );
 }
 
@@ -1489,4 +1492,35 @@ fn tolerated_appearance_drops_are_warned_about() {
         stderr.contains("warning: 2 invalid material/texture reference(s) dropped"),
         "{stderr}"
     );
+}
+
+/// A namespace or schema given twice for one key is refused, not decided
+/// by which comes last.
+#[test]
+fn export_refuses_a_key_given_twice() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    for (flag, a, b) in [
+        (
+            "--ade-xmlns",
+            "uro=https://a.example",
+            "uro=https://b.example",
+        ),
+        (
+            "--ade-schema",
+            "https://a.example=a.xsd",
+            "https://a.example=b.xsd",
+        ),
+    ] {
+        let e = Command::new(binary)
+            .arg("export")
+            .arg(dir.path())
+            .arg(dir.path().join("out.gml"))
+            .args([flag, a, flag, b])
+            .output()
+            .expect("failed to run export");
+        assert!(!e.status.success(), "{flag} twice must be refused");
+        let stderr = String::from_utf8_lossy(&e.stderr);
+        assert!(stderr.contains("given twice"), "{flag}: {stderr}");
+    }
 }

@@ -240,10 +240,10 @@ fn convert_export_compare_round_trips_a_dataset_with_genuinely_different_per_mod
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .expect(
         "export must decode a package whose modules have genuinely different schemas, \
          each table against its own metadata",

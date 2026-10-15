@@ -93,10 +93,10 @@ fn convert_and_export_path(
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    let report = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     let exported = Source::open(&output).unwrap();
@@ -227,10 +227,10 @@ fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    let report = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
     let exported = Source::open(&output).unwrap();
 
@@ -306,10 +306,10 @@ fn delft_source_metadata_reaches_kv_metadata_and_the_exported_header() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     let exported_header_line = std::fs::read_to_string(&output)
@@ -425,10 +425,10 @@ fn railway_compatibility_export_restores_appearance_feature_local() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    let report = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     // (a)
@@ -558,10 +558,10 @@ fn railway_export_restores_appearance_under_a_non_canonical_lod() {
     convert(&pristine_opts).unwrap();
     let pristine_export = tempfile::tempdir().unwrap();
     let pristine_out = pristine_export.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: pristine_pkg.path().to_path_buf(),
-        output: pristine_out.clone(),
-    })
+    export(&ExportOptions::new(
+        pristine_pkg.path().to_path_buf(),
+        pristine_out.clone(),
+    ))
     .unwrap();
     let (_, pristine_textures) = count_geometry_appearance_keys(&pristine_out);
 
@@ -571,10 +571,10 @@ fn railway_export_restores_appearance_under_a_non_canonical_lod() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let export_path = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: export_path.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        export_path.clone(),
+    ))
     .unwrap();
 
     // Global count: the derived export carries the SAME number of texture
@@ -682,10 +682,10 @@ fn multi_lod_object_with_single_lod_appearance_round_trips() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let export_path = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: export_path.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        export_path.clone(),
+    ))
     .unwrap();
 
     let report = compare_datasets(&input_path, &export_path, &CompareOptions::default()).unwrap();
@@ -867,10 +867,10 @@ fn solid_appearance_round_trips_through_the_flat_cells() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let export_path = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: export_path.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        export_path.clone(),
+    ))
     .unwrap();
 
     // The exported feature, read as raw JSON: the comparator canonicalises
@@ -1017,10 +1017,10 @@ fn attributes_named_like_appearance_columns_do_not_corrupt_export() {
     let export_path = export_dir.path().join("export.city.jsonl");
     // Must not error: the lookalike attributes must be skipped by the
     // reserved-role filter, never parsed as appearance JSON.
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: export_path.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        export_path.clone(),
+    ))
     .expect("export must not misread lookalike attributes as appearance");
 
     // The target object's real LoD-3 texture must still round-trip, and the
@@ -1086,10 +1086,10 @@ fn children_roles_round_trip() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let export_path = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: export_path.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        export_path.clone(),
+    ))
     .unwrap();
 
     let text = std::fs::read_to_string(&export_path).unwrap();
@@ -1212,10 +1212,10 @@ fn railway_compatibility_export_attaches_appearance_only_to_referencing_features
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     let exported = Source::open(&output).unwrap();
@@ -1287,10 +1287,10 @@ fn core_profile_export_attaches_dataset_wide_defaults_even_without_sidecars() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let export_report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    let export_report = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
     // The appearance-refs-dropped behaviour must be completely unaffected by
     // attaching defaults: delft has no geometry material/texture index maps
@@ -1344,10 +1344,10 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.json");
-    let report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    let report = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     // (a)
@@ -1552,10 +1552,10 @@ fn export_errors_on_a_dangling_implicit_geometry_id_reference() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let err = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
+    let err = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
         output,
-    })
+    ))
     .unwrap_err();
 
     assert!(
@@ -1639,10 +1639,10 @@ fn export_errors_on_an_out_of_range_material_global_id() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let err = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
+    let err = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
         output,
-    })
+    ))
     .unwrap_err();
 
     assert!(
@@ -1671,10 +1671,10 @@ fn delft_also_exports_as_a_single_whole_city_json_document() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.json");
-    let report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    let report = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
     assert_eq!(report.feature_count, 1115);
 
@@ -1747,10 +1747,10 @@ fn export_errors_when_manifest_lists_implicit_geometries_but_the_sidecar_file_is
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let err = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
+    let err = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
         output,
-    })
+    ))
     .unwrap_err();
 
     assert!(
@@ -1803,10 +1803,10 @@ fn export_ignores_an_unlisted_implicit_geometries_file_left_on_disk() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
+    let report = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
         output,
-    })
+    ))
     .unwrap();
 
     assert_eq!(
@@ -1853,10 +1853,10 @@ fn export_rejects_a_manifest_listing_the_same_table_twice() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let error = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
+    let error = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
         output,
-    })
+    ))
     .unwrap_err();
     let msg = error.to_string();
     assert!(
@@ -1944,10 +1944,10 @@ fn export_reads_every_table_a_manifest_lists_not_just_the_first() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    let report = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
     assert_eq!(
         report.object_count, 2231,
@@ -2093,10 +2093,10 @@ fn export_decodes_a_second_table_with_a_renamed_attribute_column_using_its_own_m
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    let report = export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .expect(
         "two tables with genuinely different (but each internally self-consistent) schemas \
              must decode successfully, each against its own metadata",

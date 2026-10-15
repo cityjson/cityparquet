@@ -346,7 +346,9 @@ Every object row **SHOULD** carry a `bbox` in the same CRS as the geometry — a
 - `bbox` is the **union** over the object's whole subtree — its own geometry and
   every descendant's, not merely the nearest geometry-bearing generation. A
   `Building` carrying only an LoD0 footprint over solid `BuildingPart`s therefore
-  still spans its parts' full z-range.
+  still spans its parts' full z-range. The subtree stays within the object's
+  family: a group's member that is a family of its own (see the
+  [feature_id rule](/specification/object-table-schema)) is not in the group's box.
 - Where the source declares a per-object extent of its own, that extent is
   **unioned into** `bbox`. It may only widen the box: a source extent is not
   guaranteed to contain the geometry it describes, and a box narrower than the

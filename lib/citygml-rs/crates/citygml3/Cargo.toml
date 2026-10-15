@@ -1,0 +1,22 @@
+[package]
+name = "citygml3"
+description = "CityGML 3.0 reader and writer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+citygml-core = { workspace = true }
+quick-xml = { workspace = true }
+cjseq = { workspace = true, optional = true }
+
+[dev-dependencies]
+cjseq = { workspace = true }
+serde = "1"
+serde_json = { workspace = true }
+
+[features]
+default = ["cjseq"]
+# `FeatureReader::features`, which yields cjseq `CityJSONFeature`s.
+cjseq = ["dep:cjseq", "citygml-core/cjseq"]

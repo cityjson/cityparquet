@@ -64,7 +64,7 @@ package deliberately, add `--overwrite`.
 
 ## Convert CityJSON or CityGML
 
-The same command accepts a CityJSON document or CityGML 2.0 file. Replace these
+The same command accepts a CityJSON document or a CityGML 2.0 or 3.0 file. Replace these
 example input names with your own local files:
 
 ```bash
@@ -98,16 +98,22 @@ references before treating the conversion as lossless.
 
 ## Export to CityGML
 
-A `.gml` suffix selects the CityGML 2.0 writer:
+A `.gml` suffix selects the CityGML writer. It writes CityGML 2.0 unless
+`--citygml-version 3.0` asks for 3.0:
 
 ```bash
 cityparquet export delft_package delft_export.gml
+cityparquet export delft_package delft_export_3.gml --citygml-version 3.0
 ```
 
-CityGML export has narrower coverage than CityJSON export. Its report lists
-buildings written, non-building objects skipped, missing geometry, unsupported
-multi-solids, and skipped LoDs or attributes. Check that report for your model;
-a successful command does not mean every source object was exported.
+Every city object is written, with its geometry, semantic surfaces, attributes,
+appearance and ADE content, in the order the version's schema requires. What the
+target version cannot hold is left out, and the export prints one
+`warning: CityGML:` line per kind with its count: a class the version lacks (a
+`BuildingStorey` in 2.0), or a LoD 4 geometry in 3.0 whose object already has
+geometry at LoD 3. Check those warnings for your model: no warning means the
+CityGML writer left nothing out. The report line's last two numbers count what
+the export itself dropped, as for CityJSON.
 
 ## Check the CityJSONSeq round trip
 

@@ -54,11 +54,7 @@ fn railway_parks_exactly_its_cross_table_families_and_round_trips() {
     assert!(spanning > 0, "railway has a family spanning tables");
 
     let output = dir.path().join("export.city.jsonl");
-    let report = export(&ExportOptions {
-        package_dir: pkg.clone(),
-        output: output.clone(),
-    })
-    .unwrap();
+    let report = export(&ExportOptions::new(pkg.clone(), output.clone())).unwrap();
     assert_eq!(report.parked_features, spanning);
 
     let compared = compare_datasets(
@@ -83,10 +79,10 @@ fn a_family_split_within_a_table_is_refused() {
     content.batches = vec![arrow_select::take::take_record_batch(&all, &order).unwrap()];
     content.write(&table);
 
-    let err = export(&ExportOptions {
-        package_dir: pkg,
-        output: dir.path().join("export.city.jsonl"),
-    })
+    let err = export(&ExportOptions::new(
+        pkg,
+        dir.path().join("export.city.jsonl"),
+    ))
     .expect_err("a split family must not be exported");
     assert!(format!("{err}").contains("not contiguous"), "{err}");
 }

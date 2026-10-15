@@ -121,8 +121,10 @@ directly, so there is no `core.parquet`.
 **Extension modules** add further files beyond this table — an extension class that
 declares its own module gets a file named after that module, prefixed with the
 extension's namespace (the Building Physics module of the Energy ADE, namespace
-`energy` → `energy_building_physics.parquet`), while a class that specialises an existing
-class joins that class's module file. See [extensions](/specification/extensions).
+`energy` → `energy_building_physics.parquet`), a class that specialises an existing
+class joins that class's module file, and a class that does neither gets its extension's
+own file, named by the namespace (`urf.parquet`). See
+[extensions](/specification/extensions).
 
 ## Versioning
 

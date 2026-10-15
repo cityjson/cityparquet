@@ -2299,10 +2299,10 @@ mod tests {
 
         let export_dir = tempfile::tempdir().unwrap();
         let exported = export_dir.path().join("export.city.jsonl");
-        crate::export::export(&crate::export::ExportOptions {
-            package_dir: package_dir.path().to_path_buf(),
-            output: exported.clone(),
-        })
+        crate::export::export(&crate::export::ExportOptions::new(
+            package_dir.path().to_path_buf(),
+            exported.clone(),
+        ))
         .unwrap();
 
         let report = compare_datasets(&source_path, &exported, &CompareOptions::default()).unwrap();
@@ -2406,10 +2406,10 @@ mod tests {
 
         let export_dir = tempfile::tempdir().unwrap();
         let exported = export_dir.path().join("export.city.jsonl");
-        crate::export::export(&crate::export::ExportOptions {
-            package_dir: package_dir.path().to_path_buf(),
-            output: exported.clone(),
-        })
+        crate::export::export(&crate::export::ExportOptions::new(
+            package_dir.path().to_path_buf(),
+            exported.clone(),
+        ))
         .unwrap();
 
         let report = compare_datasets(&source_path, &exported, &CompareOptions::default()).unwrap();
@@ -2788,10 +2788,10 @@ mod tests {
 
         let export_dir = tempfile::tempdir().unwrap();
         let output = export_dir.path().join("export.city.json");
-        export(&ExportOptions {
-            package_dir: package_dir.path().to_path_buf(),
-            output: output.clone(),
-        })
+        export(&ExportOptions::new(
+            package_dir.path().to_path_buf(),
+            output.clone(),
+        ))
         .unwrap();
         (output, package_dir, export_dir)
     }

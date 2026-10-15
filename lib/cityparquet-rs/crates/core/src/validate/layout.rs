@@ -48,21 +48,23 @@ pub(super) fn check_layout(files: &[PackageFile], r: &mut Reporter) {
         }
         // spec 01 "By-module object-table layout" / spec 06 "The namespace":
         // a file beyond the standard set is an extension module's, named
-        // `<namespace>_<module in snake_case>.parquet`, and a file carrying
-        // an extension name MUST declare that namespace in `city.extensions`.
+        // `<namespace>_<module in snake_case>.parquet`, or an extension's
+        // own, named `<namespace>.parquet`; a file carrying an extension name
+        // MUST declare that namespace in `city.extensions`.
         let stem = table.name.trim_end_matches(".parquet");
         let declared = table.declared_namespaces();
-        let extension_module = stem
-            .split_once('_')
-            .is_some_and(|(ns, module)| declared.contains(ns) && is_snake_case(module));
+        let extension_module = declared.contains(stem)
+            || stem
+                .split_once('_')
+                .is_some_and(|(ns, module)| declared.contains(ns) && is_snake_case(module));
         if !extension_module {
             r.error(
                 "package.object-table-name",
                 PACKAGE,
                 Some(&table.name),
                 "the file name is neither a CityGML 3.0 module file nor \
-                 `<namespace>_<module>.parquet` for a namespace this file declares in \
-                 `city.extensions`"
+                 `<namespace>.parquet` or `<namespace>_<module>.parquet` for a namespace this \
+                 file declares in `city.extensions`"
                     .to_string(),
             );
         }

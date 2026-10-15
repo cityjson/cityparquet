@@ -1,4 +1,4 @@
-//! Synthesise a `cjseq::CityJSON` header for a CityGML 2.0 document.
+//! Synthesise a `cjseq::CityJSON` header for a CityGML document.
 //!
 //! Scans only the document preamble (the `gml:Envelope`, which precedes the
 //! first `cityObjectMember`) for the dataset CRS and extent, then picks the one
@@ -24,25 +24,51 @@ use std::path::Path;
 use cityparquet_schema::crs::{MM, axis_scale, resolve_to_projjson};
 use cityparquet_schema::{CityParquetError, Result};
 use cjseq::{CityJSON, Metadata, Transform};
-use quick_xml::events::Event;
-use quick_xml::reader::NsReader;
 
 use super::crs::{self, CrsResolution};
-use super::xml::{NS_GML, get_attr, ns_is, read_text, xml_err};
+use super::reader::{error, read_document};
+use citygml_core::reader::{Document, Preamble, scan_preamble};
+use citygml_core::sniff;
 
-/// Build the CityJSON header (transform + metadata) for the document at `path`.
+/// Build the CityJSON header for the document at `path`: transform and
+/// metadata, the relative geometries its `ImplicitGeometry`s place as
+/// `geometry-templates` with the appearance they index, and the extensions
+/// its ADEs are declared as. Reads the whole document once for the templates
+/// and ADEs; [`parse_header_with`] takes a [`Document`] already read.
 pub fn parse_header(path: &Path) -> Result<CityJSON> {
-    let file = File::open(path)
-        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
-    parse_header_from(BufReader::new(file))
+    let version = sniff(path).ok_or_else(|| {
+        CityParquetError::Schema(format!("{} is not a CityGML document", path.display()))
+    })?;
+    parse_header_with(path, &read_document(path, &version)?)
 }
 
-/// [`parse_header`] over any `BufRead`. It consumes the preamble (and, for a
+/// [`parse_header`] with the document-wide facts read beforehand, so that
+/// the same [`Document`] can be handed to
+/// [`super::FeatureReader::with_document`].
+pub fn parse_header_with(path: &Path, document: &Document) -> Result<CityJSON> {
+    let file = File::open(path)
+        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
+    let mut header = parse_header_from(BufReader::new(file))?;
+    if let Some((templates, appearance)) =
+        citygml_core::convert::cjseq::geometry_templates(document.templates()).map_err(error)?
+    {
+        header.geometry_templates = Some(templates);
+        header.appearance = appearance;
+    }
+    let extensions = citygml_core::convert::cjseq::extensions(document.ade());
+    if !extensions.is_empty() {
+        header.extensions = Some(extensions.into_iter().collect());
+    }
+    Ok(header)
+}
+
+/// [`parse_header`] over any `BufRead`, without the templates, which would
+/// need a read of the whole document. It consumes the preamble (and, for a
 /// document that declares its CRS only on its objects, a bounded run of them),
 /// so a streaming caller that still needs those bytes records them and replays
 /// them ahead of the rest.
 pub fn parse_header_from<R: BufRead>(input: R) -> Result<CityJSON> {
-    let (srs_name, envelope) = scan_envelope(input)?;
+    let Preamble { srs_name, envelope } = scan_preamble(input).map_err(error)?;
 
     let translate = match &envelope {
         Some(e) => [e[0], e[1], e[2]],
@@ -99,89 +125,4 @@ pub fn parse_header_from<R: BufRead>(input: R) -> Result<CityJSON> {
     }
     header.metadata = has_metadata.then_some(metadata);
     Ok(header)
-}
-
-/// Read the preamble and return `(srsName, [minx,miny,minz,maxx,maxy,maxz])`.
-///
-/// Corners are read from the preamble only. When the preamble declares no
-/// `srsName`, the scan continues into city objects looking for one — and for
-/// nothing else — because real exports declare the CRS per object and never
-/// ahead of the first `cityObjectMember`.
-fn scan_envelope<R: BufRead>(input: R) -> Result<(Option<String>, Option<[f64; 6]>)> {
-    let mut reader = NsReader::from_reader(input);
-    let mut buf = Vec::new();
-
-    let mut srs_name: Option<String> = None;
-    let mut lower: Option<[f64; 3]> = None;
-    let mut upper: Option<[f64; 3]> = None;
-
-    // Once past the preamble we keep scanning for an `srsName` ONLY — never
-    // for corners. Real exports (e.g. Freiburg's 1.86 GiB file) declare the CRS
-    // on every object's own `gml:boundedBy` and never in the preamble; adopting
-    // one of those envelopes as the DATASET extent would report a single
-    // building's extent and skew the quantisation origin, so corners stay
-    // preamble-only.
-    let mut past_preamble = false;
-    // Bound the fallback: a real file declares its CRS on the first object, so
-    // this stops almost immediately. The cap keeps a pathological CRS-less file
-    // from being read end-to-end just to fail.
-    let mut fallback_events = 0usize;
-    const MAX_FALLBACK_EVENTS: usize = 100_000;
-
-    loop {
-        buf.clear();
-        let (rr, ev) = reader.read_resolved_event_into(&mut buf).map_err(xml_err)?;
-        match ev {
-            Event::Start(e) => {
-                let local = e.local_name();
-                let name = local.as_ref().to_vec();
-                // The dataset CRS can sit on the CityModel root or the Envelope.
-                if srs_name.is_none()
-                    && let Some(s) = get_attr(&e, b"srsName")
-                {
-                    srs_name = Some(s);
-                    if past_preamble {
-                        break; // fallback satisfied
-                    }
-                }
-                if past_preamble {
-                    fallback_events += 1;
-                    if fallback_events >= MAX_FALLBACK_EVENTS {
-                        break;
-                    }
-                    continue;
-                }
-                if ns_is(&rr, NS_GML) && name == b"lowerCorner" {
-                    lower = parse_corner(&read_text(&mut reader, &mut buf)?);
-                } else if ns_is(&rr, NS_GML) && name == b"upperCorner" {
-                    upper = parse_corner(&read_text(&mut reader, &mut buf)?);
-                } else if name == b"cityObjectMember" {
-                    if srs_name.is_some() {
-                        break; // preamble gave us everything
-                    }
-                    past_preamble = true;
-                }
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-
-    let envelope = match (lower, upper) {
-        (Some(l), Some(u)) => Some([l[0], l[1], l[2], u[0], u[1], u[2]]),
-        _ => None,
-    };
-    Ok((srs_name, envelope))
-}
-
-fn parse_corner(text: &str) -> Option<[f64; 3]> {
-    let v: Vec<f64> = text
-        .split_whitespace()
-        .filter_map(|t| t.parse().ok())
-        .collect();
-    match v.len() {
-        3 => Some([v[0], v[1], v[2]]),
-        2 => Some([v[0], v[1], 0.0]),
-        _ => None,
-    }
 }

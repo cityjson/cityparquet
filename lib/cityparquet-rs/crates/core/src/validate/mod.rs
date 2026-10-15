@@ -307,7 +307,10 @@ struct SidecarIds {
 struct HierarchyRow {
     first_parent: Option<String>,
     parents: Vec<String>,
+    children: Vec<String>,
     feature_id: Option<String>,
+    /// Whether the row is a `CityObjectGroup`.
+    is_group: bool,
     /// The row's `bbox`, when it is non-null and complete.
     bbox: Option<[f64; 6]>,
     file: String,
@@ -387,6 +390,7 @@ pub fn validate_package(dir: &Path) -> Result<ValidationReport> {
         check_object_table(file, &ids, &mut hierarchy, &mut r);
     }
     check_feature_ids(&hierarchy, &mut r);
+    check_references(&hierarchy, &mut r);
     check_bbox_subtree(&hierarchy, &mut r);
 
     Ok(r.finish())

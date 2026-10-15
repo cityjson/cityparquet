@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use cityparquet_schema::{
     AttributeInferer, AttributeType, CITYPARQUET_VERSION, CityColumnEntry, CityMetadata,
     CityParquetError, CityParquetSchema, CrsState, ExtensionDeclarations, ExtensionNaming,
-    ExtensionRegistry, GeoColumnEntry, GeoMetadata, GeometryEncoding, Lod, ModuleKey,
-    ModuleKeyResolver, Result, SourceFormat as SchemaSourceFormat, geometry_column_name,
+    GeoColumnEntry, GeoMetadata, GeometryEncoding, Lod, ModuleKey, ModuleKeyResolver, Result,
+    SourceFormat as SchemaSourceFormat, geometry_column_name,
 };
 
 use cardinality_estimator::CardinalityEstimator;
@@ -21,6 +21,7 @@ use cjseq::{CityJSONFeature, GeometryType};
 
 use crate::source::{Source, SourceFormat};
 use cityparquet_schema::crs::AxisOrder;
+use cityparquet_schema::extensions::{NameKind, class_registry};
 
 use crate::wkb_write::{VertexPool, geometry_bbox};
 
@@ -131,7 +132,8 @@ pub struct ScanResult {
     /// every distinct `object_type` this scan encounters, whether or not that
     /// object carries geometry, so `crate::package::TableWriters` never needs
     /// to fall back to "module absent from the map means empty". Resolved
-    /// with an EMPTY [`ExtensionRegistry`] — see [`scan`]'s doc comment.
+    /// with the classes the declarations say specialise another — see
+    /// [`scan`]'s doc comment.
     pub module_lods: BTreeMap<ModuleKey, Vec<Lod>>,
     /// Per-[`ModuleKey`] realised WKB type sets, mirroring
     /// [`Self::geoparquet_columns`] but broken out per module rather than
@@ -215,14 +217,10 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 /// Scan every feature and object in `source` once, inferring the attribute
 /// and LoD schema and accumulating the dataset-level bbox, CRS, and transform.
 ///
-/// [`ScanResult::module_lods`] is resolved with an EMPTY [`ExtensionRegistry`]
-/// — matching `crate::package::extension_registry`'s present-day stub (no
-/// Extension/ADE schema parsing yet, tracked separately: spec
-/// `city.extensions` declaration storage). A genuine `+`-marked extension
-/// class therefore hard-errors here exactly as it already does at write time
-/// (see `extension_module_real_data.rs`'s
-/// `unresolvable_extension_type_is_a_clean_schema_error`), just one pass
-/// earlier — fail fast rather than fail during encode.
+/// [`ScanResult::module_lods`] is resolved with the [`class_registry`] of
+/// the source's declarations — matching `crate::package::extension_registry`
+/// — so an extension class routes by the class it specialises, to a core
+/// module, or to its extension's own file, exactly as at write time.
 ///
 /// Extension names are attributed here too (spec "Extensions"): a CityJSON
 /// `+` attribute is inferred under its namespace-prefixed column name, and a
@@ -281,7 +279,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     // types actually written to each LoD's geometry column, dataset-wide.
     let mut lod_geo: std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>> =
         std::collections::BTreeMap::new();
-    let mut resolver = ModuleKeyResolver::new(ExtensionRegistry::new());
+    let mut resolver = ModuleKeyResolver::new(class_registry(extensions.as_ref())?);
     let mut module_lod_sets: BTreeMap<ModuleKey, BTreeSet<Lod>> = BTreeMap::new();
     let mut module_geo: BTreeMap<ModuleKey, BTreeMap<Lod, BTreeSet<String>>> = BTreeMap::new();
     // Whether the source carries any `GeometryInstance` — its `implicit_geometry.point`
@@ -346,8 +344,8 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
                 return Err(repeated_id(id, &feature));
             }
             let thetype = crate::cjtypes::object_type_name(&co.thetype);
-            naming.encode_name(&thetype, "city-object type")?;
-            let module_key = resolver.resolve(&thetype)?;
+            let stored_type = naming.encode_name(&thetype, NameKind::CityObjectType)?;
+            let module_key = resolver.resolve(&thetype, naming.namespace(&stored_type))?;
             // Every module actually encountered gets an entry, even one with
             // no analysis geometry at all — see the field's doc comment.
             module_lod_sets.entry(module_key.clone()).or_default();

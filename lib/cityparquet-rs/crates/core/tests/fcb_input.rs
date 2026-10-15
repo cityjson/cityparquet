@@ -60,11 +60,7 @@ fn delft_from_flatcitybuf_round_trips_and_matches_the_cityjsonseq() {
     let pkg = dir.path().join("pkg");
     convert(&ConvertOptions::new(fixture("delft.fcb"), pkg.clone())).unwrap();
     let exported = dir.path().join("exported.city.jsonl");
-    export(&ExportOptions {
-        package_dir: pkg,
-        output: exported.clone(),
-    })
-    .unwrap();
+    export(&ExportOptions::new(pkg, exported.clone())).unwrap();
     let round_trip = compare_datasets(&read, &exported, &CompareOptions::default()).unwrap();
     assert!(round_trip.equal, "{:#?}", round_trip.differences);
 

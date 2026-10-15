@@ -1,8 +1,8 @@
 name: Rust
 
-# The gate for both Rust workspaces — the library (lib/cityparquet-rs) and the
-# read-benchmark harness (benchmark/readbench) — plus the harness's own two
-# non-Rust suites.
+# The gate for the Rust workspaces — the library (lib/cityparquet-rs), the
+# CityGML readers it depends on (lib/citygml-rs) and the read-benchmark harness
+# (benchmark/readbench) — plus the harness's own two non-Rust suites.
 #
 # The BENCHMARKS THEMSELVES ARE NOT HERE and should not be added: they are
 # multi-hour, need a ~24 GB fetched corpus, and the database family needs
@@ -14,6 +14,7 @@ on:
     branches: [main, develop]
     paths:
       - "lib/cityparquet-rs/**"
+      - "lib/citygml-rs/**"
       - "benchmark/**"
       - "scripts/**"
       - "justfile"
@@ -21,6 +22,7 @@ on:
   pull_request:
     paths:
       - "lib/cityparquet-rs/**"
+      - "lib/citygml-rs/**"
       - "benchmark/**"
       - "scripts/**"
       - "justfile"
@@ -113,8 +115,60 @@ jobs:
         working-directory: lib/cityparquet-rs
         run: just fixtures
 
+      # The writer tests validate every document they write with
+      # citygml-tools when CITYGML_TOOLS names it (the pin of
+      # benchmark/scripts/fetch_tools.sh; Java 17 is on the runner).
+      - name: Fetch citygml-tools
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/citygml-tools.zip" \
+            https://github.com/citygml4j/citygml-tools/releases/download/v2.5.0/citygml-tools-2.5.0.zip
+          echo "bb2949fbc6c3ec44ec85c25a0bcdfe9accde9cbdb9e26ec773889779694710b1  $RUNNER_TEMP/citygml-tools.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/citygml-tools.zip" -d "$RUNNER_TEMP"
+          echo "CITYGML_TOOLS=$RUNNER_TEMP/citygml-tools-2.5.0/citygml-tools" >> "$GITHUB_ENV"
+
       - name: just check
         working-directory: lib/cityparquet-rs
+        run: just check
+
+  citygml:
+    name: citygml-rs workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/citygml-rs/target
+          key: citygml-${{ runner.os }}-${{ hashFiles('lib/citygml-rs/Cargo.lock') }}
+          restore-keys: citygml-${{ runner.os }}-
+
+      - uses: extractions/setup-just@v4
+
+      - name: Install rustfmt and clippy
+        working-directory: lib/citygml-rs
+        run: rustup component add rustfmt clippy
+
+      # The writer tests validate every document they write with
+      # citygml-tools when CITYGML_TOOLS names it (the pin of
+      # benchmark/scripts/fetch_tools.sh; Java 17 is on the runner).
+      - name: Fetch citygml-tools
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/citygml-tools.zip" \
+            https://github.com/citygml4j/citygml-tools/releases/download/v2.5.0/citygml-tools-2.5.0.zip
+          echo "bb2949fbc6c3ec44ec85c25a0bcdfe9accde9cbdb9e26ec773889779694710b1  $RUNNER_TEMP/citygml-tools.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/citygml-tools.zip" -d "$RUNNER_TEMP"
+          echo "CITYGML_TOOLS=$RUNNER_TEMP/citygml-tools-2.5.0/citygml-tools" >> "$GITHUB_ENV"
+
+      # Its tests read the CityGML files committed under each crate's
+      # tests/data.
+      - name: just check
+        working-directory: lib/citygml-rs
         run: just check
 
   harness-suites:

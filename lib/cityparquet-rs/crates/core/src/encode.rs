@@ -25,6 +25,7 @@ use cjseq::{
 use serde_json::Value;
 
 use cityparquet_schema::crs::AxisOrder;
+use cityparquet_schema::extensions::NameKind;
 use cityparquet_schema::{AttributeType, CityParquetError, ExtensionNaming, Lod, Result};
 
 use crate::appearance::AppearanceInterner;
@@ -89,7 +90,7 @@ pub(crate) fn unmapped_object_members(co: &CityObject) -> Result<serde_json::Map
 /// rules"). `scan` and the row writer both key attributes by this name.
 pub(crate) fn stored_attribute_name(naming: &ExtensionNaming, source: &str) -> Result<String> {
     Ok(cityparquet_schema::reserved::escape_attribute_name(
-        &naming.encode_name(source, "attribute")?,
+        &naming.encode_name(source, NameKind::Attribute)?,
     ))
 }
 
@@ -587,7 +588,7 @@ fn namespace_surface_types(props: &mut GeometryProperties, naming: &ExtensionNam
     };
     for surface in surfaces {
         if let Some(Value::String(surface_type)) = surface.get_mut("type") {
-            *surface_type = naming.encode_name(surface_type, "semantic surface type")?;
+            *surface_type = naming.encode_name(surface_type, NameKind::SemanticSurfaceType)?;
         }
     }
     Ok(())
@@ -1204,7 +1205,9 @@ impl RowWriter {
         let thetype = crate::cjtypes::object_type_name(&co.thetype);
         let object_type = match cityparquet_schema::class_info(&thetype) {
             Some(info) => info.citygml_class.to_string(),
-            None => self.naming.encode_name(&thetype, "city-object type")?,
+            None => self
+                .naming
+                .encode_name(&thetype, NameKind::CityObjectType)?,
         };
         self.object_type.append(&object_type)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());

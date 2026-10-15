@@ -53,10 +53,10 @@ fn convert_and_export_path(input: &Path) -> (PathBuf, tempfile::TempDir, tempfil
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     (output, package_dir, export_dir)
@@ -374,10 +374,10 @@ fn assert_preset_round_trips(preset: RecipePreset) {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     let report = compare_datasets(
@@ -560,10 +560,10 @@ fn railway_interior_ring_texture_survives_round_trip() {
     .unwrap();
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.json");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
     let exported_doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
@@ -710,10 +710,10 @@ fn delft_derived_solid_face_drop_round_trips_and_comparator_agrees_with_the_writ
     .unwrap();
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     let report = compare_datasets(&source_path, &output, &CompareOptions::default()).unwrap();
@@ -779,10 +779,10 @@ fn convert_and_export_with_path(
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     (output, package_dir, export_dir)
@@ -888,10 +888,10 @@ fn null_shorthand_semantics_round_trips() {
     .unwrap();
     let export_dir = tempfile::tempdir().unwrap();
     let exported = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package.path().to_path_buf(),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        package.path().to_path_buf(),
+        exported.clone(),
+    ))
     .unwrap();
 
     let report = compare_datasets(&src, &exported, &CompareOptions::default()).unwrap();
@@ -1278,10 +1278,10 @@ fn a_crs_less_source_round_trips_through_an_explicit_null_crs() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let exported = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        exported.clone(),
+    ))
     .unwrap();
 
     let header: serde_json::Value = serde_json::from_str(
