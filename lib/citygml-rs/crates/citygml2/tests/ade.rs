@@ -390,7 +390,8 @@ mod cityjson {
 
     /// Each ADE a document uses is a CityJSON `extensions` member under its
     /// prefix: its schema, its version, its namespace, the XML attributes
-    /// stated once for the document, and the `+` names it adds.
+    /// stated once for the document, the `+` names it adds, and where in
+    /// their objects its elements go.
     #[test]
     fn each_ade_is_declared_as_an_extension() {
         let document = read_document(&data("533946_urf_6697_08_op.gml")).unwrap();
@@ -428,6 +429,26 @@ mod cityjson {
             uro["extraAttributes"],
             json!({"Road": {"+roadStructureAttribute": {}, "+tranDataQualityAttribute": {}}})
         );
+        // Where a writer puts each property: the hook it substitutes for.
+        assert_eq!(
+            uro["substitutionGroups"],
+            json!({
+                "roadStructureAttribute": "tran:_GenericApplicationPropertyOfRoad",
+                "tranDataQualityAttribute": "tran:_GenericApplicationPropertyOfTransportationComplex"
+            })
+        );
+        // And for an ADE class, its content model's order, its base's first.
+        let order: Vec<&str> = urf["propertyOrder"]["UseDistrict"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let at = |name: &str| order.iter().position(|n| *n == name).unwrap();
+        assert_eq!(order[..3], ["class", "function", "usage"]);
+        assert!(at("function") < at("lod1MultiCurve"));
+        assert!(at("lod1MultiCurve") < at("areaInTotal"));
+        assert!(at("areaInTotal") < at("floorAreaRate"));
 
         // A class specialising a CityGML class is declared the way a
         // CityJSON Extension declares one: by reference to CityJSON's schema.

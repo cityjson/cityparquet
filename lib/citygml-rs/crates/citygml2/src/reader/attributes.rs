@@ -1,11 +1,12 @@
 //! Attributes: the text-only properties a CityGML 2.0 class declares, typed
-//! as its schema types them, and `gen:` generic attributes.
+//! as its schema types them, and `gen:` generic attributes and sets of
+//! them.
 
 use std::io::BufRead;
 
 use citygml_core::model::{Attribute, AttributeName, Module, Namespace, QName, Value};
 use citygml_core::reader::text::{AttrType, to_value};
-use citygml_core::xml::{read_text, xml_err};
+use citygml_core::xml::{get_attr_local, read_text, skip_element, xml_err};
 use citygml_core::{Error, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
@@ -121,4 +122,70 @@ pub fn read_generic<R: BufRead>(
     Ok(value_text
         .filter(|text| !text.trim().is_empty())
         .map(|text| to_value(&text, ty)))
+}
+
+/// How deep generic attribute sets may nest in one another: a guard
+/// against attacker-controlled recursion.
+const MAX_SET_DEPTH: usize = 32;
+
+/// A `gen:genericAttributeSet` named `name` (positioned after its `Start`;
+/// consumes through its `End`): its generic attributes and nested sets, in
+/// document order. A set without a `name`, or a member without one, cannot
+/// be named, and is dropped.
+pub fn read_generic_set<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    name: Option<String>,
+) -> Result<Option<Attribute>> {
+    read_set(reader, buf, name, 0)
+}
+
+fn read_set<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    name: Option<String>,
+    depth: usize,
+) -> Result<Option<Attribute>> {
+    if depth > MAX_SET_DEPTH {
+        return Err(Error::invalid(format!(
+            "generic attribute sets nested deeper than {MAX_SET_DEPTH}"
+        )));
+    }
+    let mut members = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                let generics = citygml_core::xml::ns_eq(&rr, crate::ns::GENERICS.as_bytes());
+                let local = e.local_name();
+                let member_name = get_attr_local(&e, b"name");
+                let member = if generics && local.as_ref() == b"genericAttributeSet" {
+                    read_set(reader, buf, member_name, depth + 1)?
+                } else if let Some(ty) = generics.then(|| generic_attr(local.as_ref())).flatten() {
+                    read_generic(reader, buf, ty)?
+                        .zip(member_name)
+                        .map(|(value, name)| Attribute {
+                            name: AttributeName::Generic(name),
+                            value,
+                        })
+                } else {
+                    skip_element(reader, buf)?;
+                    None
+                };
+                members.extend(member);
+            }
+            Event::End(e) if e.local_name().as_ref() == b"genericAttributeSet" => break,
+            Event::Eof => {
+                return Err(Error::invalid(
+                    "unexpected end of document inside a gen:genericAttributeSet",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(name.map(|name| Attribute {
+        name: AttributeName::Generic(name),
+        value: Value::Set(members),
+    }))
 }

@@ -13,7 +13,7 @@ mod object;
 mod value;
 
 pub use address::Address;
-pub use ade::{Ade, AdeIndex, AdeIndexBuilder, XmlAttribute, XmlContent, XmlNode};
+pub use ade::{Ade, AdeIndex, AdeIndexBuilder, AdeLayout, XmlAttribute, XmlContent, XmlNode};
 pub use appearance::{Appearance, Material, ModelAppearance, RingUvs, Texture};
 pub use geometry::{Face, Geometry, Instance, Line, Polygon, Ring, Shape, Template};
 pub use group::{GroupIndex, GroupMember, MemberTarget};

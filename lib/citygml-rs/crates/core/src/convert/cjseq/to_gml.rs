@@ -49,9 +49,9 @@ use serde_json::{Map, Value as Json};
 
 use crate::convert::{Class, GmlFeature, Losses, Property, PropertyKind, ToGml, Vocabulary};
 use crate::model::{
-    Address, Appearance, Attribute, AttributeName, BoundarySurface, Face, Geometry, GmlObject,
-    GroupMember, Instance, Material, MemberTarget, Namespace, Polygon, QName, RingUvs, Shape,
-    Template, Texture, Value, XmlAttribute, XmlContent, XmlNode,
+    Address, AdeLayout, Appearance, Attribute, AttributeName, BoundarySurface, Face, Geometry,
+    GmlObject, GroupMember, Instance, Material, MemberTarget, Namespace, Polygon, QName, RingUvs,
+    Shape, Template, Texture, Value, XmlAttribute, XmlContent, XmlNode,
 };
 use crate::vocabulary::module_of_prefix;
 use crate::{Error, Result};
@@ -280,6 +280,10 @@ pub struct ExtensionNs {
     surfaces: BTreeSet<String>,
     /// Attribute names, by City Object type.
     attributes: BTreeMap<String, BTreeSet<String>>,
+    /// The CityGML element each attribute substitutes for, as `prefix:local`.
+    substitution_groups: BTreeMap<String, String>,
+    /// The order of each class's attributes and geometry properties.
+    property_order: BTreeMap<String, Vec<String>>,
 }
 
 impl Extensions {
@@ -340,9 +344,34 @@ impl Extensions {
                             .collect()
                     })
                     .unwrap_or_default(),
+                substitution_groups: member(ext, "substitutionGroups"),
+                property_order: member(ext, "propertyOrder"),
             })
             .collect();
         Self { list }
+    }
+
+    /// Where a CityGML writer puts the Extensions' elements, as their
+    /// declarations' `substitutionGroups` and `propertyOrder` say.
+    pub fn layout(&self) -> AdeLayout {
+        let mut layout = AdeLayout::default();
+        for e in &self.list {
+            let Some(xmlns) = &e.xmlns else {
+                continue;
+            };
+            for (property, hook) in &e.substitution_groups {
+                let Some((prefix, local)) = hook.split_once(':') else {
+                    continue;
+                };
+                if let Some(module) = module_of_prefix(prefix) {
+                    layout.add_hook(xmlns, property, QName::module(module, local));
+                }
+            }
+            for (class, content) in &e.property_order {
+                layout.add_content(xmlns, class, content.clone());
+            }
+        }
+        layout
     }
 
     /// Every Extension, in the order the header declares them.
@@ -1638,4 +1667,13 @@ fn texture(t: &TextureObject, theme: String, rings: Vec<RingUvs>) -> Texture {
             BorderColor::Rgba(c) => c.to_vec(),
         }),
     }
+}
+
+/// The member `name` of an Extension's declaration, or its default when it
+/// has none or it is not of type `T`.
+fn member<T: serde::de::DeserializeOwned + Default>(ext: &Extension, name: &str) -> T {
+    ext.other
+        .get(name)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
 }

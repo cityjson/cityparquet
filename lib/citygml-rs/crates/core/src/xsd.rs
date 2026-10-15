@@ -74,6 +74,8 @@ struct Type {
     /// The elements its content model declares, by name: `Some` with the
     /// declared type, or `None` for a `ref` to a global element.
     children: HashMap<Name, Option<Name>>,
+    /// The same elements, in the order the content model declares them.
+    order: Vec<Name>,
 }
 
 impl SchemaSet {
@@ -138,6 +140,26 @@ impl SchemaSet {
             }
         }
         self.element_type(child)
+    }
+
+    /// The elements the content model of `ty` declares, in order, after
+    /// those of the types it derives from, as far as the schemas read
+    /// define them.
+    pub fn content(&self, ty: &Name) -> Vec<Name> {
+        let mut chain = Vec::new();
+        let mut ty = Some(ty);
+        while let Some(def) = ty.and_then(|t| self.types.get(t)) {
+            if chain.len() == MAX_CHAIN {
+                break;
+            }
+            chain.push(def);
+            ty = def.base.as_ref();
+        }
+        chain
+            .into_iter()
+            .rev()
+            .flat_map(|def| def.order.iter().cloned())
+            .collect()
     }
 
     /// What the text of an element of type `ty` becomes, following the
@@ -255,12 +277,11 @@ impl SchemaSet {
                 ((ns.to_string(), local), ty)
             }
         };
-        self.types
-            .entry(parent.clone())
-            .or_default()
-            .children
-            .entry(name.clone())
-            .or_insert(declared);
+        let def = self.types.entry(parent.clone()).or_default();
+        if !def.children.contains_key(&name) {
+            def.order.push(name.clone());
+        }
+        def.children.entry(name.clone()).or_insert(declared);
         Ok(Frame::Element(Owner::Local(parent, name)))
     }
 

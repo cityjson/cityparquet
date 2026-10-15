@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-use super::{Module, QName};
+use super::{Module, Namespace, QName};
 use crate::Result;
 use crate::xsd::{Name, SchemaSet};
 
@@ -79,12 +79,67 @@ pub struct Ade {
     /// for `bldg:_AbstractBuilding`), through any classes of its own. A
     /// class whose schema was not read is not listed.
     pub parents: BTreeMap<String, QName>,
+    /// The CityGML element each of its [`Self::properties`] substitutes for
+    /// (`uro:vegDataQualityAttribute` for
+    /// `veg:_GenericApplicationPropertyOfVegetationObject`), as its schema
+    /// says, through any elements of its own: where in its object's content
+    /// the property goes. A property whose schema was not read is not
+    /// listed.
+    pub hooks: BTreeMap<String, QName>,
+    /// The elements of the ADE's namespace that the content model of each
+    /// of its [`Self::classes`] declares, in order, its bases' first: where
+    /// in the object's content each of its properties goes. A class whose
+    /// schema was not read is not listed.
+    pub content: BTreeMap<String, Vec<String>>,
     /// The unprefixed XML attributes of its elements (`codeSpace`, `uom`)
     /// that every occurrence of the element carries with one value, by
     /// element local name, then attribute name: what a
     /// conversion may state once for the document instead of on every
     /// element.
     pub constant_attributes: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+/// Where a writer puts ADE elements in their object's content, as the
+/// ADEs' schemas say: what [`Ade::hooks`] and [`Ade::content`] give, by
+/// namespace URI.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AdeLayout {
+    hooks: HashMap<(String, String), QName>,
+    content: HashMap<(String, String), Vec<String>>,
+}
+
+impl AdeLayout {
+    /// The CityGML element the ADE property `property` substitutes for.
+    pub fn hook(&self, property: &QName) -> Option<&QName> {
+        let Namespace::Other(ns) = &property.ns else {
+            return None;
+        };
+        self.hooks.get(&(ns.clone(), property.local.clone()))
+    }
+
+    /// The elements of the ADE class `class`'s content, in order.
+    pub fn content(&self, class: &QName) -> Option<&[String]> {
+        let Namespace::Other(ns) = &class.ns else {
+            return None;
+        };
+        self.content
+            .get(&(ns.clone(), class.local.clone()))
+            .map(Vec::as_slice)
+    }
+
+    /// The ADE of namespace `namespace` has property `property` substitute
+    /// for `hook`.
+    pub fn add_hook(&mut self, namespace: &str, property: &str, hook: QName) {
+        self.hooks
+            .insert((namespace.to_string(), property.to_string()), hook);
+    }
+
+    /// The ADE of namespace `namespace` has class `class`'s content
+    /// declare `content`.
+    pub fn add_content(&mut self, namespace: &str, class: &str, content: Vec<String>) {
+        self.content
+            .insert((namespace.to_string(), class.to_string()), content);
+    }
 }
 
 /// The ADEs of one document, read before its objects.
@@ -162,8 +217,47 @@ impl AdeIndex {
                     Some((class.clone(), parent))
                 })
                 .collect();
+            ade.hooks = ade
+                .properties
+                .values()
+                .flatten()
+                .filter_map(|p| {
+                    let hook = specialises(&self.schemas, &ade.namespace, p, &module)?;
+                    Some((p.clone(), hook))
+                })
+                .collect();
+            ade.content = ade
+                .classes
+                .iter()
+                .filter_map(|class| {
+                    let name = (ade.namespace.clone(), class.clone());
+                    let ty = self.schemas.element_type(&name)?;
+                    let content: Vec<String> = self
+                        .schemas
+                        .content(ty)
+                        .into_iter()
+                        .filter(|(ns, _)| *ns == ade.namespace)
+                        .map(|(_, local)| local)
+                        .collect();
+                    (!content.is_empty()).then(|| (class.clone(), content))
+                })
+                .collect();
         }
         Ok(())
+    }
+
+    /// Where a writer puts the ADEs' elements.
+    pub fn layout(&self) -> AdeLayout {
+        let mut layout = AdeLayout::default();
+        for ade in &self.ades {
+            for (property, hook) in &ade.hooks {
+                layout.add_hook(&ade.namespace, property, hook.clone());
+            }
+            for (class, content) in &ade.content {
+                layout.add_content(&ade.namespace, class, content.clone());
+            }
+        }
+        layout
     }
 
     /// The attributes of `element` (an ADE element, by namespace URI and
@@ -339,6 +433,8 @@ impl AdeIndexBuilder {
                     surfaces: used.surfaces,
                     properties: used.properties,
                     parents: BTreeMap::new(),
+                    hooks: BTreeMap::new(),
+                    content: BTreeMap::new(),
                     constant_attributes,
                 }
             })
@@ -354,9 +450,10 @@ impl AdeIndexBuilder {
     }
 }
 
-/// The CityGML class the ADE class `local` of `namespace` specialises: the
-/// first element of a CityGML module along its chain of substitution
-/// groups, or `None` when the chain leaves the schemas read or reaches
+/// The CityGML element the ADE element `local` of `namespace` substitutes
+/// for: the class an ADE class specialises, or the hook an ADE property
+/// fills. That is the first element of a CityGML module along its chain of
+/// substitution groups, or `None` when the chain leaves the schemas read or reaches
 /// another namespace first (`gml:_Feature`).
 fn specialises(
     schemas: &SchemaSet,

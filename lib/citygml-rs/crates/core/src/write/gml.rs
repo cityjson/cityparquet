@@ -231,7 +231,8 @@ pub fn point<W: Write>(
     x.close()
 }
 
-fn line<W: Write>(x: &mut XmlWriter<W>, l: &Line) -> Result<()> {
+/// A `gml:LineString`.
+pub fn line<W: Write>(x: &mut XmlWriter<W>, l: &Line) -> Result<()> {
     x.open("gml:LineString", &[])?;
     x.leaf(
         "gml:posList",
@@ -241,17 +242,24 @@ fn line<W: Write>(x: &mut XmlWriter<W>, l: &Line) -> Result<()> {
     x.close()
 }
 
-/// Faces that are all triangles without holes as a
-/// `gml:TriangulatedSurface`, or `false`, having written nothing, when one
-/// is not.
-pub fn triangulated<W: Write>(x: &mut XmlWriter<W>, faces: &[Face]) -> Result<bool> {
-    if faces
-        .iter()
-        .any(|f| f.polygon.exterior.len() != 3 || !f.polygon.interiors.is_empty() || f.reversed)
-    {
+/// Whether `face` is a triangle without holes, as a
+/// `gml:TriangulatedSurface` holds them.
+pub fn is_triangle(face: &Face) -> bool {
+    face.polygon.exterior.len() == 3 && face.polygon.interiors.is_empty() && !face.reversed
+}
+
+/// Faces that are all triangles ([`is_triangle`]) as a
+/// `gml:TriangulatedSurface` with `attributes`, or `false`, having written
+/// nothing, when one is not.
+pub fn triangulated<W: Write>(
+    x: &mut XmlWriter<W>,
+    faces: &[&Face],
+    attributes: &[(&str, &str)],
+) -> Result<bool> {
+    if !faces.iter().all(|f| is_triangle(f)) {
         return Ok(false);
     }
-    x.open("gml:TriangulatedSurface", &[])?;
+    x.open("gml:TriangulatedSurface", attributes)?;
     x.open("gml:trianglePatches", &[])?;
     for f in faces {
         x.open("gml:Triangle", &[])?;

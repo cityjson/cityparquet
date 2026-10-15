@@ -38,6 +38,10 @@ just test
 just fmt
 ```
 
+With `CITYGML_TOOLS` naming a `citygml-tools` executable, the writer tests
+also validate every document they write against the CityGML schemas and its
+ADEs' (`CITYGML_TOOLS=/path/to/citygml-tools just test`).
+
 `cityparquet-rs` path-depends on these crates, so its own `just check` and
 its CityGML tests also exercise them.
 

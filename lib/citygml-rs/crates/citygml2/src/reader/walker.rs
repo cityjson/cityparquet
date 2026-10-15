@@ -217,6 +217,11 @@ pub fn read_object<R: BufRead>(
                 let module = ns::module(&uri);
                 if module == Some(Module::Appearance) && name == b"appearance" {
                     b.add_appearance(read_appearance(reader, buf, b"appearance", ns::APPEARANCE)?);
+                } else if module == Some(Module::Generics) && name == b"genericAttributeSet" {
+                    let set_name = get_attr_local(&e, b"name");
+                    if let Some(set) = attributes::read_generic_set(reader, buf, set_name)? {
+                        b.push_attribute(set);
+                    }
                 } else if let (Some(Module::Generics), Some(ty)) =
                     (module, attributes::generic_attr(&name))
                 {
@@ -462,6 +467,9 @@ fn read_surface_attribute<R: BufRead>(
     if property.gml && matches!(name, b"name" | b"description") {
         let qname = QName::new(Namespace::Gml, String::from_utf8_lossy(name));
         return leaf(reader, buf, AttrType::Str, qname);
+    }
+    if module == Some(Module::Generics) && name == b"genericAttributeSet" {
+        return attributes::read_generic_set(reader, buf, property.generic_name);
     }
     if let (Some(Module::Generics), Some(ty)) = (module, attributes::generic_attr(name)) {
         let value = attributes::read_generic(reader, buf, ty)?;

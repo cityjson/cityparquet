@@ -427,7 +427,12 @@ fn xml_json(
 ///   adds, each with an empty schema, except a class whose schema names the
 ///   CityGML class it specialises ([`crate::model::Ade::parents`]): it refers
 ///   to the corresponding definition of CityJSON's schema
-///   (`{"allOf": [{"$ref": "cityobjects.schema.json#/_AbstractBuilding"}]}`).
+///   (`{"allOf": [{"$ref": "cityobjects.schema.json#/_AbstractBuilding"}]}`);
+/// - `substitutionGroups`, the CityGML element each attribute substitutes
+///   for, as `prefix:local` ([`crate::model::Ade::hooks`]), and
+///   `propertyOrder`, the order of each `+` City Object type's attributes
+///   and geometry properties ([`crate::model::Ade::content`]): where a
+///   CityGML writer puts them, when the ADE's schema was read.
 ///
 /// `url` is the schema `xsi:schemaLocation` names when it is absolute, a
 /// known ADE's published schema ([`known_ade_schema`]) when it is not, and
@@ -499,6 +504,26 @@ pub fn extensions(ade: &AdeIndex) -> Vec<(String, Extension)> {
                 other.insert(
                     "extraAttributes".into(),
                     serde_json::to_value(by_type).unwrap_or_default(),
+                );
+            }
+            let hooks: Map<String, Json> = a
+                .hooks
+                .iter()
+                .filter_map(|(property, hook)| {
+                    let Namespace::Module(module) = hook.ns else {
+                        return None;
+                    };
+                    let hook = format!("{}:{}", module_prefix(module), hook.local);
+                    Some((property.clone(), Json::String(hook)))
+                })
+                .collect();
+            if !hooks.is_empty() {
+                other.insert("substitutionGroups".into(), Json::Object(hooks));
+            }
+            if !a.content.is_empty() {
+                other.insert(
+                    "propertyOrder".into(),
+                    serde_json::to_value(&a.content).unwrap_or_default(),
                 );
             }
             (

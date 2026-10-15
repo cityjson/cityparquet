@@ -4,8 +4,9 @@
 //!
 //! A class's content lists only what follows the properties every city
 //! object has (`gml:description`, `gml:name`, `core:creationDate`, …,
-//! generic attributes and appearance), which come first, and precedes the
-//! properties an ADE adds, which come last. `tests/schema.rs` checks every
+//! generic attributes and appearance), which come first. The places for the
+//! properties an ADE adds, one per class along the class's line of
+//! inheritance, are listed beside it. `tests/schema.rs` checks every
 //! list against the official schemas.
 
 use citygml_core::convert::{Class, Property, PropertyKind, PropertyNs, Vocabulary};
@@ -42,6 +43,26 @@ pub(crate) struct ClassDef {
     /// The CityJSON City Object type written as this class, if any.
     pub cityjson: Option<&'static str>,
     pub content: &'static [Slot],
+    /// Where the content has the hooks an ADE's properties substitute for,
+    /// besides `_CityObject`'s, which follows the generic attributes.
+    pub hooks: &'static [Hook],
+}
+
+/// A place in a class's content for the properties an ADE adds: the
+/// position of `<module>:_GenericApplicationPropertyOf<class>`, which
+/// follows `at` of the content's slots.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Hook {
+    pub at: usize,
+    pub module: Module,
+    pub class: &'static str,
+}
+
+impl Hook {
+    /// The hook element's name.
+    pub fn element(&self) -> String {
+        format!("_GenericApplicationPropertyOf{}", self.class)
+    }
 }
 
 use PropertyKind::{Boolean, Integer, MeasureList, Number, Text, Year};
@@ -464,137 +485,384 @@ const TRAFFIC_AREA: &[Slot] = &{
 };
 
 macro_rules! class {
-    ($module:ident, $name:literal, $cityjson:expr, $content:expr) => {
+    ($module:ident, $name:literal, $cityjson:expr, $content:expr, [$($hook:expr),*]) => {
         ClassDef {
             module: Module::$module,
             name: $name,
             cityjson: $cityjson,
             content: $content,
+            hooks: &[$($hook),*],
         }
     };
+}
+
+const fn hook(at: usize, module: Module, class: &'static str) -> Hook {
+    Hook { at, module, class }
 }
 
 /// Every city object class this writer writes. Where several share a
 /// CityJSON type, the first is the one written, unless
 /// [`Vocabulary::class`] picks another by an attribute.
 pub(crate) const CLASSES: &[ClassDef] = &[
-    class!(Building, "Building", Some("Building"), ABSTRACT_BUILDING),
+    class!(
+        Building,
+        "Building",
+        Some("Building"),
+        ABSTRACT_BUILDING,
+        [
+            hook(0, Module::Core, "Site"),
+            hook(
+                ABSTRACT_BUILDING.len(),
+                Module::Building,
+                "AbstractBuilding"
+            ),
+            hook(ABSTRACT_BUILDING.len(), Module::Building, "Building")
+        ]
+    ),
     class!(
         Building,
         "BuildingPart",
         Some("BuildingPart"),
-        ABSTRACT_BUILDING
+        ABSTRACT_BUILDING,
+        [
+            hook(0, Module::Core, "Site"),
+            hook(
+                ABSTRACT_BUILDING.len(),
+                Module::Building,
+                "AbstractBuilding"
+            ),
+            hook(ABSTRACT_BUILDING.len(), Module::Building, "BuildingPart")
+        ]
     ),
     class!(
         Building,
         "BuildingInstallation",
         Some("BuildingInstallation"),
-        INSTALLATION
+        INSTALLATION,
+        [hook(
+            INSTALLATION.len(),
+            Module::Building,
+            "BuildingInstallation"
+        )]
     ),
     class!(
         Building,
         "IntBuildingInstallation",
         None,
-        INTERIOR_INSTALLATION
+        INTERIOR_INSTALLATION,
+        [hook(
+            INTERIOR_INSTALLATION.len(),
+            Module::Building,
+            "IntBuildingInstallation"
+        )]
     ),
-    class!(Building, "Room", Some("BuildingRoom"), ROOM),
+    class!(
+        Building,
+        "Room",
+        Some("BuildingRoom"),
+        ROOM,
+        [hook(ROOM.len(), Module::Building, "Room")]
+    ),
     class!(
         Building,
         "BuildingFurniture",
         Some("BuildingFurniture"),
-        FURNITURE
+        FURNITURE,
+        [hook(FURNITURE.len(), Module::Building, "BuildingFurniture")]
     ),
-    class!(Bridge, "Bridge", Some("Bridge"), ABSTRACT_BRIDGE),
-    class!(Bridge, "BridgePart", Some("BridgePart"), ABSTRACT_BRIDGE),
+    class!(
+        Bridge,
+        "Bridge",
+        Some("Bridge"),
+        ABSTRACT_BRIDGE,
+        [
+            hook(0, Module::Core, "Site"),
+            hook(ABSTRACT_BRIDGE.len(), Module::Bridge, "AbstractBridge"),
+            hook(ABSTRACT_BRIDGE.len(), Module::Bridge, "Bridge")
+        ]
+    ),
+    class!(
+        Bridge,
+        "BridgePart",
+        Some("BridgePart"),
+        ABSTRACT_BRIDGE,
+        [
+            hook(0, Module::Core, "Site"),
+            hook(ABSTRACT_BRIDGE.len(), Module::Bridge, "AbstractBridge"),
+            hook(ABSTRACT_BRIDGE.len(), Module::Bridge, "BridgePart")
+        ]
+    ),
     class!(
         Bridge,
         "BridgeInstallation",
         Some("BridgeInstallation"),
-        INSTALLATION
+        INSTALLATION,
+        [hook(
+            INSTALLATION.len(),
+            Module::Bridge,
+            "BridgeInstallation"
+        )]
     ),
-    class!(Bridge, "IntBridgeInstallation", None, INTERIOR_INSTALLATION),
+    class!(
+        Bridge,
+        "IntBridgeInstallation",
+        None,
+        INTERIOR_INSTALLATION,
+        [hook(
+            INTERIOR_INSTALLATION.len(),
+            Module::Bridge,
+            "IntBridgeInstallation"
+        )]
+    ),
     class!(
         Bridge,
         "BridgeConstructionElement",
         Some("BridgeConstructiveElement"),
-        BRIDGE_CONSTRUCTION_ELEMENT
+        BRIDGE_CONSTRUCTION_ELEMENT,
+        [hook(
+            BRIDGE_CONSTRUCTION_ELEMENT.len(),
+            Module::Bridge,
+            "BridgeConstructionElement"
+        )]
     ),
-    class!(Bridge, "BridgeRoom", Some("BridgeRoom"), BRIDGE_ROOM),
+    class!(
+        Bridge,
+        "BridgeRoom",
+        Some("BridgeRoom"),
+        BRIDGE_ROOM,
+        [hook(BRIDGE_ROOM.len(), Module::Bridge, "BridgeRoom")]
+    ),
     class!(
         Bridge,
         "BridgeFurniture",
         Some("BridgeFurniture"),
-        FURNITURE
+        FURNITURE,
+        [hook(FURNITURE.len(), Module::Bridge, "BridgeFurniture")]
     ),
-    class!(Tunnel, "Tunnel", Some("Tunnel"), ABSTRACT_TUNNEL),
-    class!(Tunnel, "TunnelPart", Some("TunnelPart"), ABSTRACT_TUNNEL),
+    class!(
+        Tunnel,
+        "Tunnel",
+        Some("Tunnel"),
+        ABSTRACT_TUNNEL,
+        [
+            hook(0, Module::Core, "Site"),
+            hook(ABSTRACT_TUNNEL.len(), Module::Tunnel, "AbstractTunnel"),
+            hook(ABSTRACT_TUNNEL.len(), Module::Tunnel, "Tunnel")
+        ]
+    ),
+    class!(
+        Tunnel,
+        "TunnelPart",
+        Some("TunnelPart"),
+        ABSTRACT_TUNNEL,
+        [
+            hook(0, Module::Core, "Site"),
+            hook(ABSTRACT_TUNNEL.len(), Module::Tunnel, "AbstractTunnel"),
+            hook(ABSTRACT_TUNNEL.len(), Module::Tunnel, "TunnelPart")
+        ]
+    ),
     class!(
         Tunnel,
         "TunnelInstallation",
         Some("TunnelInstallation"),
-        INSTALLATION
+        INSTALLATION,
+        [hook(
+            INSTALLATION.len(),
+            Module::Tunnel,
+            "TunnelInstallation"
+        )]
     ),
-    class!(Tunnel, "IntTunnelInstallation", None, INTERIOR_INSTALLATION),
+    class!(
+        Tunnel,
+        "IntTunnelInstallation",
+        None,
+        INTERIOR_INSTALLATION,
+        [hook(
+            INTERIOR_INSTALLATION.len(),
+            Module::Tunnel,
+            "IntTunnelInstallation"
+        )]
+    ),
     class!(
         Tunnel,
         "HollowSpace",
         Some("TunnelHollowSpace"),
-        HOLLOW_SPACE
+        HOLLOW_SPACE,
+        [hook(HOLLOW_SPACE.len(), Module::Tunnel, "HollowSpace")]
     ),
     class!(
         Tunnel,
         "TunnelFurniture",
         Some("TunnelFurniture"),
-        FURNITURE
+        FURNITURE,
+        [hook(FURNITURE.len(), Module::Tunnel, "TunnelFurniture")]
     ),
-    class!(WaterBody, "WaterBody", Some("WaterBody"), WATER_BODY),
-    class!(LandUse, "LandUse", Some("LandUse"), LAND_USE),
+    class!(
+        WaterBody,
+        "WaterBody",
+        Some("WaterBody"),
+        WATER_BODY,
+        [
+            hook(0, Module::WaterBody, "WaterObject"),
+            hook(WATER_BODY.len(), Module::WaterBody, "WaterBody")
+        ]
+    ),
+    class!(
+        LandUse,
+        "LandUse",
+        Some("LandUse"),
+        LAND_USE,
+        [hook(LAND_USE.len(), Module::LandUse, "LandUse")]
+    ),
     class!(
         CityFurniture,
         "CityFurniture",
         Some("CityFurniture"),
-        CITY_FURNITURE
+        CITY_FURNITURE,
+        [hook(
+            CITY_FURNITURE.len(),
+            Module::CityFurniture,
+            "CityFurniture"
+        )]
     ),
     class!(
         Vegetation,
         "SolitaryVegetationObject",
         Some("SolitaryVegetationObject"),
-        SOLITARY_VEGETATION_OBJECT
+        SOLITARY_VEGETATION_OBJECT,
+        [
+            hook(0, Module::Vegetation, "VegetationObject"),
+            hook(
+                SOLITARY_VEGETATION_OBJECT.len(),
+                Module::Vegetation,
+                "SolitaryVegetationObject"
+            )
+        ]
     ),
-    class!(Vegetation, "PlantCover", Some("PlantCover"), PLANT_COVER),
+    class!(
+        Vegetation,
+        "PlantCover",
+        Some("PlantCover"),
+        PLANT_COVER,
+        [
+            hook(0, Module::Vegetation, "VegetationObject"),
+            hook(PLANT_COVER.len(), Module::Vegetation, "PlantCover")
+        ]
+    ),
     class!(
         Generics,
         "GenericCityObject",
         Some("GenericCityObject"),
-        GENERIC_CITY_OBJECT
+        GENERIC_CITY_OBJECT,
+        []
     ),
     class!(
         CityObjectGroup,
         "CityObjectGroup",
         Some("CityObjectGroup"),
-        CITY_OBJECT_GROUP
+        CITY_OBJECT_GROUP,
+        [hook(
+            CITY_OBJECT_GROUP.len(),
+            Module::CityObjectGroup,
+            "CityObjectGroup"
+        )]
     ),
-    class!(Transportation, "Road", Some("Road"), TRANSPORTATION_COMPLEX),
+    class!(
+        Transportation,
+        "Road",
+        Some("Road"),
+        TRANSPORTATION_COMPLEX,
+        [
+            hook(0, Module::Transportation, "TransportationObject"),
+            hook(
+                TRANSPORTATION_COMPLEX.len(),
+                Module::Transportation,
+                "TransportationComplex"
+            ),
+            hook(TRANSPORTATION_COMPLEX.len(), Module::Transportation, "Road")
+        ]
+    ),
     class!(
         Transportation,
         "Railway",
         Some("Railway"),
-        TRANSPORTATION_COMPLEX
+        TRANSPORTATION_COMPLEX,
+        [
+            hook(0, Module::Transportation, "TransportationObject"),
+            hook(
+                TRANSPORTATION_COMPLEX.len(),
+                Module::Transportation,
+                "TransportationComplex"
+            ),
+            hook(
+                TRANSPORTATION_COMPLEX.len(),
+                Module::Transportation,
+                "Railway"
+            )
+        ]
     ),
-    class!(Transportation, "Track", None, TRANSPORTATION_COMPLEX),
+    class!(
+        Transportation,
+        "Track",
+        None,
+        TRANSPORTATION_COMPLEX,
+        [
+            hook(0, Module::Transportation, "TransportationObject"),
+            hook(
+                TRANSPORTATION_COMPLEX.len(),
+                Module::Transportation,
+                "TransportationComplex"
+            ),
+            hook(
+                TRANSPORTATION_COMPLEX.len(),
+                Module::Transportation,
+                "Track"
+            )
+        ]
+    ),
     class!(
         Transportation,
         "Square",
         Some("TransportSquare"),
-        TRANSPORTATION_COMPLEX
+        TRANSPORTATION_COMPLEX,
+        [
+            hook(0, Module::Transportation, "TransportationObject"),
+            hook(
+                TRANSPORTATION_COMPLEX.len(),
+                Module::Transportation,
+                "TransportationComplex"
+            ),
+            hook(
+                TRANSPORTATION_COMPLEX.len(),
+                Module::Transportation,
+                "Square"
+            )
+        ]
     ),
     class!(
         Transportation,
         "TransportationComplex",
         None,
-        TRANSPORTATION_COMPLEX
+        TRANSPORTATION_COMPLEX,
+        [
+            hook(0, Module::Transportation, "TransportationObject"),
+            hook(
+                TRANSPORTATION_COMPLEX.len(),
+                Module::Transportation,
+                "TransportationComplex"
+            )
+        ]
     ),
-    class!(Relief, "TINRelief", Some("TINRelief"), TIN_RELIEF),
+    class!(
+        Relief,
+        "TINRelief",
+        Some("TINRelief"),
+        TIN_RELIEF,
+        [
+            hook(1, Module::Relief, "ReliefComponent"),
+            hook(2, Module::Relief, "TinRelief")
+        ]
+    ),
 ];
 
 /// The boundary surface classes, by the modules they belong to, and the
@@ -944,7 +1212,8 @@ mod tests {
     //! Every content list against the official CityGML 2.0 schemas
     //! (`tests/data/schemas/citygml/2.0`): each property a list names is
     //! one the class's content model declares, in the same order, and each
-    //! the content model declares in the class's own module is listed.
+    //! the content model declares in the class's own module is listed; and
+    //! so with a class's hooks.
 
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -1091,30 +1360,60 @@ mod tests {
     /// The declared elements of the class's module a writer has no use for.
     const UNUSED: &[&str] = &["parent", "extent"];
 
-    fn check(schemas: &Schemas, module: Module, class: &str, content: &[Slot]) {
+    /// `content`, with `hooks` where they are, by namespace URI and local
+    /// name.
+    fn listed(module: Module, content: &[Slot], hooks: &[Hook]) -> Vec<Name> {
+        let ns = ns::uri(module).unwrap().to_string();
+        let hooks_at = |at: usize| {
+            hooks
+                .iter()
+                .filter(move |h| h.at == at)
+                .map(|h| (ns::uri(h.module).unwrap().to_string(), h.element()))
+        };
+        let mut out = Vec::new();
+        for (at, slot) in content.iter().enumerate() {
+            out.extend(hooks_at(at));
+            out.push((ns.clone(), slot_name(slot).to_string()));
+        }
+        out.extend(hooks_at(content.len()));
+        out
+    }
+
+    /// The class's content and hooks against what its content model
+    /// declares. `hooks` is `None` for a boundary surface, which holds no
+    /// ADE property.
+    fn check(
+        schemas: &Schemas,
+        module: Module,
+        class: &str,
+        content: &[Slot],
+        hooks: Option<&[Hook]>,
+    ) {
         let declared = schemas.content(module, class);
         let ns = ns::uri(module).unwrap();
+        let listed = listed(module, content, hooks.unwrap_or_default());
         let mut at = 0;
-        for slot in content {
-            let name = slot_name(slot);
+        for name in &listed {
             let found = declared[at..]
                 .iter()
-                .position(|(n, l)| n == ns && l == name)
+                .position(|d| d == name)
                 .unwrap_or_else(|| {
-                    panic!("{class}: {name} is not declared after position {at}: {declared:?}")
+                    panic!("{class}: {name:?} is not declared after position {at}: {declared:?}")
                 });
             at += found + 1;
         }
-        for (n, local) in &declared {
-            if n == ns
-                && !local.starts_with("_GenericApplicationPropertyOf")
-                && !UNUSED.contains(&local.as_str())
-            {
-                assert!(
-                    content.iter().any(|s| slot_name(s) == local),
-                    "{class}: {local} is declared but not listed"
-                );
-            }
+        for name in &declared {
+            let (n, local) = name;
+            let hook = local.starts_with("_GenericApplicationPropertyOf");
+            let wanted = if hook {
+                hooks.is_some() && local != "_GenericApplicationPropertyOfCityObject"
+            } else {
+                n == ns && !UNUSED.contains(&local.as_str())
+            };
+            assert!(
+                !wanted || listed.contains(name),
+                "{class}: {local} is declared but not listed"
+            );
         }
     }
 
@@ -1122,10 +1421,10 @@ mod tests {
     fn every_class_lists_its_content_in_schema_order() {
         let schemas = read();
         for def in CLASSES {
-            check(&schemas, def.module, def.name, def.content);
+            check(&schemas, def.module, def.name, def.content, Some(def.hooks));
         }
         for (module, name, _, content) in SURFACES {
-            check(&schemas, *module, name, content);
+            check(&schemas, *module, name, content, None);
         }
     }
 
