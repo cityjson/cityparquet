@@ -88,8 +88,9 @@ impl ModelAppearance {
         self.materials.is_empty() && self.textures.is_empty()
     }
 
-    /// The materials targeting any of `face_ids`, and the textures covering
-    /// any of `ring_ids` with only those rings kept, each in document order.
+    /// The materials targeting any of `face_ids` with only those targets
+    /// kept, and the textures covering any of `ring_ids` with only those
+    /// rings kept, each in document order.
     pub fn scoped_for(
         &self,
         face_ids: &HashSet<String>,
@@ -101,9 +102,25 @@ impl ModelAppearance {
                 material_idx.extend(v);
             }
         }
+        // Each material with the targets among `face_ids`, and its `gml:id`
+        // only when those are all it has: a material colouring several
+        // objects is scoped to each, and no copy is the one the id names.
         let materials = material_idx
             .iter()
-            .map(|&i| self.materials[i].clone())
+            .map(|&i| {
+                let m = &self.materials[i];
+                let targets: Vec<String> = m
+                    .targets
+                    .iter()
+                    .filter(|t| face_ids.contains(*t))
+                    .cloned()
+                    .collect();
+                Material {
+                    id: m.id.clone().filter(|_| targets.len() == m.targets.len()),
+                    targets,
+                    ..m.clone()
+                }
+            })
             .collect();
 
         let mut texture_idx: BTreeSet<usize> = BTreeSet::new();

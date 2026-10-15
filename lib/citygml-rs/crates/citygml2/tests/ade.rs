@@ -433,8 +433,10 @@ mod cityjson {
         assert_eq!(
             uro["substitutionGroups"],
             json!({
-                "roadStructureAttribute": "tran:_GenericApplicationPropertyOfRoad",
-                "tranDataQualityAttribute": "tran:_GenericApplicationPropertyOfTransportationComplex"
+                "roadStructureAttribute":
+                    "{http://www.opengis.net/citygml/transportation/2.0}_GenericApplicationPropertyOfRoad",
+                "tranDataQualityAttribute":
+                    "{http://www.opengis.net/citygml/transportation/2.0}_GenericApplicationPropertyOfTransportationComplex"
             })
         );
         // And for an ADE class, its content model's order, its base's first.

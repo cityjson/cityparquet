@@ -79,17 +79,17 @@ pub struct Ade {
     /// for `bldg:_AbstractBuilding`), through any classes of its own. A
     /// class whose schema was not read is not listed.
     pub parents: BTreeMap<String, QName>,
-    /// The CityGML element each of its [`Self::properties`] substitutes for
-    /// (`uro:vegDataQualityAttribute` for
-    /// `veg:_GenericApplicationPropertyOfVegetationObject`), as its schema
-    /// says, through any elements of its own: where in its object's content
-    /// the property goes. A property whose schema was not read is not
-    /// listed.
-    pub hooks: BTreeMap<String, QName>,
-    /// The elements of the ADE's namespace that the content model of each
-    /// of its [`Self::classes`] declares, in order, its bases' first: where
-    /// in the object's content each of its properties goes. A class whose
-    /// schema was not read is not listed.
+    /// The CityGML element each of its [`Self::properties`] substitutes
+    /// for, by namespace URI and local name (`uro:vegDataQualityAttribute`
+    /// for vegetation 2.0's `_GenericApplicationPropertyOfVegetationObject`),
+    /// as its schema says, through any elements of its own: where in its
+    /// object's content the property goes. A property whose schema was not
+    /// read is not listed.
+    pub hooks: BTreeMap<String, Name>,
+    /// The elements the content model of each of its [`Self::classes`]
+    /// declares, in order, its bases' first, each as [`order_key`] names
+    /// it: where in the object's content each of its properties goes. A
+    /// class whose schema was not read is not listed.
     pub content: BTreeMap<String, Vec<String>>,
     /// The unprefixed XML attributes of its elements (`codeSpace`, `uom`)
     /// that every occurrence of the element carries with one value, by
@@ -104,20 +104,22 @@ pub struct Ade {
 /// namespace URI.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AdeLayout {
-    hooks: HashMap<(String, String), QName>,
+    hooks: HashMap<(String, String), Name>,
     content: HashMap<(String, String), Vec<String>>,
 }
 
 impl AdeLayout {
-    /// The CityGML element the ADE property `property` substitutes for.
-    pub fn hook(&self, property: &QName) -> Option<&QName> {
+    /// The CityGML element the ADE property `property` substitutes for, by
+    /// namespace URI and local name.
+    pub fn hook(&self, property: &QName) -> Option<&Name> {
         let Namespace::Other(ns) = &property.ns else {
             return None;
         };
         self.hooks.get(&(ns.clone(), property.local.clone()))
     }
 
-    /// The elements of the ADE class `class`'s content, in order.
+    /// The elements of the ADE class `class`'s content, in order, as
+    /// [`order_key`] names them.
     pub fn content(&self, class: &QName) -> Option<&[String]> {
         let Namespace::Other(ns) = &class.ns else {
             return None;
@@ -129,7 +131,7 @@ impl AdeLayout {
 
     /// The ADE of namespace `namespace` has property `property` substitute
     /// for `hook`.
-    pub fn add_hook(&mut self, namespace: &str, property: &str, hook: QName) {
+    pub fn add_hook(&mut self, namespace: &str, property: &str, hook: Name) {
         self.hooks
             .insert((namespace.to_string(), property.to_string()), hook);
     }
@@ -222,7 +224,7 @@ impl AdeIndex {
                 .values()
                 .flatten()
                 .filter_map(|p| {
-                    let hook = specialises(&self.schemas, &ade.namespace, p, &module)?;
+                    let (_, hook) = substitutes(&self.schemas, &ade.namespace, p, &module)?;
                     Some((p.clone(), hook))
                 })
                 .collect();
@@ -235,9 +237,8 @@ impl AdeIndex {
                     let content: Vec<String> = self
                         .schemas
                         .content(ty)
-                        .into_iter()
-                        .filter(|(ns, _)| *ns == ade.namespace)
-                        .map(|(_, local)| local)
+                        .iter()
+                        .map(|(ns, local)| order_key(&ade.namespace, ns, local))
                         .collect();
                     (!content.is_empty()).then(|| (class.clone(), content))
                 })
@@ -450,22 +451,34 @@ impl AdeIndexBuilder {
     }
 }
 
-/// The CityGML element the ADE element `local` of `namespace` substitutes
-/// for: the class an ADE class specialises, or the hook an ADE property
-/// fills. That is the first element of a CityGML module along its chain of
-/// substitution groups, or `None` when the chain leaves the schemas read or reaches
-/// another namespace first (`gml:_Feature`).
+/// The CityGML class the ADE class `local` of `namespace` specialises, as
+/// [`substitutes`] finds it.
 fn specialises(
     schemas: &SchemaSet,
     namespace: &str,
     local: &str,
     module: impl Fn(&str) -> Option<Module>,
 ) -> Option<QName> {
+    let (m, (_, head)) = substitutes(schemas, namespace, local, module)?;
+    Some(QName::module(m, head))
+}
+
+/// The CityGML element the ADE element `local` of `namespace` substitutes
+/// for, with its module: the class an ADE class specialises, or the hook an
+/// ADE property fills. That is the first element of a CityGML module along
+/// its chain of substitution groups, or `None` when the chain leaves the
+/// schemas read or reaches another namespace first (`gml:_Feature`).
+fn substitutes(
+    schemas: &SchemaSet,
+    namespace: &str,
+    local: &str,
+    module: impl Fn(&str) -> Option<Module>,
+) -> Option<(Module, Name)> {
     let mut name: Name = (namespace.to_string(), local.to_string());
     for _ in 0..64 {
         let head = schemas.substitution_group(&name)?;
         if let Some(m) = module(&head.0) {
-            return Some(QName::module(m, head.1.clone()));
+            return Some((m, head.clone()));
         }
         if !schemas.has_namespace(&head.0) {
             return None;
@@ -473,4 +486,15 @@ fn specialises(
         name = head.clone();
     }
     None
+}
+
+/// How an ADE class's content order names element `local` of `ns`: by its
+/// local name when it is of the ADE's own namespace `namespace`, else as
+/// `{ns}local`.
+pub fn order_key(namespace: &str, ns: &str, local: &str) -> String {
+    if ns == namespace {
+        local.to_string()
+    } else {
+        format!("{{{ns}}}{local}")
+    }
 }

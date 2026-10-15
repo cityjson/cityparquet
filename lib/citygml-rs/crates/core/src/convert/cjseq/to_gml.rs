@@ -280,7 +280,8 @@ pub struct ExtensionNs {
     surfaces: BTreeSet<String>,
     /// Attribute names, by City Object type.
     attributes: BTreeMap<String, BTreeSet<String>>,
-    /// The CityGML element each attribute substitutes for, as `prefix:local`.
+    /// The CityGML element each attribute substitutes for, as
+    /// `{namespace URI}local`.
     substitution_groups: BTreeMap<String, String>,
     /// The order of each class's attributes and geometry properties.
     property_order: BTreeMap<String, Vec<String>>,
@@ -360,12 +361,11 @@ impl Extensions {
                 continue;
             };
             for (property, hook) in &e.substitution_groups {
-                let Some((prefix, local)) = hook.split_once(':') else {
+                let Some((ns, local)) = hook.strip_prefix('{').and_then(|h| h.split_once('}'))
+                else {
                     continue;
                 };
-                if let Some(module) = module_of_prefix(prefix) {
-                    layout.add_hook(xmlns, property, QName::module(module, local));
-                }
+                layout.add_hook(xmlns, property, (ns.to_string(), local.to_string()));
             }
             for (class, content) in &e.property_order {
                 layout.add_content(xmlns, class, content.clone());

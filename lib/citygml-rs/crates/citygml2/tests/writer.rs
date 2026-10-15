@@ -127,6 +127,14 @@ fn ade_schemas(path: &Path) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// How many of `what` `losses` counts.
+fn count(losses: &Losses, what: &str) -> usize {
+    losses
+        .iter()
+        .find(|(w, _)| *w == what)
+        .map_or(0, |(_, n)| n)
+}
+
 /// The losses of `report` other than those `lost` names.
 fn unexpected<'a>(losses: &'a Losses, lost: &[&str]) -> Vec<(&'a str, usize)> {
     losses
@@ -452,9 +460,75 @@ fn three_d_bag_survives_the_writer_but_its_lods_booleans_and_nulls() {
             "attributes whose value is null",
             "faces of boundary surfaces whose class has no geometry at their LoD (kept untagged)",
             "generic attributes whose value is a boolean (written as text)",
-            "geometries at a LoD their object already has one at",
+            "geometries at a LoD their object already has one of that kind at",
             "geometries whose LoD is written as its whole number",
         ],
         as_citygml2_holds_3dbag,
+    );
+}
+
+/// What XML cannot hold is left out, and counted, rather than written as a
+/// document no reader can read: a `+` name that is not an XML name, and a
+/// generic attribute set with nothing in it. An object left out leaves its
+/// children to be written on their own.
+#[test]
+fn what_xml_cannot_hold_is_left_out_and_counted() {
+    let (mut header, features) = oracle::read_seq(&data("3dbag/delft_100.city.jsonl"));
+    header["extensions"] = serde_json::json!({
+        "bad": {"url": "https://example.org/bad.ext.json", "version": "1.0",
+                "xmlns": "https://example.org/bad"}
+    });
+    let mut feature = features.into_iter().next().unwrap();
+    let id = feature["id"].as_str().unwrap().to_string();
+    let objects = feature["CityObjects"].as_object_mut().unwrap();
+    let parts = objects[&id]["children"].as_array().unwrap().len();
+    assert!(parts > 0);
+    let building = objects.get_mut(&id).unwrap();
+    building["type"] = "+Bad Type".into();
+    let part = objects
+        .values_mut()
+        .find(|o| o["type"] == "BuildingPart")
+        .unwrap();
+    let attributes = part["attributes"].as_object_mut().unwrap();
+    attributes.insert("+bad name".into(), "x".into());
+    attributes.insert("empty".into(), serde_json::json!({}));
+    attributes.insert("blanks".into(), serde_json::json!({"a": " "}));
+
+    let header: CityJSON = serde_json::from_value(header).unwrap();
+    let feature: CityJSONFeature = serde_json::from_value(feature).unwrap();
+    let out = scratch("what_xml_cannot_hold");
+    let report = write(
+        &header,
+        std::slice::from_ref(&feature),
+        &out,
+        BTreeMap::new(),
+    );
+    for (loss, n) in [
+        ("objects of an ADE class whose name is not an XML name", 1),
+        ("ADE elements whose name is not an XML name", 1),
+        ("generic attribute sets with no member to write", 2),
+    ] {
+        assert_eq!(
+            count(&report.losses, loss),
+            n,
+            "{loss}: {:?}",
+            report.losses
+        );
+    }
+    assert_eq!(
+        count(
+            &report.losses,
+            "objects their parent's class cannot hold (written on their own)"
+        ),
+        parts
+    );
+    assert_eq!(report.objects, parts);
+    // The document reads, and holds the parts as members of their own,
+    // which this reader, like CityJSON, does not take for objects.
+    let mut reader = FeatureReader::open(&out).unwrap();
+    assert_eq!(reader.by_ref().map(Result::unwrap).count(), 0);
+    assert_eq!(
+        reader.skipped_members().get("bldg:BuildingPart"),
+        Some(&parts)
     );
 }

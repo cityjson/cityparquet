@@ -44,7 +44,7 @@ impl<W: Write> XmlWriter<W> {
         self.indent()?;
         write!(self.out, "<{name}").map_err(io)?;
         for (k, v) in attributes {
-            write!(self.out, " {k}=\"{}\"", escape(*v)).map_err(io)?;
+            write!(self.out, " {k}=\"{}\"", escape(xml_chars(v))).map_err(io)?;
         }
         Ok(())
     }
@@ -70,7 +70,7 @@ impl<W: Write> XmlWriter<W> {
     /// An element holding `text`.
     pub fn leaf(&mut self, name: &str, attributes: &[(&str, &str)], text: &str) -> Result<()> {
         self.tag(name, attributes)?;
-        write!(self.out, ">{}</{name}>", escape(text)).map_err(io)
+        write!(self.out, ">{}</{name}>", escape(xml_chars(text))).map_err(io)
     }
 
     /// An element with no content.
@@ -96,6 +96,27 @@ impl<W: Write> XmlWriter<W> {
         self.out.flush().map_err(io)?;
         Ok(self.out)
     }
+}
+
+/// `text` without the characters XML 1.0 cannot hold: the control
+/// characters other than tab, line feed and carriage return, and U+FFFE and
+/// U+FFFF.
+fn xml_chars(text: &str) -> std::borrow::Cow<'_, str> {
+    let allowed = |c: char| !matches!(c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}');
+    if text.chars().all(allowed) {
+        std::borrow::Cow::Borrowed(text)
+    } else {
+        std::borrow::Cow::Owned(text.chars().filter(|&c| allowed(c)).collect())
+    }
+}
+
+/// Whether `name` can be the local part of an XML element or attribute
+/// name: an NCName, which begins with a letter or `_` and holds letters,
+/// digits, `-`, `_`, `.` and `·`.
+pub fn is_ncname(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && chars.all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '·'))
 }
 
 fn io(e: std::io::Error) -> Error {

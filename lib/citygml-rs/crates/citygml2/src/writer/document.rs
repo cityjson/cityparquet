@@ -24,14 +24,15 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 
 use citygml_core::convert::{Losses, PropertyKind};
+use citygml_core::model::order_key;
 use citygml_core::model::{
     Address, AdeLayout, Appearance, Attribute, AttributeName, BoundarySurface, Face, Geometry,
     GmlObject, GroupMember, Instance, Material, MemberTarget, Module, Namespace, QName, RingUvs,
     Shape, Template, Texture, Value, XmlContent, XmlNode,
 };
-use citygml_core::vocabulary::module_prefix;
+use citygml_core::vocabulary::{module_of_prefix, module_prefix};
 use citygml_core::write::gml::{self, Member};
-use citygml_core::write::{XmlWriter, number, numbers, xal};
+use citygml_core::write::{XmlWriter, is_ncname, number, numbers, xal};
 use citygml_core::{Error, Result};
 
 use super::schema::{COMMON, Hook, Slot, class_def, surface_def};
@@ -72,8 +73,8 @@ pub struct DocumentWriter<W: Write> {
     /// The CRS, until an element has stated it.
     srs_name: Option<String>,
     templates: Vec<Template>,
-    /// Whether each template has been written.
-    written: Vec<bool>,
+    /// The `gml:id` of each template's relative geometry, once written.
+    written: Vec<Option<String>>,
     /// Namespace URI -> its prefix, for the namespaces outside CityGML and
     /// GML the root declares.
     prefixes: HashMap<String, String>,
@@ -189,6 +190,15 @@ impl<W: Write> DocumentWriter<W> {
             (NS_XAL.to_string(), "xAL".to_string()),
         ]);
         for ade in &head.ades {
+            if !is_ncname(&ade.prefix)
+                || RESERVED_PREFIXES.contains(&ade.prefix.as_str())
+                || module_of_prefix(&ade.prefix).is_some()
+            {
+                return Err(Error::invalid(format!(
+                    "{} cannot be the prefix of the ADE {}",
+                    ade.prefix, ade.uri
+                )));
+            }
             declarations.push((format!("xmlns:{}", ade.prefix), ade.uri.clone()));
             prefixes.insert(ade.uri.clone(), ade.prefix.clone());
             if let Some(schema) = &ade.schema {
@@ -206,7 +216,7 @@ impl<W: Write> DocumentWriter<W> {
         Ok(Self {
             x,
             srs_name,
-            written: vec![false; templates.len()],
+            written: vec![None; templates.len()],
             templates,
             prefixes,
             content_of,
@@ -224,6 +234,9 @@ impl<W: Write> DocumentWriter<W> {
         let mut pending = vec![object];
         while let Some(o) = pending.pop() {
             if !self.writable(&o) {
+                let mut orphans = Vec::new();
+                self.orphan_children(o, &mut orphans);
+                pending.extend(orphans.into_iter().rev());
                 continue;
             }
             self.x.open("core:cityObjectMember", &[])?;
@@ -247,7 +260,7 @@ impl<W: Write> DocumentWriter<W> {
     pub fn finish(mut self) -> Result<(W, Losses)> {
         let templates = std::mem::take(&mut self.templates);
         let written = std::mem::take(&mut self.written);
-        for (template, _) in templates.iter().zip(written).filter(|(_, w)| *w) {
+        for (template, _) in templates.iter().zip(written).filter(|(_, w)| w.is_some()) {
             let (targets, rings) = targets(std::slice::from_ref(&template.geometry));
             self.appearance(
                 "app:appearanceMember",
@@ -260,8 +273,23 @@ impl<W: Write> DocumentWriter<W> {
         Ok((self.x.finish()?, self.losses))
     }
 
+    /// The children of `o`, an object not written, as top-level objects of
+    /// their own.
+    fn orphan_children(&mut self, o: GmlObject, out: &mut Vec<GmlObject>) {
+        for child in o.children {
+            self.losses
+                .note("objects their parent's class cannot hold (written on their own)");
+            out.push(child);
+        }
+    }
+
     /// Whether `o` can be written at all; counts it when not.
     fn writable(&mut self, o: &GmlObject) -> bool {
+        if matches!(o.class.ns, Namespace::Other(_)) && !is_ncname(&o.class.local) {
+            self.losses
+                .note("objects of an ADE class whose name is not an XML name");
+            return false;
+        }
         let class = self.content_class(&o.class);
         let def = class.as_ref().and_then(class_def);
         if def.is_none() && !matches!(o.class.ns, Namespace::Other(_)) {
@@ -490,11 +518,19 @@ impl<W: Write> DocumentWriter<W> {
             }
         }
         if !ade_class {
-            for node in ade(Place::End) {
+            // An ADE class's own properties, after its CityGML class's.
+            let order = self.layout.content(&o.class).unwrap_or_default().to_vec();
+            let mut end: Vec<&XmlNode> = ade(Place::End).collect();
+            end.sort_by_key(|n| rank(&order, &o.class, &n.name));
+            for node in end {
                 self.node(node)?;
             }
         }
         self.x.close()?;
+        for _ in ade(Place::Elsewhere) {
+            self.losses
+                .note("ADE properties of a CityGML class their object is not of");
+        }
 
         if !o.addresses.is_empty() && !slots.iter().any(|s| matches!(s, Slot::Address(_))) {
             self.losses
@@ -519,18 +555,25 @@ impl<W: Write> DocumentWriter<W> {
     /// Where ADE element `node` goes in the content of an object whose class
     /// has `hooks`.
     fn place(&self, node: &XmlNode, hooks: &[Hook]) -> Place {
-        let Some(hook) = self.layout.hook(&node.name) else {
+        let Some((uri, local)) = self.layout.hook(&node.name) else {
             return Place::End;
         };
-        if hook.ns == Namespace::Module(Module::Core)
-            && hook.local == "_GenericApplicationPropertyOfCityObject"
-        {
+        if uri == ns::CORE && local == "_GenericApplicationPropertyOfCityObject" {
             return Place::CityObject;
         }
-        hooks
+        if let Some(h) = hooks
             .iter()
-            .position(|h| Namespace::Module(h.module) == hook.ns && h.element() == hook.local)
-            .map_or(Place::End, Place::Hook)
+            .position(|h| ns::uri(h.module) == Some(uri.as_str()) && h.element() == *local)
+        {
+            return Place::Hook(h);
+        }
+        // A hook of CityGML 2.0 the class does not have; one of another
+        // version says nothing about where in 2.0 the property goes.
+        if ns::module(uri.as_bytes()).is_some() {
+            Place::Elsewhere
+        } else {
+            Place::End
+        }
     }
 
     /// The content of an object of an ADE class CityGML has no content
@@ -554,22 +597,17 @@ impl<W: Write> DocumentWriter<W> {
             .content(&o.class)
             .map(<[String]>::to_vec)
             .unwrap_or_default();
-        let rank = |name: &str| order.iter().position(|n| n == name).unwrap_or(order.len());
+        let own = |local: &str| rank(&order, &o.class, &QName::new(module.clone(), local));
         let mut items: Vec<(usize, Item)> = Vec::new();
         for (g, property) in plan.property.iter().enumerate() {
             if let Some(p) = property {
-                items.push((rank(p), Item::Geometry(g)));
+                items.push((own(p), Item::Geometry(g)));
             }
         }
-        items.push((rank("boundedBy"), Item::Surfaces));
+        items.push((own("boundedBy"), Item::Surfaces));
         for (i, (node, place)) in o.ade.iter().zip(places).enumerate() {
             if *place == Place::End {
-                let r = if node.name.ns == *module {
-                    rank(&node.name.local)
-                } else {
-                    order.len()
-                };
-                items.push((r, Item::Node(i)));
+                items.push((rank(&order, &o.class, &node.name), Item::Node(i)));
             }
         }
         items.sort_by_key(|(r, _)| *r);
@@ -616,7 +654,6 @@ impl<W: Write> DocumentWriter<W> {
         };
         let tin_class = slots.contains(&Slot::Tin);
         let group = slots.contains(&Slot::Member);
-        let mut lods: Vec<u8> = Vec::new();
         for (g, geometry) in o.geometries.iter().enumerate() {
             let Some(n) = lod_number(&geometry.lod) else {
                 self.losses
@@ -629,7 +666,11 @@ impl<W: Write> DocumentWriter<W> {
             }
             let shape = &geometry.shape;
             let candidates = if group {
-                vec!["geometry".to_string()]
+                // `grp:geometry` holds GML geometry, not an implicit one.
+                match shape {
+                    Shape::Instance(_) => Vec::new(),
+                    _ => vec!["geometry".to_string()],
+                }
             } else if tin_class {
                 tin(geometry)
                     .map(|_| "tin".to_string())
@@ -638,28 +679,26 @@ impl<W: Write> DocumentWriter<W> {
             } else {
                 candidates(shape, n)
             };
-            let taken = plan
-                .property
-                .iter()
-                .flatten()
-                .any(|p| candidates.contains(p));
-            let chosen = candidates
+            let fits: Vec<String> = candidates
                 .into_iter()
-                .find(|c| has(c) || (group && c == "geometry") || (tin_class && c == "tin"));
-            let Some(chosen) = chosen else {
+                .filter(|c| has(c) || (group && c == "geometry") || (tin_class && c == "tin"))
+                .collect();
+            if fits.is_empty() {
                 self.losses.note(format!(
                     "{} geometries at a LoD their class has no {} property for",
                     kind(shape),
                     kind(shape)
                 ));
                 continue;
-            };
-            if lods.contains(&n) || taken || (group && plan.property.iter().any(Option::is_some)) {
-                self.losses
-                    .note("geometries at a LoD their object already has one at");
-                continue;
             }
-            lods.push(n);
+            let free = fits
+                .into_iter()
+                .find(|c| !plan.property.iter().flatten().any(|p| p == c));
+            let Some(chosen) = free else {
+                self.losses
+                    .note("geometries at a LoD their object already has one of that kind at");
+                continue;
+            };
             plan.lod[g] = n;
             plan.solid[g] = matches!(
                 shape,
@@ -813,6 +852,11 @@ impl<W: Write> DocumentWriter<W> {
                 return Ok(());
             }
             Value::Set(members) => {
+                if !members.iter().any(writes_generic) {
+                    self.losses
+                        .note("generic attribute sets with no member to write");
+                    return Ok(());
+                }
                 self.x.open("gen:genericAttributeSet", &[("name", name)])?;
                 for m in members {
                     match &m.name {
@@ -919,21 +963,25 @@ impl<W: Write> DocumentWriter<W> {
                 "an implicit geometry places template {t}, which the document does not have"
             )));
         };
-        let id = template.id.clone().unwrap_or_else(|| format!("_t{t}"));
+        let id = template.id.clone();
         self.x.open("core:ImplicitGeometry", &[])?;
         self.x
             .leaf("core:transformationMatrix", &[], &numbers(instance.matrix))?;
-        if self.written[t] {
-            let href = format!("#{id}");
+        if let Some(written) = &self.written[t] {
+            let href = format!("#{written}");
             self.x
                 .empty("core:relativeGMLGeometry", &[("xlink:href", &href)])?;
         } else {
-            self.written[t] = true;
             let shape = template.geometry.shape.clone();
-            let id = Some(id).filter(|id| self.claim(id));
-            let attrs: Vec<(&str, &str)> = id.iter().map(|id| ("gml:id", id.as_str())).collect();
+            let id = match id.filter(|id| is_ncname(id) && self.claim(id)) {
+                Some(id) => id,
+                None => self.fresh_id(),
+            };
+            self.written[t] = Some(id.clone());
             self.x.open("core:relativeGMLGeometry", &[])?;
-            gml::shape(&mut self.x, &shape, &attrs, &mut |_| Member::Inline)?;
+            gml::shape(&mut self.x, &shape, &[("gml:id", &id)], &mut |_| {
+                Member::Inline
+            })?;
             self.x.close()?;
         }
         let srs = self.srs();
@@ -1069,6 +1117,10 @@ impl<W: Write> DocumentWriter<W> {
                 let Some(child) = children.get_mut(*k).and_then(Option::take) else {
                     return Ok(());
                 };
+                if !self.writable(&child) {
+                    self.orphan_children(child, hoisted);
+                    return Ok(());
+                }
                 if let Some(role) = &m.role {
                     attrs.push(("role", role.clone()));
                 }
@@ -1111,6 +1163,11 @@ impl<W: Write> DocumentWriter<W> {
 
     /// An ADE element, as the document wrote it.
     fn node(&mut self, node: &XmlNode) -> Result<()> {
+        if !is_ncname(&node.name.local) {
+            self.losses
+                .note("ADE elements whose name is not an XML name");
+            return Ok(());
+        }
         let Some((name, declaration)) = self.name(&node.name) else {
             self.losses
                 .note("ADE elements in a module CityGML 2.0 does not have");
@@ -1119,17 +1176,20 @@ impl<W: Write> DocumentWriter<W> {
         let mut attrs: Vec<(&str, &str)> = Vec::new();
         for a in &node.attributes {
             let bound = match a.name.split_once(':') {
-                None => true,
-                Some((prefix, _)) => {
-                    RESERVED_PREFIXES.contains(&prefix)
-                        || self.prefixes.values().any(|p| p == prefix)
+                None => is_ncname(&a.name),
+                Some((prefix, local)) => {
+                    is_ncname(local)
+                        && (RESERVED_PREFIXES.contains(&prefix)
+                            || self.prefixes.values().any(|p| p == prefix))
                 }
             };
-            if bound {
+            if !bound {
+                self.losses.note(
+                    "ADE XML attributes not named by an XML name of a namespace the document \
+                     declares",
+                );
+            } else if a.name != "gml:id" || self.claim(&a.value) {
                 attrs.push((a.name.as_str(), a.value.as_str()));
-            } else {
-                self.losses
-                    .note("ADE XML attributes of a namespace the document does not declare");
             }
         }
         if let Some((k, v)) = &declaration {
@@ -1274,6 +1334,19 @@ enum Place {
     Hook(usize),
     /// At the end, or where an ADE class's schema puts it.
     End,
+    /// Nowhere: at the hook of a class the object's class does not derive
+    /// from.
+    Elsewhere,
+}
+
+/// Where element `name` comes in `order`, the content order of the ADE
+/// class `class`; after every element it names when it names none.
+fn rank(order: &[String], class: &QName, name: &QName) -> usize {
+    let (Namespace::Other(own), Namespace::Other(uri)) = (&class.ns, &name.ns) else {
+        return order.len();
+    };
+    let key = order_key(own, uri, &name.local);
+    order.iter().position(|n| *n == key).unwrap_or(order.len())
 }
 
 /// Where an object's geometries, faces and boundary surfaces go.
@@ -1342,7 +1415,8 @@ fn surface_holder(
 ) -> Option<&'static str> {
     let surface = &surfaces[s];
     let holder: &'static str = match &surface.class.ns {
-        Namespace::Other(_) => "boundedBy",
+        Namespace::Other(_) if is_ncname(&surface.class.local) => "boundedBy",
+        Namespace::Other(_) => return None,
         _ if ade_class => return None,
         _ => surface_def(&surface.class)?.0,
     };
@@ -1495,6 +1569,18 @@ fn themes<'a>(appearance: &'a Appearance) -> Vec<(&'a str, Vec<SurfaceData<'a>>)
 const BLANK: &str = "attributes whose value is blank text";
 
 /// Whether `value` is text that is empty or only whitespace.
+/// Whether `member` of a generic attribute set writes an element.
+fn writes_generic(member: &Attribute) -> bool {
+    fn writes(value: &Value) -> bool {
+        match value {
+            Value::List(items) => items.iter().any(writes),
+            Value::Set(members) => members.iter().any(writes_generic),
+            v => !blank(v),
+        }
+    }
+    matches!(member.name, AttributeName::Generic(_)) && writes(&member.value)
+}
+
 fn blank(value: &Value) -> bool {
     matches!(value, Value::String(s) if s.trim().is_empty())
 }

@@ -429,9 +429,10 @@ fn xml_json(
 ///   to the corresponding definition of CityJSON's schema
 ///   (`{"allOf": [{"$ref": "cityobjects.schema.json#/_AbstractBuilding"}]}`);
 /// - `substitutionGroups`, the CityGML element each attribute substitutes
-///   for, as `prefix:local` ([`crate::model::Ade::hooks`]), and
+///   for, as `{namespace URI}local` ([`crate::model::Ade::hooks`]), and
 ///   `propertyOrder`, the order of each `+` City Object type's attributes
-///   and geometry properties ([`crate::model::Ade::content`]): where a
+///   and geometry properties, those of another namespace as
+///   `{namespace URI}local` ([`crate::model::Ade::content`]): where a
 ///   CityGML writer puts them, when the ADE's schema was read.
 ///
 /// `url` is the schema `xsi:schemaLocation` names when it is absolute, a
@@ -509,12 +510,8 @@ pub fn extensions(ade: &AdeIndex) -> Vec<(String, Extension)> {
             let hooks: Map<String, Json> = a
                 .hooks
                 .iter()
-                .filter_map(|(property, hook)| {
-                    let Namespace::Module(module) = hook.ns else {
-                        return None;
-                    };
-                    let hook = format!("{}:{}", module_prefix(module), hook.local);
-                    Some((property.clone(), Json::String(hook)))
+                .map(|(property, (ns, local))| {
+                    (property.clone(), Json::String(format!("{{{ns}}}{local}")))
                 })
                 .collect();
             if !hooks.is_empty() {
