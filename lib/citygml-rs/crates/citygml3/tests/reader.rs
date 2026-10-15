@@ -78,19 +78,47 @@ fn an_xal3_address_has_the_members_of_an_xal2_one() {
 
 /// Each storey's MultiSurface holds three polygons of its own and three
 /// `xlink:href`s to polygons of a room's walls: the storey has all six
-/// faces, the xlinked ones untagged.
+/// faces, in the document's order.
 #[test]
-fn a_storey_s_xlinked_surface_members_are_its_faces() {
-    let features = features("ogc/BuildingUnits_Storeys_xlink.gml");
-    let objects = features[0]["CityObjects"].as_object().unwrap();
+fn a_storey_s_faces_keep_the_document_order() {
+    use citygml_core::model::{GmlObject, Shape};
+    fn find<'a>(object: &'a GmlObject, id: &str) -> Option<&'a GmlObject> {
+        if object.id.as_deref() == Some(id) {
+            return Some(object);
+        }
+        object.children.iter().find_map(|c| find(c, id))
+    }
+    let path = data("ogc/BuildingUnits_Storeys_xlink.gml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let objects: Vec<GmlObject> = FeatureReader::open(&path)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
     for storey in ["storey1", "storey2"] {
-        let geometry = objects[storey]["geometry"].as_array().unwrap();
-        assert_eq!(geometry.len(), 1, "{storey}");
-        assert_eq!(geometry[0]["type"], "MultiSurface", "{storey}");
-        assert_eq!(
-            geometry[0]["boundaries"].as_array().unwrap().len(),
-            6,
-            "{storey}"
-        );
+        // The members' ids in the document: each inline polygon's `gml:id`
+        // and each `xlink:href`'s fragment.
+        let start = text.find(&format!("gml:id=\"{storey}\"")).unwrap();
+        let end = start + text[start..].find("</bldg:Storey>").unwrap();
+        let mut expected = Vec::new();
+        for part in text[start..end].split('<').skip(1) {
+            let attribute = if part.starts_with("gml:Polygon ") {
+                "gml:id=\""
+            } else if part.starts_with("gml:surfaceMember ") {
+                "xlink:href=\"#"
+            } else {
+                continue;
+            };
+            if let Some(at) = part.find(attribute) {
+                let rest = &part[at + attribute.len()..];
+                expected.push(rest[..rest.find('"').unwrap()].to_string());
+            }
+        }
+        assert_eq!(expected.len(), 6, "{storey}");
+        let object = objects.iter().find_map(|o| find(o, storey)).unwrap();
+        let Shape::MultiSurface(faces) = &object.geometries[0].shape else {
+            panic!("{storey} is not a MultiSurface");
+        };
+        let ids: Vec<String> = faces.iter().map(|f| f.id.clone().unwrap()).collect();
+        assert_eq!(ids, expected, "{storey}");
     }
 }
