@@ -53,6 +53,7 @@ use arrow_array::{Array, MapArray, RecordBatch};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
+use crate::citygml::crs::Crs;
 use cityparquet_schema::crs::AxisOrder;
 use cityparquet_schema::extensions::cityjson_extensions_member;
 use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
@@ -750,24 +751,13 @@ fn reference_system(meta: &CityMetadata) -> Result<Option<ReferenceSystem>> {
         _ => None,
     };
     match (authority, code.as_deref()) {
-        (Some("EPSG"), Some(code)) => Ok(Some(crate::citygml::crs::Crs::Epsg(code.to_string()).reference_system())),
+        (Some("EPSG"), Some(code)) => Ok(Some(Crs::Epsg(code.to_string()).reference_system())),
         // OGC:CRS84 / CRS84h are the only non-EPSG CRSs in the vendored table;
-        // rebuild their registered OGC CRS URLs (versions per the OGC
-        // definitions server) so a lon/lat package without source_metadata
-        // still exports its referenceSystem rather than silently dropping it
-        // (sol-review G1).
-        (Some("OGC"), Some(code @ "CRS84")) => Ok(Some(ReferenceSystem::new(
-            None,
-            "OGC".to_string(),
-            "1.3".to_string(),
-            code.to_string(),
-        ))),
-        (Some("OGC"), Some(code @ "CRS84h")) => Ok(Some(ReferenceSystem::new(
-            None,
-            "OGC".to_string(),
-            "0".to_string(),
-            code.to_string(),
-        ))),
+        // rebuild their registered OGC CRS URLs so a lon/lat package without
+        // source_metadata still exports its referenceSystem rather than
+        // silently dropping it (sol-review G1).
+        (Some("OGC"), Some("CRS84")) => Ok(Some(Crs::Crs84.reference_system())),
+        (Some("OGC"), Some("CRS84h")) => Ok(Some(Crs::Crs84h.reference_system())),
         // Any other non-EPSG PROJJSON CRS has no CityJSON referenceSystem URL
         // form here.
         _ => Ok(None),

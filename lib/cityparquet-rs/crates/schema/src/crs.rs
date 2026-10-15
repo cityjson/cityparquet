@@ -211,7 +211,9 @@ fn vendored() -> &'static (HashMap<String, Box<RawValue>>, String) {
             .expect("vendored PROJJSON asset must gunzip");
         let mut map: HashMap<String, Box<RawValue>> =
             serde_json::from_str(&json).expect("vendored PROJJSON asset must parse");
-        let meta = map.remove("_meta").expect("vendored PROJJSON asset has a _meta");
+        let meta = map
+            .remove("_meta")
+            .expect("vendored PROJJSON asset has a _meta");
         let meta: Value = serde_json::from_str(meta.get()).expect("_meta must parse");
         let proj = meta["proj_version"].as_str().unwrap_or("?").to_string();
         (map, proj)

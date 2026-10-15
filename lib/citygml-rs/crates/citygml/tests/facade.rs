@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use citygml::{FeatureReader, Version, Writer, WriterOptions, header, sniff, sniff_from};
+use citygml::{FeatureReader, Version, Writer, WriterOptions, header, open, sniff, sniff_from};
 use cjseq::CityJSONFeature;
 
 fn data(krate: &str, name: &str) -> PathBuf {
@@ -43,6 +43,22 @@ fn a_document_is_read_by_the_reader_of_its_version() {
         assert!(!ours.is_empty());
         assert_eq!(ours, theirs, "{krate}");
     }
+}
+
+#[test]
+fn open_reads_the_header_and_features_header_and_open_read_apart() {
+    // The PLATEAU building file has an ADE and a CityModel-level pass to make.
+    let path = data("citygml2", "plateau/udx/bldg/53394519_bldg_6697_op.gml");
+    let (together, reader) = open(&path).unwrap();
+    let apart = header(&path).unwrap();
+    assert_eq!(
+        serde_json::to_string(&together).unwrap(),
+        serde_json::to_string(&apart).unwrap()
+    );
+    assert_eq!(
+        features(reader),
+        features(FeatureReader::open(&path, &apart.transform).unwrap())
+    );
 }
 
 #[test]

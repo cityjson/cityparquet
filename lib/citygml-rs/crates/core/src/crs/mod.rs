@@ -84,7 +84,8 @@ fn epsg_code(name: &str) -> Option<String> {
 }
 
 impl Crs {
-    /// The key the EPSG dataset knows the CRS by: its code, or `OGC:CRS84`.
+    /// The key the EPSG dataset knows the CRS by: its code, `OGC:CRS84` or
+    /// `OGC:CRS84h`.
     pub fn key(&self) -> &str {
         match self {
             Self::Epsg(code) => code,
@@ -100,7 +101,8 @@ impl Crs {
         scale_of(self.key())
     }
 
-    /// The CRS as a CityJSON `referenceSystem`.
+    /// The CRS as a CityJSON `referenceSystem`, at the version the OGC
+    /// registers it under.
     #[cfg(feature = "cjseq")]
     pub fn reference_system(&self) -> cjseq::ReferenceSystem {
         match self {
@@ -111,7 +113,7 @@ impl Crs {
                 cjseq::ReferenceSystem::new(None, "OGC".into(), "1.3".into(), "CRS84".into())
             }
             Self::Crs84h => {
-                cjseq::ReferenceSystem::new(None, "OGC".into(), "1.3".into(), "CRS84h".into())
+                cjseq::ReferenceSystem::new(None, "OGC".into(), "0".into(), "CRS84h".into())
             }
         }
     }
@@ -182,10 +184,23 @@ mod tests {
     #[test]
     fn crs84_is_named_without_a_code() {
         assert_eq!(resolve("urn:ogc:def:crs:OGC:1.3:CRS84"), Some(Crs::Crs84));
-        assert_eq!(resolve("urn:ogc:def:crs:OGC:1.3:CRS84h"), Some(Crs::Crs84h));
+        assert_eq!(resolve("urn:ogc:def:crs:OGC:0:CRS84h"), Some(Crs::Crs84h));
         assert_eq!(
             resolve("http://www.opengis.net/def/crs/OGC/1.3/CRS84"),
             Some(Crs::Crs84)
+        );
+    }
+
+    #[cfg(feature = "cjseq")]
+    #[test]
+    fn crs84_is_advertised_at_the_version_the_ogc_registers_it_under() {
+        assert_eq!(
+            Crs::Crs84.reference_system().to_url(),
+            "https://www.opengis.net/def/crs/OGC/1.3/CRS84"
+        );
+        assert_eq!(
+            Crs::Crs84h.reference_system().to_url(),
+            "https://www.opengis.net/def/crs/OGC/0/CRS84h"
         );
     }
 

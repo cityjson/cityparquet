@@ -65,7 +65,7 @@ Generated benchmark inputs, evidence and summaries belong in the ignored `benchm
 ## Four Cargo workspaces, and why
 
 `lib/cityparquet-rs` is the library. `lib/citygml-rs` holds the CityGML
-readers it path-depends on, a workspace of their own because FlatCityBuf uses
+readers and writers it path-depends on, a workspace of their own because FlatCityBuf uses
 them too and they may move to a repository of their own. `benchmark/readbench`
 is the read benchmark's harness — **its own workspace**, living with the
 corpora, results, scripts and renderers it belongs to. `lib/citylake` is a

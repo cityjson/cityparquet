@@ -13,11 +13,12 @@ Streaming CityGML readers and writers for Rust.
   same API.
 
 ```rust
-use citygml::{FeatureReader, Version, Writer, WriterOptions, header};
+use citygml::{Version, Writer, WriterOptions};
 
-let header = header(path)?; // the transform follows the CRS's axis units
+// The transform follows the units of the CRS's axes.
+let (header, features) = citygml::open(path)?;
 let mut writer = Writer::new(&Version::V3_0, out, &header, WriterOptions::default())?;
-for feature in FeatureReader::open(path, &header.transform)? {
+for feature in features {
     writer.write_feature(&feature?)?; // a cjseq::CityJSONFeature
 }
 let (_out, report) = writer.finish()?; // what CityGML 3.0 could not hold

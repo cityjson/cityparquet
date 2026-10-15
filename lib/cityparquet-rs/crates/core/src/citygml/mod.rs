@@ -11,4 +11,6 @@ pub use citygml::crs;
 pub use citygml::{
     Document, Version as CityGmlVersion, sniff as sniff_citygml, sniff_from as sniff_citygml_from,
 };
-pub use reader::{FeatureReader, parse_header, parse_header_from, parse_header_with, read_document};
+pub use reader::{
+    FeatureReader, parse_header, parse_header_from, parse_header_with, read_document,
+};

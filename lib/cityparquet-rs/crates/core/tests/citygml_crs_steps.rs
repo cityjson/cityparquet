@@ -35,7 +35,11 @@ fn bits(scale: [f64; 3]) -> [u64; 3] {
 /// An `f64` as a Rust literal that reads back as the same bits.
 fn literal(x: f64) -> String {
     let text = format!("{x:?}");
-    assert_eq!(text.parse::<f64>().unwrap().to_bits(), x.to_bits(), "{text}");
+    assert_eq!(
+        text.parse::<f64>().unwrap().to_bits(),
+        x.to_bits(),
+        "{text}"
+    );
     text
 }
 
@@ -174,10 +178,7 @@ fn the_citygml_crates_hold_the_steps_of_this_crate_s_epsg_table() {
 #[test]
 fn every_crs_gets_the_same_step_from_the_citygml_crates() {
     assert_eq!(citygml::crs::MM.to_bits(), MM.to_bits());
-    assert_eq!(
-        citygml::crs::NANO_DEGREE.to_bits(),
-        NANO_DEGREE.to_bits()
-    );
+    assert_eq!(citygml::crs::NANO_DEGREE.to_bits(), NANO_DEGREE.to_bits());
     let mut checked = 0;
     for key in vendored_keys() {
         match (step(key), citygml::crs::scale_of(key)) {

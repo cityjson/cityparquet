@@ -4,6 +4,9 @@
 //! `citygml3`); this crate picks the one a document's version needs:
 //!
 //! - [`sniff`] tells which version a document is;
+//! - [`open`] reads a document's CityJSON header and opens its features,
+//!   with one pass over it beforehand (what [`header`] and
+//!   [`FeatureReader::open`] would each make);
 //! - [`header`] builds its CityJSON header: the transform every feature is
 //!   quantised against, chosen from the CRS and envelope it declares, its
 //!   reference system and extent, its implicit geometries' templates and its
@@ -11,6 +14,10 @@
 //! - [`FeatureReader`] streams its city objects as `cjseq::CityJSONFeature`s;
 //! - [`Writer`] writes CityJSON features as a document of the version it is
 //!   given.
+//!
+//! The CityJSON types are those of the `cjseq` this crate re-exports; a
+//! tool that names them uses it, or pins the same version, so that it does
+//! not build a second, incompatible copy.
 
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -18,6 +25,8 @@ use std::sync::Arc;
 
 use citygml_core::reader::{Features, ObjectStream};
 use cjseq::{CityJSON, CityJSONFeature, Transform};
+
+pub use cjseq;
 
 pub use citygml_core::convert::cjseq::{Report, WriterOptions, header_from, header_with};
 pub use citygml_core::crs;
@@ -71,9 +80,22 @@ pub fn header(path: &Path) -> Result<CityJSON> {
     header_with(path, &read_document(path, &version_of(path)?)?)
 }
 
+/// The CityJSON header of the document at `path` and its features,
+/// quantised against the header's transform, with one pass over the
+/// document before the features stream.
+pub fn open(path: &Path) -> Result<(CityJSON, FeatureReader)> {
+    let version = version_of(path)?;
+    let document = read_document(path, &version)?;
+    let header = header_with(path, &document)?;
+    let features =
+        FeatureReader::with_document(path, &version, &header.transform, Arc::new(document))?;
+    Ok((header, features))
+}
+
 /// The city objects of a CityGML document as CityJSON features, read by the
 /// reader of the document's version, one top-level object (with its parts,
-/// rooms and other children) per feature.
+/// rooms and other children) per feature. It is `Send`, so it can stream
+/// on another thread.
 pub struct FeatureReader {
     inner: Features<Box<dyn ObjectStream + Send>>,
 }
@@ -151,7 +173,9 @@ impl Iterator for FeatureReader {
 
 /// CityJSON features written as a CityGML document of the version it was
 /// started with, one feature at a time, in any order.
-pub enum Writer<W: Write> {
+pub struct Writer<W: Write>(Versioned<W>);
+
+enum Versioned<W: Write> {
     V2_0(citygml2::writer::Writer<W>),
     V3_0(citygml3::writer::Writer<W>),
 }
@@ -165,26 +189,28 @@ impl<W: Write> Writer<W> {
         options: WriterOptions,
     ) -> Result<Self> {
         match version {
-            Version::V2_0 => citygml2::writer::Writer::new(out, header, options).map(Self::V2_0),
-            Version::V3_0 => citygml3::writer::Writer::new(out, header, options).map(Self::V3_0),
+            Version::V2_0 => citygml2::writer::Writer::new(out, header, options)
+                .map(|w| Self(Versioned::V2_0(w))),
+            Version::V3_0 => citygml3::writer::Writer::new(out, header, options)
+                .map(|w| Self(Versioned::V3_0(w))),
             other => Err(unsupported(other)),
         }
     }
 
     /// Write `feature`'s objects.
     pub fn write_feature(&mut self, feature: &CityJSONFeature) -> Result<()> {
-        match self {
-            Self::V2_0(w) => w.write_feature(feature),
-            Self::V3_0(w) => w.write_feature(feature),
+        match &mut self.0 {
+            Versioned::V2_0(w) => w.write_feature(feature),
+            Versioned::V3_0(w) => w.write_feature(feature),
         }
     }
 
     /// End the document. Gives back what it was written to, and what it
     /// holds and left out.
     pub fn finish(self) -> Result<(W, Report)> {
-        match self {
-            Self::V2_0(w) => w.finish(),
-            Self::V3_0(w) => w.finish(),
+        match self.0 {
+            Versioned::V2_0(w) => w.finish(),
+            Versioned::V3_0(w) => w.finish(),
         }
     }
 }
