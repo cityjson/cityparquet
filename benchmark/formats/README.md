@@ -258,11 +258,12 @@ bytes. The columns the family probes are `bloom_attributes` under the slice's
 entry in `benchmark/manifest.toml`, overridden by `ATTRIBUTES=` on
 `bloom-bench` and `bloom-bench-http` (or `--bloom-attributes`); a run fails,
 naming the column, when a configured column carries no filter in the
-`cityparquet` package, so it cannot silently measure nothing. On a 3DBAG tile
-and on the delft fixture the qualifying attributes are `identificatie`
-(distinct ratio 1.0) and `documentnummer` (about 0.26), which is what the
-manifest configures; because the ratio depends on the data, the slice's own
-list is to be confirmed with `just bloom-columns` on the host that runs it.
+`cityparquet` package, so it cannot silently measure nothing. The ratio
+depends on the data: on the delft fixture both `identificatie` (distinct
+ratio 1.0) and `documentnummer` (about 0.26) qualify, but on the 1,000,001-row
+slice `documentnummer` falls to 0.114 and no repeating text attribute reaches
+0.2, so the manifest configures `identificatie` alone and the slice has no
+repeating-attribute probe.
 
 Every lookup row carries `row_groups_total`, `bloom_pruned`, `stats_pruned`
 (the row groups min/max statistics ruled out among those the filters kept)

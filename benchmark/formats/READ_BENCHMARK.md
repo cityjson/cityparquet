@@ -1092,7 +1092,10 @@ bench-prep`, and parsing it dominates the slice's `citygml` rows; quote
     row groups that hold the value, because a filter cannot narrow the
     search inside a group: on a 3DBAG tile written with 9 row groups,
     `documentnummer`'s hit returned 23 rows and its filters pruned 6 of the
-    9 groups, so the reader still scanned 3. A miss can still read a group
+    9 groups, so the reader still scanned 3. On the slice that column carries
+    no filter (distinct ratio 0.114, under the writer's 0.2), nor does any
+    other repeating text attribute, so the slice's only attribute probe is
+    `identificatie`, which is unique per Building. A miss can still read a group
     through a false positive at the 1 % target rate. The benefit depends on
     the row-group size, which the benchmark does not vary (65 536 rows per
     group, the writer's default). `cityparquet+nobloom` still carries
@@ -1450,6 +1453,9 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
   issue concurrently); the FlatCityBuf arm reads through
   `http-range-client`'s buffered client, one ranged `GET` at a time, for
   the header, the spatial or attribute index and then the features.
+  No client sets a request timeout, because a whole-object `GET` of a
+  large file over the simulated link takes minutes; the `object_store`
+  clients keep a 5 s connect timeout.
   Because the text formats' bytes and requests are the same for every
   query, and their time nearly so (within 0.92–1.15× of read all in the
   end-to-end runs on Rotterdam and Vienna, with the transfer 83–94 % of
