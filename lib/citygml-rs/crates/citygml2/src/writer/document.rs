@@ -16,9 +16,10 @@
 //! counted in [`Losses`]: a geometry at a LoD its object already has one
 //! at, or of a kind its class has no property for; the faces of a boundary
 //! surface whose class has no geometry at their LoD (kept in the object's
-//! geometry, untagged); an attribute naming no property of its class; and a
-//! child its parent's class cannot hold, written as a top-level object of
-//! its own instead.
+//! geometry, untagged); an attribute naming no property of its class; an
+//! ADE property whose hook is one of another CityGML version; and a child
+//! its parent's class cannot hold, written as a top-level object of its own
+//! instead.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -106,6 +107,9 @@ const NS_GML: &str = "http://www.opengis.net/gml";
 const NS_XLINK: &str = "http://www.w3.org/1999/xlink";
 const NS_XAL: &str = "urn:oasis:names:tc:ciq:xsdschema:xAL:2.0";
 const NS_XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
+
+/// What every CityGML namespace URI, of any version, begins with.
+const CITYGML: &str = "http://www.opengis.net/citygml/";
 
 impl<W: Write> DocumentWriter<W> {
     /// Start a document on `out`: its root, declaring every CityGML 2.0
@@ -354,6 +358,11 @@ impl<W: Write> DocumentWriter<W> {
                 .losses
                 .note("ADE properties of a CityGML class their object is not of");
         }
+        for _ in ade(Place::OtherVersion) {
+            self.b
+                .losses
+                .note("ADE properties of an ADE for another CityGML version");
+        }
 
         if !o.addresses.is_empty() && !slots.iter().any(|s| matches!(s, Slot::Address(_))) {
             self.b
@@ -396,6 +405,8 @@ impl<W: Write> DocumentWriter<W> {
         // version says nothing about where in 2.0 the property goes.
         if ns::module(uri.as_bytes()).is_some() {
             Place::Elsewhere
+        } else if uri.starts_with(CITYGML) {
+            Place::OtherVersion
         } else {
             Place::End
         }
@@ -928,6 +939,8 @@ enum Place {
     /// Nowhere: at the hook of a class the object's class does not derive
     /// from.
     Elsewhere,
+    /// Nowhere: at a hook of another CityGML version.
+    OtherVersion,
 }
 
 /// Where element `name` comes in `order`, the content order of the ADE

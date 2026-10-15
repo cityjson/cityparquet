@@ -280,9 +280,11 @@ pub struct ExtensionNs {
     surfaces: BTreeSet<String>,
     /// Attribute names, by City Object type.
     attributes: BTreeMap<String, BTreeSet<String>>,
-    /// The CityGML element each attribute substitutes for, as
-    /// `{namespace URI}local`.
+    /// The CityGML element each attribute, class and container substitutes
+    /// for, as `{namespace URI}local`.
     substitution_groups: BTreeMap<String, String>,
+    /// The element a CityGML 3.0 `adeOf…` hook holds each attribute in.
+    containers: BTreeMap<String, String>,
     /// The order of each class's attributes and geometry properties.
     property_order: BTreeMap<String, Vec<String>>,
 }
@@ -346,6 +348,7 @@ impl Extensions {
                     })
                     .unwrap_or_default(),
                 substitution_groups: member(ext, "substitutionGroups"),
+                containers: member(ext, "containers"),
                 property_order: member(ext, "propertyOrder"),
             })
             .collect();
@@ -353,7 +356,8 @@ impl Extensions {
     }
 
     /// Where a CityGML writer puts the Extensions' elements, as their
-    /// declarations' `substitutionGroups` and `propertyOrder` say.
+    /// declarations' `substitutionGroups`, `containers` and
+    /// `propertyOrder` say.
     pub fn layout(&self) -> AdeLayout {
         let mut layout = AdeLayout::default();
         for e in &self.list {
@@ -366,6 +370,9 @@ impl Extensions {
                     continue;
                 };
                 layout.add_hook(xmlns, property, (ns.to_string(), local.to_string()));
+            }
+            for (property, container) in &e.containers {
+                layout.add_container(xmlns, property, container);
             }
             for (class, content) in &e.property_order {
                 layout.add_content(xmlns, class, content.clone());
@@ -749,7 +756,8 @@ impl<'a> Conv<'a> {
     /// An attribute as `property`, or `None`, counted, when its value does
     /// not fit the property and it is written as a generic attribute
     /// instead. A date given as a midnight `xs:dateTime` is written as the
-    /// `xs:date` it is, and counted, since it reads back as the date.
+    /// `xs:date` it is, and a date where an `xs:dateTime` goes as its
+    /// midnight; each is counted, since it reads back as what was written.
     fn property(&mut self, property: &Property, value: &Json) -> Option<Vec<Attribute>> {
         let Some(values) = fit(property, value) else {
             self.losses.note(NOT_FITTING);
@@ -759,6 +767,9 @@ impl<'a> Conv<'a> {
             && value.as_str().is_some_and(|s| !is_date(s))
         {
             self.losses.note("dates given with their midnight time");
+        }
+        if matches!(property.kind, PropertyKind::DateTime) && value.as_str().is_some_and(is_date) {
+            self.losses.note("dates written as their midnight");
         }
         Some(
             values
@@ -1445,6 +1456,7 @@ fn fit_scalar(kind: PropertyKind, value: &Json) -> Option<Value> {
         (PropertyKind::Text, Json::String(s)) => Some(Value::String(s.clone())),
         (PropertyKind::Text, Json::Number(n)) => Some(Value::String(n.to_string())),
         (PropertyKind::Date, Json::String(s)) => date(s).map(Value::String),
+        (PropertyKind::DateTime, Json::String(s)) => date_time(s).map(Value::String),
         (PropertyKind::Year, Json::String(s)) if is_year(s) => Some(Value::String(s.clone())),
         (PropertyKind::Year, Json::Number(n)) => {
             n.as_u64().map(|y| Value::String(format!("{y:04}")))
@@ -1475,6 +1487,22 @@ fn date(s: &str) -> Option<String> {
         .strip_prefix("00:00:00")
         .is_some_and(|rest| rest.is_empty() || rest.trim_start_matches(['.', '0']).is_empty());
     (midnight && is_date(day)).then(|| format!("{day}{zone}"))
+}
+
+/// `s` as an `xs:dateTime`: itself when it is one, or the midnight of an
+/// `xs:date`; `None` for anything else.
+fn date_time(s: &str) -> Option<String> {
+    let (body, zone) = split_zone(s);
+    if is_date(s) {
+        return Some(format!("{body}T00:00:00{zone}"));
+    }
+    let (day, time) = body.split_once('T')?;
+    let (hms, fraction) = time.split_once('.').unwrap_or((time, "0"));
+    let mut parts = hms.split(':');
+    let two = |p: Option<&str>| p.is_some_and(|p| p.len() == 2 && all_digits(p));
+    let clock =
+        two(parts.next()) && two(parts.next()) && two(parts.next()) && parts.next().is_none();
+    (is_date(day) && clock && all_digits(fraction)).then(|| s.to_string())
 }
 
 /// `xs:date`: `YYYY-MM-DD`, with an optional time zone.

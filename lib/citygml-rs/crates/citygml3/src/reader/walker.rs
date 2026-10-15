@@ -486,8 +486,8 @@ fn push_leaf<R: BufRead>(
 }
 
 /// A `genericAttribute` property (positioned after its `Start`): its `gen:`
-/// attribute, when it is one with a name and a value. A
-/// `GenericAttributeSet` is skipped.
+/// attribute, when it is one with a name and a value, or its
+/// `GenericAttributeSet`, when that has a name.
 fn read_generic_attribute<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
@@ -498,7 +498,12 @@ fn read_generic_attribute<R: BufRead>(
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
         match ev {
             Event::Start(e) => {
-                let ty = ns_eq(&rr, ns::GENERICS.as_bytes())
+                let generics = ns_eq(&rr, ns::GENERICS.as_bytes());
+                if generics && e.local_name().as_ref() == b"GenericAttributeSet" {
+                    attribute = attributes::read_generic_set(reader, buf, 0)?;
+                    continue;
+                }
+                let ty = generics
                     .then(|| attributes::generic_attr(e.local_name().as_ref()))
                     .flatten();
                 match ty {

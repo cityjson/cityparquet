@@ -430,12 +430,15 @@ fn xml_json(
 ///   CityGML class it specialises ([`crate::model::Ade::parents`]): it refers
 ///   to the corresponding definition of CityJSON's schema
 ///   (`{"allOf": [{"$ref": "cityobjects.schema.json#/_AbstractBuilding"}]}`);
-/// - `substitutionGroups`, the CityGML element each attribute substitutes
-///   for, as `{namespace URI}local` ([`crate::model::Ade::hooks`]), and
-///   `propertyOrder`, the order of each `+` City Object type's attributes
-///   and geometry properties, those of another namespace as
-///   `{namespace URI}local` ([`crate::model::Ade::content`]): where a
-///   CityGML writer puts them, when the ADE's schema was read.
+/// - `substitutionGroups`, the CityGML element each attribute, class and
+///   container substitutes for, as `{namespace URI}local`
+///   ([`crate::model::Ade::hooks`]); `containers`, the element a CityGML
+///   3.0 `adeOf…` hook holds each attribute in
+///   ([`crate::model::Ade::containers`]); and `propertyOrder`, the order of
+///   the attributes and geometry properties of each `+` City Object type
+///   and container, those of another namespace as `{namespace URI}local`
+///   ([`crate::model::Ade::content`]): where a CityGML writer puts them,
+///   when the ADE's schema was read.
 ///
 /// `url` is the schema `xsi:schemaLocation` names when it is absolute, a
 /// known ADE's published schema ([`known_ade_schema`]) when it is not, and
@@ -518,6 +521,12 @@ pub fn extensions(ade: &AdeIndex) -> Vec<(String, Extension)> {
                 .collect();
             if !hooks.is_empty() {
                 other.insert("substitutionGroups".into(), Json::Object(hooks));
+            }
+            if !a.containers.is_empty() {
+                other.insert(
+                    "containers".into(),
+                    serde_json::to_value(&a.containers).unwrap_or_default(),
+                );
             }
             if !a.content.is_empty() {
                 other.insert(

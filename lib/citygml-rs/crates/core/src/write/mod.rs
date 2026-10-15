@@ -1,5 +1,6 @@
 //! What both writers share: an indenting XML writer, GML geometry
-//! ([`gml`]) and xAL addresses ([`xal`]).
+//! ([`gml`]) and xAL addresses ([`xal`] for CityGML 2.0's xAL 2.0,
+//! [`xal3`] for CityGML 3.0's xAL 3).
 //!
 //! The writers name every element by a prefix the document root declares
 //! (`gml`, `xlink`, `xAL`, each module's), so an element is written as the
@@ -8,6 +9,7 @@
 pub mod document;
 pub mod gml;
 pub mod xal;
+pub mod xal3;
 
 use std::io::Write;
 
@@ -20,6 +22,8 @@ pub struct XmlWriter<W: Write> {
     out: W,
     /// The elements open, innermost last.
     open: Vec<String>,
+    /// The GML its geometry is written in.
+    pub gml: gml::Version,
 }
 
 impl<W: Write> XmlWriter<W> {
@@ -30,6 +34,7 @@ impl<W: Write> XmlWriter<W> {
         Ok(Self {
             out,
             open: Vec::new(),
+            gml: gml::Version::V3_1,
         })
     }
 

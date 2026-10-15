@@ -9,6 +9,7 @@
 use citygml_core::model::{AdeIndex, AdeIndexBuilder, Module, QName};
 use citygml_core::vocabulary::cityjson_type;
 use citygml_core::xml::{is_ade, xml_err};
+use citygml_core::xsd::Name;
 use citygml_core::{Error, Result};
 use quick_xml::events::BytesStart;
 
@@ -22,10 +23,12 @@ enum Frame {
     Member,
     /// A city object.
     Object(Owner),
-    /// An `adeOf…` hook of an object.
-    Hook(Owner),
-    /// The ADE element a hook holds, whose children are the properties.
-    Properties(Owner),
+    /// An `adeOf…` hook of an object: its owner, and the hook as its
+    /// schema names the element it holds (`bldg:ADEOfAbstractBuilding`).
+    Hook(Owner, Name),
+    /// The ADE element a hook holds, whose children are the properties: its
+    /// namespace URI and local name.
+    Properties(Owner, Vec<u8>, String),
     /// A transportation space whose boundary surfaces are its object's, or
     /// a property holding one.
     Space,
@@ -120,10 +123,22 @@ impl AdeScan {
                     let owner = owner.clone();
                     self.property(uri, module, &local, ade, owner)
                 }
-                Some(Frame::Hook(owner)) if ade => Frame::Properties(owner.clone()),
-                Some(Frame::Properties(owner)) => {
-                    if ade && let Some(ty) = owner.property_of(uri) {
-                        self.builder.property(&uri_text, &ty, &local);
+                Some(Frame::Hook(owner, hook)) if ade => {
+                    let (owner, hook) = (owner.clone(), hook.clone());
+                    self.builder.container_hook(&uri_text, &local, hook);
+                    Frame::Properties(owner, uri.to_vec(), local.clone())
+                }
+                Some(Frame::Properties(owner, container_uri, container)) => {
+                    if ade {
+                        if let Some(ty) = owner.property_of(uri) {
+                            self.builder.property(&uri_text, &ty, &local);
+                        }
+                        // An ADE object's own properties are found in a
+                        // container as another ADE's are.
+                        if container_uri == uri {
+                            let container = container.clone();
+                            self.builder.container(&uri_text, &local, &container);
+                        }
                     }
                     Frame::Other
                 }
@@ -143,7 +158,7 @@ impl AdeScan {
                 {
                     Frame::Surfaces
                 }
-                Some(Frame::Hook(_) | Frame::Surface | Frame::Other) | None => Frame::Other,
+                Some(Frame::Hook(..) | Frame::Surface | Frame::Other) | None => Frame::Other,
             }
         };
         self.frames.push(frame);
@@ -197,7 +212,8 @@ impl AdeScan {
         {
             Frame::Member
         } else if walker::is_ade_hook(name) {
-            Frame::Hook(owner)
+            let element = format!("ADEOf{}", &local["adeOf".len()..]);
+            Frame::Hook(owner, (String::from_utf8_lossy(uri).into_owned(), element))
         } else {
             Frame::Other
         }

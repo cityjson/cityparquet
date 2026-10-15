@@ -1,6 +1,6 @@
 [package]
 name = "citygml2"
-description = "CityGML 2.0 reader"
+description = "CityGML 2.0 reader and writer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

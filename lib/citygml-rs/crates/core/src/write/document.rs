@@ -100,7 +100,9 @@ impl<W: Write> Base<W> {
     /// Start a document in `version` on `out`: its `core:CityModel` root,
     /// declaring each module of `modules` (with the schema
     /// `xsi:schemaLocation` names for it), each of `namespaces` by its
-    /// prefix, and each ADE of `head`; then the model's envelope.
+    /// prefix, and each ADE of `head`; then the model's envelope. Geometry
+    /// is GML 3.2 when `namespaces` binds `gml` to its namespace, else GML
+    /// 3.1.1.
     /// `module_uri` gives a module's namespace URI; `templates` are the
     /// relative geometries the objects' implicit geometries place, by
     /// position.
@@ -114,6 +116,9 @@ impl<W: Write> Base<W> {
         templates: Vec<Template>,
     ) -> Result<Self> {
         let mut x = XmlWriter::new(out)?;
+        if namespaces.contains(&("gml", gml::NS_GML32)) {
+            x.gml = gml::Version::V3_2;
+        }
         let mut declarations: Vec<(String, String)> = Vec::new();
         let mut locations = Vec::new();
         for (module, schema) in modules {

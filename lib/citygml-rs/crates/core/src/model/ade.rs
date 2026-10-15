@@ -79,17 +79,25 @@ pub struct Ade {
     /// for `bldg:_AbstractBuilding`), through any classes of its own. A
     /// class whose schema was not read is not listed.
     pub parents: BTreeMap<String, QName>,
-    /// The CityGML element each of its [`Self::properties`] substitutes
-    /// for, by namespace URI and local name (`uro:vegDataQualityAttribute`
-    /// for vegetation 2.0's `_GenericApplicationPropertyOfVegetationObject`),
-    /// as its schema says, through any elements of its own: where in its
-    /// object's content the property goes. A property whose schema was not
-    /// read is not listed.
+    /// The CityGML element each of its [`Self::properties`],
+    /// [`Self::classes`] and [`Self::containers`] substitutes for, by
+    /// namespace URI and local name (`uro:vegDataQualityAttribute` for
+    /// vegetation 2.0's `_GenericApplicationPropertyOfVegetationObject`,
+    /// `test:BuildingProperties` for building 3.0's
+    /// `ADEOfAbstractBuilding`), as its schema says, through any elements
+    /// of its own: where in its object's content the element goes. One
+    /// whose schema was not read is not listed, but for a container, whose
+    /// hook is the one the document puts it in.
     pub hooks: BTreeMap<String, Name>,
+    /// The element each of its [`Self::properties`] is found in, where a
+    /// CityGML 3.0 `adeOf…` hook holds that element and the element the
+    /// properties (`test:ownerName` in `test:BuildingProperties`).
+    pub containers: BTreeMap<String, String>,
     /// The elements the content model of each of its [`Self::classes`]
+    /// and [`Self::containers`]
     /// declares, in order, its bases' first, each as [`order_key`] names
-    /// it: where in the object's content each of its properties goes. A
-    /// class whose schema was not read is not listed.
+    /// it: where in the object's content each of its properties goes. One
+    /// whose schema was not read is not listed.
     pub content: BTreeMap<String, Vec<String>>,
     /// The unprefixed XML attributes of its elements (`codeSpace`, `uom`)
     /// that every occurrence of the element carries with one value, by
@@ -105,6 +113,7 @@ pub struct Ade {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AdeLayout {
     hooks: HashMap<(String, String), Name>,
+    containers: HashMap<(String, String), String>,
     content: HashMap<(String, String), Vec<String>>,
 }
 
@@ -118,8 +127,29 @@ impl AdeLayout {
         self.hooks.get(&(ns.clone(), property.local.clone()))
     }
 
-    /// The elements of the ADE class `class`'s content, in order, as
-    /// [`order_key`] names them.
+    /// The element the ADE property `property` is found in, inside a
+    /// CityGML 3.0 `adeOf…` hook (`BuildingProperties`), by local name in
+    /// the property's namespace.
+    pub fn container(&self, property: &QName) -> Option<&str> {
+        let Namespace::Other(ns) = &property.ns else {
+            return None;
+        };
+        self.containers
+            .get(&(ns.clone(), property.local.clone()))
+            .map(String::as_str)
+    }
+
+    /// The ADE of namespace `namespace` has property `property` in
+    /// `container`.
+    pub fn add_container(&mut self, namespace: &str, property: &str, container: &str) {
+        self.containers.insert(
+            (namespace.to_string(), property.to_string()),
+            container.to_string(),
+        );
+    }
+
+    /// The elements of the ADE class or container `class`'s content, in
+    /// order, as [`order_key`] names them.
     pub fn content(&self, class: &QName) -> Option<&[String]> {
         let Namespace::Other(ns) = &class.ns else {
             return None;
@@ -219,18 +249,22 @@ impl AdeIndex {
                     Some((class.clone(), parent))
                 })
                 .collect();
-            ade.hooks = ade
+            let declared: Vec<(String, Name)> = ade
                 .properties
                 .values()
                 .flatten()
+                .chain(&ade.classes)
+                .chain(ade.containers.values())
                 .filter_map(|p| {
                     let (_, hook) = substitutes(&self.schemas, &ade.namespace, p, &module)?;
                     Some((p.clone(), hook))
                 })
                 .collect();
+            ade.hooks.extend(declared);
             ade.content = ade
                 .classes
                 .iter()
+                .chain(ade.containers.values())
                 .filter_map(|class| {
                     let name = (ade.namespace.clone(), class.clone());
                     let ty = self.schemas.element_type(&name)?;
@@ -253,6 +287,9 @@ impl AdeIndex {
         for ade in &self.ades {
             for (property, hook) in &ade.hooks {
                 layout.add_hook(&ade.namespace, property, hook.clone());
+            }
+            for (property, container) in &ade.containers {
+                layout.add_container(&ade.namespace, property, container);
             }
             for (class, content) in &ade.content {
                 layout.add_content(&ade.namespace, class, content.clone());
@@ -287,6 +324,8 @@ struct Used {
     classes: BTreeSet<String>,
     surfaces: BTreeSet<String>,
     properties: BTreeMap<String, BTreeSet<String>>,
+    containers: BTreeMap<String, String>,
+    container_hooks: BTreeMap<String, Name>,
     elements: BTreeMap<String, Occurrences>,
 }
 
@@ -374,6 +413,27 @@ impl AdeIndexBuilder {
             .insert(local.to_string());
     }
 
+    /// The ADE property `local` of `namespace` is found in the ADE element
+    /// `container`, which a CityGML 3.0 `adeOf…` hook holds. The first
+    /// container a property is found in is the one kept.
+    pub fn container(&mut self, namespace: &str, local: &str, container: &str) {
+        self.used(namespace)
+            .containers
+            .entry(local.to_string())
+            .or_insert_with(|| container.to_string());
+    }
+
+    /// The ADE element `container` of `namespace` is found in the CityGML
+    /// 3.0 hook `hook` (`bldg:ADEOfAbstractBuilding`, by namespace URI and
+    /// local name): where it goes when the ADE's schema is not at hand to
+    /// say. The first hook a container is found in is the one kept.
+    pub fn container_hook(&mut self, namespace: &str, container: &str, hook: Name) {
+        self.used(namespace)
+            .container_hooks
+            .entry(container.to_string())
+            .or_insert(hook);
+    }
+
     fn used(&mut self, namespace: &str) -> &mut Used {
         if !self.ades.contains_key(namespace) {
             self.order.push(namespace.to_string());
@@ -434,7 +494,8 @@ impl AdeIndexBuilder {
                     surfaces: used.surfaces,
                     properties: used.properties,
                     parents: BTreeMap::new(),
-                    hooks: BTreeMap::new(),
+                    hooks: used.container_hooks,
+                    containers: used.containers,
                     content: BTreeMap::new(),
                     constant_attributes,
                 }

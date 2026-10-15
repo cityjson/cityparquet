@@ -140,6 +140,8 @@ pub enum PropertyKind {
     Text,
     /// A date (`2020-01-31`).
     Date,
+    /// A date and time (`2020-01-31T12:00:00Z`).
+    DateTime,
     /// A year (`1998`).
     Year,
     /// A whole number, at least 0 when `non_negative`.

@@ -1,6 +1,6 @@
 [package]
 name = "citygml3"
-description = "CityGML 3.0 reader"
+description = "CityGML 3.0 reader and writer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,7 @@ cjseq = { workspace = true, optional = true }
 
 [dev-dependencies]
 cjseq = { workspace = true }
+serde = "1"
 serde_json = { workspace = true }
 
 [features]

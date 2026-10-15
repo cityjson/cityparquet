@@ -3,9 +3,9 @@
 
 use std::io::BufRead;
 
-use citygml_core::model::{Module, Value};
+use citygml_core::model::{Attribute, AttributeName, Module, Value};
 use citygml_core::reader::text::{AttrType, to_value};
-use citygml_core::xml::{read_text, xml_err};
+use citygml_core::xml::{ns_eq, read_text, skip_element, xml_err};
 use citygml_core::{Error, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
@@ -96,4 +96,94 @@ pub fn read_generic<R: BufRead>(
     Ok(name
         .zip(value)
         .map(|(name, text)| (name.trim().to_string(), to_value(&text, ty))))
+}
+
+/// How deep generic attribute sets may nest in one another: a guard
+/// against attacker-controlled recursion.
+const MAX_SET_DEPTH: usize = 32;
+
+/// A `gen:GenericAttributeSet` (positioned after its `Start`; consumes
+/// through its `End`), `depth` sets deep: its `gen:name`, and the generic
+/// attributes and sets its `gen:genericAttribute`s hold, in document order.
+/// A set without a name, or a member without one, cannot be named, and is
+/// dropped.
+pub fn read_generic_set<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    depth: usize,
+) -> Result<Option<Attribute>> {
+    if depth > MAX_SET_DEPTH {
+        return Err(Error::invalid(format!(
+            "generic attribute sets nested deeper than {MAX_SET_DEPTH}"
+        )));
+    }
+    let mut name: Option<String> = None;
+    let mut members = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                let generics = ns_eq(&rr, crate::ns::GENERICS.as_bytes());
+                match e.local_name().as_ref() {
+                    b"name" if generics => {
+                        name = Some(read_text(reader, buf)?.trim().to_string());
+                    }
+                    b"genericAttribute" if generics => {
+                        members.extend(read_set_member(reader, buf, depth)?);
+                    }
+                    _ => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"GenericAttributeSet" => break,
+            Event::Eof => {
+                return Err(Error::invalid(
+                    "unexpected end of document inside a gen:GenericAttributeSet",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(name.filter(|n| !n.is_empty()).map(|name| Attribute {
+        name: AttributeName::Generic(name),
+        value: Value::Set(members),
+    }))
+}
+
+/// A set's `gen:genericAttribute` (positioned after its `Start`; consumes
+/// through its `End`): the generic attribute or set it holds.
+fn read_set_member<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    depth: usize,
+) -> Result<Option<Attribute>> {
+    let mut member = None;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                let generics = ns_eq(&rr, crate::ns::GENERICS.as_bytes());
+                let local = e.local_name();
+                if generics && local.as_ref() == b"GenericAttributeSet" {
+                    member = read_generic_set(reader, buf, depth + 1)?;
+                } else if let Some(ty) = generics.then(|| generic_attr(local.as_ref())).flatten() {
+                    member = read_generic(reader, buf, ty)?.map(|(name, value)| Attribute {
+                        name: AttributeName::Generic(name),
+                        value,
+                    });
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"genericAttribute" => break,
+            Event::Eof => {
+                return Err(Error::invalid(
+                    "unexpected end of document inside a gen:genericAttribute",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(member)
 }

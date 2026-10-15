@@ -1,4 +1,4 @@
-//! CityGML 3.0 reader.
+//! CityGML 3.0 reader and writer.
 //!
 //! [`FeatureReader`] streams a CityGML 3.0 document one top-level city object
 //! at a time, as a version-neutral [`citygml_core::GmlObject`]. With the
@@ -16,9 +16,13 @@
 //! elements and subdivisions they hold, and the objects of an ADE's
 //! classes; [`ObjectStream::skipped_members`] reports the members it passes
 //! over.
+//!
+//! [`writer`] writes the model, or with the `cjseq` feature CityJSON, as a
+//! CityGML 3.0 document.
 
 pub mod ns;
 mod reader;
+pub mod writer;
 
 pub use citygml_core::reader::{Document, ObjectStream, Preamble, scan_preamble};
 #[cfg(feature = "cjseq")]

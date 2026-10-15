@@ -1,6 +1,9 @@
-//! GML geometry, as GML 3.1.1 and 3.2 both spell it.
+//! GML geometry, in GML 3.1.1 or 3.2 as the [`XmlWriter`] says.
 //!
-//! Every ring is written closed (its first point repeated) and every
+//! The two spell geometry alike but for a solid's shells (a
+//! `gml:CompositeSurface` in 3.1.1, a `gml:Shell` in 3.2) and a
+//! `gml:TriangulatedSurface`'s triangles (`gml:trianglePatches`,
+//! `gml:patches`). Every ring is written closed (its first point repeated) and every
 //! coordinate as `gml:posList srsDimension="3"`. A face reached through a
 //! reversed `gml:OrientableSurface` is written through one again. A face
 //! another element defines is written as a reference to its polygon's
@@ -11,6 +14,18 @@ use std::io::Write;
 use super::{XmlWriter, numbers};
 use crate::model::{Face, Line, Polygon, Ring, Shape};
 use crate::{Error, Result};
+
+/// GML 3.2's namespace URI.
+pub const NS_GML32: &str = "http://www.opengis.net/gml/3.2";
+
+/// The GML a document's geometry is written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Version {
+    /// GML 3.1.1, CityGML 2.0's.
+    V3_1,
+    /// GML 3.2, CityGML 3.0's.
+    V3_2,
+}
 
 /// How a face goes where a surface member goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +175,11 @@ pub fn solid<W: Write>(
             },
             &[],
         )?;
-        surfaces(x, "gml:CompositeSurface", &[], shell, &mut *how)?;
+        let shell_element = match x.gml {
+            Version::V3_1 => "gml:CompositeSurface",
+            Version::V3_2 => "gml:Shell",
+        };
+        surfaces(x, shell_element, &[], shell, &mut *how)?;
         x.close()?;
     }
     x.close()
@@ -260,7 +279,13 @@ pub fn triangulated<W: Write>(
         return Ok(false);
     }
     x.open("gml:TriangulatedSurface", attributes)?;
-    x.open("gml:trianglePatches", &[])?;
+    x.open(
+        match x.gml {
+            Version::V3_1 => "gml:trianglePatches",
+            Version::V3_2 => "gml:patches",
+        },
+        &[],
+    )?;
     for f in faces {
         x.open("gml:Triangle", &[])?;
         ring(x, "gml:exterior", &f.polygon.exterior, None)?;
