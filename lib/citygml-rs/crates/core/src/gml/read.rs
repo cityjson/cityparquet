@@ -371,6 +371,9 @@ pub struct Collected {
     /// `gml:surfaceMember`s, and those of the `gml:baseSurface` of a
     /// `gml:OrientableSurface`, with its orientation.
     pub xlinks: Vec<Xlink>,
+    /// Where each of [`Self::xlinks`] stands among the polygons: how many
+    /// polygons come before it in the document.
+    pub xlinks_at: Vec<usize>,
     /// Every surface aggregate (`gml:CompositeSurface`, `gml:MultiSurface`)
     /// carrying a `gml:id`, with its members in document order — what an
     /// `xlink:href` to the aggregate stands for.
@@ -462,6 +465,7 @@ pub fn collect_surfaces<R: BufRead>(
                     }
                     let reverse = orientable.iter().fold(false, |r, (_, flip)| r ^ flip);
                     out.xlinks.push(Xlink { id: frag, reverse });
+                    out.xlinks_at.push(out.polygons.len());
                     skip_element(reader, buf)?;
                 } else {
                     depth += 1;

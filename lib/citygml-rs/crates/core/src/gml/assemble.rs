@@ -174,22 +174,22 @@ impl ObjectBuilder {
     /// targets, and its polygons and `xlink:href` members a MultiSurface
     /// unless the LoD has a solid or boundary-surface geometry (see
     /// [`Self::finish`]).
-    pub fn add_surfaces(&mut self, lod: String, collected: Collected) {
-        let xlinks = collected.xlinks.clone();
-        let mut refs: Vec<SurfaceRef> = self
-            .absorb(collected)
+    pub fn add_surfaces(&mut self, lod: String, mut collected: Collected) {
+        let mut xlinks = std::mem::take(&mut collected.xlinks)
             .into_iter()
-            .map(|(id, poly)| {
-                if let Some(id) = id {
-                    self.polygons.insert(id, poly.clone());
-                }
-                inline(poly)
-            })
-            .collect();
-        refs.extend(xlinks.into_iter().map(|Xlink { id, reverse }| SurfaceRef {
-            reverse,
-            target: RefTarget::Xlink(id),
-        }));
+            .zip(std::mem::take(&mut collected.xlinks_at))
+            .peekable();
+        let mut refs = Vec::new();
+        for (i, (id, poly)) in self.absorb(collected).into_iter().enumerate() {
+            while let Some((xlink, _)) = xlinks.next_if(|(_, at)| *at == i) {
+                refs.push(xlink_ref(xlink));
+            }
+            if let Some(id) = id {
+                self.polygons.insert(id, poly.clone());
+            }
+            refs.push(inline(poly));
+        }
+        refs.extend(xlinks.map(|(xlink, _)| xlink_ref(xlink)));
         if !refs.is_empty() {
             self.plain_surfaces.push((lod, refs));
         }
@@ -845,6 +845,14 @@ impl ObjectBuilder {
                 ))
             }),
         }
+    }
+}
+
+/// An `xlink:href` surface member.
+fn xlink_ref(Xlink { id, reverse }: Xlink) -> SurfaceRef {
+    SurfaceRef {
+        reverse,
+        target: RefTarget::Xlink(id),
     }
 }
 
