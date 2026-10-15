@@ -217,9 +217,10 @@ impl Source {
     /// The header is the database's own: its reference system is
     /// `EPSG:<srid>` of `database_srs` (none for SRID 0, which `--crs` can
     /// then supply), its extent the envelope of its top-level features, and
-    /// the transform steps by the reference system's units from the extent's
-    /// lower corner, as for a CityGML document. The geometry templates are
-    /// the relative geometries its implicit geometries place.
+    /// the transform steps by the reference system's units, as for a CityGML
+    /// document, from the grid point at or below the extent's lower corner.
+    /// The geometry templates are the relative geometries its implicit
+    /// geometries place.
     #[cfg(feature = "citydb")]
     pub fn open_citydb(config: &citygml_citydb::Config) -> Result<Self> {
         use crate::citygml::reader::error;
@@ -234,11 +235,14 @@ impl Source {
             Some(projjson) => cityparquet_schema::crs::axis_scale(&projjson)?,
             None => [cityparquet_schema::crs::MM; 3],
         };
+        // The extent is computed, so its corner is on no grid: the origin
+        // is the grid point at or below it, so that coordinates on the
+        // step's grid stay on it.
+        let translate = extent.map_or([0.0; 3], |e| {
+            std::array::from_fn(|axis| (e[axis] / scale[axis]).floor() * scale[axis])
+        });
         let mut header = CityJSON::new();
-        header.transform = cjseq::Transform {
-            scale,
-            translate: extent.map_or([0.0; 3], |e| [e[0], e[1], e[2]]),
-        };
+        header.transform = cjseq::Transform { scale, translate };
         if extent.is_some() || code.is_some() {
             header.metadata = Some(cjseq::Metadata {
                 geographical_extent: extent,

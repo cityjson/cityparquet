@@ -41,7 +41,7 @@ fn write_as_seq(source: &Source, path: &Path) {
 
 /// A database's header: the reference system its geometries are stored in,
 /// and a transform whose step is the reference system's own (millimetres
-/// for a projected one) from the lower corner of the database's extent.
+/// for a projected one) from within a step below the database's extent.
 #[test]
 fn a_database_declares_its_reference_system_and_extent() {
     let Some(config) = database("delft") else {
@@ -56,11 +56,14 @@ fn a_database_declares_its_reference_system_and_extent() {
         "https://www.opengis.net/def/crs/EPSG/0/7415"
     );
     let extent = metadata.geographical_extent.unwrap();
-    assert_eq!(
-        header.transform.translate,
-        [extent[0], extent[1], extent[2]]
-    );
     assert_eq!(header.transform.scale, [0.001; 3]);
+    for (axis, (lower, origin)) in extent.iter().zip(header.transform.translate).enumerate() {
+        let below = lower - origin;
+        assert!(
+            (0.0..0.001).contains(&below),
+            "axis {axis}: the origin is {below} below the extent"
+        );
+    }
 }
 
 /// A PLATEAU database is in EPSG:6697, latitude and longitude in degrees:
@@ -79,6 +82,28 @@ fn a_geographic_database_is_quantised_at_a_degree_step() {
             0.001
         ]
     );
+}
+
+/// The translate is on the grid of the step: a database's extent is
+/// computed (the railway scene's lower corner is no millimetre), and an
+/// origin off the grid would move every stored coordinate by up to half a
+/// step and merge vertices a step apart.
+#[test]
+fn the_translate_is_a_whole_number_of_steps() {
+    let Some(config) = database("railway_scene") else {
+        return;
+    };
+    let source = Source::open_citydb(&config).unwrap();
+    let transform = &source.header().transform;
+    for axis in 0..3 {
+        let steps = transform.translate[axis] / transform.scale[axis];
+        assert!(
+            (steps - steps.round()).abs() < 1e-6,
+            "axis {axis}: translate {} is {steps} steps of {}",
+            transform.translate[axis],
+            transform.scale[axis]
+        );
+    }
 }
 
 /// Converting a database and exporting the package gives back the model
