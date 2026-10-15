@@ -160,11 +160,11 @@ def export_args(entry: dict) -> list[str]:
 #   new name; the database stores no MIME type. Whether there is an image is
 #   kept.
 # 3DCityDB stores texture coordinates as single-precision floats, and
-# citydb-tool's exporter writes seven significant digits of them: a texture
-# coordinate is the same within a single-precision step, 3e-5 for the
-# coordinates up to 256 a repeated texture reaches (the railway scene's go
-# past 100).
-UV_TOL = "3e-5"
+# citydb-tool's exporter writes seven significant digits of them: the direct
+# reader hands over the stored float, the exporter its seven-digit rounding,
+# which is within 5e-5 of it below 1000 (a repeated texture's coordinates in
+# the railway scene reach 714).
+UV_TOL = "5e-5"
 GENERATED = re.compile(r"^ID_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 UNNAMED = re.compile(r"^(ID_[0-9a-f-]{36}|material-\d+)$")
 
