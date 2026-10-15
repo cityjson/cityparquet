@@ -88,6 +88,16 @@ fn a_track_agrees_with_citygml_tools() {
     );
 }
 
+/// The LoD 3 Railway's terrain: a TIN whose material targets the
+/// `gml:TriangulatedSurface` by its id colours every triangle.
+#[test]
+fn a_coloured_tin_agrees_with_citygml_tools() {
+    assert_eq!(
+        ours("tin_relief_fragment.gml"),
+        oracle("oracle/tin_relief_fragment.city.jsonl")
+    );
+}
+
 /// Fifteen trees of the LoD 3 Railway instantiate three relative geometries
 /// through `ImplicitGeometry`, the first use of each inline and the others by
 /// `xlink:href`, coloured and textured by the CityModel's appearance. The
@@ -130,4 +140,45 @@ fn implicit_geometries_agree_with_citygml_tools() {
         ours("railway_trees_fragment.gml"),
         oracle("oracle/railway_trees_fragment.city.jsonl")
     );
+}
+
+/// A KIT railway tree and bridge whose textures name their images by file
+/// only, with no `app:mimeType`: each texture's CityJSON type is its
+/// image's, as citygml-tools gives it. The tree's texture colours its
+/// relative geometry, so it is the header's.
+#[test]
+fn a_texture_s_type_is_its_image_s_when_no_mime_type_says() {
+    fn types(lines: &[Value]) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = lines
+            .iter()
+            .flat_map(|f| {
+                f["appearance"]["textures"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .map(|t| (t["image"].to_string(), t["type"].to_string()))
+            .collect();
+        out.sort();
+        out
+    }
+    let gml = data("railway_textures_fragment.gml");
+    let transform = cjseq::Transform {
+        scale: [1e-3; 3],
+        translate: [0.0; 3],
+    };
+    let document = citygml2::read_document(&gml).unwrap();
+    let (_, appearance) = citygml_core::convert::cjseq::geometry_templates(document.templates())
+        .unwrap()
+        .expect("the tree's relative geometry");
+    let mut ours: Vec<Value> = FeatureReader::open(&gml)
+        .unwrap()
+        .features(transform)
+        .map(|f| serde_json::to_value(f.unwrap()).unwrap())
+        .collect();
+    ours.push(serde_json::json!({ "appearance": appearance }));
+    let (header, mut oracle) = read_seq(&data("oracle/railway_textures_fragment.city.jsonl"));
+    oracle.push(header);
+    assert_eq!(types(&oracle).len(), 2);
+    assert_eq!(types(&ours), types(&oracle));
 }

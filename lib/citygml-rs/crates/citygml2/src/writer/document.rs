@@ -271,7 +271,11 @@ impl<W: Write> DocumentWriter<W> {
                         let faces: Vec<&Face> = o.geometries[g].shape.faces().collect();
                         let srs = self.b.srs();
                         self.b.x.open("dem:tin", &[])?;
-                        gml::triangulated(&mut self.b.x, &faces, &pairs(&srs))?;
+                        let mut attributes = pairs(&srs);
+                        if let Some(id) = &plan.tin {
+                            attributes.insert(0, ("gml:id", id.as_str()));
+                        }
+                        gml::triangulated(&mut self.b.x, &faces, &attributes)?;
                         self.b.x.close()?;
                     }
                 }

@@ -1186,15 +1186,24 @@ fn material_object(m: &Material) -> Result<MaterialObject> {
 fn texture_object(t: &Texture) -> Result<TextureObject> {
     let invalid = |what: String| Error::invalid(format!("CityGML texture: {what}"));
     // CityJSON names a texture's format by one of two words; CityGML gives
-    // a MIME type, and any other image type has no CityJSON form.
-    let thetype =
-        t.mime_type
+    // a MIME type, or, when it gives none, the image's file extension does.
+    // Any other image type has no CityJSON form.
+    let thetype = match t.mime_type.as_deref() {
+        Some(mime) => match mime.to_ascii_lowercase().as_str() {
+            "image/png" => Some(TextureFormat::PNG),
+            "image/jpeg" | "image/jpg" => Some(TextureFormat::JPG),
+            _ => None,
+        },
+        None => t
+            .image_uri
             .as_deref()
-            .and_then(|mime| match mime.to_ascii_lowercase().as_str() {
-                "image/png" => Some(TextureFormat::PNG),
-                "image/jpeg" | "image/jpg" => Some(TextureFormat::JPG),
+            .and_then(|uri| uri.rsplit_once('.'))
+            .and_then(|(_, ext)| match ext.to_ascii_lowercase().as_str() {
+                "png" => Some(TextureFormat::PNG),
+                "jpg" | "jpeg" => Some(TextureFormat::JPG),
                 _ => None,
-            });
+            }),
+    };
     fn word<T: serde::de::DeserializeOwned>(name: &str, v: &Option<String>) -> Result<Option<T>> {
         v.as_ref()
             .map(|s| serde_json::from_value(Json::String(s.clone())))

@@ -374,8 +374,8 @@ pub struct Collected {
     /// Where each of [`Self::xlinks`] stands among the polygons: how many
     /// polygons come before it in the document.
     pub xlinks_at: Vec<usize>,
-    /// Every surface aggregate (`gml:CompositeSurface`, `gml:MultiSurface`)
-    /// carrying a `gml:id`, with its members in document order — what an
+    /// Every surface aggregate (`gml:CompositeSurface`, `gml:MultiSurface`,
+    /// and a TIN's `gml:TriangulatedSurface` or `gml:Tin`) carrying a `gml:id`, with its members in document order — what an
     /// `xlink:href` to the aggregate stands for.
     pub aggregates: Vec<(String, Vec<AggregateMember>)>,
 }
@@ -473,7 +473,10 @@ pub fn collect_surfaces<R: BufRead>(
                         orientable.push((depth, orientation_reversed(&e)));
                     }
                     if gml
-                        && matches!(local.as_ref(), b"CompositeSurface" | b"MultiSurface")
+                        && matches!(
+                            local.as_ref(),
+                            b"CompositeSurface" | b"MultiSurface" | b"TriangulatedSurface" | b"Tin"
+                        )
                         && let Some(id) = gml_id(&e)
                     {
                         if let Some((_, _, members)) = open.last_mut() {

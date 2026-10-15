@@ -112,6 +112,13 @@ fn a_lod4_building_agrees_with_citygml_tools() {
     agrees("lod4_building_v2.gml");
 }
 
+/// The LoD 3 Railway's terrain: a TIN whose material targets the
+/// `gml:TriangulatedSurface` by its id colours every triangle.
+#[test]
+fn a_coloured_tin_agrees_with_citygml_tools() {
+    agrees("tin_relief_fragment.gml");
+}
+
 /// A building whose LoD 2 CompositeSolid is tagged by xlinked boundary
 /// surfaces.
 #[test]
