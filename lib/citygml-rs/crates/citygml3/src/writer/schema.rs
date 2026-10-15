@@ -283,6 +283,8 @@ level!(
     "InteriorWallSurface",
     []
 );
+// A door's addresses: the model holds none on a boundary surface, so the
+// writer writes none, and the slot only states the content model.
 level!(
     DOOR_SURFACE,
     Construction,
@@ -1077,7 +1079,6 @@ impl Vocabulary for Vocabulary3 {
     }
 
     fn surface(&self, surface: &str, owner: &QName) -> Option<QName> {
-        let def = class_def(owner)?;
         let candidate = SURFACES.iter().find(|s| s.cityjson.contains(&surface))?;
         // A door or window belongs in a surface of an object that has
         // boundary surfaces.
@@ -1085,9 +1086,15 @@ impl Vocabulary for Vocabulary3 {
             "fillingSurface" => "boundary",
             holder => holder,
         };
-        def.slots()
-            .any(|(_, s)| s.holder() == Some(holder))
-            .then(|| QName::module(candidate.module, candidate.name))
+        // An ADE class of no known CityGML class has `ADE_CLASS`'s content.
+        let holds = match class_def(owner) {
+            Some(def) => def.slots().any(|(_, s)| s.holder() == Some(holder)),
+            None => ADE_CLASS
+                .iter()
+                .flat_map(|l| l.slots)
+                .any(|s| s.holder() == Some(holder)),
+        };
+        holds.then(|| QName::module(candidate.module, candidate.name))
     }
 
     fn property(&self, class: &QName, name: &str) -> Option<Property> {

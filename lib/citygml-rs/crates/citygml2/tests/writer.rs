@@ -34,7 +34,7 @@ fn data(name: &str) -> PathBuf {
 /// Where a test writes `name`.
 fn scratch(name: &str) -> PathBuf {
     let file = name.replace('/', "_");
-    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("writer_{file}.gml"))
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("citygml2_writer_{file}.gml"))
 }
 
 fn json(v: &impl serde::Serialize) -> Value {

@@ -173,11 +173,19 @@ const SURFACES: &[(Module, &str, &str)] = &[
 ];
 
 /// The CityJSON semantic surface type of the CityGML boundary surface class
-/// `class` (`con:DoorSurface` -> `Door`).
-pub fn cityjson_surface(class: &QName) -> &str {
+/// `class` (`con:DoorSurface` -> `Door`) on an object of class `owner`:
+/// CityGML 3.0's one closure surface class is a water body's
+/// `WaterClosureSurface`.
+pub fn cityjson_surface<'a>(class: &'a QName, owner: &QName) -> &'a str {
     let Namespace::Module(module) = class.ns else {
         return &class.local;
     };
+    if module == Module::Core
+        && class.local == "ClosureSurface"
+        && owner.ns == Namespace::Module(Module::WaterBody)
+    {
+        return "WaterClosureSurface";
+    }
     SURFACES
         .iter()
         .find(|(m, local, _)| *m == module && *local == class.local)

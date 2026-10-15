@@ -51,7 +51,7 @@ pub struct WriterOptions {
 }
 
 /// What a finished document holds, and what its version could not.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     /// Features written.
     pub features: usize,

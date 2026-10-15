@@ -831,7 +831,7 @@ fn semantic_surfaces(g: &Geometry, object: &GmlObject) -> Result<SurfaceSubset> 
             Ok(SemanticsSurface {
                 thetype: SemanticSurfaceType::try_from(match &surface.class.ns {
                     Namespace::Other(_) => format!("+{}", surface.class.local),
-                    _ => cityjson_surface(&surface.class).to_string(),
+                    _ => cityjson_surface(&surface.class, &object.class).to_string(),
                 })
                 .map_err(build_error)?,
                 parent: surface.parent.map(|p| SurfaceIndex(renumber[&p])),

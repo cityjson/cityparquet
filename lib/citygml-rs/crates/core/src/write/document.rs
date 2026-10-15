@@ -4,7 +4,9 @@
 //! geometry as a property, and ADE elements as the document wrote them.
 //!
 //! What a class holds and how its properties are named is the version's:
-//! [`PlanRules`] asks.
+//! [`PlanRules`] asks. [`VersionWriter`] writes, around a version's own
+//! objects and textures, the top-level members, the appearances and the
+//! document's end.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
@@ -15,6 +17,7 @@ use crate::convert::Losses;
 use crate::model::{
     AdeLayout, Appearance, Attribute, AttributeName, BoundarySurface, Face, Geometry, GmlObject,
     Material, Module, Namespace, QName, Shape, Template, Texture, Value, XmlContent, XmlNode,
+    order_key,
 };
 use crate::vocabulary::{module_of_prefix, module_prefix};
 use crate::{Error, Result};
@@ -67,6 +70,98 @@ pub trait PlanRules {
     fn surface_holder(&self, surfaces: &[BoundarySurface], s: usize) -> Option<&'static str>;
     /// Whether a boundary surface of `class` has geometry at LoD `n`.
     fn surface_holds_lod(&self, class: &QName, n: u8) -> bool;
+}
+
+/// A version's document writer, for what both versions write alike around
+/// what each writes its own way: the top-level objects, the appearances
+/// and the end of the document.
+pub trait VersionWriter<W: Write>: Sized {
+    /// The element of an `app:Appearance` holding one material or texture.
+    const SURFACE_DATA: &'static str;
+    /// The element of the `app:Appearance` of a relative geometry, after
+    /// the objects.
+    const APPEARANCE_MEMBER: &'static str;
+
+    fn base(&mut self) -> &mut Base<W>;
+    fn into_base(self) -> Base<W>;
+    /// Whether `o` can be written at all; counts it when not.
+    fn writable(&mut self, o: &GmlObject) -> bool;
+    /// One object, its element named by its class; adds to `hoisted` what
+    /// is to be written after it as an object of its own.
+    fn object(&mut self, o: GmlObject, hoisted: &mut Vec<GmlObject>) -> Result<()>;
+    /// A texture, on the rings of `rings` (ring -> its polygon) it names.
+    fn texture(&mut self, t: &Texture, rings: &HashMap<String, String>) -> Result<()>;
+
+    /// `object` as a top-level object, and what it cannot hold, each in a
+    /// `core:cityObjectMember`.
+    fn write_top_level(&mut self, object: GmlObject) -> Result<()> {
+        let mut pending = vec![object];
+        while let Some(o) = pending.pop() {
+            if !self.writable(&o) {
+                let mut orphans = Vec::new();
+                self.base().orphan_children(o, &mut orphans);
+                pending.extend(orphans.into_iter().rev());
+                continue;
+            }
+            self.base().x.open("core:cityObjectMember", &[])?;
+            let mut hoisted = Vec::new();
+            self.object(o, &mut hoisted)?;
+            self.base().x.close()?;
+            self.base().objects += 1;
+            pending.extend(hoisted.into_iter().rev());
+        }
+        Ok(())
+    }
+
+    /// `appearance`, one `app:Appearance` per theme in property `element`:
+    /// each material targeting the polygons of `targets` it names, each
+    /// texture the rings `rings` gives the polygon of.
+    fn appearance(
+        &mut self,
+        element: &str,
+        appearance: &Appearance,
+        targets: &HashSet<String>,
+        rings: &HashMap<String, String>,
+    ) -> Result<()> {
+        for (theme, data) in themes(appearance) {
+            self.base().x.open(element, &[])?;
+            self.base().x.open("app:Appearance", &[])?;
+            if !theme.is_empty() {
+                self.base().x.leaf("app:theme", &[], theme)?;
+            }
+            for d in data {
+                match d {
+                    SurfaceData::Material(m) => {
+                        self.base().material(Self::SURFACE_DATA, m, targets)?
+                    }
+                    SurfaceData::Texture(t) => self.texture(t, rings)?,
+                }
+            }
+            self.base().x.close()?;
+            self.base().x.close()?;
+        }
+        Ok(())
+    }
+
+    /// End the document: the appearance of the relative geometries written,
+    /// then the root. Gives back what it was written to, and what was left
+    /// out.
+    fn finish_document(mut self) -> Result<(W, Losses)> {
+        let templates = std::mem::take(&mut self.base().templates);
+        let written = std::mem::take(&mut self.base().written);
+        for (template, _) in templates.iter().zip(written).filter(|(_, w)| w.is_some()) {
+            let (targets, rings) = targets(std::slice::from_ref(&template.geometry));
+            self.appearance(
+                Self::APPEARANCE_MEMBER,
+                &template.appearance,
+                &targets,
+                &rings,
+            )?;
+        }
+        let mut b = self.into_base();
+        b.x.close()?;
+        Ok((b.x.finish()?, b.losses))
+    }
 }
 
 /// A document being written, as far as both versions write it alike.
@@ -188,6 +283,87 @@ impl<W: Write> Base<W> {
         }
     }
 
+    /// Whether an object `o` of a class whose content is `known` (and is a
+    /// TIN relief's when `tin`) can be written at all; counts it when not.
+    /// An ADE class needs no known content.
+    pub fn writable(&mut self, o: &GmlObject, known: bool, tin_relief: bool) -> bool {
+        let ade = matches!(o.class.ns, Namespace::Other(_));
+        if ade && !is_ncname(&o.class.local) {
+            self.losses
+                .note("objects of an ADE class whose name is not an XML name");
+            return false;
+        }
+        if !known && !ade {
+            self.losses.note(format!(
+                "objects of a class {} does not have ({})",
+                self.version, o.class.local
+            ));
+            return false;
+        }
+        if tin_relief && !o.geometries.iter().any(|g| tin(g).is_some()) {
+            self.losses
+                .note("TIN reliefs without a surface of triangles");
+            return false;
+        }
+        true
+    }
+
+    /// A material, in a `surface_data` element, targeting the polygons of
+    /// `targets` it names; left out when it targets none.
+    pub fn material(
+        &mut self,
+        surface_data: &str,
+        m: &Material,
+        targets: &HashSet<String>,
+    ) -> Result<()> {
+        let written: Vec<&String> = m.targets.iter().filter(|t| targets.contains(*t)).collect();
+        if written.len() < m.targets.len() {
+            self.losses
+                .note("material targets the document does not write");
+        }
+        if written.is_empty() {
+            return Ok(());
+        }
+        let id = m.id.clone().filter(|id| self.claim(id));
+        let attrs: Vec<(&str, &str)> = id.iter().map(|id| ("gml:id", id.as_str())).collect();
+        self.x.open(surface_data, &[])?;
+        self.x.open("app:X3DMaterial", &attrs)?;
+        if let Some(name) = &m.name {
+            self.x.leaf("gml:name", &[], name)?;
+        }
+        let colour = |c: &Option<Vec<f64>>| c.as_ref().map(|c| numbers(c.iter().copied()));
+        for (element, value) in [
+            ("app:ambientIntensity", m.ambient_intensity.map(number)),
+            ("app:diffuseColor", colour(&m.diffuse_color)),
+            ("app:emissiveColor", colour(&m.emissive_color)),
+            ("app:specularColor", colour(&m.specular_color)),
+            ("app:shininess", m.shininess.map(number)),
+            ("app:transparency", m.transparency.map(number)),
+            ("app:isSmooth", m.is_smooth.map(|b| b.to_string())),
+        ] {
+            if let Some(value) = value {
+                self.x.leaf(element, &[], &value)?;
+            }
+        }
+        for t in written {
+            self.x.leaf("app:target", &[], &format!("#{t}"))?;
+        }
+        self.x.close()?;
+        self.x.close()
+    }
+
+    /// A face in a boundary surface's geometry: the polygon a solid refers
+    /// to as it is, any other face as its geometry uses it.
+    pub fn surface_member(&mut self, face: &Face, solid: bool) -> Result<()> {
+        if solid {
+            self.x.open("gml:surfaceMember", &[])?;
+            gml::polygon(&mut self.x, &face.polygon, &[])?;
+            self.x.close()
+        } else {
+            gml::member(&mut self.x, "gml:surfaceMember", face, Member::Inline)
+        }
+    }
+
     /// `id`, when no element of the document has it yet; counted when one
     /// has.
     pub fn claim(&mut self, id: &str) -> bool {
@@ -199,12 +375,20 @@ impl<W: Write> Base<W> {
         false
     }
 
-    /// A `gml:id` no element of the document has.
+    /// A `gml:id` no element of the document has, claimed.
     pub fn fresh_id(&mut self) -> String {
+        let id = self.unused_id();
+        self.ids.insert(id.clone());
+        id
+    }
+
+    /// A `gml:id` no element of the document has, for an object written
+    /// later, which claims it then.
+    pub fn unused_id(&mut self) -> String {
         loop {
             self.next_id += 1;
             let id = format!("_w{}", self.next_id);
-            if self.ids.insert(id.clone()) {
+            if !self.ids.contains(&id) {
                 return id;
             }
         }
@@ -295,7 +479,7 @@ impl<W: Write> Base<W> {
                 ));
                 continue;
             };
-            if geometry.lod != n.to_string() {
+            if !is_whole(&geometry.lod) {
                 self.losses
                     .note("geometries whose LoD is written as its whole number");
             }
@@ -564,6 +748,33 @@ impl Plan {
             }
         }
         out
+    }
+}
+
+/// Whether a model LoD is a whole number (`2`, `2.0`), which CityGML
+/// holds as it is.
+fn is_whole(lod: &str) -> bool {
+    lod.split_once('.')
+        .is_none_or(|(_, minor)| minor.chars().all(|c| c == '0'))
+}
+
+/// Where element `name` comes in `order`, the content order of the ADE
+/// class or container `class`; after every element it names when it names
+/// none.
+pub fn rank(order: &[String], class: &QName, name: &QName) -> usize {
+    let (Namespace::Other(own), Namespace::Other(uri)) = (&class.ns, &name.ns) else {
+        return order.len();
+    };
+    let key = order_key(own, uri, &name.local);
+    order.iter().position(|n| *n == key).unwrap_or(order.len())
+}
+
+/// The CityGML class whose content an object of `class` has: itself, or
+/// for an ADE class the one `content_of` says it specialises.
+pub fn content_class(content_of: &ContentOf, class: &QName) -> Option<QName> {
+    match &class.ns {
+        Namespace::Other(_) => content_of(class),
+        _ => Some(class.clone()),
     }
 }
 

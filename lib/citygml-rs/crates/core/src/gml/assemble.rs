@@ -448,10 +448,13 @@ impl ObjectBuilder {
                 });
             }
         }
-        // Points, lines, TINs and instances, at a LoD no surface or solid
-        // holds.
+        // Points, lines, TINs and instances, each unless a geometry of its
+        // kind is at its LoD already.
         for g in self.direct {
-            if !geometries.iter().any(|have: &Geometry| have.lod == g.lod) {
+            if !geometries
+                .iter()
+                .any(|have: &Geometry| have.lod == g.lod && kind(&have.shape) == kind(&g.shape))
+            {
                 geometries.push(g);
             }
         }
@@ -795,5 +798,17 @@ fn plain_face(poly: &Polygon, surface: Option<usize>) -> Face {
         id: poly.id.clone(),
         reversed: false,
         surface,
+    }
+}
+
+/// What kind of geometry `shape` is: points, curves, surfaces, solids or
+/// an instance.
+fn kind(shape: &Shape) -> u8 {
+    match shape {
+        Shape::MultiPoint(_) => 0,
+        Shape::MultiLineString(_) => 1,
+        Shape::MultiSurface(_) | Shape::CompositeSurface(_) => 2,
+        Shape::Solid(_) | Shape::CompositeSolid(_) | Shape::MultiSolid(_) => 3,
+        Shape::Instance(_) => 4,
     }
 }

@@ -33,7 +33,7 @@ fn data(name: &str) -> PathBuf {
 /// Where a test writes `name`.
 fn scratch(name: &str) -> PathBuf {
     let file = name.replace('/', "_");
-    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("writer_{file}.gml"))
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("citygml3_writer_{file}.gml"))
 }
 
 fn json(v: &impl serde::Serialize) -> Value {
@@ -68,8 +68,20 @@ fn read(path: &Path, transform: &Transform) -> (CityJSON, Vec<CityJSONFeature>) 
 }
 
 /// `header` and `features` written as CityGML 3.0 at `out`, with the ADE
-/// schemas `schemas` gives by namespace.
+/// schemas `schemas` gives by namespace, and valid.
 fn write(
+    header: &CityJSON,
+    features: &[CityJSONFeature],
+    out: &Path,
+    schemas: BTreeMap<String, String>,
+) -> Report {
+    let report = write_unvalidated(header, features, out, schemas);
+    validate(out);
+    report
+}
+
+/// [`write`], for a document whose ADE has no schema to validate against.
+fn write_unvalidated(
     header: &CityJSON,
     features: &[CityJSONFeature],
     out: &Path,
@@ -86,7 +98,6 @@ fn write(
     }
     let (file, report) = writer.finish().unwrap();
     drop(file.into_inner().unwrap());
-    validate(out);
     report
 }
 
@@ -562,4 +573,286 @@ fn ade_properties_for_another_version_are_left_out_and_counted() {
         "{:?}",
         report.losses
     );
+}
+
+/// A CityGML 3.0 group member only refers to its member: a member the
+/// group's feature holds is written as an object of its own, referred to,
+/// and counted. Derived from the railway fragment's CityJSON, whose group
+/// refers to trees that are features of their own: here the group's
+/// feature holds them, as a CityJSON document's group does.
+#[test]
+fn members_a_group_holds_are_written_as_objects_of_their_own() {
+    let (header, features) = oracle::read_seq(&data(
+        "../../../citygml2/tests/data/oracle/railway_trees_fragment.city.jsonl",
+    ));
+    let (mut groups, trees): (Vec<Value>, Vec<Value>) = features
+        .into_iter()
+        .partition(|f| f["CityObjects"][f["id"].as_str().unwrap()]["type"] == "CityObjectGroup");
+    let mut group = groups.remove(0);
+    let group_id = group["id"].as_str().unwrap().to_string();
+    let members: Vec<String> = group["CityObjects"][&group_id]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap().to_string())
+        .collect();
+    // Each tree's objects move into the group's feature, their vertex
+    // indices past the vertices already there.
+    let mut held = 0;
+    for tree in trees {
+        let offset = group["vertices"].as_array().unwrap().len() as u64;
+        for (id, mut object) in tree["CityObjects"].as_object().unwrap().clone() {
+            if !members.contains(&id) {
+                continue;
+            }
+            for g in object["geometry"].as_array_mut().unwrap() {
+                assert_eq!(g["type"], "GeometryInstance");
+                let v = g["boundaries"][0].as_u64().unwrap();
+                g["boundaries"][0] = (v + offset).into();
+            }
+            object["parents"] = serde_json::json!([group_id]);
+            group["CityObjects"][&id] = object;
+            held += 1;
+        }
+        let vertices = tree["vertices"].as_array().unwrap().clone();
+        group["vertices"].as_array_mut().unwrap().extend(vertices);
+    }
+    assert!(held > 1);
+
+    let header: CityJSON = serde_json::from_value(header).unwrap();
+    let feature: CityJSONFeature = serde_json::from_value(group).unwrap();
+    let out = scratch("group_holding_its_members");
+    let report = write(
+        &header,
+        std::slice::from_ref(&feature),
+        &out,
+        BTreeMap::new(),
+    );
+    assert_eq!(
+        count(
+            &report.losses,
+            "group members written as objects of their own, referred to"
+        ),
+        held,
+        "{:?}",
+        report.losses
+    );
+    let (_, after) = read(&out, &header.transform);
+    let mut referred = Vec::new();
+    for f in &after {
+        for (id, object) in &f.city_objects {
+            if *id == group_id {
+                assert_eq!(object.children.as_deref().unwrap(), &members[..]);
+            } else if members.contains(id) {
+                assert_eq!(
+                    object.parents.as_deref().unwrap(),
+                    std::slice::from_ref(&group_id)
+                );
+                referred.push(id.clone());
+            }
+        }
+    }
+    assert_eq!(referred.len(), held);
+}
+
+/// CityGML keeps one geometry of a kind per whole LoD: of two
+/// MultiSurfaces at LoDs 2.1 and 2.2 the second is left out, and counted,
+/// rather than written as another boundary surface that reads back merged
+/// into the first. Derived from 3DBAG's first building: its LoD 0
+/// footprint, copied to LoDs 2.1 and 2.2.
+#[test]
+fn a_second_multisurface_at_a_whole_lod_is_left_out_and_counted() {
+    let (header, features) = oracle::read_seq(&data(
+        "../../../citygml2/tests/data/3dbag/delft_100.city.jsonl",
+    ));
+    let header: CityJSON = serde_json::from_value(header).unwrap();
+    let original = features.into_iter().next().unwrap();
+    let mut feature = original.clone();
+    let id = feature["id"].as_str().unwrap().to_string();
+    let geometries = feature["CityObjects"][&id]["geometry"]
+        .as_array_mut()
+        .unwrap();
+    let footprint = geometries
+        .iter()
+        .find(|g| g["lod"] == "0" && g["type"] == "MultiSurface")
+        .unwrap()
+        .clone();
+    for lod in ["2.1", "2.2"] {
+        let mut copy = footprint.clone();
+        copy["lod"] = lod.into();
+        geometries.push(copy);
+    }
+
+    // What the feature loses, and holds at LoD 2, without the copies and
+    // with them.
+    let written = |feature: Value, name: &str| {
+        let feature: CityJSONFeature = serde_json::from_value(feature).unwrap();
+        let out = scratch(name);
+        let report = write(
+            &header,
+            std::slice::from_ref(&feature),
+            &out,
+            BTreeMap::new(),
+        );
+        let lod2 = lods(&out)[0].iter().filter(|l| *l == "2").count();
+        let lost = count(
+            &report.losses,
+            "geometries at a LoD their object already has one of that kind at",
+        );
+        (lost, lod2)
+    };
+    let (lost_before, lod2_before) = written(original, "one_multisurface_at_lod2");
+    let (lost, lod2) = written(feature, "two_multisurfaces_at_lod2");
+    assert_eq!(lost, lost_before + 1);
+    assert_eq!(lod2, lod2_before + 1);
+}
+
+/// CityGML 3.0 has one closure surface class, which on a water body is
+/// CityJSON's `WaterClosureSurface`. Derived from PLATEAU's first water
+/// body: its LoD 1 surface, at LoD 2, as a water closure surface.
+#[test]
+fn a_water_closure_surface_reads_back_as_one() {
+    let (header, features) = oracle::read_seq(&data(
+        "../../../citygml2/tests/data/oracle/533945_wtr_6697_op.city.jsonl",
+    ));
+    let mut feature = features.into_iter().next().unwrap();
+    let id = feature["id"].as_str().unwrap().to_string();
+    let surface = feature["CityObjects"][&id]["geometry"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|g| g["type"] == "MultiSurface")
+        .unwrap();
+    let faces = surface["boundaries"].as_array().unwrap().len();
+    surface["lod"] = "2".into();
+    surface["semantics"] = serde_json::json!({
+        "surfaces": [{"type": "WaterClosureSurface"}],
+        "values": vec![0; faces],
+    });
+
+    let header: CityJSON = serde_json::from_value(header).unwrap();
+    let feature: CityJSONFeature = serde_json::from_value(feature).unwrap();
+    let out = scratch("water_closure_surface");
+    let report = write(
+        &header,
+        std::slice::from_ref(&feature),
+        &out,
+        BTreeMap::new(),
+    );
+    assert!(report.losses.is_empty(), "{:?}", report.losses);
+    let (_, after) = read(&out, &header.transform);
+    let types: Vec<Value> = after
+        .iter()
+        .flat_map(|f| f.city_objects.values())
+        .flat_map(|o| o.geometry.iter().flatten())
+        .flat_map(|g| {
+            json(g)["semantics"]["surfaces"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .map(|s| s["type"].clone())
+        .collect();
+    assert_eq!(types, ["WaterClosureSurface"]);
+}
+
+/// A curve beside a surface at one LoD is a geometry of another kind, and
+/// reads back as its own. Derived from 3DBAG's first building: a line along
+/// the first edge of its LoD 0 footprint, at LoD 0.
+#[test]
+fn a_curve_beside_a_surface_at_one_lod_reads_back() {
+    let (header, features) = oracle::read_seq(&data(
+        "../../../citygml2/tests/data/3dbag/delft_100.city.jsonl",
+    ));
+    let mut feature = features.into_iter().next().unwrap();
+    let id = feature["id"].as_str().unwrap().to_string();
+    let geometries = feature["CityObjects"][&id]["geometry"]
+        .as_array_mut()
+        .unwrap();
+    let ring = geometries
+        .iter()
+        .find(|g| g["lod"] == "0" && g["type"] == "MultiSurface")
+        .unwrap()["boundaries"][0][0]
+        .clone();
+    geometries.push(serde_json::json!({
+        "type": "MultiLineString",
+        "lod": "0",
+        "boundaries": [[ring[0], ring[1]]],
+    }));
+
+    let header: CityJSON = serde_json::from_value(header).unwrap();
+    let feature: CityJSONFeature = serde_json::from_value(feature).unwrap();
+    let out = scratch("curve_beside_surface");
+    write(
+        &header,
+        std::slice::from_ref(&feature),
+        &out,
+        BTreeMap::new(),
+    );
+    let (_, after) = read(&out, &header.transform);
+    let at_lod0: Vec<String> = after[0].city_objects[&id]
+        .geometry
+        .iter()
+        .flatten()
+        .map(json)
+        .filter(|g| g["lod"] == "0")
+        .map(|g| g["type"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(at_lod0, ["MultiSurface", "MultiLineString"]);
+}
+
+/// An object of an ADE class whose CityGML class is not known has a city
+/// object's boundary surfaces. Derived from 3DBAG's first building: its
+/// part, as an object of a class of an ADE whose schema is not at hand,
+/// and so cannot be validated.
+#[test]
+fn an_ade_object_of_unknown_class_keeps_its_boundary_surfaces() {
+    let (mut header, features) = oracle::read_seq(&data(
+        "../../../citygml2/tests/data/3dbag/delft_100.city.jsonl",
+    ));
+    header["extensions"] = serde_json::json!({
+        "Storage": {
+            "url": "https://example.org/storage.xsd",
+            "version": "1.0",
+            "xmlns": "https://example.org/storage/1.0",
+            "extraCityObjects": {"+Warehouse": {}}
+        }
+    });
+    let mut feature = features.into_iter().next().unwrap();
+    let id = feature["id"].as_str().unwrap().to_string();
+    let part = format!("{id}-0");
+    feature["CityObjects"][&part]["type"] = "+Warehouse".into();
+
+    let header: CityJSON = serde_json::from_value(header).unwrap();
+    let feature: CityJSONFeature = serde_json::from_value(feature).unwrap();
+    let out = scratch("ade_object_of_unknown_class");
+    let report = write_unvalidated(
+        &header,
+        std::slice::from_ref(&feature),
+        &out,
+        BTreeMap::new(),
+    );
+    assert!(
+        report
+            .losses
+            .iter()
+            .all(|(what, _)| !what.contains("surface")),
+        "{:?}",
+        report.losses
+    );
+    let (_, after) = read(&out, &header.transform);
+    let roofs = after
+        .iter()
+        .flat_map(|f| f.city_objects.iter())
+        .filter(|(id, _)| **id == part)
+        .flat_map(|(_, o)| o.geometry.iter().flatten())
+        .flat_map(|g| {
+            json(g)["semantics"]["surfaces"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|s| s["type"] == "RoofSurface")
+        .count();
+    assert!(roofs > 0);
 }
