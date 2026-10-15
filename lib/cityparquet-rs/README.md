@@ -241,7 +241,7 @@ cargo run -p cityparquet-cli -- compare A.city.jsonl B.city.jsonl
 ```
 
 Exit `0` and prints `equal` when semantically equal; exit `2` and prints up to
-20 differences otherwise. `--exclude-appearance` and `--exclude-instances`
+20 differences otherwise (every one with `--all`). `--exclude-appearance` and `--exclude-instances`
 skip appearance/`GeometryInstance` comparison, for a package whose sidecars
 were left out of the comparison on purpose. This is how a round-trip is
 proven: `convert` → `export` → `compare` against the source.

@@ -209,6 +209,10 @@ enum Commands {
         /// Exclude GeometryInstance geometries from comparison
         #[arg(long)]
         exclude_instances: bool,
+
+        /// Print every difference, not the first 20
+        #[arg(long)]
+        all: bool,
     },
 
     /// Write a STAC Collection (`collection.json`) over several packages'
@@ -892,6 +896,7 @@ fn main() -> std::process::ExitCode {
             b,
             exclude_appearance,
             exclude_instances,
+            all,
         } => {
             let opts = CompareOptions {
                 coord_tolerance: [0.0; 3],
@@ -913,15 +918,12 @@ fn main() -> std::process::ExitCode {
                         }
                         std::process::ExitCode::SUCCESS
                     } else {
-                        const MAX_PRINTED_DIFFERENCES: usize = 20;
-                        for diff in report.differences.iter().take(MAX_PRINTED_DIFFERENCES) {
+                        let printed = if all { usize::MAX } else { 20 };
+                        for diff in report.differences.iter().take(printed) {
                             println!("{diff}");
                         }
-                        if report.differences.len() > MAX_PRINTED_DIFFERENCES {
-                            println!(
-                                "... ({} more)",
-                                report.differences.len() - MAX_PRINTED_DIFFERENCES
-                            );
+                        if report.differences.len() > printed {
+                            println!("... ({} more)", report.differences.len() - printed);
                         }
                         std::process::ExitCode::from(2)
                     }

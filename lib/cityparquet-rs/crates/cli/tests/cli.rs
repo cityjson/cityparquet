@@ -430,6 +430,36 @@ fn compare_different_datasets_returns_exit_2_with_differences() {
     );
 }
 
+/// `--all` prints every difference, for a caller that must account for each.
+#[test]
+fn compare_all_prints_every_difference() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let run = |all: bool| {
+        let mut cmd = Command::new(binary);
+        cmd.arg("compare")
+            .arg(fixture("delft.city.jsonl"))
+            .arg(fixture("lod3_railway.city.json"));
+        if all {
+            cmd.arg("--all");
+        }
+        let output = cmd.output().expect("failed to run compare");
+        assert_eq!(output.status.code(), Some(2));
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let capped = run(false);
+    let more: usize = capped
+        .lines()
+        .last()
+        .and_then(|l| l.strip_prefix("... ("))
+        .and_then(|l| l.strip_suffix(" more)"))
+        .expect("the capped output ends with the '... (N more)' notice")
+        .parse()
+        .unwrap();
+    let all = run(true);
+    assert!(!all.contains("more)"), "--all prints no truncation notice");
+    assert_eq!(all.lines().count(), 20 + more);
+}
+
 #[test]
 fn export_and_compare_railway_with_exclusions() {
     let package_dir = tempfile::tempdir().unwrap();
