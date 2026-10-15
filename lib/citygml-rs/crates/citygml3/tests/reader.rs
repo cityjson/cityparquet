@@ -75,3 +75,22 @@ fn an_xal3_address_has_the_members_of_an_xal2_one() {
         })
     );
 }
+
+/// Each storey's MultiSurface holds three polygons of its own and three
+/// `xlink:href`s to polygons of a room's walls: the storey has all six
+/// faces, the xlinked ones untagged.
+#[test]
+fn a_storey_s_xlinked_surface_members_are_its_faces() {
+    let features = features("ogc/BuildingUnits_Storeys_xlink.gml");
+    let objects = features[0]["CityObjects"].as_object().unwrap();
+    for storey in ["storey1", "storey2"] {
+        let geometry = objects[storey]["geometry"].as_array().unwrap();
+        assert_eq!(geometry.len(), 1, "{storey}");
+        assert_eq!(geometry[0]["type"], "MultiSurface", "{storey}");
+        assert_eq!(
+            geometry[0]["boundaries"].as_array().unwrap().len(),
+            6,
+            "{storey}"
+        );
+    }
+}

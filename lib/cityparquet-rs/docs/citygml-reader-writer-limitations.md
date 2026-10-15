@@ -31,10 +31,12 @@ attribute names and types, addresses and appearance palettes
   `lodNGeometry` (dispatched by inner GML type, points and curves included),
   `lodNMultiCurve`, a transportation object's `lodNNetwork`, a building's
   `lod0FootPrint`/`lod0RoofEdge`, and a TIN's `gml:TriangulatedSurface`. Every
-  LoD the document spells, LoD 4 included. A shell member that is an
-  `xlink:href` to an identified `gml:CompositeSurface` or `gml:MultiSurface`
-  stands for all of that aggregate's polygons, and a nested object (a room)
-  resolves xlinks to polygons its parent defines.
+  LoD the document spells, LoD 4 included. A shell or MultiSurface member
+  that is an `xlink:href` is a face, in the orientation of any
+  `gml:OrientableSurface` around it; one to an identified
+  `gml:CompositeSurface` or `gml:MultiSurface` stands for all of that
+  aggregate's polygons, and a nested object (a storey, a room) resolves
+  xlinks to polygons its parent or the parent's other children define.
 - Semantic surfaces (`boundedBy`, `trafficArea`, `auxiliaryTrafficArea`)
   referenced inline or by `xlink:href`, with a Door or Window inside a wall's
   `opening` as that wall's child surface.
