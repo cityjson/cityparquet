@@ -170,6 +170,28 @@ fn same_features(name: &str, before: &[Value], after: &[Value]) {
     );
 }
 
+/// `before` and `after` hold each feature's materials and textures in the
+/// same order: a document read back numbers them as the first read did.
+fn same_palettes(name: &str, before: &[CityJSONFeature], after: &[CityJSONFeature]) {
+    let palettes = |fs: &[CityJSONFeature]| -> Vec<(Value, Value)> {
+        fs.iter()
+            .map(|f| {
+                let f = json(f);
+                (
+                    f["appearance"]["materials"].clone(),
+                    f["appearance"]["textures"].clone(),
+                )
+            })
+            .collect()
+    };
+    let (before, after) = (palettes(before), palettes(after));
+    let differing = before.iter().zip(&after).filter(|(b, a)| b != a).count();
+    assert_eq!(
+        differing, 0,
+        "{name}: features whose palettes are reordered"
+    );
+}
+
 /// The CityGML at `gml`, read, written and read again, says what it said
 /// the first time, losing nothing but what `lost` names.
 fn survives(gml: &str, lost: &[&str]) {
@@ -190,6 +212,7 @@ fn survives(gml: &str, lost: &[&str]) {
     let canonical_all =
         |fs: &[CityJSONFeature]| -> Vec<Value> { fs.iter().map(|f| canonical(&json(f))).collect() };
     same_features(gml, &canonical_all(&before), &canonical_all(&after));
+    same_palettes(gml, &before, &after);
     let templates = |h: &CityJSON| {
         canonical_templates(
             &json(&h.geometry_templates),

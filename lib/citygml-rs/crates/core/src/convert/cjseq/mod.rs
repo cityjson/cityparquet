@@ -192,7 +192,7 @@ fn emit(object: &GmlObject, my_id: &str, parent_id: Option<&str>, out: &mut Out<
     let thetype = CityObjectType::try_from(type_name).map_err(build_error)?;
     let mut co = CityObject::new(thetype);
     co.geographical_extent = object.extent;
-    co.geometry = Some(geometries);
+    co.geometry = (!geometries.is_empty()).then_some(geometries);
     let mut attrs = attributes(&object.attributes);
     ade_attributes(object, out.ade, &mut attrs)?;
     if !attrs.is_empty() {

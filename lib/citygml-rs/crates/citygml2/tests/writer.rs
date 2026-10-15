@@ -160,16 +160,43 @@ fn same_features(name: &str, before: &[Value], after: &[Value]) {
     );
 }
 
+/// `before` and `after` hold each feature's materials and textures in the
+/// same order: a document read back numbers them as the first read did.
+fn same_palettes(name: &str, before: &[CityJSONFeature], after: &[CityJSONFeature]) {
+    let palettes = |fs: &[CityJSONFeature]| -> Vec<(Value, Value)> {
+        fs.iter()
+            .map(|f| {
+                let f = json(f);
+                (
+                    f["appearance"]["materials"].clone(),
+                    f["appearance"]["textures"].clone(),
+                )
+            })
+            .collect()
+    };
+    let (before, after) = (palettes(before), palettes(after));
+    let differing = before.iter().zip(&after).filter(|(b, a)| b != a).count();
+    assert_eq!(
+        differing, 0,
+        "{name}: features whose palettes are reordered"
+    );
+}
+
 /// The CityGML at `gml`, read, written and read again, says what it said
 /// the first time, losing nothing but what `lost` names.
 fn survives(gml: &str, lost: &[&str]) {
+    survives_with(gml, lost, ade_schemas(&data(gml)));
+}
+
+/// [`survives`], the writer given the ADE schemas `schemas` names.
+fn survives_with(gml: &str, lost: &[&str], schemas: BTreeMap<String, String>) {
     let transform = Transform {
         scale: [1e-9, 1e-9, 1e-3],
         translate: [0.0; 3],
     };
     let (header, before) = read(&data(gml), &transform);
     let out = scratch(gml);
-    let report = write(&header, &before, &out, ade_schemas(&data(gml)));
+    let report = write(&header, &before, &out, schemas);
     assert!(
         unexpected(&report.losses, lost).is_empty(),
         "{gml}: {:?}",
@@ -180,6 +207,7 @@ fn survives(gml: &str, lost: &[&str]) {
     let canonical_all =
         |fs: &[CityJSONFeature]| -> Vec<Value> { fs.iter().map(|f| canonical(&json(f))).collect() };
     same_features(gml, &canonical_all(&before), &canonical_all(&after));
+    same_palettes(gml, &before, &after);
     let templates = |h: &CityJSON| {
         canonical_templates(
             &json(&h.geometry_templates),
@@ -227,6 +255,17 @@ fn plateau_water_bodies_survive_the_writer() {
 fn plateau_ade_objects_survive_the_writer() {
     survives("plateau/udx/urf/533946_urf_6697_08_op.gml", &[]);
     survives("plateau/udx/ubld/53394611_ubld_6697_op.gml", &[]);
+}
+
+#[test]
+fn plateau_ade_objects_survive_a_writer_told_no_schema() {
+    // A writer is told where an ADE's schema is only for the document's
+    // `xsi:schemaLocation`; what it nests where comes from the header.
+    survives_with(
+        "plateau/udx/ubld/53394611_ubld_6697_op.gml",
+        &[],
+        BTreeMap::new(),
+    );
 }
 
 #[test]
