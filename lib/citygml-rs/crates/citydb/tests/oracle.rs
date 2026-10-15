@@ -391,39 +391,31 @@ fn without_ade(v: Value) -> Value {
 
 /// The dataset `database` (loaded by `tests/setup-db.sh` from the
 /// citygml3 crate's `file`) reads as the citygml3 reader reads the file.
-/// See [`compare`] for `lost` and `xlinked`.
-fn reads_as_the_file(database: &str, file: &str, lost: &[Lost], xlinked: &[&str]) {
+/// `lost` is what the database does not keep (see [`Lost`]).
+fn reads_as_the_file(database: &str, file: &str, lost: &[Lost]) {
     compare(
         database,
         &format!("citygml3/tests/data/{file}"),
         Version::V3,
         lost,
-        xlinked,
     );
 }
 
 /// The dataset `database` (loaded by `tests/setup-db.sh` from the
 /// citygml2 crate's CityGML 2.0 `file`) reads as the citygml2 reader reads
 /// the file.
-fn reads_as_the_2_0_file(database: &str, file: &str, lost: &[Lost], xlinked: &[&str]) {
+fn reads_as_the_2_0_file(database: &str, file: &str, lost: &[Lost]) {
     compare(
         database,
         &format!("citygml2/tests/data/{file}"),
         Version::V2,
         lost,
-        xlinked,
     );
 }
 
 /// Compare the dataset `database` with what `file` (relative to the
 /// crates directory) reads as.
-///
-/// `xlinked` names the objects whose plain surface geometry has
-/// `gml:surfaceMember xlink:href` members: the file readers leave them
-/// out, and citydb-tool stores them resolved. Each such geometry from the
-/// database must hold every face the file reader reads and more, and is
-/// then compared no further.
-fn compare(database: &str, file: &str, version: Version, lost: &[Lost], xlinked: &[&str]) {
+fn compare(database: &str, file: &str, version: Version, lost: &[Lost]) {
     let Some(db) = common::database(database) else {
         return;
     };
@@ -479,30 +471,8 @@ fn compare(database: &str, file: &str, version: Version, lost: &[Lost], xlinked:
     );
     let mut differences = Vec::new();
     for (id, file_feature) in &expected {
-        let mut db_feature =
+        let db_feature =
             as_the_database_keeps(as_the_file_states(actual[id].clone(), file_feature));
-        for object in xlinked {
-            let (Some(ours), Some(theirs)) = (
-                db_feature["CityObjects"].get_mut(*object),
-                file_feature["CityObjects"].get(*object),
-            ) else {
-                continue;
-            };
-            let faces = |o: &Value| -> Vec<Value> {
-                o["geometry"][0]["boundaries"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default()
-            };
-            let (resolved, read) = (faces(ours), faces(theirs));
-            assert!(
-                resolved.len() > read.len() && read.iter().all(|f| resolved.contains(f)),
-                "{database}: {object}: the database holds {} faces, the file reader {}",
-                resolved.len(),
-                read.len()
-            );
-            ours["geometry"] = theirs["geometry"].clone();
-        }
         for d in diff(file_feature, &db_feature, 5) {
             differences.push(format!("{id}: {d}"));
         }
@@ -526,23 +496,17 @@ fn plateau_buildings() {
         "plateau3_bldg",
         "plateau/53394519_bldg_6697_op.gml",
         &[Lost::Textures],
-        &[],
     );
 }
 
 #[test]
 fn plateau_transportation() {
-    reads_as_the_file(
-        "plateau3_tran",
-        "plateau/53394529_tran_6697_op.gml",
-        &[],
-        &[],
-    );
+    reads_as_the_file("plateau3_tran", "plateau/53394529_tran_6697_op.gml", &[]);
 }
 
 #[test]
 fn plateau_vegetation() {
-    reads_as_the_file("plateau3_veg", "plateau/53394600_veg_6697_op.gml", &[], &[]);
+    reads_as_the_file("plateau3_veg", "plateau/53394600_veg_6697_op.gml", &[]);
 }
 
 #[test]
@@ -551,13 +515,12 @@ fn plateau_bridges() {
         "plateau3_brid",
         "plateau/53394610_brid_6697_op.gml",
         &[Lost::Textures],
-        &[],
     );
 }
 
 #[test]
 fn a_lod4_building_with_rooms_and_furniture() {
-    reads_as_the_file("lod4_building3", "lod4_building_v2.gml", &[], &[]);
+    reads_as_the_file("lod4_building3", "lod4_building_v2.gml", &[]);
 }
 
 #[test]
@@ -566,23 +529,17 @@ fn groups_and_implicit_geometries() {
         "railway_trees3",
         "railway_trees_fragment.gml",
         &[Lost::Textures],
-        &[],
     );
 }
 
 #[test]
 fn a_composite_solid() {
-    reads_as_the_file("b1_lod2", "b1_lod2_cs_w_sem.gml", &[], &[]);
+    reads_as_the_file("b1_lod2", "b1_lod2_cs_w_sem.gml", &[]);
 }
 
 #[test]
 fn storeys_and_building_units() {
-    reads_as_the_file(
-        "storeys",
-        "ogc/BuildingUnits_Storeys_xlink.gml",
-        &[],
-        &["storey1", "storey2"],
-    );
+    reads_as_the_file("storeys", "ogc/BuildingUnits_Storeys_xlink.gml", &[]);
 }
 
 #[test]
@@ -590,7 +547,6 @@ fn a_road_section_with_traffic_spaces() {
     reads_as_the_file(
         "carriageway",
         "ogc/citygml3_individual_section_1carriageway.gml",
-        &[],
         &[],
     );
 }
@@ -601,7 +557,6 @@ fn plateau_2_0_buildings() {
         "plateau_bldg",
         "plateau/udx/bldg/53394519_bldg_6697_op.gml",
         &[Lost::Textures, Lost::Ade],
-        &[],
     );
 }
 
@@ -611,7 +566,6 @@ fn plateau_2_0_bridges() {
         "plateau_brid",
         "plateau/udx/brid/53394610_brid_6697_op.gml",
         &[Lost::Textures, Lost::Ade],
-        &[],
     );
 }
 
@@ -621,7 +575,6 @@ fn plateau_2_0_city_furniture() {
         "plateau_frn",
         "plateau/udx/frn/53394631_frn_6697_op.gml",
         &[Lost::Textures, Lost::Ade],
-        &[],
     );
 }
 
@@ -631,7 +584,6 @@ fn plateau_2_0_transportation() {
         "plateau_tran",
         "plateau/udx/tran/53394529_tran_6697_op.gml",
         &[Lost::Ade],
-        &[],
     );
 }
 
@@ -641,13 +593,12 @@ fn plateau_2_0_vegetation() {
         "plateau_veg",
         "plateau/udx/veg/53394600_veg_6697_op.gml",
         &[Lost::Ade],
-        &[],
     );
 }
 
 #[test]
 fn a_2_0_lod4_building() {
-    reads_as_the_2_0_file("lod4_building", "lod4_building_v2.gml", &[], &[]);
+    reads_as_the_2_0_file("lod4_building", "lod4_building_v2.gml", &[]);
 }
 
 #[test]
@@ -656,7 +607,6 @@ fn groups_and_implicit_geometries_in_2_0() {
         "railway_trees",
         "railway_trees_fragment.gml",
         &[Lost::Textures],
-        &[],
     );
 }
 
@@ -782,7 +732,6 @@ fn plateau_2_0_water_bodies() {
         "plateau_wtr",
         "plateau/udx/wtr/533945_wtr_6697_op.gml",
         &[Lost::Ade],
-        &[],
     );
 }
 
@@ -803,6 +752,5 @@ fn the_railway_scene() {
         file,
         Version::V2,
         &[Lost::ImageNames, Lost::MaterialIds, Lost::Envelopes],
-        &[],
     );
 }
