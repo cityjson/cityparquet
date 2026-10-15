@@ -14,7 +14,8 @@
 //! - [`reader`]: the parts of reading a document both versions share;
 //! - [`vocabulary`]: CityGML class names and their CityJSON counterparts;
 //! - [`xsd`]: what an ADE's XML Schema says about its elements;
-//! - [`convert`]: the conversions out of the model.
+//! - [`convert`]: the conversions out of the model;
+//! - [`write`]: what both writers share: XML, GML geometry and xAL.
 
 pub mod convert;
 mod error;
@@ -23,6 +24,7 @@ pub mod model;
 pub mod reader;
 pub mod sniff;
 pub mod vocabulary;
+pub mod write;
 pub mod xml;
 pub mod xsd;
 

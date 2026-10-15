@@ -80,18 +80,39 @@ impl ToGml for CityJSONFeature {
     type Context = GmlContext;
 
     fn to_gml(&self, cx: &GmlContext) -> Result<GmlFeature> {
-        // An object's structural parent is its first parent in the feature:
-        // [`super`]'s conversion puts a group that references it after it.
+        // An object's structural parent is a parent in the feature that
+        // lists it among its children: one that is not a group if there is
+        // one, else a group that holds it.
+        let is_group = |p: &str| {
+            self.city_objects
+                .get(p)
+                .is_some_and(|co| String::from(co.thetype.clone()) == "CityObjectGroup")
+        };
+        let lists = |p: &str, id: &str| {
+            self.city_objects
+                .get(p)
+                .and_then(|co| co.children.as_ref())
+                .is_some_and(|c| c.iter().any(|c| c == id))
+        };
+        let mut unconfirmed = 0usize;
         let parent: HashMap<&str, &str> = self
             .city_objects
             .iter()
             .filter_map(|(id, co)| {
-                let p = co
-                    .parents
-                    .iter()
-                    .flatten()
-                    .find(|p| *p != id && self.city_objects.contains_key(p.as_str()))?;
-                Some((id.as_str(), p.as_str()))
+                let candidates = || {
+                    co.parents
+                        .iter()
+                        .flatten()
+                        .map(String::as_str)
+                        .filter(|p| *p != id && self.city_objects.contains_key(*p))
+                };
+                let p = candidates()
+                    .find(|p| !is_group(p) && lists(p, id))
+                    .or_else(|| candidates().find(|p| is_group(p) && lists(p, id)));
+                if p.is_none() && candidates().any(|p| !is_group(p)) {
+                    unconfirmed += 1;
+                }
+                Some((id.as_str(), p?))
             })
             .collect();
         let mut conv = Conv {
@@ -119,6 +140,10 @@ impl ToGml for CityJSONFeature {
                     .filter(|id| *id != self.id && !conv.parent.contains_key(id)),
             )
             .collect::<Vec<_>>();
+        for _ in 0..unconfirmed {
+            conv.losses
+                .note("parent links their parent does not list (written as top-level objects)");
+        }
         let mut objects = Vec::new();
         for id in roots {
             objects.extend(conv.object(self, id, 0)?.objects);
@@ -132,8 +157,8 @@ impl ToGml for CityJSONFeature {
 
 /// A document's geometry templates as the relative geometries
 /// `ImplicitGeometry`s place, coloured by the header `appearance` their
-/// material and texture values index. A template's semantics are left out:
-/// no class owns them.
+/// material and texture values index. A template's semantics are left out,
+/// and counted: no class owns them.
 pub fn templates_to_gml(
     templates: &GeometryTemplates,
     appearance: Option<&CjAppearance>,
@@ -488,6 +513,8 @@ impl<'a> Conv<'a> {
         let mut children = Vec::new();
         // Where each child that stayed itself landed in `children`.
         let mut child_at: HashMap<&str, usize> = HashMap::new();
+        // Where the children of each child that has no class here landed.
+        let mut hoisted_at: HashMap<&str, std::ops::Range<usize>> = HashMap::new();
         for cid in co.children.iter().flatten() {
             if self.parent.get(cid.as_str()) != Some(&id) {
                 continue;
@@ -495,6 +522,8 @@ impl<'a> Conv<'a> {
             let built = self.object(feature, cid, depth + 1)?;
             if built.own {
                 child_at.insert(cid, children.len());
+            } else {
+                hoisted_at.insert(cid, children.len()..children.len() + built.objects.len());
             }
             children.extend(built.objects);
         }
@@ -527,6 +556,12 @@ impl<'a> Conv<'a> {
             .iter()
             .flatten()
             .filter(|p| self.parent.get(id) != Some(&p.as_str()))
+            .filter(|p| {
+                feature
+                    .city_objects
+                    .get(p.as_str())
+                    .is_none_or(|g| String::from(g.thetype.clone()) == "CityObjectGroup")
+            })
             .map(|p| ncname(p).into_owned())
             .collect();
         let mut object = GmlObject {
@@ -570,14 +605,25 @@ impl<'a> Conv<'a> {
         if ty == "CityObjectGroup" {
             let roles = co.children_roles.as_deref().unwrap_or_default();
             for (i, cid) in co.children.iter().flatten().enumerate() {
+                let role = roles.get(i).cloned().flatten();
+                if let Some(range) = hoisted_at.get(cid.as_str()) {
+                    self.losses.note(
+                        "group members that have no class here (their children are members \
+                         instead)",
+                    );
+                    for k in range.clone() {
+                        object.members.push(GroupMember {
+                            target: MemberTarget::Child(k),
+                            role: role.clone(),
+                        });
+                    }
+                    continue;
+                }
                 let target = match child_at.get(cid.as_str()) {
                     Some(&k) => MemberTarget::Child(k),
                     None => MemberTarget::Id(ncname(cid).into_owned()),
                 };
-                object.members.push(GroupMember {
-                    target,
-                    role: roles.get(i).cloned().flatten(),
-                });
+                object.members.push(GroupMember { target, role });
             }
         } else {
             let elsewhere = co
@@ -656,14 +702,9 @@ impl<'a> Conv<'a> {
                 None => self.vocabulary.property(&class.name, key),
             };
             if let Some(property) = property
-                && let Some(values) = fit(&property, value)
+                && let Some(attributes) = self.property(&property, value)
             {
-                object
-                    .attributes
-                    .extend(values.into_iter().map(|value| Attribute {
-                        name: AttributeName::Property(property.qname()),
-                        value,
-                    }));
+                object.attributes.extend(attributes);
                 continue;
             }
             if let Some(ns) = own_ade {
@@ -674,6 +715,31 @@ impl<'a> Conv<'a> {
             object.attributes.extend(self.generic(key, value, 0)?);
         }
         Ok(())
+    }
+
+    /// An attribute as `property`, or `None`, counted, when its value does
+    /// not fit the property and it is written as a generic attribute
+    /// instead. A date given as a midnight `xs:dateTime` is written as the
+    /// `xs:date` it is, and counted, since it reads back as the date.
+    fn property(&mut self, property: &Property, value: &Json) -> Option<Vec<Attribute>> {
+        let Some(values) = fit(property, value) else {
+            self.losses.note(NOT_FITTING);
+            return None;
+        };
+        if matches!(property.kind, PropertyKind::Date)
+            && value.as_str().is_some_and(|s| !is_date(s))
+        {
+            self.losses.note("dates given with their midnight time");
+        }
+        Some(
+            values
+                .into_iter()
+                .map(|value| Attribute {
+                    name: AttributeName::Property(property.qname()),
+                    value,
+                })
+                .collect(),
+        )
     }
 
     /// An attribute that is no property of the class: one generic attribute,
@@ -749,8 +815,12 @@ impl<'a> Conv<'a> {
                     } else if key == "$" {
                         text = scalar_text(v);
                     } else {
-                        let child = self.child_name(key, &name.ns);
-                        children.extend(self.xml_nodes(child, v, depth + 1)?);
+                        match self.child_name(key, &name.ns) {
+                            Some(child) => children.extend(self.xml_nodes(child, v, depth + 1)?),
+                            None => self
+                                .losses
+                                .note("Extension members named by a prefix no Extension declares"),
+                        }
                     }
                 }
                 if text.is_some() && !children.is_empty() {
@@ -797,19 +867,20 @@ impl<'a> Conv<'a> {
 
     /// The element a key inside an Extension attribute names: `local` in
     /// its parent's namespace, `prefix:local` in the namespace the prefix
-    /// names, or `{uri}local`.
-    fn child_name(&self, key: &str, parent: &Namespace) -> QName {
+    /// names, or `{uri}local`; `None` for a prefix no Extension names.
+    fn child_name(&self, key: &str, parent: &Namespace) -> Option<QName> {
         if let Some(rest) = key.strip_prefix('{')
             && let Some((uri, local)) = rest.split_once('}')
         {
-            return QName::new(Namespace::Other(uri.to_string()), local);
+            return Some(QName::new(Namespace::Other(uri.to_string()), local));
         }
-        if let Some((prefix, local)) = key.split_once(':')
-            && let Some(ns) = self.extensions.prefixed(prefix)
-        {
-            return QName::new(ns, local);
+        match key.split_once(':') {
+            Some((prefix, local)) => self
+                .extensions
+                .prefixed(prefix)
+                .map(|ns| QName::new(ns, local)),
+            None => Some(QName::new(parent.clone(), key)),
         }
-        QName::new(parent.clone(), key)
     }
 
     fn address(&mut self, a: &CityObjectAddress) -> Result<Address> {
@@ -895,8 +966,13 @@ impl<'a> Conv<'a> {
         }
         let (lod, mut shape, semantics, materials, textures) = match g {
             CjGeometry::MultiPoint {
-                lod, boundaries, ..
+                lod,
+                boundaries,
+                semantics,
             } => {
+                if semantics.is_some() {
+                    self.losses.note("semantic surfaces of points and lines");
+                }
                 let points = boundaries
                     .iter()
                     .map(|&i| self.pool.get(i))
@@ -907,8 +983,13 @@ impl<'a> Conv<'a> {
                 }));
             }
             CjGeometry::MultiLineString {
-                lod, boundaries, ..
+                lod,
+                boundaries,
+                semantics,
             } => {
+                if semantics.is_some() {
+                    self.losses.note("semantic surfaces of points and lines");
+                }
                 let lines = boundaries
                     .iter()
                     .map(|l| l.iter().map(|&i| self.pool.get(i)).collect())
@@ -1193,12 +1274,9 @@ impl<'a> Conv<'a> {
                 self.losses
                     .note("Extension attributes of semantic surfaces");
             } else if let Some(property) = self.vocabulary.property(class, key)
-                && let Some(values) = fit(&property, value)
+                && let Some(attributes) = self.property(&property, value)
             {
-                out.extend(values.into_iter().map(|value| Attribute {
-                    name: AttributeName::Property(property.qname()),
-                    value,
-                }));
+                out.extend(attributes);
             } else {
                 out.extend(self.generic(key, value, 0)?);
             }
@@ -1308,6 +1386,12 @@ fn faces_mut(shape: &mut Shape) -> Vec<&mut Face> {
     }
 }
 
+/// The loss noted for an attribute named after a property of its class
+/// whose value the property cannot hold: it is written as a generic
+/// attribute, so it reads back as an attribute of the same name and value,
+/// but the CityGML says something else.
+const NOT_FITTING: &str = "attributes written as generic attributes because their value does not fit the property of that name";
+
 /// The values a property is written with, or `None` when `value` does not
 /// fit it and is written as a generic attribute instead.
 fn fit(property: &Property, value: &Json) -> Option<Vec<Value>> {
@@ -1330,8 +1414,12 @@ fn fit(property: &Property, value: &Json) -> Option<Vec<Value>> {
 fn fit_scalar(kind: PropertyKind, value: &Json) -> Option<Value> {
     match (kind, value) {
         (PropertyKind::Text, Json::String(s)) => Some(Value::String(s.clone())),
-        (PropertyKind::Date, Json::String(s)) if is_date(s) => Some(Value::String(s.clone())),
+        (PropertyKind::Text, Json::Number(n)) => Some(Value::String(n.to_string())),
+        (PropertyKind::Date, Json::String(s)) => date(s).map(Value::String),
         (PropertyKind::Year, Json::String(s)) if is_year(s) => Some(Value::String(s.clone())),
+        (PropertyKind::Year, Json::Number(n)) => {
+            n.as_u64().map(|y| Value::String(format!("{y:04}")))
+        }
         (PropertyKind::Integer { non_negative }, Json::Number(n)) => n
             .as_i64()
             .filter(|i| !non_negative || *i >= 0)
@@ -1343,6 +1431,21 @@ fn fit_scalar(kind: PropertyKind, value: &Json) -> Option<Value> {
         }
         _ => None,
     }
+}
+
+/// `s` as an `xs:date`: itself when it is one, or the date of an
+/// `xs:dateTime` at midnight (`2024-03-15T00:00:00Z`), which says no more;
+/// `None` for anything else.
+fn date(s: &str) -> Option<String> {
+    if is_date(s) {
+        return Some(s.to_string());
+    }
+    let (body, zone) = split_zone(s);
+    let (day, time) = body.split_once('T')?;
+    let midnight = time
+        .strip_prefix("00:00:00")
+        .is_some_and(|rest| rest.is_empty() || rest.trim_start_matches(['.', '0']).is_empty());
+    (midnight && is_date(day)).then(|| format!("{day}{zone}"))
 }
 
 /// `xs:date`: `YYYY-MM-DD`, with an optional time zone.
@@ -1369,7 +1472,7 @@ fn split_zone(s: &str) -> (&str, &str) {
     if let Some(body) = s.strip_suffix('Z') {
         return (body, "Z");
     }
-    if s.len() > 6 {
+    if s.len() > 6 && s.is_char_boundary(s.len() - 6) {
         let (body, zone) = s.split_at(s.len() - 6);
         let z = zone.as_bytes();
         if (z[0] == b'+' || z[0] == b'-') && z[3] == b':' {

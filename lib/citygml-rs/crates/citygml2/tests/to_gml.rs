@@ -255,7 +255,8 @@ fn same_foreign(path: &str, lost: &[&str]) {
     assert_eq!(before.len(), after.len(), "{path}: feature count");
     let mut differences = Vec::new();
     for (b, a) in before.iter().zip(&after) {
-        for d in diff(&canonical(&without_nulls(without_implied(b.clone()))), a, 5) {
+        let b = with_plain_dates(without_nulls(without_implied(b.clone())));
+        for d in diff(&canonical(&b), a, 5) {
             differences.push(format!("{}: {d}", b["id"]));
         }
     }
@@ -278,6 +279,23 @@ fn without_nulls(mut feature: Value) -> Value {
     feature
 }
 
+/// `feature` with its creation and termination dates given as midnight
+/// `xs:dateTime`s (as citygml-tools writes them) cut to the `xs:date` the
+/// CityGML property holds.
+fn with_plain_dates(mut feature: Value) -> Value {
+    for co in feature["CityObjects"].as_object_mut().unwrap().values_mut() {
+        let Some(attributes) = co.get_mut("attributes").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        for key in ["creationDate", "terminationDate"] {
+            if let Some(Value::String(s)) = attributes.get_mut(key) {
+                *s = s.replacen("T00:00:00", "", 1);
+            }
+        }
+    }
+    feature
+}
+
 #[test]
 fn citygml_tools_cityjson_survives_the_model() {
     for file in [
@@ -289,7 +307,10 @@ fn citygml_tools_cityjson_survives_the_model() {
         "53394631_frn_6697_op",
         "plateau_trk_fragment",
     ] {
-        same_foreign(&format!("oracle/{file}.city.jsonl"), &[]);
+        same_foreign(
+            &format!("oracle/{file}.city.jsonl"),
+            &["dates given with their midnight time"],
+        );
     }
 }
 
