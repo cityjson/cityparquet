@@ -65,8 +65,9 @@ impl XlinkBudget {
 pub struct ObjectBuilder {
     id: Option<String>,
     class: QName,
-    /// Standalone `lodN{MultiSurface,Geometry}` surfaces, one list per LoD.
-    plain_surfaces: Vec<(String, Vec<Polygon>)>,
+    /// Standalone `lodN{MultiSurface,Geometry}` surfaces, one list per LoD:
+    /// inline polygons and `xlink:href` members.
+    plain_surfaces: Vec<(String, Vec<SurfaceRef>)>,
     /// Geometry that references nothing, so needs no resolution: points,
     /// lines and TINs.
     direct: Vec<Geometry>,
@@ -164,26 +165,33 @@ impl ObjectBuilder {
                 self.polygons.insert(id.clone(), poly.clone());
             }
         }
-        self.plain_surfaces.push((lod, polys));
+        self.plain_surfaces
+            .push((lod, polys.into_iter().map(inline).collect()));
     }
 
     /// Record a standalone surface collection at `lod` (`lodNMultiSurface`,
     /// `lod0FootPrint`): its identified polygons and aggregates become xlink
-    /// targets, and its polygons a MultiSurface unless the LoD has a solid
-    /// or boundary-surface geometry (see [`Self::finish`]).
+    /// targets, and its polygons and `xlink:href` members a MultiSurface
+    /// unless the LoD has a solid or boundary-surface geometry (see
+    /// [`Self::finish`]).
     pub fn add_surfaces(&mut self, lod: String, collected: Collected) {
-        let polys: Vec<Polygon> = self
+        let xlinks = collected.xlinks.clone();
+        let mut refs: Vec<SurfaceRef> = self
             .absorb(collected)
             .into_iter()
             .map(|(id, poly)| {
                 if let Some(id) = id {
                     self.polygons.insert(id, poly.clone());
                 }
-                poly
+                inline(poly)
             })
             .collect();
-        if !polys.is_empty() {
-            self.plain_surfaces.push((lod, polys));
+        refs.extend(xlinks.into_iter().map(|Xlink { id, reverse }| SurfaceRef {
+            reverse,
+            target: RefTarget::Xlink(id),
+        }));
+        if !refs.is_empty() {
+            self.plain_surfaces.push((lod, refs));
         }
     }
 
@@ -413,15 +421,18 @@ impl ObjectBuilder {
             .map(|(_, lod, _)| lod)
             .chain(self.boundary_refs.iter().map(|(_, lod, _)| lod))
             .collect();
-        for (lod, polys) in &self.plain_surfaces {
+        for (lod, refs) in &self.plain_surfaces {
             if semantic_lods.contains(lod) || self.solids.iter().any(|(l, _)| l == lod) {
                 continue;
             }
-            let faces = polys.iter().map(|p| plain_face(p, None)).collect();
-            geometries.push(Geometry {
-                lod: lod.clone(),
-                shape: Shape::MultiSurface(faces),
-            });
+            let faces = self.plain_faces(refs, budget, &mut HashSet::new())?;
+            // A LoD whose members were all unresolved xlinks has no face.
+            if !faces.is_empty() {
+                geometries.push(Geometry {
+                    lod: lod.clone(),
+                    shape: Shape::MultiSurface(faces),
+                });
+            }
         }
         // Each LoD whose geometry lives only in boundary surfaces (no solid
         // at that LoD) gets one MultiSurface. Where a solid exists, the
@@ -512,9 +523,18 @@ impl ObjectBuilder {
             AggregateMember::Polygon(_) => None,
         });
         let boundary_refs = self.boundary_refs.iter().map(|(_, _, xlink)| &xlink.id);
+        let plain_refs = self
+            .plain_surfaces
+            .iter()
+            .flat_map(|(_, refs)| refs)
+            .filter_map(|sref| match &sref.target {
+                RefTarget::Xlink(id) => Some(id),
+                RefTarget::Inline(_) => None,
+            });
         let mut pending: Vec<String> = solid_refs
             .chain(member_refs)
             .chain(boundary_refs)
+            .chain(plain_refs)
             .cloned()
             .collect();
         while let Some(id) = pending.pop() {
@@ -609,13 +629,13 @@ impl ObjectBuilder {
         let mut faces = Vec::new();
         // A polygon referenced more than once (two boundary surfaces xlinking
         // one id) is one face.
-        let mut emitted: HashSet<&str> = HashSet::new();
+        let mut emitted: HashSet<String> = HashSet::new();
         for (surface, poly_lod, poly) in &self.boundary_polys {
             if poly_lod != lod {
                 continue;
             }
-            if let Some(id) = poly.id.as_deref()
-                && !emitted.insert(id)
+            if let Some(id) = &poly.id
+                && !emitted.insert(id.clone())
             {
                 continue;
             }
@@ -625,7 +645,7 @@ impl ObjectBuilder {
             if ref_lod != lod {
                 continue;
             }
-            if !emitted.insert(href) {
+            if !emitted.insert(href.clone()) {
                 continue;
             }
             let polys = self.xlink_polygons(href, budget)?;
@@ -645,17 +665,54 @@ impl ObjectBuilder {
         }
         // A standalone face no boundary surface holds would otherwise vanish:
         // one LoD yields one geometry.
-        for (plain_lod, polys) in &self.plain_surfaces {
-            if plain_lod != lod {
-                continue;
+        for (plain_lod, refs) in &self.plain_surfaces {
+            if plain_lod == lod {
+                faces.extend(self.plain_faces(refs, budget, &mut emitted)?);
             }
-            for poly in polys {
-                if let Some(id) = poly.id.as_deref()
-                    && !emitted.insert(id)
-                {
-                    continue;
+        }
+        Ok(faces)
+    }
+
+    /// The faces of standalone surface members, each inline polygon as it
+    /// is and each `xlink:href` resolved, in its orientation; none twice by
+    /// id, counting `emitted`. An xlink that resolves to no polygon is
+    /// skipped with a warning.
+    fn plain_faces(
+        &self,
+        refs: &[SurfaceRef],
+        budget: &XlinkBudget,
+        emitted: &mut HashSet<String>,
+    ) -> Result<Vec<Face>> {
+        let mut faces = Vec::with_capacity(refs.len());
+        for sref in refs {
+            match &sref.target {
+                RefTarget::Inline(poly) => {
+                    if let Some(id) = &poly.id
+                        && !emitted.insert(id.clone())
+                    {
+                        continue;
+                    }
+                    faces.push(Face {
+                        reversed: sref.reverse,
+                        ..plain_face(poly, None)
+                    });
                 }
-                faces.push(plain_face(poly, None));
+                RefTarget::Xlink(href) => {
+                    if !emitted.insert(href.clone()) {
+                        continue;
+                    }
+                    let polys = self.xlink_polygons(href, budget)?;
+                    if polys.is_empty() {
+                        eprintln!(
+                            "warning: a surface of {} references #{href}, which resolves to no polygon in this object; skipping",
+                            self.describe()
+                        );
+                    }
+                    faces.extend(polys.iter().map(|poly| Face {
+                        reversed: sref.reverse,
+                        ..plain_face(poly, None)
+                    }));
+                }
             }
         }
         Ok(faces)
@@ -788,6 +845,14 @@ impl ObjectBuilder {
                 ))
             }),
         }
+    }
+}
+
+/// An inline polygon as a surface member, in its own orientation.
+fn inline(poly: Polygon) -> SurfaceRef {
+    SurfaceRef {
+        reverse: false,
+        target: RefTarget::Inline(poly),
     }
 }
 
