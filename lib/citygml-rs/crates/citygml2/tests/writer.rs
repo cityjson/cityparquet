@@ -160,8 +160,9 @@ fn same_features(name: &str, before: &[Value], after: &[Value]) {
     );
 }
 
-/// `before` and `after` hold each feature's materials and textures in the
-/// same order: a document read back numbers them as the first read did.
+/// `before` and `after` hold each feature's materials, textures and texture
+/// vertices in the same order: a document read back numbers them as the
+/// first read did.
 fn same_palettes(name: &str, before: &[CityJSONFeature], after: &[CityJSONFeature]) {
     let palettes = |fs: &[CityJSONFeature]| -> Vec<(Value, Value)> {
         fs.iter()
@@ -169,7 +170,10 @@ fn same_palettes(name: &str, before: &[CityJSONFeature], after: &[CityJSONFeatur
                 let f = json(f);
                 (
                     f["appearance"]["materials"].clone(),
-                    f["appearance"]["textures"].clone(),
+                    serde_json::json!([
+                        f["appearance"]["textures"],
+                        f["appearance"]["vertices-texture"]
+                    ]),
                 )
             })
             .collect()
@@ -219,6 +223,11 @@ fn survives_with(gml: &str, lost: &[&str], schemas: BTreeMap<String, String>) {
         templates(&header_again),
         "{gml}: templates"
     );
+}
+
+#[test]
+fn railway_textures_survive_the_writer() {
+    survives("railway_textures_fragment.gml", &[]);
 }
 
 #[test]

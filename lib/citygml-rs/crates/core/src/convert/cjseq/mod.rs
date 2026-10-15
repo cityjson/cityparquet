@@ -958,7 +958,9 @@ fn material_values<V>(values: V) -> MaterialReference<V> {
 /// `texture`. A ring no texture of a theme covers is `[null]`; a theme that
 /// covers no ring of a geometry is left off it. A face reached through a
 /// reversed `gml:OrientableSurface` has its rings wound backwards, and its UVs
-/// are reversed with them.
+/// are reversed with them. UVs are numbered as the geometries' rings meet
+/// them, not as the document lists its targets, so a document written from
+/// the CityJSON and read back numbers them the same.
 fn apply_textures(
     object: &GmlObject,
     geometries: &mut [CjGeometry],
@@ -967,7 +969,7 @@ fn apply_textures(
     if object.appearance.textures.is_empty() {
         return Ok(());
     }
-    type RingMap<'a> = HashMap<&'a str, (TextureIndex, Vec<UvIndex>)>;
+    type RingMap<'a> = HashMap<&'a str, (TextureIndex, &'a [[f64; 2]])>;
     let mut themes: Vec<&str> = Vec::new();
     let mut by_theme: HashMap<&str, RingMap> = HashMap::new();
     for t in &object.appearance.textures {
@@ -977,10 +979,10 @@ fn apply_textures(
         }
         let rings = by_theme.entry(&t.theme).or_default();
         for (ring_id, uvs) in &t.rings {
-            let uvs = uvs.iter().map(|&uv| palettes.intern_uv(uv)).collect();
             rings.insert(ring_id, (idx, uvs));
         }
     }
+    let palettes = std::cell::RefCell::new(palettes);
     for (g, cj) in object.geometries.iter().zip(geometries.iter_mut()) {
         let mut covering: Vec<(&str, &RingMap)> = Vec::new();
         for theme in &themes {
@@ -1011,10 +1013,11 @@ fn apply_textures(
                                 id.as_deref().unwrap_or_default()
                             )));
                         }
+                        let mut palettes = palettes.borrow_mut();
                         let uvs = if f.reversed {
-                            uvs.iter().rev().copied().collect()
+                            uvs.iter().rev().map(|&uv| palettes.intern_uv(uv)).collect()
                         } else {
-                            uvs.clone()
+                            uvs.iter().map(|&uv| palettes.intern_uv(uv)).collect()
                         };
                         Ok(TexturedRing::Textured {
                             texture: *texture,
