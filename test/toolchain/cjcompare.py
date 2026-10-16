@@ -22,12 +22,16 @@ Everything is compared as a model, never as a document:
 - a ring's closing repeat is stripped and its start is rotated to the
   other side's start, because neither is part of the model; a reversed
   ring is still a difference;
+- a surface's faces are compared in order, unless `--any-face-order` pairs
+  them by geometry first (for a writer known to reorder them; a moved face
+  is then `noted`);
 - semantic surfaces, materials and textures are resolved per face (per ring
   for textures) to the objects they point at, so palette order and ids are
   irrelevant, and CityJSON's shorthands (a `null` for a whole shell, a
   material `value` for a whole geometry) are expanded first;
 - a GeometryInstance is compared as its template's geometry plus the
-  transformation matrix and the reference point.
+  transformation matrix and the reference point; a reference point moved
+  into the matrix's translation, the placement unchanged, is `noted`.
 
 Each difference is classified. `fail` is a loss or a change. `admitted` is a
 loss the specification allows: a row of the round-trip table
@@ -45,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import itertools
 import json
 import math
 import os
@@ -540,12 +545,18 @@ class Tally:
         self.admitted = Counter()
         self.noted = Counter()
         self.examples: dict[str, list[str]] = defaultdict(list)
+        # Every failure, for a caller that must explain each one.
+        self.failures: list[str] = []
+        # Whether a surface's faces may come back in another order.
+        self.any_face_order = False
         self.max_dev = 0.0
         self.max_uv_dev = 0.0
 
     def record(self, status: str, cat: str, msg: str, limit: int = 8) -> None:
         getattr(self, status)[cat] += 1
         key = f"{status}:{cat}"
+        if status == "fail":
+            self.failures.append(f"{key}: {msg}")
         if len(self.examples[key]) < limit:
             self.examples[key].append(msg)
 
@@ -647,6 +658,55 @@ def _widened(a: Any, b: Any) -> str:
     return "ne"
 
 
+def _in_source_order(fa: list[Face], fb: list[Face], tol: list[float]) -> tuple[list[Face], int]:
+    """fb's faces put in fa's order, each paired with the face of the same
+    shell path, ring count and exterior ring (up to its start), and how many
+    moved. A face with no such partner keeps a position left over, so that
+    the positional comparison still reports it."""
+    cell = [1000 * x for x in tol]
+
+    def bucket(f: Face) -> tuple:
+        ring = f.rings[0]
+        centre = [sum(p[0][a] for p in ring) / max(len(ring), 1) for a in range(3)]
+        return (f.path, len(f.rings), len(ring), *(math.floor(c / w) for c, w in zip(centre, cell)))
+
+    index: dict[tuple, list[int]] = defaultdict(list)
+    for j, f in enumerate(fb):
+        index[bucket(f)].append(j)
+    used = [False] * len(fb)
+    pairs: list[int | None] = []
+    for i, a in enumerate(fa):
+        if (
+            i < len(fb)
+            and not used[i]
+            and a.path == fb[i].path
+            and len(a.rings) == len(fb[i].rings)
+            and _align(a.rings[0], fb[i].rings[0], tol)[0] is not None
+            and values_equal(a.semantic, fb[i].semantic) == "eq"
+        ):
+            used[i] = True
+            pairs.append(i)
+            continue
+        # Of the faces with this geometry (a surface may repeat one), the
+        # first with the same semantic surface, else the first.
+        key = bucket(a)
+        candidates = [
+            j
+            for d in itertools.product((-1, 0, 1), repeat=3)
+            for j in index.get((*key[:3], *(k + o for k, o in zip(key[3:], d))), ())
+            if not used[j] and _align(a.rings[0], fb[j].rings[0], tol)[0] is not None
+        ]
+        found = next((j for j in candidates if values_equal(a.semantic, fb[j].semantic) == "eq"), None)
+        if found is None and candidates:
+            found = candidates[0]
+        if found is not None:
+            used[found] = True
+        pairs.append(found)
+    left = iter(j for j in range(len(fb)) if not used[j])
+    order = [j if j is not None else next(left) for j in pairs]
+    return [fb[j] for j in order], sum(1 for i, j in enumerate(order) if i != j)
+
+
 def compare_faces(
     oid: str, key: str, fa: list[Face], fb: list[Face], tol: list[float], uv_tol: float, t: Tally
 ) -> dict[str, bool]:
@@ -682,6 +742,10 @@ def compare_faces(
         t.record("fail", "geometry", f"{oid} {key}: {len(fa)} faces in the source, {len(fb)} in the output")
         bad["geometry"] = True
         return bad
+    if t.any_face_order:
+        fb, moved = _in_source_order(fa, fb, tol)
+        if moved:
+            t.record("noted", "geometry", f"{oid} {key}: {moved} of {len(fa)} faces in another order")
     for i, (a, b) in enumerate(zip(fa, fb)):
         if a.path != b.path:
             t.record("fail", "geometry", f"{oid} {key} face {i}: shell path {a.path} vs {b.path}")
@@ -760,11 +824,25 @@ def compare_geom(oid: str, ga: Geom, gb: Geom, tol: list[float], uv_tol: float, 
         ia, ib = ga.instance, gb.instance
         inner = compare_geom(oid + " template", ia["template"], ib["template"], TEMPLATE_TOL, uv_tol, t)
         ok = not any(inner.values())
-        if not all(math.isclose(x, y, rel_tol=1e-9, abs_tol=1e-9) for x, y in zip(ia["matrix"], ib["matrix"])) or len(ia["matrix"]) != len(ib["matrix"]):
-            t.record("fail", "templates", f"{oid}: transformation matrix {ia['matrix']} vs {ib['matrix']}")
-            ok = False
-        if not _close(ia["point"], ib["point"], tol):
-            t.record("fail", "templates", f"{oid}: reference point {ia['point']} vs {ib['point']}")
+        same = lambda x, y: math.isclose(x, y, rel_tol=1e-9, abs_tol=1e-9)
+        ma, mb = ia["matrix"], ib["matrix"]
+        matrix_equal = len(ma) == len(mb) and all(same(x, y) for x, y in zip(ma, mb))
+        if matrix_equal and _close(ia["point"], ib["point"], tol):
+            pass
+        elif (
+            len(ma) == len(mb) == 16
+            and all(same(ma[i], mb[i]) for i in range(16) if i not in (3, 7, 11))
+            and _close(*(tuple(p + m[i] for p, i in zip(inst["point"], (3, 7, 11))) for inst, m in ((ia, ma), (ib, mb))), tol)
+        ):
+            # The same placement: the reference point plus the matrix's
+            # translation is where the template's origin lands, however the
+            # two are split.
+            t.record("noted", "templates", f"{oid}: the same placement, reference point {ia['point']} vs {ib['point']} with the difference in the matrix's translation")
+        else:
+            if not matrix_equal:
+                t.record("fail", "templates", f"{oid}: transformation matrix {ma} vs {mb}")
+            if not _close(ia["point"], ib["point"], tol):
+                t.record("fail", "templates", f"{oid}: reference point {ia['point']} vs {ib['point']}")
             ok = False
         if not ok:
             if any(inner.values()):
@@ -800,10 +878,12 @@ def compare(
     tol: float | list[float] | None = None,
     uv_tol: float = 1e-9,
     pair_unmatched: bool = False,
+    any_face_order: bool = False,
 ) -> dict:
     a = load(source)
     b = load(output)
     t = Tally()
+    t.any_face_order = any_face_order
     if pair_unmatched:
         _pair_unmatched(a, b, t)
     if tol is None:
@@ -999,6 +1079,7 @@ def compare(
         "metadata": meta,
         "categories": categories,
         "examples": {k: v for k, v in t.examples.items()},
+        "failures": t.failures,
         "ok": not any(t.fail.values()),
     }
 
@@ -1063,13 +1144,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--uv-tol", type=float, default=1e-9)
     p.add_argument("--json", help="write the full report here")
     p.add_argument("--pair-unmatched", action="store_true", help="pair objects found on one side only by type and position (CityGML without gml:id)")
+    p.add_argument("--any-face-order", action="store_true", help="pair a surface's faces by their geometry, not their position (a writer that reorders them)")
     args = p.parse_args(argv)
     tol = None
     if args.tol:
         parts = [float(x) for x in args.tol.split(",")]
         tol = parts[0] if len(parts) == 1 else parts
     try:
-        rep = compare(args.source, args.output, tol, args.uv_tol, args.pair_unmatched)
+        rep = compare(args.source, args.output, tol, args.uv_tol, args.pair_unmatched, args.any_face_order)
     except (OSError, ValueError, KeyError, IndexError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

@@ -41,5 +41,9 @@ pub mod visit;
 pub mod wkb_read;
 pub mod wkb_write;
 
+/// The 3DCityDB v5 reader, whose [`citydb::Config`] [`source::Source::open_citydb`]
+/// takes.
+#[cfg(feature = "citydb")]
+pub use citygml_citydb as citydb;
 pub use cityparquet_schema::{self as schema, CityParquetError, Result};
 pub use cjseq;

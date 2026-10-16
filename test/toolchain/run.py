@@ -4,11 +4,13 @@
         test/toolchain/run.py fetch  [--profile quick]
     uv run ... test/toolchain/run.py run    [--profile quick] [--only ID,...] [--keep]
     uv run ... test/toolchain/run.py report RUN_DIR
+    uv run ... test/toolchain/run.py citydb [--only ID,...] [--keep]
 
 `fetch` downloads the corpus (corpus.toml) and checks every byte. `run`
 pushes each dataset through every tool chain, compares everything that comes
 back with the source, and writes `results.jsonl` and `report.md` into a new
-run directory. `report` rewrites the report from a run's results.
+run directory. `report` rewrites the report from a run's results. `citydb`
+loads sources into 3DCityDB v5 and reads them back (citydb.py).
 
 The tools come from the environment, each with a default in this tree:
 
@@ -79,6 +81,11 @@ class Tools:
 def load_corpus() -> list[dict]:
     with open(HERE / "corpus.toml", "rb") as f:
         return tomllib.load(f)["dataset"]
+
+
+def load_citydb() -> list[dict]:
+    with open(HERE / "corpus.toml", "rb") as f:
+        return tomllib.load(f).get("citydb", [])
 
 
 def load_known() -> list[dict]:
@@ -205,11 +212,12 @@ class Run:
         self.results = open(out / "results.jsonl", "a", encoding="utf-8")
         self.env = dict(os.environ, CITYJSON_EXTENSION=str(tools.cityjson_ext), THREE_D_EXTENSION=str(tools.three_d_ext))
 
-    def record(self, ds: dict, step: str, status: str, detail: str = "", **extra) -> dict:
+    def record(self, ds: dict, step: str, status: str, detail: str = "", failures: list[str] | None = None, **extra) -> dict:
         if status == "fail":
             # Known only when every failure line is explained: one known issue
-            # must not hide an unexplained failure in the same step.
-            lines = [l for l in detail.splitlines() if l.startswith("fail:")] or [detail]
+            # must not hide an unexplained failure in the same step. `failures`
+            # is every line when the detail shows only a sample of them.
+            lines = failures or [l for l in detail.splitlines() if l.startswith("fail:")] or [detail]
             ids = []
             for line in lines:
                 hit = next(
@@ -254,15 +262,29 @@ class Run:
 
     # -- the comparisons ---------------------------------------------------
 
-    def compare(self, ds: dict, step: str, source: Path, output: Path, tol: str | None = None, pair: bool = False) -> dict:
+    def compare(
+        self,
+        ds: dict,
+        step: str,
+        source: Path,
+        output: Path,
+        tol: str | None = None,
+        pair: bool = False,
+        uv_tol: str | None = None,
+        any_face_order: bool = False,
+    ) -> dict:
         if not output.exists():
             return self.record(ds, step, "skip", f"{output.name} was not written")
         rep_path = output.with_suffix(output.suffix + ".compare.json")
         args = [self.python, HERE / "cjcompare.py", source, output, "--json", rep_path]
         if tol:
             args += ["--tol", tol]
+        if uv_tol:
+            args += ["--uv-tol", uv_tol]
         if pair:
             args.append("--pair-unmatched")
+        if any_face_order:
+            args.append("--any-face-order")
         rc, out, secs = self.sh(args)
         if rc == 2 or not rep_path.exists():
             return self.record(ds, step, "fail", f"comparator error: {out[-1500:]}", seconds=secs)
@@ -278,6 +300,7 @@ class Run:
             step,
             status,
             detail,
+            failures=rep["failures"],
             seconds=secs,
             categories=cats,
             objects=[rep["objects_source"], rep["objects_output"]],
@@ -289,14 +312,14 @@ class Run:
     def rs_compare(self, ds: dict, step: str, source: Path, output: Path) -> dict:
         if not output.exists():
             return self.record(ds, step, "skip", f"{output.name} was not written")
-        rc, out, secs = self.sh([self.tools.cityparquet, "compare", source, output])
+        rc, out, secs = self.sh([self.tools.cityparquet, "compare", "--all", source, output])
         if rc == 0:
             return self.record(ds, step, "pass", "", seconds=secs)
         # One `fail:` line per difference, each cut short, so that known.toml
-        # can account for every one of them.
-        lines = [l for l in out.splitlines() if l.strip()]
-        detail = "\n".join(f"fail:{l[:300]}" for l in lines[:40]) + (f"\n({len(lines) - 40} more)" if len(lines) > 40 else "")
-        return self.record(ds, step, "fail", detail, seconds=secs)
+        # can account for every one of them; the detail shows the first 40.
+        lines = [f"fail:{l[:300]}" for l in out.splitlines() if l.strip()]
+        detail = "\n".join(lines[:40]) + (f"\n({len(lines) - 40} more)" if len(lines) > 40 else "")
+        return self.record(ds, step, "fail", detail, failures=lines, seconds=secs)
 
     def gml_to_cityjson(self, gml: Path, outdir: Path) -> Path | None:
         outdir.mkdir(parents=True, exist_ok=True)
@@ -664,6 +687,47 @@ def run(profile: str, only: set[str] | None, keep: bool) -> int:
     return 1 if any(x["status"] == "fail" for x in rows) else 0
 
 
+def run_citydb(only: set[str] | None, keep: bool) -> int:
+    import citydb
+
+    tools = Tools.from_env()
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = work_dir() / f"citydb-{stamp}"
+    out.mkdir(parents=True)
+    python = sys.executable
+    env = environment(tools, python)
+    env["profile"] = "citydb"
+    env["citydb"] = {"pg_image": citydb.PG_IMAGE, "tool_image": citydb.TOOL_IMAGE}
+    (out / "environment.json").write_text(json.dumps(env, indent=1))
+    print(f"run directory {out}")
+    r = Run(out, tools, python)
+    corpus = {d["id"]: d for d in load_corpus()}
+    corpus_dir = work_dir() / "corpus"
+    entries = [e for e in load_citydb() if not only or e.get("id", e.get("dataset")) in only]
+    listed = []
+    for e in entries:
+        ds, src, _, _ = citydb.source_of(e, corpus, corpus_dir, ROOT)
+        size = src.stat().st_size if src is not None and src.exists() else ds.get("bytes", 0)
+        listed.append(
+            {"id": f"citydb:{ds['id']}", "format": ds["format"], "kind": ds.get("kind", "real"), "bytes": size,
+             "exercises": f"EPSG:{e['srid']}; {e['exercises']}"}
+        )
+    why = None if "cityparquet" not in r.missing else "cityparquet binary not found"
+    why = why or citydb.available()
+    if why:
+        for e, d in zip(entries, listed):
+            r.record(d, "3DCityDB", "skip", why)
+    else:
+        with citydb.Server() as server:
+            for e in entries:
+                citydb.run_dataset(r, e, corpus, corpus_dir, ROOT, server, keep)
+    (out / "corpus.json").write_text(json.dumps(listed, indent=1))
+    r.results.close()
+    write_report(out)
+    rows = [json.loads(l) for l in (out / "results.jsonl").read_text().splitlines()]
+    return 1 if any(x["status"] == "fail" for x in rows) else 0
+
+
 def write_report(out: Path) -> None:
     import report
 
@@ -680,6 +744,9 @@ def main() -> int:
     rp.add_argument("--profile", choices=PROFILES, default="quick")
     rp.add_argument("--only", help="comma-separated dataset ids")
     rp.add_argument("--keep", action="store_true", help="keep every derived file, not only those of a dataset that failed")
+    cd = sub.add_parser("citydb", help="load sources into 3DCityDB v5 and read them back")
+    cd.add_argument("--only", help="comma-separated entry ids")
+    cd.add_argument("--keep", action="store_true", help="keep every derived file")
     rr = sub.add_parser("report")
     rr.add_argument("run_dir", type=Path)
     a = p.parse_args()
@@ -687,6 +754,8 @@ def main() -> int:
         return fetch(a.profile)
     if a.cmd == "run":
         return run(a.profile, set(a.only.split(",")) if a.only else None, a.keep)
+    if a.cmd == "citydb":
+        return run_citydb(set(a.only.split(",")) if a.only else None, a.keep)
     write_report(a.run_dir)
     return 0
 

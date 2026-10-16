@@ -1620,6 +1620,22 @@ directory under `test/runs/toolchain/` (ignored) holds `results.jsonl` and
 (`.claude/skills/`) says how to triage what it finds. It is not a stage of
 `test/run-all.sh`: it downloads its corpus and takes about ten minutes.
 
+`run.py citydb` is the 3DCityDB v5 family (`citydb.py`, the `[[citydb]]`
+entries of `corpus.toml`). It starts the 3DCityDB and citydb-tool
+containers (`docker`, or `CONTAINER=podman`), loads each
+source with citydb-tool, converts the database with `cityparquet convert
+postgresql://…`, and checks: the package is valid (C5); the direct reader
+equals citydb-tool's own CityJSON export of the same database (C2); the
+package, exported and loaded into a second database, comes back equal (C3);
+converting that second database gives the same package (C4); and the direct
+path's time against export and convert (C6). Without docker every step is a
+skip.
+
+```sh
+uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 \
+  test/toolchain/run.py citydb [--only plateau-bldg,railway-scene] [--keep]
+```
+
 ---
 
 ## Part 5 — Benchmarks (procedure only)

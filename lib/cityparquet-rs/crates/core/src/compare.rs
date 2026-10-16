@@ -127,8 +127,7 @@ pub struct Exclusions {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompareReport {
     pub equal: bool,
-    /// Human-readable, object-id-prefixed. Capped at 50 entries; beyond that
-    /// a final `"... N more differences truncated"` entry is appended.
+    /// Human-readable, object-id-prefixed, every one of them.
     pub differences: Vec<String>,
     /// What was skipped and why (degenerate-ring normalisation,
     /// `exclusions`-driven skips, and writer's first-geometry-per-LoD rule).
@@ -138,8 +137,6 @@ pub struct CompareReport {
 fn err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Schema(msg.into())
 }
-
-const MAX_DIFFERENCES: usize = 50;
 
 // ---------------------------------------------------------------------
 // Coordinate tree: a generic nested-list shape with dequantised leaves.
@@ -1666,12 +1663,6 @@ pub fn compare_datasets(a: &Path, b: &Path, opts: &CompareOptions) -> Result<Com
         );
     }
 
-    if differences.len() > MAX_DIFFERENCES {
-        let extra = differences.len() - MAX_DIFFERENCES;
-        differences.truncate(MAX_DIFFERENCES);
-        differences.push(format!("... {extra} more differences truncated"));
-    }
-
     Ok(CompareReport {
         equal: differences.is_empty(),
         differences,
@@ -1855,12 +1846,11 @@ mod tests {
         );
     }
 
-    /// More than [`MAX_DIFFERENCES`] real differences must truncate: the
-    /// list keeps the first 50 and appends one final "... N more" entry.
-    /// Synthesised from the real fixture by editing a string attribute on
-    /// every object that has one (delft has far more than 50).
+    /// Every difference is reported, however many: a caller that has to
+    /// account for each one sees them all. Synthesised from the real fixture
+    /// by editing a string attribute on every object that has one.
     #[test]
-    fn compare_truncates_beyond_max_differences() {
+    fn compare_reports_every_difference() {
         let original = fixture("delft.city.jsonl");
         let text = fs::read_to_string(&original).unwrap();
         let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
@@ -1888,10 +1878,7 @@ mod tests {
                 *line = serde_json::to_string(&feature).unwrap();
             }
         }
-        assert!(
-            changed > MAX_DIFFERENCES,
-            "need more than {MAX_DIFFERENCES} edits to exercise truncation, only made {changed}"
-        );
+        assert!(changed > 50, "only made {changed} edits");
 
         let dir = tempfile::tempdir().unwrap();
         let modified_path = dir.path().join("delft-many-edits.city.jsonl");
@@ -1900,17 +1887,7 @@ mod tests {
         let report =
             compare_datasets(&original, &modified_path, &CompareOptions::default()).unwrap();
         assert!(!report.equal);
-        assert_eq!(
-            report.differences.len(),
-            MAX_DIFFERENCES + 1,
-            "the first {MAX_DIFFERENCES} differences plus one truncation notice"
-        );
-        let last = report.differences.last().unwrap();
-        assert!(
-            last.contains("truncated") && last.contains(&(changed - MAX_DIFFERENCES).to_string()),
-            "the final entry must name the truncated count ({}), got: {last}",
-            changed - MAX_DIFFERENCES
-        );
+        assert_eq!(report.differences.len(), changed, "one difference per edit");
     }
 
     #[test]

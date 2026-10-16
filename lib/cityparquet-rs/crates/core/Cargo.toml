@@ -31,6 +31,8 @@ futures = { version = "0.3", optional = true }
 futures-util = { version = "0.3", optional = true }
 async-trait = { workspace = true, optional = true }
 fcb_core = { workspace = true, optional = true }
+# 3DCityDB v5 input (`Source::open_citydb`).
+citygml-citydb = { workspace = true, optional = true }
 # The Hilbert sort's run directory (`sort.rs`).
 tempfile = { workspace = true }
 
@@ -52,6 +54,9 @@ bytes = { workspace = true }
 [features]
 # FlatCityBuf (`.fcb`) input for `convert`.
 fcb = ["dep:fcb_core"]
+# 3DCityDB v5 input for `convert`: a PostgreSQL client, with TLS through
+# rustls.
+citydb = ["dep:citygml-citydb"]
 object-store = [
     "dep:object_store",
     "dep:futures",

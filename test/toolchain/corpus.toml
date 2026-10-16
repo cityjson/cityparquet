@@ -423,3 +423,104 @@ kind = "real"
 exercises = "multi-LoD 3DBAG tile as CityGML 3.0"
 status = "pending"
 reason = "no CityGML 3.0 reader yet (the citygml3 crate is planned in the CityGML reader redesign)"
+
+# --------------------------------------------------------------------------
+# 3DCityDB (`run.py citydb`, citydb.py)
+# --------------------------------------------------------------------------
+#
+# Each entry loads one source into a 3DCityDB v5 database with citydb-tool and
+# reads it back. The source is a corpus dataset (`dataset`), a file in this
+# repository (`path`, relative to its root), or a file in the citydb-tool image
+# (`image_path`).
+#
+# srid, srs_name     the reference system the database is created in, as
+#                    3DCityDB's create-db.sql takes it
+# vertex_precision   decimals citydb-tool's CityJSON export keeps (3 for
+#                    metres; 9 for degrees, the step cityparquet uses)
+# any_face_order     compare a surface's faces paired by geometry, not by
+#                    position (cjcompare --any-face-order): citydb-tool's
+#                    exporter reorders them, where the direct reader keeps
+#                    the order the source file has
+#
+# The published Ingolstadt.gml (ingolstadt-gml3) is not XML: it holds the
+# text of a Python bytes literal (b'<?xml ...), which citydb-tool refuses, so
+# Ingolstadt is loaded from its CityJSON only. CityGML 3.0 loads are covered
+# by citygml-citydb's own tests (lib/citygml-rs/crates/citydb/tests).
+
+[[citydb]]
+dataset = "3dbag-tile"
+srid = 7415
+srs_name = "urn:ogc:def:crs,crs:EPSG::28992,crs:EPSG::5109"
+exercises = "CityJSON import: solids with semantics, LoD 0, 1.2, 1.3 and 2.2 (citydb-tool keeps one LoD 1 geometry), typed attributes"
+
+[[citydb]]
+dataset = "ingolstadt"
+srid = 32632
+srs_name = "urn:ogc:def:crs:EPSG::32632"
+# The buildings' faces: of the 4368 pairs of consecutive faces building
+# 4018215 has in Ingolstadt.city.json, citydb-tool's export keeps 4302
+# together and the direct reader 4366.
+any_face_order = true
+exercises = "CityJSON import: LoD 3 buildings with openings and installations"
+
+[[citydb]]
+id = "railway-scene"
+format = "citygml2"
+image_path = "/opt/citydb-tool/samples/datasets/railway_scene_lod3_v2.zip"
+srid = 25833
+srs_name = "urn:ogc:def:crs:EPSG::25833"
+exercises = "the KIT LoD 3 railway scene citydb-tool ships: textures with their images, materials, 14 feature types"
+
+[[citydb]]
+id = "plateau-bldg"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/bldg/53394519_bldg_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU 13101 buildings (CityGML 2.0): LoD 0 to 2, xlinked solids, addresses, textures without their images, i-UR ADE"
+
+[[citydb]]
+id = "plateau-tran"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/tran/53394529_tran_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU roads: TrafficArea and AuxiliaryTrafficArea, LoD 1 to 3"
+
+[[citydb]]
+id = "plateau-brid"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/brid/53394610_brid_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU bridges"
+
+[[citydb]]
+id = "plateau-frn"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/frn/53394631_frn_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU city furniture: implicit geometries"
+
+[[citydb]]
+id = "plateau-veg"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/veg/53394600_veg_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU vegetation"
+
+[[citydb]]
+id = "plateau-wtr"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/wtr/533945_wtr_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU water bodies"
