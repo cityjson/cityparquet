@@ -447,7 +447,10 @@ def run_dataset(r: Run, ds: dict, corpus: Path, keep: bool) -> None:
                     if back is None:
                         r.record(ds, "round trip rs (gml)", "fail", "citygml-tools could not read the written CityGML")
                     else:
-                        r.compare(ds, "round trip rs", reference, back, gml_tol, pair=True)
+                        # A CityGML writer puts each face in its boundary
+                        # surface, so a geometry's faces come back grouped by
+                        # surface: their order is not part of the model.
+                        r.compare(ds, "round trip rs", reference, back, gml_tol, pair=True, any_face_order=True)
             else:
                 r.compare(ds, "round trip rs", src, rs_out)
                 r.rs_compare(ds, "rs compare (second oracle)", src, rs_out)

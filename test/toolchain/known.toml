@@ -8,14 +8,6 @@
 # stays a failure in the report until someone says whose it is.
 
 [[issue]]
-id = "extension-class-own-file-duckdb"
-dataset = "^noise-extension$"
-step = "^dk write$"
-match = "no resolvable module|belongs to no CityGML module"
-summary = "duckdb-cityjson does not yet put a CityJSON Extension class that declares no module and specialises no class in its extension's own file, as the specification says; cityparquet-rs does"
-reference = "documents/docs/03-specification/06-extensions.mdx, The ModuleKey; toolchain-test-2026-10-16 report, finding 5"
-
-[[issue]]
 id = "gml-id-escape"
 dataset = "^(rotterdam-gml|ingolstadt-gml3)$"
 step = "^round trip"
