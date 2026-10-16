@@ -395,6 +395,12 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
             raise SystemExit(f"bench-prep: {error}") from error
         if mode == "download":
             write_origin(prepared, {"origin": "bucket", "manifest_url": url, "manifest_sha256": digest, "chain_version": chain, "config": cfg})
+        # The run also reads each dataset's raw source (its staged input and
+        # the run manifest's sha256), which no hosted artefact replaces. Only
+        # a missing one is fetched: `fetch_benchmark.sh` re-fetches a present
+        # file that has no fetch receipt.
+        if any(entry["role"] == "corpus" and not source(entry, locations).is_file() for entry in selected):
+            just("fetch-data", str(locations["corpus"]))
     if mode in {"local", "rebuild-sources"}:
         if any(entry["role"] == "corpus" for entry in selected):
             just("fetch-data", str(locations["corpus"]))
@@ -444,6 +450,10 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
             raise SystemExit(f"bench-prep: {error}") from error
     if mode != "download":
         write_origin(prepared, {"origin": "local"})
+    if mode in {"download", "no-cache"}:
+        missing_slice = [str(source(entry, locations)) for entry in selected if entry["role"] == "slice" and not source(entry, locations).is_file()]
+        if missing_slice:
+            raise SystemExit(slice_source_missing(missing_slice, locations))
 
     if "databases" in families:
         root = locations["formats"].parent
@@ -520,12 +530,23 @@ def write_model_times(result_csv: Path) -> None:
             writer.writerow([row["dataset"], row["format"], row["scenario"], row.get("notes", ""), params["profile"], params["target"], params.get("bandwidth_mbps", ""), params.get("latency_ms", ""), row.get("bytes_read", ""), row.get("http_requests", ""), row.get("time_median_s", ""), model])
 
 
+def slice_source_missing(missing: list[str], locations: dict[str, Path]) -> str:
+    """The refusal for a missing 3DBAG slice source, which `fetch-data` does not supply."""
+    return f"3DBAG slice source missing; cut it with just fetch-3dbag {locations['3dbag']}: " + ", ".join(missing)
+
+
 def require_prepared(inputs: list[Path], locations: dict[str, Path]) -> None:
-    missing = [str(item) for item in inputs if not item.is_file()]
-    if missing:
-        raise SystemExit("inputs are not prepared; run just bench-prep first: " + ", ".join(missing))
+    """Refuse a run whose prepared artefacts or raw sources are missing, naming
+    the command that supplies them."""
     if not locations["prepared"].is_dir():
         raise SystemExit(f"prepared artefacts missing: run just bench-prep first ({locations['prepared']})")
+    missing = [item for item in inputs if not item.is_file()]
+    slice_missing = [str(item) for item in missing if item.is_relative_to(locations["3dbag"])]
+    corpus_missing = [str(item) for item in missing if not item.is_relative_to(locations["3dbag"])]
+    if corpus_missing:
+        raise SystemExit(f"corpus sources missing; fetch them with just fetch-data {locations['corpus']}: " + ", ".join(corpus_missing))
+    if slice_missing:
+        raise SystemExit(slice_source_missing(slice_missing, locations))
 
 
 def read_repeat(profile: str) -> int:

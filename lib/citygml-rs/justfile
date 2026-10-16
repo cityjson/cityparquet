@@ -1,0 +1,18 @@
+# citygml-rs — the CityGML crates' own tasks. Self-contained: the tests read
+# the CityGML files committed under each crate's tests/data.
+
+default:
+    @just --list
+
+test:
+    cargo test --workspace --all-features
+
+lint:
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+
+fmt:
+    cargo fmt --all
+
+check: lint test
+    cargo fmt --all --check

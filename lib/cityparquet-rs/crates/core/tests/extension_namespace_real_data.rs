@@ -133,10 +133,10 @@ fn export_restores_the_plus_marker_and_the_extensions_member() {
     .unwrap();
 
     let exported = out.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: out.path().to_path_buf(),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        out.path().to_path_buf(),
+        exported.clone(),
+    ))
     .unwrap();
 
     let source = Source::open(&exported).unwrap();

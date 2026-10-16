@@ -464,10 +464,11 @@ pub struct ImplicitGeometryRow {
     pub id: i64,
     /// The relative geometry's identifier in the source document, when it had one.
     /// Always `None` from a CityJSON source — `geometry-templates.templates`
-    /// is a bare array whose entries carry no identifier — and the CityGML
-    /// reader emits no implicit geometries at all. The column exists so that a source
-    /// which does name its relative geometries has somewhere to put it, now that `id`
-    /// is a remappable integer.
+    /// is a bare array whose entries carry no identifier — and from a CityGML
+    /// source, whose relative geometries reach the package as CityJSON
+    /// templates too. The column exists so that a source
+    /// which does name its relative geometries has somewhere to put it, since
+    /// `id` is a remappable integer.
     pub name: Option<String>,
     pub lod: Lod,
     pub wkb: Vec<u8>,

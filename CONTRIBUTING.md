@@ -123,12 +123,6 @@ pushes from `github-actions[bot]`.
 workspace entirely, in `benchmark/readbench`: it is evidence, and only means
 anything next to the corpora under `benchmark/`. CityLake is not published.
 
-**`cityparquet` cannot be published yet**, and `cityparquet-cli` depends on
-it. It depends on `cjseq` 0.5 by git, and crates.io refuses a crate with a git
-dependency, so a real publish stops when Cargo packages it, before anything is
-uploaded. It clears once cjseq 0.5 is on crates.io and the workspace depends on
-it by version.
-
 ## Measurements
 
 If you change a benchmark, read [`benchmark/README.md`](benchmark/README.md)

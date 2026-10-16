@@ -53,7 +53,7 @@ were built against, which is each submodule's own `build/release/duckdb`.
 ### 0.1 cityparquet-rs needs no submodule
 
 `lib/cityparquet-rs` takes the City3D STAC crates (`city3d-stac-types`,
-`city3d-stac-gen`) from crates.io and `cjseq` as a git dependency. Its `just
+`city3d-stac-gen`) and `cjseq` from crates.io. Its `just
 check` therefore needs no `git submodule update`; the
 two DuckDB extensions are the only submodules (`just setup` from the repository
 root checks them out).
@@ -544,7 +544,7 @@ duckdb -c "SELECT count(*) FROM read_parquet('$OUT/delft_parts/*/building.parque
 appearance references, then one line per partition:
 
 ```
-partitions=3 duplicate_ids=0 invalid_appearance_refs_dropped=0
+partitions=3 invalid_appearance_refs_dropped=0
 features-00000 1001 0
 features-00001 1000 0
 features-00002 230 0
@@ -1579,6 +1579,63 @@ the same three centroids, digit for digit. The railway's matrices are all the
 identity; a `NULL` matrix also means identity, and a singular matrix raises for
 a `SOLID_3D` (`lib/duckdb-3d/docs/FUNCTIONS.md`).
 
+### 4.7 Every tool chain on real data — `test/toolchain/`
+
+4.3 to 4.6 follow one dataset through one chain by hand. `test/toolchain/`
+does the same for every dataset in a pinned corpus (`corpus.toml`: CityJSON,
+CityJSONSeq, CityGML 2.0 and FlatCityBuf, real data first, with small
+fixtures only for what no published dataset carries) and every chain:
+
+| Chain                                                                 | Checked against                    |
+| --------------------------------------------------------------------- | ---------------------------------- |
+| cityparquet-rs: `convert`, `validate`, `export`                       | the source                         |
+| duckdb-cityjson: `insert_*`, `cityparquet_validate`, `COPY … TO`      | the source                         |
+| each writer's package, exported by the other tool                     | the source                         |
+| each writer's package, exported by cityparquet-rs                     | each other (`packages agree`)      |
+| the rs package, read and rewritten by duckdb-cityjson                 | the source                         |
+| duckdb-3d over both packages and over the source                      | each other, per object and LoD     |
+| CityGML: the source and the rs GML export, both read by citygml-tools | each other, plus an element census |
+
+Every comparison with a source goes through `test/toolchain/cjcompare.py`,
+which reads CityJSON, CityJSONSeq and FlatCityBuf itself and shares no code
+with any writer. It compares models, not documents (vertices dereferenced,
+ring starts aligned, appearance resolved per face), per category: objects,
+hierarchy, attributes, address, geometry, coordinates, semantics, materials,
+textures and templates. A difference is a failure unless the specification
+allows it, and the comparator says which rule allows it.
+
+```sh
+uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 --with pytest \
+  pytest -q test/toolchain/test_cjcompare.py     # the comparator against mutated real data
+uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 \
+  test/toolchain/run.py fetch --profile quick
+uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 \
+  test/toolchain/run.py run --profile quick
+```
+
+The tools come from `CITYPARQUET`, `CITYJSON_EXTENSION`, `THREE_D_EXTENSION`
+and `CITYGML_TOOLS`, each defaulting to its build path in this tree; the run
+directory under `test/runs/toolchain/` (ignored) holds `results.jsonl` and
+`report.md`. The skill `testing-cityparquet-toolchain`
+(`.claude/skills/`) says how to triage what it finds. It is not a stage of
+`test/run-all.sh`: it downloads its corpus and takes about ten minutes.
+
+`run.py citydb` is the 3DCityDB v5 family (`citydb.py`, the `[[citydb]]`
+entries of `corpus.toml`). It starts the 3DCityDB and citydb-tool
+containers (`docker`, or `CONTAINER=podman`), loads each
+source with citydb-tool, converts the database with `cityparquet convert
+postgresql://…`, and checks: the package is valid (C5); the direct reader
+equals citydb-tool's own CityJSON export of the same database (C2); the
+package, exported and loaded into a second database, comes back equal (C3);
+converting that second database gives the same package (C4); and the direct
+path's time against export and convert (C6). Without docker every step is a
+skip.
+
+```sh
+uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 \
+  test/toolchain/run.py citydb [--only plateau-bldg,railway-scene] [--keep]
+```
+
 ---
 
 ## Part 5 — Benchmarks (procedure only)
@@ -1662,9 +1719,8 @@ just convert-all benchmark/runs/data/benchmark out/cityparquet
 
 One package directory per input, each in Hilbert order, the writer's default.
 Run it over `benchmark/runs/data/3dbag` as well for the 1M-object slice. Hilbert
-order holds a CityGML or FlatCityBuf input parsed in memory (a CityJSON or
-CityJSONSeq input is read back in that order instead); `--ordering source`
-streams any input one feature at a time.
+order sorts the encoded rows within `--memory-budget` (2G by default), spilling
+sorted runs to disk beyond it; `--ordering source` skips the sort.
 
 ### 5.3 Read benchmark
 

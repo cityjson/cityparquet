@@ -24,10 +24,10 @@ fn export_emits_geographical_extent_from_bbox() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     let text = std::fs::read_to_string(&output).unwrap();

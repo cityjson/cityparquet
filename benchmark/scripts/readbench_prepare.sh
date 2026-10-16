@@ -35,7 +35,8 @@
 # in `corpus_bucket.py`). Bumping CHAIN_VERSION therefore points every
 # machine at a new, empty bucket folder until someone rebuilds and uploads.
 #
-# THE CORPUS IS NORMALISED FIRST: ONE GEOMETRY PER LoD AND OBJECT. Before any
+# THE CORPUS IS NORMALISED FIRST: ONE GEOMETRY PER LoD AND OBJECT, AND NO
+# SEMANTICS BELOW LoD 2. Before any
 # artefact is built, a CityJSON/CityJSONSeq INPUT goes through `lod-normalise`
 # (benchmark/readbench, `lod::keep_first_per_lod`): each CityObject keeps the
 # first geometry at each LoD in source order, the vertices nothing references
@@ -46,9 +47,15 @@
 # all five formats, hold the same geometries. "The same LoD" is the writer's
 # key exactly (`Lod::parse`, so `1` and `1.0` are one LoD; a GeometryInstance
 # never claims a LoD), and the CityParquet stage asserts the writer then skips
-# nothing. A source that needs no change is used as is, byte for byte. The
-# normalised source lives in OUTDIR/.readbench-chain/ and replaces INPUT for
-# the rest of the chain. A CityGML INPUT is not normalised.
+# nothing. The same pass then removes the semantic surfaces of every
+# geometry below LoD 2 (`lod::remove_semantics_below_lod2`): CityGML 2.0's
+# `_BoundarySurface` has `lod2MultiSurface` to `lod4MultiSurface` only, so
+# the CityGML artefact cannot hold them (3DBAG's LoD 1.2 and 1.3 solids carry
+# them), and removing them from the SOURCE makes all five formats hold the
+# same semantic surfaces. The log line reports both counts. A source that
+# needs no change is used as is, byte for byte. The normalised source lives
+# in OUTDIR/.readbench-chain/ and replaces INPUT for the rest of the chain. A
+# CityGML INPUT is not normalised.
 #
 # THE CONVERSION CHAIN, AND WHY IT RUNS FORWARDS ONLY:
 #
@@ -620,12 +627,13 @@ same_file() {
     == "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")" ]]
 }
 
-# --- normalisation: one geometry per LoD and object ------------------------
+# --- normalisation: one geometry per LoD and object, no semantics below LoD 2
 # See the header. Runs on every invocation (it is a single streaming or
 # in-memory pass) and before the chain-provenance check, because whether
 # this dataset changed decides which of its artefacts are stale.
 # `LOD_NORMALISE` names a prebuilt `lod-normalise`; otherwise it is built here.
-NORMALISED=0
+GEOMETRIES_DROPPED=0
+SEMANTICS_REMOVED=0
 if [[ "$INPUT_KIND" != "citygml" ]]; then
   if [[ -z "${LOD_NORMALISE:-}" ]]; then
     require_tool cargo "building lod-normalise (the corpus normalisation)"
@@ -640,13 +648,28 @@ if [[ "$INPUT_KIND" != "citygml" ]]; then
   mkdir -p "$OUTDIR/.readbench-chain"
   NORM_OUT="$OUTDIR/.readbench-chain/$BASE.normalised.$NORM_EXT"
   NORM_REPORT="$("$LOD_NORMALISE" "$INPUT" "$NORM_OUT")"
-  NORM_DROPPED="$(sed -n 's/.*dropped=\([0-9][0-9]*\).*/\1/p' <<<"$NORM_REPORT")"
+  NORM_DROPPED="$(sed -n 's/^dropped=\([0-9][0-9]*\) .*/\1/p' <<<"$NORM_REPORT")"
   if [[ -z "$NORM_DROPPED" ]]; then
     echo "error: lod-normalise printed no drop count for $INPUT: $NORM_REPORT" >&2
     exit 1
   fi
-  echo "-- normalise $BASE: one geometry per LoD and object: $NORM_DROPPED geometr$([[ "$NORM_DROPPED" == 1 ]] && echo y || echo ies) dropped (${NORM_REPORT#dropped=* })"
+  # A prebuilt LOD_NORMALISE without the semantics rule prints no count for
+  # it, and would leave the semantics CityGML 2.0 cannot hold in place.
+  NORM_SEMANTICS="$(sed -n 's/.* semantics_removed=\([0-9][0-9]*\) .*/\1/p' <<<"$NORM_REPORT")"
+  if [[ -z "$NORM_SEMANTICS" ]]; then
+    echo "error: lod-normalise printed no semantics count for $INPUT (a build without the LoD < 2 semantics rule?): $NORM_REPORT" >&2
+    exit 1
+  fi
+  echo "-- normalise $BASE: one geometry per LoD and object: $NORM_DROPPED geometr$([[ "$NORM_DROPPED" == 1 ]] && echo y || echo ies) dropped; semantics removed from $NORM_SEMANTICS geometr$([[ "$NORM_SEMANTICS" == 1 ]] && echo y || echo ies) (LoD < 2) (${NORM_REPORT#dropped=* semantics_removed=* })"
+  # Which rule changed the source decides which stages are stale (see
+  # `stage_version`): the CityGML stage depends on the geometry rule only.
   if [[ "$NORM_DROPPED" -gt 0 ]]; then
+    GEOMETRIES_DROPPED=1
+  fi
+  if [[ "$NORM_SEMANTICS" -gt 0 ]]; then
+    SEMANTICS_REMOVED=1
+  fi
+  if [[ "$NORM_DROPPED" -gt 0 || "$NORM_SEMANTICS" -gt 0 ]]; then
     # INPUT sitting in OUTDIR under an artefact's own name would be both the
     # unnormalised source and an artefact this chain must rebuild.
     for out in "$GML_OUT" "$CITYJSON_OUT" "$SEQ_OUT"; do
@@ -656,7 +679,6 @@ if [[ "$INPUT_KIND" != "citygml" ]]; then
         exit 1
       fi
     done
-    NORMALISED=1
     INPUT="$NORM_OUT"
   else
     rm -f "$NORM_OUT"
@@ -705,7 +727,9 @@ fi
 #   8  the artefacts are reproducible byte for byte: the CityJSONSeq cut by
 #      `cjseq cat` lists its features in the source document's order (see
 #      `seq-order`), and the package's STAC `datetime` is CORPUS_DATETIME.
-CHAIN_VERSION=8
+#   9  the normalisation also removes the semantic surfaces of every geometry
+#      below LoD 2, which CityGML 2.0 cannot express.
+CHAIN_VERSION=9
 # The STAC `datetime` of every benchmark package: the day the benchmark
 # corpus was fixed. A fixed value, because the library otherwise falls back
 # to the conversion time for a source without `referenceDate` and no two
@@ -716,12 +740,21 @@ CORPUS_DATETIME="2026-10-05T00:00:00Z"
 # artefact is stale when its stage changed after the version that built it,
 # so a bump that touches one stage does not force the hours-long stages it
 # left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#   9  every stage but the CityGML one, for a dataset the semantics rule
+#      changed (the 3DBAG slice in the corpus); no stage for one it left
+#      alone. The CityGML artefact is unchanged: `citygml-tools from-cityjson
+#      -v 2.0` cannot write semantics below LoD 2 (`_BoundarySurface` has no
+#      `lod0MultiSurface` or `lod1MultiSurface`), so with or without them in
+#      the CityJSON it writes the same document, up to the random surface
+#      identifiers it mints on every run. The CityGML stage therefore follows
+#      the geometry rule alone (7 below).
 #   8  the CityParquet stage (its `metadata.json` carried the conversion
 #      time), and the CityJSONSeq and FlatCityBuf stages when the stream is
 #      cut by `cjseq cat` (its feature order was not fixed); a CityJSONSeq
 #      INPUT is copied, so its stream and FlatCityBuf file are unchanged.
-#   7  every stage, for a dataset the normalisation changed (Vienna in the
-#      corpus); no stage for one it left byte-identical.
+#   7  every stage, for a dataset the geometry rule (one geometry per LoD
+#      and object) changed (Vienna in the corpus); no stage for one it left
+#      alone.
 #   6  the CityJSON and CityParquet stages: a CityJSON built before may carry
 #      the source's whitespace, and a package built before carries a
 #      synthesised LoD 0 footprint for every object without a source LoD 0.
@@ -738,12 +771,16 @@ CORPUS_DATETIME="2026-10-05T00:00:00Z"
 #   2  the CityJSONSeq stage became a real artefact for every input kind
 #      (the gzip case above); FlatCityBuf and CityGML derive from it.
 stage_version() {
+  if [[ "$SEMANTICS_REMOVED" -eq 1 && "$1" != "$GML_OUT" ]]; then
+    echo 9
+    return
+  fi
   case "$1" in
     "$PARQUET_OUT") echo 8; return ;;
     "$SEQ_OUT" | "$FCB_OUT")
       if [[ "$SEQ_FROM" == "cjseq-cat" ]]; then echo 8; return; fi ;;
   esac
-  if [[ "$NORMALISED" -eq 1 ]]; then
+  if [[ "$GEOMETRIES_DROPPED" -eq 1 ]]; then
     echo 7
     return
   fi

@@ -346,7 +346,9 @@ Every object row **SHOULD** carry a `bbox` in the same CRS as the geometry — a
 - `bbox` is the **union** over the object's whole subtree — its own geometry and
   every descendant's, not merely the nearest geometry-bearing generation. A
   `Building` carrying only an LoD0 footprint over solid `BuildingPart`s therefore
-  still spans its parts' full z-range.
+  still spans its parts' full z-range. The subtree stays within the object's
+  family: a group's member that is a family of its own (see the
+  [feature_id rule](/specification/object-table-schema)) is not in the group's box.
 - Where the source declares a per-object extent of its own, that extent is
   **unioned into** `bbox`. It may only widen the box: a source extent is not
   guaranteed to contain the geometry it describes, and a box narrower than the
@@ -363,7 +365,12 @@ Every object row **SHOULD** carry a `bbox` in the same CRS as the geometry — a
 
 Rows **MAY** be written in **[Hilbert-curve order](/design-decisions/spatial-access)**
 on the `bbox` centroid to improve spatial locality for object-storage range reads and
-row-group pruning. The cost falls on the writer: it must hold every row before it can
-write the first, whereas rows in source order can be streamed one at a time. Either
-order is conformant. Row-group sizing interacts with pruning selectivity; see the
+row-group pruning. The order is over feature families, not single rows: the writer derives
+one key per family and every row of the family takes it, so the order keeps each family's
+rows [contiguous](/specification/object-table-schema). Which point of the family the key
+is computed from is the writer's choice; the reference writer uses the centre of the
+feature's vertices. The cost falls on the writer: no row can
+be written until every key is known, so it sorts the whole dataset, in memory or spilling
+sorted runs to temporary storage and merging them, whereas rows in source order stream one
+at a time. Either order is conformant. Row-group sizing interacts with pruning selectivity; see the
 [dataset metadata](/specification/metadata).

@@ -692,10 +692,10 @@ fn index_repeat_sliver_ring_survives_convert_and_export_round_trip() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let exported = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: out.path().to_path_buf(),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        out.path().to_path_buf(),
+        exported.clone(),
+    ))
     .unwrap();
 
     let cmp_report = compare_datasets(&path, &exported, &CompareOptions::default()).unwrap();
@@ -1005,10 +1005,10 @@ fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let exported = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: out.path().to_path_buf(),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        out.path().to_path_buf(),
+        exported.clone(),
+    ))
     .unwrap();
     let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
@@ -1197,10 +1197,10 @@ fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let exported = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: out.path().to_path_buf(),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        out.path().to_path_buf(),
+        exported.clone(),
+    ))
     .unwrap();
 
     let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
@@ -1830,10 +1830,10 @@ fn geometryless_dataset_round_trips() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let exported = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: out.path().to_path_buf(),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        out.path().to_path_buf(),
+        exported.clone(),
+    ))
     .unwrap();
     let report = compare_datasets(&src, &exported, &CompareOptions::default()).unwrap();
     assert!(

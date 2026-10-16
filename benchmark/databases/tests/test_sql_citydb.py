@@ -395,14 +395,42 @@ def test_the_append_reset_empties_the_tables_the_importer_writes_to():
     name them."""
     marks = {table: 7 for table, _ in append_watermark_sql()}
     statements = append_reset_sql(marks)
-    tables = [sql for sql, _ in statements]
-    # property references both feature and geometry_data; geometry_data
-    # references feature. Deleting in any other order fails the FK.
-    assert "citydb.property" in tables[0]
-    assert "citydb.geometry_data" in tables[1]
-    assert "citydb.feature" in tables[2]
+    assert [sql for sql, _ in statements] == [
+        f"DELETE FROM citydb.{table} WHERE id > %s" for table in (
+            # Every child before every parent it references: property ->
+            # feature, geometry_data, appearance; appear_to_surface_data ->
+            # appearance, surface_data; appearance -> feature; surface_data
+            # -> tex_image; geometry_data -> feature.
+            "property", "appear_to_surface_data", "appearance",
+            "surface_data", "tex_image", "geometry_data", "feature",
+        )
+    ]
     assert all(args == (7,) for _, args in statements)
-    assert all(sql.count("%s") == 1 for sql, _ in statements)
+
+
+def test_the_append_reset_removes_the_appearance_the_importer_writes():
+    """citydb-tool imports a textured file's appearance model. Measured on
+    Rotterdam: `appearance.feature_id` is ON DELETE SET NULL, so deleting
+    the appended `feature` rows orphaned the `appearance` row instead of
+    removing it, and its `appear_to_surface_data` and `surface_data` rows
+    stayed with it, one more set per sample. `surface_data_mapping` has a
+    composite key and no `id` to watermark; it goes by ON DELETE CASCADE
+    from `surface_data` and `geometry_data`."""
+    tables = [table for table, _ in append_watermark_sql()]
+    for table in ("appearance", "appear_to_surface_data", "surface_data",
+                  "tex_image"):
+        assert table in tables
+    assert "surface_data_mapping" not in tables
+
+
+def test_the_append_watermarks_cover_exactly_the_tables_the_reset_empties():
+    watermarks = append_watermark_sql()
+    marks = {table: 0 for table, _ in watermarks}
+    reset = [sql for sql, _ in append_reset_sql(marks)]
+    assert [f"DELETE FROM citydb.{table} WHERE id > %s"
+            for table, _ in watermarks] == reset
+    assert all(sql == f"SELECT coalesce(max(id), 0) FROM citydb.{table}"
+               for table, sql in watermarks)
 
 
 def test_parts_per_building_joins_parent_via_the_property_fk_and_child_via_val_feature_id():

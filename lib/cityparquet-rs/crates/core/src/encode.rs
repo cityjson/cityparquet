@@ -25,6 +25,7 @@ use cjseq::{
 use serde_json::Value;
 
 use cityparquet_schema::crs::AxisOrder;
+use cityparquet_schema::extensions::NameKind;
 use cityparquet_schema::{AttributeType, CityParquetError, ExtensionNaming, Lod, Result};
 
 use crate::appearance::AppearanceInterner;
@@ -33,7 +34,7 @@ use crate::appearance_columns::{
 };
 use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder};
 use crate::scan::ScanResult;
-use crate::source::{FeatureIter, OrderedFeatures, Source};
+use crate::source::{FeatureIter, Source};
 use crate::wkb_write::{VertexPool, geometry_bbox, geometry_to_wkb, point_to_wkb};
 
 /// Members carried by a dedicated column, stripped from the `other` payload
@@ -89,7 +90,7 @@ pub(crate) fn unmapped_object_members(co: &CityObject) -> Result<serde_json::Map
 /// rules"). `scan` and the row writer both key attributes by this name.
 pub(crate) fn stored_attribute_name(naming: &ExtensionNaming, source: &str) -> Result<String> {
     Ok(cityparquet_schema::reserved::escape_attribute_name(
-        &naming.encode_name(source, "attribute")?,
+        &naming.encode_name(source, NameKind::Attribute)?,
     ))
 }
 
@@ -587,7 +588,7 @@ fn namespace_surface_types(props: &mut GeometryProperties, naming: &ExtensionNam
     };
     for surface in surfaces {
         if let Some(Value::String(surface_type)) = surface.get_mut("type") {
-            *surface_type = naming.encode_name(surface_type, "semantic surface type")?;
+            *surface_type = naming.encode_name(surface_type, NameKind::SemanticSurfaceType)?;
         }
     }
     Ok(())
@@ -1204,7 +1205,9 @@ impl RowWriter {
         let thetype = crate::cjtypes::object_type_name(&co.thetype);
         let object_type = match cityparquet_schema::class_info(&thetype) {
             Some(info) => info.citygml_class.to_string(),
-            None => self.naming.encode_name(&thetype, "city-object type")?,
+            None => self
+                .naming
+                .encode_name(&thetype, NameKind::CityObjectType)?,
         };
         self.object_type.append(&object_type)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());
@@ -1421,36 +1424,23 @@ impl RowWriter {
 /// internal builders desynced, so no partially-desynced batch is ever
 /// emitted, even to error-tolerant callers (e.g. `filter_map(Result::ok)`)
 /// that keep pulling past the error.
-/// The one-time source of `CityJSONFeature`s [`BatchIter`] pulls from:
-/// EITHER a plain re-iteration of the [`Source`] the ordinary streaming path
-/// ([`encode`]) opens, OR the same features in a caller's order
-/// ([`encode_in_order`], `crate::package::convert`'s Hilbert row ordering).
-/// `advance` only ever calls `self.features.next()`, so swapping WHICH
-/// stream backs `BatchIter` is the entire diff between the two entry points.
-enum FeatureStream<'a> {
-    Source(FeatureIter<'a>),
-    Ordered(OrderedFeatures<'a>),
-}
-
-impl Iterator for FeatureStream<'_> {
-    type Item = Result<CityJSONFeature>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            FeatureStream::Source(it) => it.next(),
-            FeatureStream::Ordered(it) => it.next(),
-        }
-    }
-}
-
 pub struct BatchIter<'a> {
-    features: FeatureStream<'a>,
+    features: FeatureIter<'a>,
     transform: Transform,
     schema: Arc<Schema>,
     batch_size: usize,
     writer: RowWriter,
     current_feature: Option<CityJSONFeature>,
     current_object_ids: Vec<String>,
+    /// Set by [`BatchIter::with_hilbert_keys`]: each row is tagged with the
+    /// Hilbert key of its feature.
+    hilbert: Option<HilbertKeys>,
+    /// The current feature's Hilbert key.
+    current_key: u32,
+    /// The keys of the rows of the batch being built, then of the batch last
+    /// returned.
+    keys: Vec<u32>,
+    batch_keys: Vec<u32>,
     current_idx: usize,
     exhausted_input: bool,
     /// Set when `next()` yields an `Err`; fuses the iterator (see the
@@ -1460,6 +1450,12 @@ pub struct BatchIter<'a> {
     /// Dataset-global material/texture interner, fed one feature's worth of
     /// local definitions at a time as rows are encoded; see [`Self::appearance`].
     appearance: AppearanceInterner,
+}
+
+/// What a row's Hilbert key is computed against.
+struct HilbertKeys {
+    dataset_bbox: [f64; 6],
+    axis_order: AxisOrder,
 }
 
 impl BatchIter<'_> {
@@ -1488,7 +1484,26 @@ impl BatchIter<'_> {
         &mut self.appearance
     }
 
+    /// Tag every row with the Hilbert key of its feature — the curve index
+    /// of the centre of the feature's own vertex pool against the dataset
+    /// bbox (`crate::order::centre_hilbert_key`) — read after each batch with
+    /// [`Self::take_batch_keys`].
+    pub(crate) fn with_hilbert_keys(mut self, scan: &ScanResult) -> Self {
+        self.hilbert = Some(HilbertKeys {
+            dataset_bbox: scan.dataset_bbox.unwrap_or([0.0; 6]),
+            axis_order: scan.axis_order,
+        });
+        self
+    }
+
+    /// The Hilbert keys of the rows of the batch `next` last returned (empty
+    /// without [`Self::with_hilbert_keys`]).
+    pub(crate) fn take_batch_keys(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.batch_keys)
+    }
+
     fn finish_batch(&mut self) -> Result<RecordBatch> {
+        self.batch_keys = std::mem::take(&mut self.keys);
         let arrays = self.writer.finish_arrays();
         Ok(RecordBatch::try_new(self.schema.clone(), arrays)?)
     }
@@ -1515,8 +1530,18 @@ impl BatchIter<'_> {
                     }
                     Some(Err(e)) => return Some(Err(e)),
                     Some(Ok(feature)) => {
+                        // spec 02 "Feature families are contiguous": the
+                        // root row opens its family's run, the rest follow
+                        // in id order.
                         let mut ids: Vec<String> = feature.city_objects.keys().cloned().collect();
-                        ids.sort();
+                        ids.sort_by(|a, b| (*a != feature.id, a).cmp(&(*b != feature.id, b)));
+                        if let Some(keys) = &self.hilbert {
+                            self.current_key = crate::order::centre_hilbert_key(
+                                crate::order::feature_centre(&feature.vertices, &self.transform),
+                                &keys.dataset_bbox,
+                                keys.axis_order,
+                            );
+                        }
                         self.current_object_ids = ids;
                         self.current_idx = 0;
                         self.current_feature = Some(feature);
@@ -1541,6 +1566,9 @@ impl BatchIter<'_> {
                 &mut self.appearance,
             ) {
                 return Some(Err(e));
+            }
+            if self.hilbert.is_some() {
+                self.keys.push(self.current_key);
             }
             if self.writer.len == self.batch_size {
                 return Some(self.finish_batch());
@@ -1580,45 +1608,17 @@ pub fn encode<'a>(
     let transform = source.header().transform.clone();
     let writer = RowWriter::new(scan);
     Ok(BatchIter {
-        features: FeatureStream::Source(features),
+        features,
         transform,
         schema,
         batch_size: batch_size.max(1),
         writer,
         current_feature: None,
         current_object_ids: Vec::new(),
-        current_idx: 0,
-        exhausted_input: false,
-        errored: false,
-        stats: EncodeStats::default(),
-        appearance: AppearanceInterner::new(),
-    })
-}
-
-/// Sibling entry point to [`encode`] for a caller that has already decided
-/// the feature order — the Hilbert row ordering (`crate::package::convert`):
-/// the features come from [`Source::features_in_order`] (or an
-/// [`OrderedFeatures`] over features already parsed), quantised against
-/// `transform`, the source header's. Everything else (schema, batch size,
-/// appearance interning, stats) is identical, because both entry points
-/// build the SAME [`BatchIter`] and share its [`BatchIter::advance`] loop.
-pub fn encode_in_order<'a>(
-    features: OrderedFeatures<'a>,
-    transform: &Transform,
-    scan: &ScanResult,
-    batch_size: usize,
-) -> Result<BatchIter<'a>> {
-    let schema = Arc::new(scan.schema.to_arrow_schema()?);
-    let transform = transform.clone();
-    let writer = RowWriter::new(scan);
-    Ok(BatchIter {
-        features: FeatureStream::Ordered(features),
-        transform,
-        schema,
-        batch_size: batch_size.max(1),
-        writer,
-        current_feature: None,
-        current_object_ids: Vec::new(),
+        hilbert: None,
+        current_key: 0,
+        keys: Vec::new(),
+        batch_keys: Vec::new(),
         current_idx: 0,
         exhausted_input: false,
         errored: false,

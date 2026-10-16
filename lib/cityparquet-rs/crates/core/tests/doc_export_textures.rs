@@ -60,10 +60,10 @@ fn railway_doc_export_round_trips_textures_losslessly() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.json");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
+    export(&ExportOptions::new(
+        package_dir.path().to_path_buf(),
+        output.clone(),
+    ))
     .unwrap();
 
     let report = compare_datasets(&railway_path, &output, &CompareOptions::default()).unwrap();

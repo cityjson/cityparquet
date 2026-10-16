@@ -1,5 +1,7 @@
 //! Merge several [`Source`]s into one logical CityJSON dataset for a single
-//! (optionally partitioned) conversion.
+//! (optionally partitioned) conversion. The merged source holds the inputs,
+//! not their features: it reads them one after another, so a merge costs no
+//! more memory than its largest input's streaming read.
 //!
 //! All inputs must share a CRS (else [`merge_sources`] errors). CityJSON
 //! quantisation (`transform`) may differ per input — 3DBAG tiles each carry
@@ -16,32 +18,20 @@
 //! across inputs in this milestone); more than one carrier is an error.
 //! `geographicalExtent` is stripped from the merged header so a partition's
 //! footer never advertises another input's extent.
-
-use std::collections::HashSet;
+//!
+//! Object ids must be unique across the inputs; the conversion's scan refuses
+//! a repeated one (`crate::scan::scan`).
 
 use cityparquet_schema::{CityParquetError, Result};
-use cjseq::{Appearance, CityJSON, CityJSONFeature, Transform};
+use cjseq::{Appearance, CityJSON, Transform};
 
 use crate::source::Source;
-
-/// One merged dataset: the shared header (merged transform, first input's
-/// metadata sans `geographicalExtent`, the sole template carrier's templates),
-/// every input's features concatenated (requantised onto the merged transform
-/// where needed), the doc-level appearance the templates resolve against, and
-/// how many feature ids collided across inputs.
-#[derive(Debug, Clone)]
-pub struct MergedDataset {
-    pub header: CityJSON,
-    pub features: Vec<CityJSONFeature>,
-    pub doc_appearance: Option<Appearance>,
-    pub duplicate_ids: usize,
-}
 
 fn err(msg: String) -> CityParquetError {
     CityParquetError::Schema(msg)
 }
 
-fn transform_eq(a: &Transform, b: &Transform) -> bool {
+pub(crate) fn transform_eq(a: &Transform, b: &Transform) -> bool {
     a.scale == b.scale && a.translate == b.translate
 }
 
@@ -65,7 +55,7 @@ fn crs_key(header: &CityJSON) -> Result<Option<serde_json::Value>> {
 /// `v' = round(v·(srcScale/mergedScale) + (srcTranslate − mergedTranslate)/mergedScale)`
 /// — the two ratios are precomputed per axis so a clean integral ratio
 /// (`merged` finer by an integer factor, same translate) round-trips exactly.
-fn requantise_vertices(vertices: &mut [[i64; 3]], src: &Transform, merged: &Transform) {
+pub(crate) fn requantise_vertices(vertices: &mut [[i64; 3]], src: &Transform, merged: &Transform) {
     let mut ratio = [0f64; 3];
     let mut offset = [0f64; 3];
     for i in 0..3 {
@@ -85,9 +75,22 @@ fn is_template_carrier(source: &Source) -> bool {
     source.header().geometry_templates.is_some()
 }
 
-/// Merge `sources` (non-empty) into one [`MergedDataset`]. See the module docs
-/// for the CRS / transform / template rules.
-pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
+/// Merge `sources` (non-empty) into one [`Source`] that reads them in turn.
+/// See the module docs for the CRS / transform / template rules.
+///
+/// The merged CRS is the operator's ([`Source::crs_is_operator_supplied`])
+/// only if every input's was: the inputs share one CRS, so a single input
+/// that declared it itself makes it source-declared.
+pub fn merge_sources(sources: Vec<Source>) -> Result<Source> {
+    let (header, doc_appearance) = merged_header(&sources)?;
+    let crs_is_operator_supplied = sources.iter().all(Source::crs_is_operator_supplied);
+    Ok(Source::chained(header, sources, doc_appearance)
+        .with_crs_operator_supplied(crs_is_operator_supplied))
+}
+
+/// The merged header of `sources` (non-empty), after checking that they can
+/// be merged, and the doc-level appearance its templates resolve against.
+pub(crate) fn merged_header(sources: &[Source]) -> Result<(CityJSON, Option<Appearance>)> {
     let first = sources
         .first()
         .ok_or_else(|| err("merge_sources: no sources".to_string()))?;
@@ -151,21 +154,6 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
         ));
     }
 
-    // Concatenate features, requantising onto the merged transform where the
-    // source's own transform differs from it.
-    let mut features: Vec<CityJSONFeature> = Vec::new();
-    for s in sources {
-        let src_t = &s.header().transform;
-        let needs_requantise = !transform_eq(src_t, &merged_transform);
-        for f in s.features()? {
-            let mut f = f?;
-            if needs_requantise {
-                requantise_vertices(&mut f.vertices, src_t, &merged_transform);
-            }
-            features.push(f);
-        }
-    }
-
     // Merged header: first input's, with the merged transform, no
     // geographicalExtent, and the sole carrier's templates (if any).
     let mut header = first.header().clone();
@@ -198,21 +186,5 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
         }
     };
 
-    // Duplicate feature ids across inputs: count, keep all. The count travels
-    // out on `MergedDataset::duplicate_ids` — warning about it is the caller's
-    // job, not this library's.
-    let mut seen: HashSet<&str> = HashSet::new();
-    let mut duplicate_ids = 0usize;
-    for f in &features {
-        if !seen.insert(f.id.as_str()) {
-            duplicate_ids += 1;
-        }
-    }
-
-    Ok(MergedDataset {
-        header,
-        features,
-        doc_appearance,
-        duplicate_ids,
-    })
+    Ok((header, doc_appearance))
 }

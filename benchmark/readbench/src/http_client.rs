@@ -6,6 +6,13 @@
 //! Cloudflare, which answers 403 to some default agents, so the benchmark
 //! reads with the same identity that prepared its inputs.
 //!
+//! No client sets a request timeout. A whole-object `GET` of a
+//! multi-gigabyte file over the simulated link legitimately takes minutes,
+//! and object_store's default 30 s timeout, which runs from connecting until
+//! the body has finished, is sized for latency-sensitive object-store
+//! clients. The object_store clients keep its 5 s connect timeout. A real
+//! target that stalls mid-transfer is therefore not guarded here.
+//!
 //! On a real target the coordinator also records the path it measured: the
 //! base URL's host and the addresses it resolved to at run start, and per
 //! object the `cf-cache-status` and `age` response headers, observed before
@@ -23,11 +30,14 @@ use reqwest::header::{HeaderValue, RANGE};
 pub const USER_AGENT: &str = "cityparquet-bench-prep/1";
 
 /// object_store's client options for every `HttpStore` the benchmark
-/// builds: plain `http://` allowed (the simulated network), [`USER_AGENT`].
+/// builds: plain `http://` allowed (the simulated network), [`USER_AGENT`],
+/// no request timeout (a whole-file `GET` over the simulated link takes
+/// minutes) and object_store's 5 s connect timeout.
 pub fn client_options() -> object_store::ClientOptions {
     object_store::ClientOptions::new()
         .with_allow_http(true)
         .with_user_agent(HeaderValue::from_static(USER_AGENT))
+        .with_timeout_disabled()
 }
 
 /// A `reqwest` client sending [`USER_AGENT`] (FlatCityBuf's range client,
@@ -170,6 +180,13 @@ mod tests {
             head.contains(&format!("user-agent: {USER_AGENT}")),
             "{head}"
         );
+    }
+
+    #[test]
+    fn client_options_set_no_request_timeout_but_keep_the_connect_timeout() {
+        let dbg = format!("{:?}", client_options());
+        assert!(dbg.contains(", timeout: None"), "{dbg}");
+        assert!(!dbg.contains(", connect_timeout: None"), "{dbg}");
     }
 
     #[test]

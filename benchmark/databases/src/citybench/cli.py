@@ -314,6 +314,12 @@ def _dataset_crs(args):
 
 
 def cmd_bench(args) -> int:
+    # Before any dataset is resolved, any database started or any system
+    # prepared. Recursive entries carry the probe in `args`.
+    if getattr(args, "extension_probe", None) is None:
+        systems = getattr(args, "systems", None)
+        args.extension_probe = _require_extension(
+            systems.split(",") if systems else list(DUCKDB_TAGS))
     if getattr(args, "datasets", None):
         prepared = Path(args.prepared_dir) if args.prepared_dir else BENCHMARK_DIR / "runs" / "data" / "readbench"
         status = 0
@@ -325,8 +331,6 @@ def cmd_bench(args) -> int:
     if not getattr(args, "ports", None):
         args.crs = _dataset_crs(args)
         args.srid, args.srid_assumed = srid_for(args.crs)
-    systems = getattr(args, "systems", None)
-    _require_extension(systems.split(",") if systems else list(DUCKDB_TAGS))
     record, gate = _isolation(args)
     # The public runner creates fresh, UUID-scoped databases when a data root
     # is supplied. Recursive entry carries only discovered ports.
@@ -438,7 +442,7 @@ def cmd_bench(args) -> int:
                 index_build=index_build,
                 size_detail=size_detail,
                 memory_read=dict(pg.MEMORY_READ),
-                versions=_versions(systems),
+                versions=_versions(systems, extension_probe=args.extension_probe),
                 pg_settings=pg_settings,
                 patches=_patches(systems),
                 srid=_srids(systems),
@@ -604,14 +608,31 @@ def _execution(resolved: dict[str, dict], repeat: int) -> dict:
 DUCKDB_TAGS = ("duckdb-cityparquet", "duckdb-cityparquet-writeback")
 
 
-def _require_extension(tags: list[str]) -> None:
-    """Refuse to start a run with a DuckDB system and no extension build.
+def _require_extension(tags: list[str]) -> tuple[Path, str | None] | None:
+    """Refuse to start a run with a DuckDB system and no loadable extension.
 
-    Checked before any database is started, so a missing build costs
-    nothing rather than failing the write tier hours into the run.
+    Resolves the build and loads it once into a fresh connection, before
+    any database is started, so a missing build, or one made for another
+    DuckDB version, costs nothing rather than failing every DuckDB row
+    while the PostgreSQL imports run. Returns ``(path, reported version)``
+    for `_versions`, or None when no selected system uses DuckDB.
     """
-    if any(tag in DUCKDB_TAGS for tag in tags):
-        extension.resolve()
+    if not any(tag in DUCKDB_TAGS for tag in tags):
+        return None
+    import duckdb
+
+    path = extension.resolve()
+    try:
+        return path, _extension_reported_version(path)
+    except duckdb.Error as exc:
+        raise SystemExit(
+            f"cannot load the DuckDB CityJSON extension {path} into this "
+            f"client (duckdb {duckdb.__version__}):\n  {exc}\n"
+            "Rebuild it against this DuckDB version (from the repository "
+            "root, `just -f lib/duckdb-cityjson/justfile build`) or point "
+            f"{extension.ENV_VAR} at a build for duckdb {duckdb.__version__}. "
+            "Nothing was started."
+        ) from exc
 
 
 def _extension_reported_version(path: Path) -> str | None:
@@ -623,7 +644,8 @@ def _extension_reported_version(path: Path) -> str | None:
         conn.close()
 
 
-def _versions(systems: list) -> dict[str, str]:
+def _versions(systems: list, *,
+              extension_probe: tuple[Path, str | None] | None = None) -> dict[str, str]:
     import duckdb
 
     versions = {"duckdb": duckdb.__version__}
@@ -631,10 +653,15 @@ def _versions(systems: list) -> dict[str, str]:
     # model, so which build of that extension answered is part of the
     # result, not an environment detail: its path, the submodule commit,
     # the file's SHA-256 and the version it reports (`citybench.extension`).
+    # The version comes from the run's preflight load when it loaded this
+    # same build (`_require_extension`).
     if any(s.tag in DUCKDB_TAGS for s in systems):
         path = extension.resolve()
-        versions.update(extension.provenance(
-            path, reported=_extension_reported_version(path)))
+        if extension_probe is not None and extension_probe[0] == path:
+            reported = extension_probe[1]
+        else:
+            reported = _extension_reported_version(path)
+        versions.update(extension.provenance(path, reported=reported))
     if any(s.tag == "cjdb" for s in systems):
         from citybench.systems.cjdb import CJDB_UPSTREAM_VERSION
 

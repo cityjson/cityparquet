@@ -152,31 +152,37 @@ emits an `other` entry that duplicates an attribute.
 
 ### Extensions
 
-Every name a CityJSON Extension adds carries the extension's **namespace** as
-a `<namespace>_` prefix: the namespace is the extension's name (the key of the
-source's `extensions` member) lower-cased with every character outside
-`[a-z0-9]` removed, so `Energy` gives `energy`. A `+heatCapacity` attribute
+Every name a CityJSON Extension or CityGML ADE adds carries the extension's
+**namespace** as a `<namespace>_` prefix: the namespace is the extension's name
+(the key of the source's `extensions` member, for an ADE the prefix the
+document binds) lower-cased with every character outside `[a-z0-9]` removed,
+so `Energy` gives `energy`. A `+heatCapacity` attribute
 becomes the column `energy_heatCapacity` (tagged with the `extension` role), a
 `+PartyWallSurface` semantic surface becomes the `geometry_properties` surface
 type `energy_PartyWallSurface`, and a `+`-marked class is stored in
 `object_type` as `energy_<Class>` (a `+`-marked core class still routes to its
-core module file). An extension module file is named `<namespace>_<module>`
+core module file, a class whose `extraCityObjects` schema refers to a
+definition of CityJSON's `cityobjects.schema.json` to that definition's module,
+any other to its extension's own file, `<namespace>.parquet`).
+An extension module file is named `<namespace>_<module>`
 (`energy_building_physics.parquet`). Core names are never prefixed.
 
 The declarations are written to the `city.extensions` footer metadata, keyed
 by namespace, each a reference (`name`, `url`, optional `version`) to the
-extension's schema document. Export strips a declared prefix back to CityJSON's
+extension's schema document, with an ADE's `xmlns` and `xmlAttributes` and
+the `extra*` members naming what the extension adds, when the source gives
+them. Export strips a declared prefix back to CityJSON's
 `+` and rebuilds the `extensions` member from these references.
 
-The writer attributes a `+` name only when the source declares exactly one
-extension. A `+` name in a source declaring none is rejected (CityJSON
-requires the declaration); a source declaring several is rejected too, since
-attributing each name needs the extensions' schema documents, which this
-implementation does not read. A core attribute, surface type or class whose
+The writer attributes a `+` name to the sole declared extension, or among
+several to the one whose `extra*` members list it. A `+` name in a source
+declaring none is rejected (CityJSON requires the declaration), and so is
+one that none or several of the declared extensions list, since reading the
+extensions' schema documents is not implemented. A core attribute, surface type or class whose
 name begins with a declared namespace prefix is rejected, as it could not be
 told apart from an extension name on export. Extension class routing uses a
-registry that is a stub: a `+` class that is not a core class has no module
-to route to and is rejected.
+registry that is a stub, as no schema document is read: a `+` class that is
+not a core class goes to its extension's own file.
 
 ### Geometry
 
@@ -235,12 +241,15 @@ By default, rows are reordered along a **2D Hilbert curve** over the
 bbox centroid (`x`/`y` only — city models are height-thin, so `z` would waste
 curve resolution), clustering spatially-near features into the same or
 adjacent row groups. This improves bbox row-group pruning for windowed
-spatial reads. The scan keeps each feature's centre, and the encode pass
-reads the features back in key order: a CityJSONSeq line by its byte span, a
-CityJSON document feature by index. A CityGML or FlatCityBuf input can only
-be read front to back, so the scan keeps its features parsed and peak memory
-grows with the input; `--ordering source` (`RowOrder::Source`) streams
-features in source order instead, one at a time, for any input.
+spatial reads. Every row of a feature takes the feature's key, ties broken by
+source order, so a feature family's rows stay contiguous in each table (the
+specification requires it). The encode pass runs in source order and the rows
+go through an external merge sort that holds at most `--memory-budget` of
+them and spills sorted runs to temporary Arrow IPC files beyond it. Peak
+memory is then the budget plus, while merging, one run batch (at most 1,024
+rows or about 8 MiB) per run, and one 128-bit hash per object for the
+duplicate-id check; a `.city.json` input is held whole. `--ordering source`
+(`RowOrder::Source`) writes rows in source order with no sort.
 
 ### Appearance
 

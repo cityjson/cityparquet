@@ -81,11 +81,7 @@ fn a_multilinestring_is_stored_as_multicurve_and_exported_back() {
     assert!(report.violations.is_empty(), "{report}");
 
     let exported = dir.path().join("exported.city.jsonl");
-    export(&ExportOptions {
-        package_dir: pkg,
-        output: exported.clone(),
-    })
-    .unwrap();
+    export(&ExportOptions::new(pkg, exported.clone())).unwrap();
     let equal = compare_datasets(&source, &exported, &CompareOptions::default()).unwrap();
     assert!(equal.equal, "{:#?}", equal.differences);
 }

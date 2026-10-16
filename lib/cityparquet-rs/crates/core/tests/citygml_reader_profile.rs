@@ -2,13 +2,10 @@
 //! (the readbench `citygml` runner) depends on, both exercised against real /
 //! committed fixtures, never inline hand-written GML.
 //!
-//! 1. **What the reader did not read.** The reader maps `bldg:Building` plus a
-//!    fixed list of 1st-level non-building types; a `cityObjectMember` of any
-//!    other type is skipped. Skipping is right for the conversion pipeline —
-//!    it must keep ingesting the mapped part of a real national export — but a
-//!    caller that publishes a COUNT has to be able to tell "this document holds
-//!    nothing I map" from "this document is empty". So the reader now tallies
-//!    what it skipped, by element name.
+//! 1. **What the reader did not read.** A `cityObjectMember` of a type the
+//!    reader does not map is skipped and tallied by element name (the
+//!    `citygml2` crate's own tests prove the tally on a real file). A
+//!    document whose members are all mapped must tally nothing.
 //! 2. **An appearance-free open.** `FeatureReader::open` re-reads the whole
 //!    document up front to index every CityModel-level `app:appearanceMember`
 //!    (so a material can be applied to a building regardless of where in the
@@ -50,40 +47,8 @@ fn read(
     (features, skipped)
 }
 
-/// `plateau_trk_fragment.gml` is three `tran:Track` members lifted verbatim
-/// from a real PLATEAU `trk` tile. `Track` is not a type this reader maps, so
-/// the stream is empty — and the tally is what makes that distinguishable from
-/// an empty document.
-#[test]
-fn the_reader_tallies_city_object_members_it_does_not_map() {
-    let (features, skipped) = read(&data_fixture("plateau_trk_fragment.gml"), false);
-    assert!(
-        features.is_empty(),
-        "no Track is mapped, so no feature is emitted"
-    );
-    assert_eq!(
-        skipped,
-        vec![("tran:Track".to_string(), 3)],
-        "the tally must name the element type as the document spells it, and \
-         count every skipped member"
-    );
-}
-
-/// The tally counts the MEMBER's own object once, not every unmapped element
-/// in its subtree: a `tran:Track` holds `tran:TrafficArea`s,
-/// `gml:MultiSurface`es and so on, none of which are members.
-#[test]
-fn the_tally_counts_members_not_every_unmapped_element_beneath_them() {
-    let (_, skipped) = read(&data_fixture("plateau_trk_fragment.gml"), false);
-    let total: usize = skipped.iter().map(|(_, n)| n).sum();
-    assert_eq!(
-        total, 3,
-        "three members, however deep each one's unmapped subtree goes"
-    );
-}
-
-/// The other side of the guard: a document whose members are all mapped must
-/// tally nothing, or every valid input would be refused.
+/// A document whose members are all mapped tallies nothing, or every valid
+/// input would be refused.
 #[test]
 fn a_fully_mapped_document_tallies_nothing() {
     for (name, expected_features) in [
