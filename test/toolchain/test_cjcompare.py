@@ -413,3 +413,42 @@ def test_dropped_face_fails_geometry(railway, tmp_path):
     for t in (g.get("texture") or {}).values():
         t["values"].pop()
     assert status(cjcompare.compare(str(RAILWAY), write(tmp_path, d)), "geometry") == "fail"
+
+
+ROTTERDAM = CORPUS / "3-20-DELFSHAVEN.city.json"
+
+
+def _escaped(doc: dict, name=None) -> dict:
+    # Every id as the CityGML writers escape it, objects in reverse order so
+    # that pairing by position would mismatch them.
+    name = name or cjcompare._ncname
+    d = copy.deepcopy(doc)
+    objects = {}
+    for oid, co in reversed(list(d["CityObjects"].items())):
+        for k in ("parents", "children"):
+            if k in co:
+                co[k] = [name(x) for x in co[k]]
+        objects[name(oid)] = co
+    d["CityObjects"] = objects
+    return d
+
+
+def test_escaped_ids_are_paired_by_their_escape_and_fail(tmp_path):
+    with open(need(ROTTERDAM), encoding="utf-8") as f:
+        rotterdam = json.load(f)
+    rep = cjcompare.compare(str(ROTTERDAM), write(tmp_path, _escaped(rotterdam)), pair_unmatched=True)
+    assert len(rep["failures"]) == len(rotterdam["CityObjects"])
+    assert all(" written as _" in f for f in rep["failures"])
+    for cat in ("hierarchy", "attributes", "geometry", "coordinates", "semantics", "textures"):
+        assert status(rep, cat) in ("pass", "n/a"), (cat, rep["examples"])
+
+
+def test_escaped_ids_swapped_between_objects_fail_their_content(tmp_path):
+    with open(need(ROTTERDAM), encoding="utf-8") as f:
+        rotterdam = json.load(f)
+    x, y = list(rotterdam["CityObjects"])[:2]
+    swap = {x: y, y: x}
+    d = _escaped(rotterdam, lambda i: cjcompare._ncname(swap.get(i, i)))
+    rep = cjcompare.compare(str(ROTTERDAM), write(tmp_path, d), pair_unmatched=True)
+    assert status(rep, "coordinates") == "fail" or status(rep, "geometry") == "fail"
+    assert status(rep, "attributes") == "fail"
