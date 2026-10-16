@@ -107,3 +107,11 @@ fn a_version_without_a_writer_is_refused() {
     let refused = Writer::new(&version, Vec::new(), &header, WriterOptions::default());
     assert!(refused.is_err());
 }
+
+#[test]
+fn text_before_the_root_is_not_a_citygml_document() {
+    // The head of a document published as the repr of a Python bytes object,
+    // `b'<?xml …'`: no XML parser reads it.
+    let path = data("citygml3", "ingolstadt_python_bytes_head.gml");
+    assert_eq!(sniff(&path), None);
+}
