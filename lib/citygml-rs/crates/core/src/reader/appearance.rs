@@ -165,11 +165,8 @@ fn read_x3d_material<R: BufRead>(
                             m.is_smooth = Some(matches!(v.trim(), "true" | "1"));
                         }
                         b"target" => {
-                            let t = read_text(reader, buf)?;
-                            if let Some(id) = t.trim().strip_prefix('#')
-                                && !id.is_empty()
-                            {
-                                m.targets.push(id.to_string());
+                            if let Some(id) = local_ref(&read_text(reader, buf)?) {
+                                m.targets.push(id);
                             }
                         }
                         _ => skip_element(reader, buf)?,
@@ -271,7 +268,7 @@ fn read_tex_coord_list<R: BufRead>(
     app: &str,
     rings: &mut Vec<RingUvs>,
 ) -> Result<()> {
-    let ring_id = |text: &str| text.trim().strip_prefix('#').map(str::to_string);
+    let ring_id = local_ref;
     // 3.0's coordinates, waiting for the `ring`s that follow them.
     let mut unpaired: Vec<Vec<[f64; 2]>> = Vec::new();
     let mut ids: Vec<String> = Vec::new();
@@ -305,6 +302,16 @@ fn read_tex_coord_list<R: BufRead>(
     }
     rings.extend(ids.into_iter().zip(unpaired));
     Ok(())
+}
+
+/// The `gml:id` an appearance's `target` or `ring` names. Both are
+/// `anyURI`s: `#id` is the usual spelling, but a bare `id` is the same
+/// same-document reference (the published LoD3_Railway.gml names its rings
+/// so), and a reference into another document names nothing here.
+fn local_ref(text: &str) -> Option<String> {
+    let text = text.trim();
+    let id = text.strip_prefix('#').unwrap_or(text);
+    (!id.is_empty() && !id.contains(['#', '/'])).then(|| id.to_string())
 }
 
 /// A whitespace-separated UV list as `[u, v]` pairs, without the closing
