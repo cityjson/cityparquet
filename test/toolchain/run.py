@@ -45,7 +45,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 PROFILES = {"quick": {"quick"}, "full": {"quick", "full"}, "xl": {"quick", "full", "xl"}}
-EXT = {"cityjson": ".city.json", "cityjsonseq": ".city.jsonl", "fcb": ".fcb", "citygml2": ".gml"}
+EXT = {"cityjson": ".city.json", "cityjsonseq": ".city.jsonl", "fcb": ".fcb", "citygml2": ".gml", "citygml3": ".gml"}
 DUCK_FORMAT = {"cityjson": "cityjson", "cityjsonseq": "cityjsonseq", "fcb": "flatcitybuf"}
 STEP_TIMEOUT = int(os.environ.get("TOOLCHAIN_STEP_TIMEOUT", "3600"))
 
@@ -139,7 +139,19 @@ def _fix_address_location_lod(src: Path, dest: Path) -> None:
     dest.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
-FIXES = {"integer-vertices": _fix_integer_vertices, "address-location-lod": _fix_address_location_lod}
+def _fix_python_bytes_literal(src: Path, dest: Path) -> None:
+    """A document published as the repr of a Python bytes object
+    (`b'<?xml …'`) instead of the bytes themselves: its literal, evaluated."""
+    import ast
+
+    dest.write_bytes(ast.literal_eval(src.read_text(encoding="ascii")))
+
+
+FIXES = {
+    "integer-vertices": _fix_integer_vertices,
+    "address-location-lod": _fix_address_location_lod,
+    "python-bytes-literal": _fix_python_bytes_literal,
+}
 
 
 def fetch(profile: str) -> int:
@@ -390,7 +402,7 @@ def run_dataset(r: Run, ds: dict, corpus: Path, keep: bool) -> None:
     have_dk = "cityjson_ext" not in r.missing
     have_3d = have_dk and "three_d_ext" not in r.missing
     have_gt = "citygml_tools" not in r.missing
-    is_gml = fmt == "citygml2"
+    is_gml = fmt in ("citygml2", "citygml3")
     out_ext = ".city.jsonl" if fmt == "fcb" else EXT[fmt]
 
     if not src.exists():
@@ -424,7 +436,7 @@ def run_dataset(r: Run, ds: dict, corpus: Path, keep: bool) -> None:
         rc, out, secs = r.sh([cp, "validate", pkg_rs])
         r.record(ds, "rs validate (rs package)", "pass" if rc == 0 else "fail", out[-1500:], seconds=secs)
         rs_out = d / f"rs_out{out_ext}"
-        rc, out, secs = r.sh([cp, "export", pkg_rs, rs_out])
+        rc, out, secs = r.sh([cp, "export", pkg_rs, rs_out, *(["--citygml-version", "3.0"] if fmt == "citygml3" else [])])
         r.record(ds, "rs export (rs package)", "pass" if rc == 0 else "fail", out[-1500:], seconds=secs)
         if rc == 0:
             if is_gml:
@@ -511,7 +523,7 @@ def run_dataset(r: Run, ds: dict, corpus: Path, keep: bool) -> None:
             if not made:
                 # The writer failed, and that step already says so.
                 continue
-            if kind == "citygml2":
+            if kind in ("citygml2", "citygml3"):
                 continue
             res, secs = r.duck("measure", path, kind, d / f"measure_{label.replace(' ', '_')}.parquet")
             if res.get("ok"):
@@ -608,7 +620,7 @@ def agree(r: Run, ds: dict, step: str, a: Path, b: Path) -> None:
         r.record(ds, step, "pass", f"{total[0]} geometries, {total[1]} parsed as solids", rows=total[0])
         return
     kinds = Counter("missing" if x[2] or x[3] else ("topology" if x[4] else "measure") for x in rows)
-    ex = [f"{x[0]} {x[1]}: parsed {x[7]}/{x[8]} valid {x[9]}/{x[10]} faces {x[11]}/{x[12]} volume {x[13]}/{x[14]}" for x in rows[:6]]
+    ex = [f"{x[0]} {x[1]}: parsed {x[6]}/{x[7]} valid {x[8]}/{x[9]} faces {x[10]}/{x[11]} volume {x[12]}/{x[13]}" for x in rows[:6]]
     r.record(ds, step, "fail", f"{len(rows)} of {total[0]} geometries differ {dict(kinds)}\n" + "\n".join(ex), rows=total[0])
 
 

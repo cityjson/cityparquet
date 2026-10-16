@@ -395,7 +395,7 @@ kind = "derived"
 exercises = "Building/BuildingPart in FlatCityBuf (fcb_core writer, benchmark corpus)"
 
 # --------------------------------------------------------------------------
-# CityGML 3.0 — no reader in the tool chain yet
+# CityGML 3.0
 # --------------------------------------------------------------------------
 
 [[dataset]]
@@ -403,13 +403,14 @@ id = "ingolstadt-gml3"
 format = "citygml3"
 file = "Ingolstadt.gml"
 url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/citygml/Ingolstadt.gml"
-bytes = 29744141
-sha256 = "507eec11a46b525718b6dd33a0dea9cc18c546c9fc173734988269d20f0f3966"
+bytes = 29744133
+sha256 = "3c6704e83088edf8ebc792538a0285abe0498cc895e49ec383f01841bc124a6c"
+source_bytes = 29744141
+source_sha256 = "507eec11a46b525718b6dd33a0dea9cc18c546c9fc173734988269d20f0f3966"
+derive = "fix:python-bytes-literal"
 profile = "quick"
 kind = "real"
-exercises = "LoD3 with openings, as CityGML 3.0"
-status = "pending"
-reason = "no CityGML 3.0 reader yet (the citygml3 crate is planned in the CityGML reader redesign)"
+exercises = "LoD3 with openings, as CityGML 3.0 (published as a Python bytes literal, b'<?xml …', which no XML parser reads; the fix evaluates the literal)"
 
 [[dataset]]
 id = "3dbag-tile-gml3"
@@ -421,8 +422,6 @@ sha256 = "507b0969eee567496c9838580afbbfbb6d7e95df6f61853ef259d68334c6b5fd"
 profile = "quick"
 kind = "real"
 exercises = "multi-LoD 3DBAG tile as CityGML 3.0"
-status = "pending"
-reason = "no CityGML 3.0 reader yet (the citygml3 crate is planned in the CityGML reader redesign)"
 
 # --------------------------------------------------------------------------
 # 3DCityDB (`run.py citydb`, citydb.py)
