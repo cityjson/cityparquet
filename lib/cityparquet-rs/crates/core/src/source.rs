@@ -297,6 +297,27 @@ impl Source {
         self.format
     }
 
+    /// The version of the schema the source is written in: the CityGML
+    /// version of a CityGML document, the 3DCityDB version of a database,
+    /// and the CityJSON version otherwise.
+    pub fn source_version(&self) -> String {
+        if let Some((version, _)) = &self.citygml {
+            return match version {
+                crate::citygml::CityGmlVersion::V2_0 => "2.0".to_string(),
+                crate::citygml::CityGmlVersion::V3_0 => "3.0".to_string(),
+                crate::citygml::CityGmlVersion::Other(v) => v.clone(),
+            };
+        }
+        #[cfg(feature = "citydb")]
+        if let Some(db) = &self.citydb {
+            return db.version().to_string();
+        }
+        serde_json::to_value(self.header.version)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .expect("a CityJSON version serialises as a string")
+    }
+
     pub fn header(&self) -> &CityJSON {
         &self.header
     }

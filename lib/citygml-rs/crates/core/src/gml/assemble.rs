@@ -9,7 +9,8 @@
 //! the references and decides which geometry each LoD gets:
 //!
 //! - a `lodNSolid` is that LoD's geometry, its faces tagged with the boundary
-//!   surface that holds (or xlinks) the same polygon;
+//!   surface that holds (or xlinks) the same polygon; a boundary-surface
+//!   face it does not refer to is left out, with a warning;
 //! - a LoD with boundary-surface geometry and no solid gets one MultiSurface
 //!   of those faces, plus any standalone face at that LoD none of them holds;
 //! - a standalone `lodNMultiSurface` at a LoD with no boundary geometry is a
@@ -410,6 +411,35 @@ impl ObjectBuilder {
         let mut geometries = Vec::new();
         for (lod, geom) in &self.solids {
             geometries.push(self.solid_geometry(geom, lod, budget)?);
+        }
+        // One geometry per LoD: boundary-surface faces the solid of their LoD
+        // does not refer to are left out, and said to be.
+        for (lod, _) in &self.solids {
+            let referred: HashSet<&str> = geometries
+                .iter()
+                .filter(|g| &g.lod == lod)
+                .flat_map(|g| g.shape.faces())
+                .filter_map(|f| f.id.as_deref())
+                .collect();
+            let polygons = self
+                .boundary_polys
+                .iter()
+                .filter(|(_, l, p)| {
+                    l == lod && p.id.as_deref().is_none_or(|id| !referred.contains(id))
+                })
+                .count();
+            let links = self
+                .boundary_refs
+                .iter()
+                .filter(|(_, l, x)| l == lod && !referred.contains(x.id.as_str()))
+                .count();
+            let beside = polygons + links;
+            if beside > 0 {
+                eprintln!(
+                    "warning: {beside} boundary-surface face(s) of {} at LoD {lod} are not faces of its solid there; left out",
+                    self.describe()
+                );
+            }
         }
         // A LoD whose boundary surfaces carry geometry gets that geometry
         // below, which takes in any standalone face of the same LoD; two

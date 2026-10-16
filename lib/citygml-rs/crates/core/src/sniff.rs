@@ -2,7 +2,8 @@
 //!
 //! Reads events only until the first `Start` element and checks it is a
 //! `CityModel` in a CityGML core namespace. Any I/O or XML error (a JSON file,
-//! say) means "not CityGML", so a caller can fall back to another format.
+//! say), or text before the root, which XML does not allow, means "not
+//! CityGML", so a caller can fall back to another format.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -59,6 +60,8 @@ pub fn sniff_from<R: BufRead>(input: R) -> Option<Version> {
                 }
                 return None;
             }
+            // XML allows no character data outside the root element.
+            Ok((_, Event::Text(t))) if !t.iter().all(u8::is_ascii_whitespace) => return None,
             Ok((_, Event::Eof)) | Err(_) => return None,
             Ok(_) => {}
         }

@@ -251,6 +251,7 @@ class Obj:
     address: list[dict[str, Any]]
     geoms: list[Geom]
     unmapped: tuple[str, ...]  # CityObject members outside the CityJSON core set
+    children_order: tuple[str, ...] = ()  # `children` as listed, for pairing
 
 
 def _canon_lod(lod: Any) -> str | None:
@@ -516,6 +517,7 @@ def load(path: str) -> Side:
                 addr,
                 [_canon_geometry(g, chunk) for g in co.get("geometry", []) or []],
                 unmapped,
+                tuple(co.get("children", []) or []),
             )
     return Side(ds, objects, dropped, dups)
 
@@ -1084,26 +1086,77 @@ def compare(
     }
 
 
+def _ncname(i: str) -> str:
+    """`i` as the CityGML writers make it an XML name for `gml:id`: each
+    character a name cannot hold becomes `_`, and one that cannot start a
+    name is preceded by `_`."""
+    start = lambda c: c == "_" or c.isalpha()
+    inner = lambda c: start(c) or c in "-." or c.isalnum()
+    if i and start(i[0]) and all(inner(c) for c in i):
+        return i
+    return ("" if i and start(i[0]) else "_") + "".join(c if inner(c) else "_" for c in i)
+
+
+def _in_parent_order(side: Side, ids: list[str]) -> list[str]:
+    """`ids`, siblings of one parent, in the order the parent lists its
+    children; objects of the document's own order otherwise."""
+    parents = {p for i in ids for p in side.objects[i].parents}
+    if len(parents) != 1:
+        return ids
+    parent = side.objects.get(next(iter(parents)))
+    order = {c: k for k, c in enumerate(parent.children_order if parent else ())}
+    return sorted(ids, key=lambda i: order.get(i, len(order)))
+
+
 def _pair_unmatched(a: Side, b: Side, t: Tally) -> None:
-    """A CityGML object without a gml:id gets an id from whoever reads it,
-    so the two sides name it differently. Objects found on one side only are
-    paired by type and order of appearance, when each type has as many on
-    both sides; the output's are renamed to the source's ids."""
+    """Objects found on one side only, paired so that the rest of the
+    comparison sees them; the output's are renamed to the source's ids.
+
+    An id that is not an XML name comes back as the writer escaped it: such
+    objects are paired by that escape, one to one, and each is a failure,
+    since the id changed. A CityGML object without a gml:id gets an id from
+    whoever reads it, so the two sides name it differently: what is left is
+    paired by type and order of appearance, first among the children of one
+    parent and then over the whole document, wherever a type has as many on
+    both sides."""
     only_a = [i for i in a.objects if i not in b.objects]
     only_b = [i for i in b.objects if i not in a.objects]
-    by_type_a: dict[str, list[str]] = defaultdict(list)
-    by_type_b: dict[str, list[str]] = defaultdict(list)
-    for i in only_a:
-        by_type_a[a.objects[i].otype].append(i)
-    for i in only_b:
-        by_type_b[b.objects[i].otype].append(i)
     rename: dict[str, str] = {}
-    for otype, ids in by_type_a.items():
-        if len(ids) == len(by_type_b.get(otype, [])):
-            rename.update(zip(by_type_b[otype], ids))
+    escaped: dict[str, list[str]] = defaultdict(list)
+    for i in only_a:
+        escaped[_ncname(i)].append(i)
+    unmatched_b = set(only_b)
+    for e, ids in escaped.items():
+        if len(ids) == 1 and e != ids[0] and e in unmatched_b:
+            rename[e] = ids[0]
+            unmatched_b.discard(e)
+            t.record("fail", "objects", f"{ids[0]} written as {e}")
+    only_a = [i for i in only_a if i not in rename.values()]
+    only_b = [i for i in only_b if i in unmatched_b]
+    # Children are paired within their paired parent first, since a writer
+    # may order the objects of a document differently; what is left, by
+    # type over the whole document.
+    by_position: dict[str, str] = {}
+    for key in (
+        lambda o, ren: (tuple(sorted(ren(x) for x in o.parents)), o.otype),
+        lambda o, ren: o.otype,
+    ):
+        groups_a: dict = defaultdict(list)
+        groups_b: dict = defaultdict(list)
+        for i in only_a:
+            groups_a[key(a.objects[i], lambda x: x)].append(i)
+        for i in only_b:
+            groups_b[key(b.objects[i], lambda x: rename.get(x, x))].append(i)
+        for k, ids in groups_a.items():
+            if k and len(ids) == len(groups_b.get(k, [])):
+                by_position.update(zip(_in_parent_order(b, groups_b[k]), _in_parent_order(a, ids)))
+        only_a = [i for i in only_a if i not in by_position.values()]
+        only_b = [i for i in only_b if i not in by_position]
+    if by_position:
+        t.record("noted", "objects", f"{len(by_position)} object(s) without a common id paired by type and position, e.g. {next(iter(by_position.items()))}")
+    rename.update(by_position)
     if not rename:
         return
-    t.record("noted", "objects", f"{len(rename)} object(s) without a common id paired by type and position, e.g. {next(iter(rename.items()))}")
 
     def ren(x: str) -> str:
         return rename.get(x, x)
@@ -1112,6 +1165,7 @@ def _pair_unmatched(a: Side, b: Side, t: Tally) -> None:
     for i, o in b.objects.items():
         o.parents = tuple(sorted(ren(x) for x in o.parents))
         o.children = tuple(sorted(ren(x) for x in o.children))
+        o.children_order = tuple(ren(x) for x in o.children_order)
         o.roles = tuple(sorted((ren(x), r) for x, r in o.roles))
         objects[ren(i)] = o
     b.objects = objects
@@ -1143,7 +1197,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tol", help="coordinate tolerance in CRS units, one value or x,y,z (default: one quantum of the coarser transform)")
     p.add_argument("--uv-tol", type=float, default=1e-9)
     p.add_argument("--json", help="write the full report here")
-    p.add_argument("--pair-unmatched", action="store_true", help="pair objects found on one side only by type and position (CityGML without gml:id)")
+    p.add_argument("--pair-unmatched", action="store_true", help="pair objects found on one side only by their escape as an XML name, then by type and position (CityGML without gml:id)")
     p.add_argument("--any-face-order", action="store_true", help="pair a surface's faces by their geometry, not their position (a writer that reorders them)")
     args = p.parse_args(argv)
     tol = None

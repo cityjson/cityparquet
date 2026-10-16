@@ -256,6 +256,34 @@ fn a_lod3_building_and_relief_survive_the_writer() {
     survives("tin_relief_fragment.gml", &[]);
 }
 
+/// A TINRelief is written inside a `dem:ReliefFeature`, as the source holds
+/// it: citygml-tools (citygml4j) reads no relief from a bare TINRelief.
+#[test]
+fn a_tin_relief_is_written_in_a_relief_feature() {
+    for gml in ["lod4_building_v2.gml", "tin_relief_fragment.gml"] {
+        let transform = Transform {
+            scale: [1e-9, 1e-9, 1e-3],
+            translate: [0.0; 3],
+        };
+        let (header, features) = read(&data(gml), &transform);
+        let out = scratch(&format!("relief_{gml}"));
+        write(&header, &features, &out, BTreeMap::new());
+        let written = std::fs::read_to_string(&out).unwrap();
+        let source = std::fs::read_to_string(data(gml)).unwrap();
+        for element in [
+            "<dem:ReliefFeature",
+            "<dem:reliefComponent>",
+            "<dem:TINRelief",
+        ] {
+            assert_eq!(
+                written.matches(element).count(),
+                source.matches(element).count(),
+                "{gml}: {element}"
+            );
+        }
+    }
+}
+
 #[test]
 fn groups_and_implicit_geometries_survive_the_writer() {
     survives("railway_trees_fragment.gml", &[]);

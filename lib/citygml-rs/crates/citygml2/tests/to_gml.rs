@@ -321,3 +321,17 @@ fn three_d_bag_survives_the_model_but_its_nulls() {
         &["attributes whose value is null"],
     );
 }
+
+#[test]
+fn an_id_that_is_not_an_xml_name_is_renamed_and_counted() {
+    let (before, after, losses) = foreign(&data("rotterdam_braced_ids.city.jsonl"));
+    let renamed = losses
+        .iter()
+        .find(|(what, _)| what.starts_with("ids that are not XML names"))
+        .map(|(_, n)| n);
+    assert_eq!(renamed, Some(before.len()), "{losses:?}");
+    for (b, a) in before.iter().zip(&after) {
+        let id = b["id"].as_str().unwrap();
+        assert_eq!(a["id"], id.replace(['{', '}'], "_").replacen("", "_", 1));
+    }
+}
