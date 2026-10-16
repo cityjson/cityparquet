@@ -30,10 +30,11 @@ APM (Claude Code and Codex):
 apm install cityjson/cityparquet/ai/plugin
 ```
 
-The plugin does **not** register the MCP server. Claude Code copies a plugin
-into its own cache, so it cannot reach `../mcp`, and the server is not
-published as a package yet. Build the server from a clone and register it
-yourself; [`../mcp/README.md`](../mcp/README.md) has the steps.
+The Claude Code plugin also registers the [MCP server](../mcp) (`.mcp.json`),
+started with `npx -y @cityjson/cityparquet-mcp`, so it needs Node 24 or later.
+APM installs the skills only: register the server yourself with
+`claude mcp add cityparquet -- npx -y @cityjson/cityparquet-mcp`, or see
+[`../mcp/README.md`](../mcp/README.md) for other clients and the hosted endpoint.
 
 ## Keeping them honest
 

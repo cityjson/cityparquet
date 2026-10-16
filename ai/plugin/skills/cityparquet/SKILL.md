@@ -82,5 +82,14 @@ created in one call is gone by the next: put a whole workflow in one
 Run the same SQL in the `duckdb` CLI, **version 1.5.5**, after
 `INSTALL cityjson FROM community; INSTALL three_d FROM community; LOAD cityjson; LOAD three_d; LOAD spatial;`.
 Older DuckDB versions install older builds of both extensions, which lack most
-of what the documentation describes. The specification is published at
-<https://cityjson.github.io/cityparquet/>.
+of what the documentation describes.
+
+Read the specification from the published site, not from guessed URLs.
+<https://cityjson.github.io/cityparquet/llms.txt> lists every page. A
+specification chapter is at `/specification/<chapter>` and a design decision at
+`/design-decisions/<decision>`, both under `https://cityjson.github.io/cityparquet`,
+with the chapter ids the MCP server uses (`object-table-schema`,
+`geometry-semantics`, …; `geometry-encoding`, `spatial-access`, …). Add `.md` to
+a page's URL for its Markdown source. `llms-full.txt` is the whole site in one
+file. The function references are each extension's `docs/FUNCTIONS.md` on
+GitHub (`cityjson/duckdb-cityjson`, `cityjson/duckdb-3d`).
