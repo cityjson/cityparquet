@@ -2,8 +2,8 @@
 
 Rust reference implementation of **CityParquet** — a cloud-native, columnar
 Parquet encoding for 3D city models, with an Arrow in-memory representation. It
-reads CityJSON, CityJSONSeq, CityGML 2.0 and FlatCityBuf, and writes CityJSON,
-CityJSONSeq and (for buildings) CityGML 2.0. Part of the CityParquet + CityLake research stack
+reads and writes CityJSON, CityJSONSeq and CityGML 2.0 and 3.0, and reads
+FlatCityBuf and 3DCityDB v5 databases. Part of the CityParquet + CityLake research stack
 (TU Delft 3D Geoinformation).
 
 CityParquet stores a city model as a **directory of Parquet files** — one row
@@ -54,16 +54,17 @@ What this implementation covers of the
 [specification](https://cityjson.github.io/cityparquet/specification). This is a
 practical summary, not a certification of conformance.
 
-| Area                               | Support                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Object tables                      | CityGML module routing, identity and hierarchy columns, typed attributes, structured addresses, and extension data                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Geometry                           | WKB columns with explicit LoD suffixes, including `geometry_lod0_0`; geometry properties and bounding boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Appearance and implicit geometries | Material and texture assignments, appearance sidecars, and the `implicit_geometries.parquet` sidecar with LoD-specific geometry                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Extensions                         | A source that declares a **single** extension: the namespace is derived from it, and every `+` name — attribute, `object_type` value, semantic surface type — carries its prefix, declared in `city.extensions`. Attributing names across several declared extensions from their schema documents is not implemented, so a `+` name in a source that declares several is rejected. The extension registry is a stub that reads no schema documents, so an extension class resolves to a module file only when its name without the `+` is a core class name (`+Building` → `building.parquet`); any other extension class has no resolvable module and is rejected |
-| Metadata and CRS                   | Structured `city` footer metadata, GeoParquet `geo` metadata for eligible geometry, PROJJSON CRS information, and a STAC Item in `metadata.json`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Bloom filters                      | On `id`, `feature_id` and high-cardinality string attributes at FPP 0.01, after the last row group; `--no-bloom` turns them off                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Reading                            | Arrow record batches, column projection, attribute filtering, bounding-box pruning, bloom-filter pruning for `id`, `feature_id` and string-equality lookups (every filter of a column asked for in one batched range read; a filter without a declared `bloom_filter_length` is fetched separately), and optional asynchronous object-store access (the `object-store` feature)                                                                                                                                                                                                                                                                                    |
-| Checking                           | `validate` against the specification; semantic comparison and round-trip checks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Area                               | Support                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Object tables                      | CityGML module routing, identity and hierarchy columns, typed attributes, structured addresses, and extension data                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Geometry                           | WKB columns with explicit LoD suffixes, including `geometry_lod0_0`; geometry properties and bounding boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Appearance and implicit geometries | Material and texture assignments, appearance sidecars, and the `implicit_geometries.parquet` sidecar with LoD-specific geometry                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Extensions                         | CityJSON Extensions and CityGML ADEs: the namespace is derived from each declared extension (for an ADE, the prefix the document binds), and every `+` name — attribute, `object_type` value, semantic surface type — carries its prefix, declared in `city.extensions`. Among several declared extensions a `+` name is attributed by the `extra*` members a declaration lists; a CityJSON Extension's schema document is not read, so a name none of them lists is rejected. An extension class whose name without the `+` is a core class name routes to that module (`+Building` → `building.parquet`), one whose declaration refers to a CityJSON definition it specialises to that definition's module (an ADE class by its XSD substitution group, read when the document names the XSD by a relative path: `uro:UndergroundBuilding` → `building.parquet`), any other to its extension's own file (`urf.parquet`). ADE values take their XSD types |
+| Feature families                   | Each family's rows are contiguous in every object table, root row first, and object ids are unique across the package; `validate` checks both. An object reached through several parents (a building in two `CityObjectGroup`s) is refused: writing it once, under its first parent's root, is not implemented                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Metadata and CRS                   | Structured `city` footer metadata, GeoParquet `geo` metadata for eligible geometry, PROJJSON CRS information, and a STAC Item in `metadata.json`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Bloom filters                      | On `id`, `feature_id` and high-cardinality string attributes at FPP 0.01, after the last row group; `--no-bloom` turns them off                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Reading                            | Arrow record batches, column projection, attribute filtering, bounding-box pruning, bloom-filter pruning for `id`, `feature_id` and string-equality lookups (every filter of a column asked for in one batched range read; a filter without a declared `bloom_filter_length` is fetched separately), and optional asynchronous object-store access (the `object-store` feature)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Checking                           | `validate` against the specification; semantic comparison and round-trip checks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ## Install & build
 
@@ -83,7 +84,7 @@ Run via `cargo run -p cityparquet-cli -- <command>` (add `--release` for
 realistic timing). Six subcommands: `convert`, `export`, `compare`,
 `collection`, `validate` and `bench`.
 
-### convert — CityJSON/Seq, CityGML or FlatCityBuf → CityParquet package
+### convert — CityJSON/Seq, CityGML, FlatCityBuf or 3DCityDB → CityParquet package
 
 ```bash
 cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite
@@ -93,13 +94,27 @@ cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite
 (`.gml`) or FlatCityBuf (`.fcb`) file, a directory of them, or a glob; several
 inputs merge into one dataset. The format is sniffed from the content.
 
-- **CityGML input is version 2.0 only**; another version is refused by name.
-  The reader covers buildings (solids, semantic surfaces and openings, parts,
-  installations, appearance, every LoD up to 4) and the geometry and attributes
-  of the other thematic modules but relief; what it does not read is listed in
+- **CityGML input is version 2.0 or 3.0**, read through the `citygml`
+  crate (`../citygml-rs`), which picks the `citygml2` or `citygml3` reader: every class of either version, its
+  appearance, implicit geometries and ADEs. What they do not read is listed in
   [docs/citygml-reader-writer-limitations.md](docs/citygml-reader-writer-limitations.md).
 - **FlatCityBuf input** is behind the `fcb` cargo feature (on for the CLI): the
   file is read front to back, its header standing in for the CityJSON one.
+- **A 3DCityDB v5 database** is an `INPUT` given as a `postgresql://` URL, on
+  its own, behind the `citydb` cargo feature (on for the CLI). It is read by
+  the `citygml-citydb` crate (`../citygml-rs`) inside one read-only
+  transaction: its current top-level features, a batch at a time, with their
+  appearance and implicit geometries. What the URL leaves out (host, user,
+  password, database, `sslmode`) comes from the `PG*` environment variables and
+  `~/.pgpass`, as for libpq; a password inside the URL works, with a warning.
+  The reference system is the database's SRID, the extent its features'
+  envelope. What the reader leaves out (a texture without an image, a class
+  with no CityJSON type) is counted on stderr, one `warning:` line per name.
+
+  ```bash
+  PGPASSWORD=… cityparquet convert postgresql://alice@db.example.org/citydb \
+      --citydb-schema citydb -o delft
+  ```
 
 Writes `OUTPUT_DIR/` containing one object table per CityGML module (e.g.
 `building.parquet`, `transportation.parquet`) + `metadata.json`,
@@ -112,13 +127,16 @@ Collection.
 | ------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--overwrite`                   | off           | purge an existing package in the target dir first                                                                                                                                                                                      |
 | `--recipe`                      | `cityparquet` | writer preset: `cityparquet`, `parquet-defaults`, `no-dictionary`, `no-bss`, `no-delta`, `snappy`                                                                                                                                      |
-| `--ordering`                    | `hilbert`     | `hilbert` (spatial row ordering for better bbox pruning; a CityGML or FlatCityBuf input is held parsed in memory) or `source` (streams one feature at a time: the low-memory path)                                                     |
+| `--ordering`                    | `hilbert`     | `hilbert` (spatial row ordering for better bbox pruning, by an external sort bounded by `--memory-budget`) or `source` (rows in input order, no sort)                                                                                  |
+| `--memory-budget`               | `2G`          | encoded rows the Hilbert sort holds in memory before spilling a sorted run to disk; bytes, or with a `K`/`M`/`G` suffix                                                                                                                |
+| `--spill-dir`                   | unset         | directory to spill the Hilbert sort's runs in (default: the package's scratch directory); the runs go in a directory of their own inside it, removed when the conversion ends                                                          |
 | `--row-group-size`              | `65536`       | Parquet row-group size                                                                                                                                                                                                                 |
 | `--zstd-level`                  | `3`           | zstd level (ignored by `--recipe snappy`)                                                                                                                                                                                              |
 | `--no-bloom`                    | off           | write no Parquet bloom filter (by default `id`, `feature_id` and high-cardinality string attributes carry one)                                                                                                                         |
 | `--bloom-fpp`                   | `0.01`        | target false-positive probability of every bloom filter, strictly between 0 and 1                                                                                                                                                      |
 | `--batch-size`                  | `4096`        | encode batch size                                                                                                                                                                                                                      |
 | `--lod0`                        | off           | synthesise an LoD0 footprint into `geometry_lod0_0` for every object without a source LoD0 (ground surfaces first, else downward-facing faces)                                                                                         |
+| `--citydb-schema`               | `citydb`      | the schema of a database input's 3DCityDB instance                                                                                                                                                                                     |
 | `--crs`                         | unset         | operator-supplied CRS (`EPSG:25832` or bare `25832`) for a source that declares none; ignored for a source that declares its own                                                                                                       |
 | `--tolerate-invalid-appearance` | off           | drop a material/texture index that falls outside its local definitions array, and leave untextured a texture ring with fewer UVs than vertices, instead of aborting; counted in the report's trailing field and warned about on stderr |
 | `--partition`                   | unset         | split the output into one package per partition: `count` (+`--number N`), `features` (+`--feature-num M`), or `box` (+`--cell-size METRES`). Omit to write one package                                                                 |
@@ -189,16 +207,31 @@ cargo run -p cityparquet-cli -- export PACKAGE_DIR OUTPUT.city.jsonl
 ```
 
 The format follows the extension: `.city.jsonl` → CityJSONSeq, `.city.json` →
-a CityJSON document, `.gml` → CityGML 2.0. CityJSON export prints
+a CityJSON document, `.gml` → CityGML. Every export prints
 `feature_count object_count instance_geometries_dropped
-appearance_refs_dropped`, and warns when it writes LoD 4 geometry (as `"4.0"`;
-CityJSON 2.0 defines LoDs 0 to 3 only).
+appearance_refs_dropped`. CityJSON export warns when it writes LoD 4 geometry
+(as `"4.0"`; CityJSON 2.0 defines LoDs 0 to 3 only).
 
-**CityGML export is limited to `Building` and `BuildingPart`**: their solids
-(`lod1Solid` to `lod4Solid`, CompositeSolid included), semantic surfaces,
-attributes and appearance. Every other object is skipped and counted in the
-printed report (`non_building_skipped`, …), and a MultiSolid has no CityGML 2.0
-building slot. See
+Export streams: each table is read front to back and a feature is written once
+its rows are complete, so only features spanning tables (a CityObjectGroup and
+its members) are held until their other tables are read. A package whose
+feature rows are not contiguous within a table is refused. A `.city.json`
+document still collects every feature, since it has one vertex pool.
+
+CityGML is written by the `citygml2` and `citygml3` writers, each property
+where its version's schema puts it, so citygml-tools accepts the document as
+valid. Flags for a `.gml` output:
+
+| Flag                         | Meaning                                                                                                        |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `--citygml-version 2.0\|3.0` | the version written (2.0 by default)                                                                           |
+| `--ade-xmlns NAME=URI`       | the XML namespace of an extension whose declaration names none; repeatable                                     |
+| `--ade-schema URI=LOCATION`  | where an ADE's XML Schema is, for the document's `xsi:schemaLocation` in place of the declared one; repeatable |
+
+What the target version cannot hold is left out and counted, one
+`warning: CityGML: WHAT: COUNT` line per kind: a class the version lacks
+(`BuildingStorey` in 2.0), a LoD 4 geometry in 3.0 (written as LoD 3 when the
+object has none), a second geometry of one kind at a LoD. See
 [docs/citygml-reader-writer-limitations.md](docs/citygml-reader-writer-limitations.md).
 
 ### compare — semantic equality of two datasets
@@ -208,7 +241,7 @@ cargo run -p cityparquet-cli -- compare A.city.jsonl B.city.jsonl
 ```
 
 Exit `0` and prints `equal` when semantically equal; exit `2` and prints up to
-20 differences otherwise. `--exclude-appearance` and `--exclude-instances`
+20 differences otherwise (every one with `--all`). `--exclude-appearance` and `--exclude-instances`
 skip appearance/`GeometryInstance` comparison, for a package whose sidecars
 were left out of the comparison on purpose. This is how a round-trip is
 proven: `convert` → `export` → `compare` against the source.

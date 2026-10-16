@@ -74,11 +74,7 @@ fn package_ids_and_refs(
         "{}.export.city.jsonl",
         pkg.file_name().unwrap().to_string_lossy()
     ));
-    export(&ExportOptions {
-        package_dir: pkg.to_path_buf(),
-        output: jsonl.clone(),
-    })
-    .unwrap();
+    export(&ExportOptions::new(pkg.to_path_buf(), jsonl.clone())).unwrap();
 
     let mut ids = std::collections::HashSet::new();
     let mut refs = Vec::new();
@@ -262,11 +258,7 @@ fn box_partitions_each_round_trip_clean() {
     for (label, _) in &rep.partitions {
         let pkg = out.path().join(label);
         let export1 = out.path().join(format!("{label}_1.city.jsonl"));
-        export(&ExportOptions {
-            package_dir: pkg.clone(),
-            output: export1.clone(),
-        })
-        .unwrap();
+        export(&ExportOptions::new(pkg.clone(), export1.clone())).unwrap();
 
         // Reconvert the exported partition and re-export it; the two exports
         // must be semantically identical.
@@ -274,11 +266,7 @@ fn box_partitions_each_round_trip_clean() {
         let o2 = ConvertOptions::new(export1.clone(), pkg2.clone());
         convert(&o2).unwrap();
         let export2 = out.path().join(format!("{label}_2.city.jsonl"));
-        export(&ExportOptions {
-            package_dir: pkg2.clone(),
-            output: export2.clone(),
-        })
-        .unwrap();
+        export(&ExportOptions::new(pkg2.clone(), export2.clone())).unwrap();
 
         let rc = compare_datasets(&export1, &export2, &no_excl).unwrap();
         assert!(
@@ -509,10 +497,10 @@ fn a_co_assigned_package_still_exports_the_two_features_separately() {
     assert_eq!(rep.partitions.len(), 1);
 
     let exported = out.path().join("repaired.city.jsonl");
-    export(&ExportOptions {
-        package_dir: out.path().join(&rep.partitions[0].0),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        out.path().join(&rep.partitions[0].0),
+        exported.clone(),
+    ))
     .unwrap();
 
     let features: Vec<serde_json::Value> = std::fs::read_to_string(&exported)
@@ -528,11 +516,51 @@ fn a_co_assigned_package_still_exports_the_two_features_separately() {
         2,
         "the parent and part must export as two features, not be fused into one"
     );
-    for (feature, expected) in features.iter().zip([&parent, &child]) {
-        let objects = feature["CityObjects"].as_object().unwrap();
-        assert_eq!(objects.len(), 1, "each feature still holds its one object");
-        assert!(objects.contains_key(expected), "feature ids are preserved");
-    }
+    // Feature order is not part of the contract: the parent names a child
+    // in another feature, so its family is written once the package is read.
+    let mut exported_ids: Vec<&String> = features
+        .iter()
+        .map(|feature| {
+            let objects = feature["CityObjects"].as_object().unwrap();
+            assert_eq!(objects.len(), 1, "each feature still holds its one object");
+            objects.keys().next().unwrap()
+        })
+        .collect();
+    exported_ids.sort();
+    let mut expected = vec![&parent, &child];
+    expected.sort();
+    assert_eq!(exported_ids, expected, "feature ids are preserved");
+}
+
+/// The same package exported to CityGML: the BuildingPart sits in a family of
+/// its own, yet it is still nested in its Building rather than dropped as an
+/// orphan, because the Building's family waits for the child it names.
+#[test]
+fn a_co_assigned_package_nests_the_part_in_its_building_in_citygml() {
+    let out = tempfile::tempdir().unwrap();
+    let (_dir, path, parent, child) = delft_with_split_parent_and_part(0, true);
+    let src = Source::open(&path).unwrap();
+    let opts = ConvertOptions::new(path.clone(), out.path().to_path_buf());
+    let rep =
+        convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(2), &opts).unwrap();
+
+    let gml = out.path().join("repaired.gml");
+    let report = cityparquet::export::export(&cityparquet::export::ExportOptions::new(
+        out.path().join(&rep.partitions[0].0),
+        gml.clone(),
+    ))
+    .unwrap();
+    let citygml = report.citygml.unwrap();
+    assert_eq!(citygml.objects, 1, "the part is no top-level object");
+
+    let text = std::fs::read_to_string(&gml).unwrap();
+    let building = text
+        .find(&format!("gml:id=\"{parent}\""))
+        .expect("the Building is written");
+    let part = text
+        .find(&format!("gml:id=\"{child}\""))
+        .expect("the BuildingPart is written");
+    assert!(building < part, "the part is nested inside its Building");
 }
 
 /// A reference whose target is absent from the whole dataset (a partial-area

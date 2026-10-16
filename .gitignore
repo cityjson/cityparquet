@@ -44,7 +44,9 @@ dist/
 .DS_Store
 
 # --- local agent tooling ----------------------------------------------------
-.claude/
+# Project skills under .claude/skills/ are shared; the rest is local.
+.claude/*
+!.claude/skills/
 .codex/
 .opencode/
 .superpowers/
@@ -76,3 +78,6 @@ ai/skills/
 !/benchmark/runs/summary/
 /benchmark/runs/summary/*
 !/benchmark/runs/summary/full/
+
+# test/toolchain: downloaded corpus and run outputs
+/test/runs/

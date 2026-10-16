@@ -1,0 +1,16 @@
+[package]
+name = "citygml"
+description = "CityGML 2.0 and 3.0 to and from CityJSON, whichever version a document is"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+citygml-core = { workspace = true, features = ["cjseq"] }
+citygml2 = { workspace = true }
+citygml3 = { workspace = true }
+cjseq = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

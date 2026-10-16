@@ -72,7 +72,7 @@ CLI (add `--release` for realistic timing):
 
 ```bash
 cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite  # CityJSON/Seq/CityGML → package
-cargo run -p cityparquet-cli -- export  PACKAGE_DIR  OUT.city.jsonl    # package → CityJSON/Seq
+cargo run -p cityparquet-cli -- export  PACKAGE_DIR  OUT.city.jsonl    # package → CityJSON/Seq, or CityGML for OUT.gml
 cargo run -p cityparquet-cli -- compare A.city.jsonl B.city.jsonl      # semantic equality (round-trip proof)
 cargo run -p cityparquet-cli -- validate PACKAGE_DIR                   # conformance against the spec (exit 2 on an error)
 cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
@@ -80,8 +80,8 @@ cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 
 `convert` takes the output directory as the **required `-o`/`--output` flag**, not
 positionally. Other flags include `--recipe`, `--ordering hilbert|source`
-(Hilbert by default, which holds a CityGML or FlatCityBuf input in memory to
-sort; `source` streams, the low-memory path),
+(Hilbert by default, an external sort that spills to disk beyond
+`--memory-budget`, 2G by default; `source` skips the sort), `--spill-dir`,
 `--row-group-size`, `--zstd-level`,
 `--partition`, `--lod0` (opt-in LoD0 footprint synthesis), `--crs` (an operator-supplied CRS for a source that
 declares none — without it such a source still converts, writing `city.crs: null`), and

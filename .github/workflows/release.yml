@@ -57,12 +57,13 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          run="$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}" --jq '[.name, .conclusion] | @tsv')"
-          name="${run%%$'\t'*}"
-          conclusion="${run##*$'\t'}"
-          case "${name}" in
-            "Publish crates" | "Publish MCP") ;;
-            *) echo "::error::run ${RUN_ID} is \"${name}\", not a publish run"; exit 1 ;;
+          # A run's `name` is its run-name ("Publish MCP (patch)"), so the
+          # workflow is identified by its file.
+          IFS=$'\t' read -r path name conclusion < <(
+            gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}" --jq '[.path, .name, .conclusion] | @tsv')
+          case "${path}" in
+            .github/workflows/publish-crates.yml | .github/workflows/publish-mcp.yml) ;;
+            *) echo "::error::run ${RUN_ID} is \"${name}\" (${path}), not a publish run"; exit 1 ;;
           esac
           if [ "${conclusion}" != "success" ]; then
             echo "::error::run ${RUN_ID} (${name}) ended in ${conclusion}; there is nothing to release"

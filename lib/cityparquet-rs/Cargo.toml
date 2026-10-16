@@ -25,6 +25,7 @@ arrow-array = "58"
 arrow-buffer = "58"
 arrow-select = "58"
 arrow-cast = "58"
+arrow-ipc = { version = "58", features = ["lz4"] }
 parquet = { version = "58", features = [
     "zstd",
     "geospatial",
@@ -40,11 +41,15 @@ serde = { version = "1", features = ["derive"] }
 # lookup parses only the entry it asked for (D-RS-15).
 serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 thiserror = "2"
-# cjseq 0.5 is not on crates.io yet, so it comes from git, pinned to a commit
-# on the fork's `main`; crates.io refuses a crate with a git dependency, which
-# is what keeps `cityparquet` unpublished.
-cjseq = { git = "https://github.com/HideBa/cjseq", rev = "0d92c4b51f4b32b9dc2aadf649b4b6caf8ad69f7" }
+# The exact pin makes each cjseq pre-release a deliberate step while its API
+# is still moving. The `cli` feature (clap, rand) is not needed.
+cjseq = { version = "=0.5.0-alpha.1", default-features = false }
 quick-xml = "0.39"
+# The CityGML readers and writers and the 3DCityDB reader, from this monorepo's
+# `lib/citygml-rs` workspace. They
+# pin the same cjseq as above, so both resolve to one copy.
+citygml = { path = "../citygml-rs/crates/citygml", version = "0.1.0" }
+citygml-citydb = { path = "../citygml-rs/crates/citydb", version = "0.1.0" }
 chrono = "0.4"
 flate2 = "1"
 object_store = { version = "0.13", features = ["http"] }
@@ -78,7 +83,6 @@ jsonschema = "0.26"
 cardinality-estimator = "1.0.3"
 # Parses CityJSONSeq feature lines a batch at a time across cores.
 rayon = "1.12"
-memchr = "2.7"
 # FlatCityBuf input (the `fcb` feature). The exact pin the read benchmark
 # (`benchmark/readbench`) carries, so the two resolve to one version.
 fcb_core = "=0.7.6"

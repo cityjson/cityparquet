@@ -12,7 +12,7 @@ Three crates, layered so the type system has no I/O dependencies:
 | Crate                    | Responsibility                                                                                                                           | Notable dependency line                                       |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | **`cityparquet-schema`** | The CityParquet spec _as code_: types, CityGML taxonomy, Arrow schema, profiles, manifest, metadata. No buffers, no Parquet.             | **zero** `arrow-array` / `parquet` deps — only `arrow-schema` |
-| **`cityparquet`**        | The Parquet read/write path: scan, encode, write, read, decode, export, compare, validate, WKB, appearance, sidecars, ordering, recipes. | `arrow-*`, `parquet`, `wkb`, `cjseq`                          |
+| **`cityparquet`**        | The Parquet read/write path: scan, encode, write, read, decode, export, compare, validate, WKB, appearance, sidecars, ordering, recipes. | `arrow-*`, `parquet`, `wkb`, `cjseq`, `citygml`               |
 | **`cityparquet-cli`**    | The `cityparquet` binary (convert/export/compare/collection/validate/bench) and the benchmark harness library.                           | `clap`, the two crates above                                  |
 
 The **schema/Parquet isolation** is enforced in CI: `just isolation` fails if
@@ -53,7 +53,7 @@ executable specification.
 CityJSON→package path. It is a **two-pass** design over a unified `Source`:
 
 ```
-Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 document, FlatCityBuf file)
+Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 or 3.0 document, FlatCityBuf file, 3DCityDB v5 database)
    │
    ├─ pass 1 ── scan ─────────► ScanResult { CityParquetSchema, dataset metadata }
    │            (LoDs, attribute columns, CRS, transform, dataset bbox;
@@ -64,19 +64,31 @@ Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 document, FlatCityBuf file
                 │                 wkb_write; semantics → the geometry_properties
                 │                 struct; appearance → typed per-WKB-face MAP cells)
                 │
+                ├─ sort ───────► Hilbert order: external merge sort, spilling
+                │                sorted runs to Arrow IPC under a memory budget
+                │
                 ├─ recipe ─────► per-column WriterProperties (the benchmark variable)
                 │
                 └─ write ──────► one <snake>.parquet per CityGML module + sidecars + metadata.json
 ```
 
 - **`source`** — `Source` unifies whole-document CityJSON, streaming
-  CityJSONSeq, CityGML 2.0 (`citygml`, which synthesises a CityJSON header and
-  streams features) and FlatCityBuf (`fcb`, behind the `fcb` feature, bridging
-  `fcb_core`'s CityJSON types to `cjseq` through JSON) behind one feature
-  iterator, so nothing downstream cares which input shape it got.
+  CityJSONSeq, CityGML 2.0 and 3.0 (`citygml`, which gives this crate's
+  errors to the `citygml` crate of `../citygml-rs`: it builds a CityJSON
+  header and streams the features of the `citygml2` or `citygml3` reader, as
+  the document's namespace says) and FlatCityBuf (`fcb`, behind the `fcb` feature, bridging
+  `fcb_core`'s CityJSON types to `cjseq` through JSON) and 3DCityDB v5
+  (`Source::open_citydb`, behind the `citydb` feature: the `citygml-citydb`
+  crate builds the database's header and assembles its rows into the same
+  model objects the CityGML readers yield, read in one read-only transaction
+  so both passes see one snapshot) behind one feature
+  iterator, so nothing downstream cares which input shape it got. Several
+  inputs merge (`merge::merge_sources`) into one `Source` that reads them in
+  turn, requantising each onto the merged transform as it streams.
 - **`scan`** (pass 1) — one read-only pass answering "what columns and
   dataset metadata does this need?" It never retains WKB or vertex data, so
-  pass 2 can size its Arrow builders up front.
+  pass 2 can size its Arrow builders up front. It refuses a repeated object
+  id, keeping one 128-bit hash per object.
 - **`encode`** (pass 2) — trusts the `ScanResult` and emits `RecordBatch`es;
   fails fast if asked to encode something the schema doesn't describe. One row
   per object, geometry bucketed into the per-LoD columns.
@@ -85,8 +97,17 @@ Source (CityJSON doc, CityJSONSeq stream, CityGML 2.0 document, FlatCityBuf file
   (geoarrow.wkb, arrow.json) and the six fixed `bbox` leaf paths — **never by
   column name** — so the recipe can't drift from the schema. This is the
   paper's benchmark variable (see below).
-- **`order`** — Hilbert reordering of features before encode (the default
-  `RowOrder`; `RowOrder::Source` skips it and streams).
+- **`order`** / **`sort`** — the Hilbert key of a feature (the curve index of
+  its vertex-pool centre against the dataset bbox) and the external sort that
+  orders rows by `(key, row ordinal)`. Encode always runs in source order and
+  tags each row with its feature's key; the sorter buffers rows until
+  `ConvertOptions::memory_budget`, spills each sorted run as an LZ4-compressed
+  Arrow IPC stream file in a directory of its own under `.cityparquet-tmp/`
+  (or `spill_dir`), and merges the runs k-way, holding one run batch (at most
+  1,024 rows or about 8 MiB) per run. Rows of one feature share a key and have consecutive
+  ordinals, so a feature family stays contiguous in every table, as the spec
+  requires. Spilled and in-memory sorts emit the same batches, so they write
+  the same tables. `RowOrder::Source` skips the sort.
 - **`sidecar`** / **`appearance`** — under Compatibility, the appearance
   interner assigns dataset-global ids and the sidecar writers emit the
   definition tables.
@@ -100,9 +121,9 @@ purge any prior package files and rename the temp contents into place. A
 failure mid-write leaves the existing package intact and the temp dir behind
 for inspection.
 
-`ConvertOptions` bundles the knobs: `profile`, `overwrite`, `batch_size`,
-`recipe` (`WriterRecipe`), and `ordering` (`RowOrder::{Hilbert, Source}`,
-Hilbert by default).
+`ConvertOptions` bundles the knobs: `overwrite`, `batch_size`,
+`recipe` (`WriterRecipe`), `ordering` (`RowOrder::{Hilbert, Source}`,
+Hilbert by default), and the sort's `memory_budget` (2 GiB) and `spill_dir`.
 The table layout itself is not a knob: by-type (one `<snake>.parquet` table
 per 1st-level CityObject family) is the sole, mandatory layout.
 
@@ -135,6 +156,24 @@ ordering is designed to feed.
 `export::export(&ExportOptions) -> ExportReport` is the package→CityJSON
 inverse of `convert`, built on `decode` plus its own geometry reconstruction
 (WKB → CityJSON boundary arrays, re-quantised against the dataset transform).
+
+It streams. Tables are read in manifest order, each front to back, and rows
+are regrouped into feature families by `family::Families`: a family's rows
+are one run per table (the spec's contiguity rule), and when a run ends the
+family is written if its root row and every child it names are present.
+Otherwise it is parked until its rows in other tables arrive (a
+CityObjectGroup and its members, an extension child); `ExportReport::
+parked_features` counts these. A run that re-opens, or rows for a family
+already written, are refused, so export also keeps one 128-bit hash per
+feature written. CityJSONSeq output is written as families
+complete; a CityJSON document collects every feature, since it has one
+vertex pool. CityGML output passes each feature to the `citygml` crate's writer
+of the version asked for (`OutputWriter` in `export.rs`), which writes it as it comes, the
+envelope taken from the header's extent, and reports what the version cannot
+hold when it finishes. A BuildingPart that a non-conforming package files in
+a family of its own is held by the writer until its Building comes, or the
+Building until the part does, and written inside it. Output goes to a hidden partial file renamed into place on success.
+
 Its correctness hinges on **manifest authority**:
 
 - **Implicit geometries** are rebuilt into the CityJSON `geometry-templates`

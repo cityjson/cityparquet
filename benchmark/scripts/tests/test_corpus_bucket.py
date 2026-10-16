@@ -38,9 +38,11 @@ elif args[0] == "cat":
     with open(local(args[1]), "rb") as s:
         sys.stdout.buffer.write(s.read())
 elif args[0] == "copyto":
+    # A source with a remote prefix is a copy inside the bucket.
+    source = local(args[1]) if ":" in args[1] else args[1]
     target = local(args[2])
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    shutil.copyfile(args[1], target)
+    shutil.copyfile(source, target)
 else:
     sys.exit(2)
 '''
@@ -224,6 +226,64 @@ class CorpusBucketTest(unittest.TestCase):
         with self.assertRaises(cb.CorpusError):
             cb.download_dataset(self.cfg, 7, manifest, "rdam", ["flatcitybuf"], self.tmp / "fresh")
 
+
+    def calls(self):
+        return (self.bucket / "calls.log").read_text().splitlines()
+
+    def test_carry_forward_copies_inside_the_bucket_and_merges_the_manifest(self):
+        self.publish()
+        before = len(self.calls())
+        done = cb.carry_forward(self.cfg, 7, 8, ["rdam"])
+        self.assertEqual(len(done["copied"]), 4)
+        copies = [c for c in self.calls()[before:] if c.startswith("copyto")]
+        # Every artefact is copied from v7/ to v8/ inside the bucket, and the
+        # manifest is written last.
+        for call in copies[:-1]:
+            source, target = call.split()[1:3]
+            self.assertTrue(source.startswith("fake:other-data/cityparquet-paper/benchmark/v7/"), call)
+            self.assertEqual(target, source.replace("/v7/", "/v8/"))
+        self.assertTrue(copies[-1].split()[2].endswith("v8/manifest.json"))
+        old, _, _ = cb.fetch_manifest(self.cfg, 7)
+        new, _, _ = cb.fetch_manifest(self.cfg, 8)
+        self.assertEqual(new["chain_version"], 8)
+        carried = new["datasets"]["rdam"]
+        self.assertEqual(carried["artefacts"], old["datasets"]["rdam"]["artefacts"])
+        self.assertEqual(carried["source"], old["datasets"]["rdam"]["source"])
+        self.assertEqual(carried["carried_from"], 7)
+        fresh = self.tmp / "fresh"
+        cb.download_dataset(self.cfg, 8, new, "rdam", ["citygml", "cityjsonseq", "cityparquet"], fresh)
+        self.assertEqual(cb.mismatches(fresh, "rdam", carried), [])
+        # A second carry moves nothing.
+        self.assertEqual(cb.carry_forward(self.cfg, 7, 8, ["rdam"])["copied"], [])
+
+    def test_a_carried_artefact_is_skipped_by_the_rebuild_without_hashing_it_remotely(self):
+        self.publish()
+        cb.carry_forward(self.cfg, 7, 8, ["rdam"], ["citygml"])
+        partial, _, _ = cb.fetch_manifest(self.cfg, 8)
+        self.assertEqual(sorted(partial["datasets"]["rdam"]["artefacts"]), ["citygml"])
+        before = len(self.calls())
+        entry = self.entry()
+        done = cb.upload_dataset(self.cfg, 8, self.prepared, entry, "rdam", cb.remote_manifest(self.cfg, 8))
+        self.assertEqual(done["skipped"], ["citygml/rdam.gml"])
+        self.assertEqual(len(done["uploaded"]), 3)
+        self.assertFalse([c for c in self.calls()[before:] if c.startswith("cat") and "rdam.gml" in c])
+        cb.publish_manifest(self.cfg, 8, {"rdam": entry})
+        full, _, _ = cb.fetch_manifest(self.cfg, 8)
+        self.assertEqual(full["datasets"]["rdam"], entry)
+
+    def test_carry_forward_refuses_different_content_and_a_missing_dataset(self):
+        self.publish()
+        target = self.bucket / "other-data/cityparquet-paper/benchmark/v8/citygml/rdam.gml"
+        target.parent.mkdir(parents=True)
+        target.write_text("<other/>")
+        with self.assertRaises(cb.CorpusError) as caught:
+            cb.carry_forward(self.cfg, 7, 8, ["rdam"])
+        self.assertIn("citygml/rdam.gml", str(caught.exception))
+        self.assertFalse((self.bucket / "other-data/cityparquet-paper/benchmark/v8/manifest.json").exists())
+        with self.assertRaises(cb.CorpusError):
+            cb.carry_forward(self.cfg, 7, 8, ["vienna"])
+        with self.assertRaises(cb.CorpusError):
+            cb.carry_forward(self.cfg, 6, 8, ["rdam"])
 
 if __name__ == "__main__":
     unittest.main()

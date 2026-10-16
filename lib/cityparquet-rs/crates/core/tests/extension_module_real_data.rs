@@ -1,21 +1,17 @@
-//! End-to-end coverage of the `ModuleKey`-resolution hard-error path (spec
-//! "extensions" — "A class with no resolvable `ModuleKey` ... is a hard
-//! error") and the `object_type` namespace-prefix rule (spec "Extensions" —
-//! an extension class's `object_type` carries the extension's namespace in
-//! place of CityJSON's `+` marker), both driven through the
-//! real `convert()` pipeline rather than the pure-function/synthetic-batch
-//! unit tests already covering `resolve_module_key` in isolation.
+//! End-to-end coverage of `ModuleKey` routing for extension classes (spec
+//! "extensions" — "The `ModuleKey`") and the `object_type` namespace-prefix
+//! rule (spec "Extensions" — an extension class's `object_type` carries the
+//! extension's namespace in place of CityJSON's `+` marker), both driven
+//! through the real `convert()` pipeline rather than the unit tests covering
+//! `resolve_module_key` in isolation.
 //!
-//! `crate::package::extension_registry` is an intentional stub that always
-//! returns an empty `ExtensionRegistry` (no Extension/ADE schema parsing
-//! yet), so a genuine `+`-marked CityJSON Extension type with no core-class
-//! match always hard-errors today — proven by
-//! [`unresolvable_extension_type_is_a_clean_schema_error`]. The only
-//! `+`-marked type that resolves successfully through today's pipeline is one
-//! whose stripped name is itself a recognised core CityGML 3.0 class (spec:
-//! resolution recognises a core class by either its CityJSON or CityGML
-//! spelling, `+`-marker-insensitively) — proven by
-//! [`extension_marked_core_class_routes_to_the_core_file_with_a_prefixed_type`].
+//! `crate::package::extension_registry` returns an empty `ExtensionRegistry`
+//! (no Extension/ADE schema parsing), so no extension class declares a module
+//! or a specialised class. One whose stripped name is a core CityGML 3.0 class
+//! routes to that class's file —
+//! [`extension_marked_core_class_routes_to_the_core_file_with_a_prefixed_type`]
+//! — and any other to its extension's own file —
+//! [`an_extension_class_takes_its_extensions_own_file`].
 //!
 //! Both fixtures are real, hand-crafted, on-disk CityJSON files under
 //! `tests/data/` (this repo's testing discipline forbids inline CityJSON in a
@@ -29,11 +25,11 @@ use std::path::PathBuf;
 
 use arrow_array::types::Int32Type;
 use arrow_array::{Array, DictionaryArray, StringArray};
-use cityparquet::CityParquetError;
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::source::Source;
 use cityparquet::stac::properties::PackageTables;
+use cityparquet::validate::validate_package;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 /// A committed, in-tree fixture under `crates/core/tests/data/` (small
@@ -66,35 +62,43 @@ fn object_types(path: &std::path::Path) -> Vec<String> {
     out
 }
 
-/// `extension_module_unresolvable.city.jsonl` declares the `Noise`
-/// extension and carries one `+NoiseSensor` object: not a recognised core
-/// CityGML 3.0 class, and (since
-/// `extension_registry` is a stub returning an always-empty registry) not
-/// declared by any extension either — `resolve_module_key`'s hard-error path
-/// (spec "extensions"). `convert()` must surface this as a clean
-/// `CityParquetError::Schema` naming the unresolved class, never a panic and
-/// never a silently-dropped row, and must leave no partial package behind.
+/// `extension_class_own_file.city.jsonl` declares the `Noise` extension and
+/// carries one `+NoiseSensor` object: not a recognised core CityGML 3.0
+/// class, and declaring neither a module nor a class it specialises (a
+/// CityJSON Extension has no modules). It goes to its extension's own file,
+/// `noise.parquet`, with the namespace in place of the `+`, and export
+/// restores it.
 #[test]
-fn unresolvable_extension_type_is_a_clean_schema_error() {
+fn an_extension_class_takes_its_extensions_own_file() {
     let out = tempfile::tempdir().unwrap();
     let opts = ConvertOptions::new(
-        data_fixture("extension_module_unresolvable.city.jsonl"),
+        data_fixture("extension_class_own_file.city.jsonl"),
         out.path().to_path_buf(),
     );
+    convert(&opts).expect("an extension class converts");
 
-    let err = convert(&opts).expect_err("an unresolvable ModuleKey must reject the conversion");
+    let tables = PackageTables::open(out.path()).expect("resolve tables");
+    let names: Vec<_> = tables
+        .tables
+        .iter()
+        .map(|t| t.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["noise.parquet"]);
+    assert_eq!(object_types(&tables.tables[0]), ["noise_NoiseSensor"]);
+    let report = validate_package(out.path()).unwrap();
+    assert!(report.is_conformant(), "{report}");
 
-    assert!(
-        matches!(err, CityParquetError::Schema(_)),
-        "expected a Schema error, got: {err:?}"
-    );
-    assert!(
-        format!("{err}").contains("NoiseSensor"),
-        "error must name the unresolved class, got: {err}"
-    );
-    assert!(
-        !out.path().join("metadata.json").exists(),
-        "a rejected conversion must leave no package behind"
+    let exported = out.path().join("export.city.jsonl");
+    export(&ExportOptions::new(
+        out.path().to_path_buf(),
+        exported.clone(),
+    ))
+    .expect("export");
+    let source = Source::open(&exported).unwrap();
+    let feature = source.features().unwrap().next().unwrap().unwrap();
+    assert_eq!(
+        String::from(feature.city_objects["EXT_UNKNOWN_1"].thetype.clone()),
+        "+NoiseSensor"
     );
 }
 
@@ -140,10 +144,10 @@ fn extension_marked_core_class_routes_to_the_core_file_with_a_prefixed_type() {
     );
 
     let exported = out.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: out.path().to_path_buf(),
-        output: exported.clone(),
-    })
+    export(&ExportOptions::new(
+        out.path().to_path_buf(),
+        exported.clone(),
+    ))
     .expect("export");
     let source = Source::open(&exported).unwrap();
     let feature = source.features().unwrap().next().unwrap().unwrap();

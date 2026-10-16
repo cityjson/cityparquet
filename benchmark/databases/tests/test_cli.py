@@ -551,6 +551,7 @@ def test_cmd_bench_plans_isolation_once_and_hands_the_cpuset_to_the_containers(m
 
     monkeypatch.setattr(cli, "isolated_databases", fake_databases)
     monkeypatch.setattr(cli, "_dataset_crs", lambda args: {"id": {"authority": "EPSG", "code": 7415}})
+    monkeypatch.setattr(cli, "_extension_reported_version", lambda path: "test")
     args = Namespace(dataset="x", data_root=str(tmp_path), ports=None, srid=7415,
                      numa_node="auto", max_load="auto", max_load_wait_s=600.0,
                      memory_max=None)
@@ -593,6 +594,7 @@ def test_cmd_bench_records_the_engine_and_drops_cpuset_an_engine_lacks(monkeypat
 
     monkeypatch.setattr(cli, "isolated_databases", fake_databases)
     monkeypatch.setattr(cli, "_dataset_crs", lambda args: {"id": {"authority": "EPSG", "code": 7415}})
+    monkeypatch.setattr(cli, "_extension_reported_version", lambda path: "test")
     args = Namespace(dataset="x", data_root=str(tmp_path), ports=None, srid=7415,
                      numa_node="auto", max_load="auto", max_load_wait_s=600.0, memory_max=None)
     try:
@@ -663,6 +665,114 @@ def test_a_run_with_a_duckdb_system_refuses_to_start_without_a_build(
     with pytest.raises(extension.ExtensionNotFound):
         cli._require_extension(["duckdb-cityparquet", "cjdb"])
     cli._require_extension(["cjdb", "3dcitydb"])  # no DuckDB system: no build needed
+
+
+def _bench_args(**overrides):
+    from argparse import Namespace
+
+    return Namespace(**{
+        "dataset": "x", "datasets": None, "systems": None, "data_root": None,
+        "ports": None, "prepared_dir": None, "output_dir": None, "repeat": 1,
+        "numa_node": "off", "max_load": "off", "max_load_wait_s": 0.0,
+        "memory_max": None, **overrides,
+    })
+
+
+def _record_preparation(monkeypatch, cli):
+    """Every step of `cmd_bench` that prepares a system or starts a
+    database, recorded instead of run; the first one reached stops the run."""
+    reached = []
+
+    class Reached(Exception):
+        pass
+
+    def stop(name):
+        def record(*args, **kwargs):
+            reached.append(name)
+            raise Reached(name)
+        return record
+
+    monkeypatch.setattr(cli, "_dataset_crs", stop("_dataset_crs"))
+    monkeypatch.setattr(cli.isolation_mod, "setup", stop("isolation"))
+    monkeypatch.setattr(cli, "isolated_databases", stop("isolated_databases"))
+    monkeypatch.setattr(cli, "_build_systems", stop("_build_systems"))
+    monkeypatch.setattr(cli, "resolve_datasets", stop("resolve_datasets"))
+    return reached, Reached
+
+
+@pytest.mark.parametrize("command", ["run", "smoke"])
+def test_an_extension_duckdb_cannot_load_stops_the_run_before_anything_starts(
+        monkeypatch, command):
+    # A build for another DuckDB version used to fail every DuckDB row and
+    # only abort at the manifest, after both PostgreSQL imports.
+    import duckdb
+    from citybench import cli, extension
+
+    reached, _ = _record_preparation(monkeypatch, cli)
+    mismatch = (
+        "Invalid Input Error: Failed to load 'x', The file was built "
+        "specifically for DuckDB version 'v1.5.4' and can only be loaded "
+        "with that version of DuckDB. (this version of DuckDB is 'v1.5.5')"
+    )
+
+    def refuse(conn, path):
+        raise duckdb.InvalidInputException(mismatch)
+
+    monkeypatch.setattr(extension, "load", refuse)
+    with pytest.raises(SystemExit) as stopped:
+        cli.main([command, "--dataset", "x"])
+    message = stopped.value.code
+    assert isinstance(message, str)  # printed to stderr; exit status 1
+    assert reached == []
+    assert os.environ[extension.ENV_VAR] in message
+    assert mismatch in message
+    assert f"duckdb {duckdb.__version__}" in message
+    assert "just -f lib/duckdb-cityjson/justfile build" in message
+    assert extension.ENV_VAR in message
+
+
+def test_a_run_without_a_duckdb_system_never_loads_the_extension(monkeypatch):
+    from citybench import cli, extension
+
+    reached, Reached = _record_preparation(monkeypatch, cli)
+    monkeypatch.setattr(extension, "connect",
+                        lambda **kw: pytest.fail("the extension was loaded"))
+    with pytest.raises(Reached):
+        cli.cmd_bench(_bench_args(systems="cjdb,3dcitydb"))
+    assert reached == ["_dataset_crs"]
+
+
+def test_a_loadable_extension_lets_the_run_proceed_and_is_probed_once(monkeypatch):
+    from citybench import cli, extension
+
+    reached, Reached = _record_preparation(monkeypatch, cli)
+    loads = []
+    monkeypatch.setattr(extension, "load", lambda conn, path: loads.append(path))
+    monkeypatch.setattr(extension, "reported_version", lambda conn: "6937c06")
+    args = _bench_args()
+    with pytest.raises(Reached):
+        cli.cmd_bench(args)
+    assert reached == ["_dataset_crs"]
+    build = Path(os.environ[extension.ENV_VAR])
+    assert loads == [build]
+    assert args.extension_probe == (build, "6937c06")
+
+    # A recursive entry (one per dataset, or after the containers start)
+    # carries the probe and does not load the extension again.
+    with pytest.raises(Reached):
+        cli.cmd_bench(args)
+    assert loads == [build]
+
+
+def test_versions_reuse_the_preflight_probe_instead_of_loading_again(monkeypatch):
+    from citybench import cli, extension
+
+    build = Path(os.environ[extension.ENV_VAR])
+    monkeypatch.setattr(cli, "_extension_reported_version",
+                        lambda path: pytest.fail("loaded a second time"))
+    probed = _versions([DuckDBCityParquet()], extension_probe=(build, "6937c06"))
+    monkeypatch.setattr(cli, "_extension_reported_version", lambda path: "6937c06")
+    assert probed == _versions([DuckDBCityParquet()])
 
 
 def test_datasets_selects_every_corpus_dataset_or_a_named_subset(tmp_path):

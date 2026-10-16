@@ -18,7 +18,7 @@ use crate::CORPUS_DATETIME;
 
 /// `CHAIN_VERSION` of `readbench_prepare.sh`: the preparation chain a
 /// variant package must have been built by to be reused.
-pub const CHAIN_VERSION: u32 = 8;
+pub const CHAIN_VERSION: u32 = 9;
 
 pub fn package_path(prepared_dir: &Path, base: &str, id: &str) -> PathBuf {
     prepared_dir.join(format!("{base}.{id}.parquet"))

@@ -311,6 +311,7 @@ pub(super) fn check_object_table(
         .collect();
     let mut has_coordinates = false;
     let mut type_cache: HashMap<String, Option<(&'static str, String)>> = HashMap::new();
+    let mut families = FamilyRuns::default();
     for_each_batch(file, r, |r, batch, offset| {
         check_object_values(
             r,
@@ -321,6 +322,7 @@ pub(super) fn check_object_table(
             &mut stats,
             &mut has_coordinates,
             &mut type_cache,
+            &mut families,
             hierarchy,
         );
     });
@@ -383,6 +385,7 @@ pub(super) fn check_object_values(
     stats: &mut BTreeMap<String, GeometryStats>,
     has_coordinates: &mut bool,
     type_cache: &mut HashMap<String, Option<(&'static str, String)>>,
+    families: &mut FamilyRuns,
     hierarchy: &mut HashMap<String, HierarchyRow>,
 ) {
     let name = file.name.as_str();
@@ -439,6 +442,30 @@ pub(super) fn check_object_values(
         let id_value = required(id, "id");
         let feature_value = required(feature_id, "feature_id");
         let type_value = required(object_type, "object_type");
+        let is_group = type_value.as_deref() == Some("CityObjectGroup");
+
+        // spec 02 "Feature families are contiguous": within one table, a
+        // `feature_id` that has given way to another never comes back.
+        if let Some(feature) = &feature_value {
+            match families.enter(feature, id_value.as_deref()) {
+                Some(Run::Reopened) => r.error(
+                    "value.feature-contiguity",
+                    OBJECT_TABLE,
+                    f,
+                    format!("row {row}: the rows of feature `{feature}` are not contiguous"),
+                ),
+                // The root row SHOULD open its family's run.
+                Some(Run::RootNotFirst) => r.warn(
+                    "value.feature-root-order",
+                    OBJECT_TABLE,
+                    f,
+                    format!(
+                        "row {row}: the root of feature `{feature}` is not the first row of its run"
+                    ),
+                ),
+                None => {}
+            }
+        }
 
         if let Some(t) = type_value {
             let verdict = type_cache
@@ -584,14 +611,31 @@ pub(super) fn check_object_values(
         }
 
         if let Some(id_value) = id_value {
-            let parent_ids: Vec<String> = parents
-                .filter(|p| !p.is_null(i))
-                .and_then(|p| {
-                    let values = p.value(i);
-                    let values = values.as_string_opt::<i32>()?;
-                    Some(values.iter().flatten().map(str::to_string).collect())
-                })
-                .unwrap_or_default();
+            let ids_in = |list: Option<&ListArray>| -> Vec<String> {
+                list.filter(|l| !l.is_null(i))
+                    .and_then(|l| {
+                        let values = l.value(i);
+                        let values = values.as_string_opt::<i32>()?;
+                        Some(values.iter().flatten().map(str::to_string).collect())
+                    })
+                    .unwrap_or_default()
+            };
+            let parent_ids = ids_in(parents);
+            let child_ids = ids_in(children);
+            // spec 02 "Reserved columns": `id` is unique across the
+            // package's object tables.
+            if let Some(first) = hierarchy.get(&id_value) {
+                r.error(
+                    "value.duplicate-id",
+                    OBJECT_TABLE,
+                    f,
+                    format!(
+                        "row {row}: `id` `{id_value}` is not unique (also in {})",
+                        first.file
+                    ),
+                );
+                continue;
+            }
             hierarchy.insert(
                 id_value,
                 HierarchyRow {
@@ -599,12 +643,46 @@ pub(super) fn check_object_values(
                     // the FIRST entry of `parents`.
                     first_parent: parent_ids.first().cloned(),
                     parents: parent_ids,
+                    children: child_ids,
                     feature_id: feature_value,
+                    is_group,
                     bbox: row_bbox,
                     file: name.to_string(),
                 },
             );
         }
+    }
+}
+
+/// The `feature_id` runs of one object table, in row order.
+#[derive(Default)]
+pub(super) struct FamilyRuns {
+    current: Option<String>,
+    root_first: bool,
+    closed: HashSet<String>,
+    reported: HashSet<String>,
+}
+
+/// A row that breaks the run rules of [`FamilyRuns`].
+enum Run {
+    /// The family's run re-opened after another family's (reported once).
+    Reopened,
+    /// The family's root row is in its run, but not first.
+    RootNotFirst,
+}
+
+impl FamilyRuns {
+    fn enter(&mut self, feature: &str, id: Option<&str>) -> Option<Run> {
+        let is_root = id == Some(feature);
+        if self.current.as_deref() == Some(feature) {
+            return (is_root && !self.root_first).then_some(Run::RootNotFirst);
+        }
+        if let Some(previous) = self.current.replace(feature.to_string()) {
+            self.closed.insert(previous);
+        }
+        self.root_first = is_root;
+        (self.closed.contains(feature) && self.reported.insert(feature.to_string()))
+            .then_some(Run::Reopened)
     }
 }
 
@@ -743,8 +821,10 @@ pub(super) fn check_implicit_reference(
     }
 }
 
-/// spec 02 "feature_id rule": a root's `feature_id` is its `id`; a child's is
-/// the `id` of the root reached through the first entry of `parents`.
+/// spec 02 "feature_id rule": an object's family root is reached through
+/// the first entry of `parents`, stopping early at an object just below a
+/// `CityObjectGroup` that roots a family of its own (its `feature_id` is its
+/// `id`). The object's `feature_id` must name that root.
 pub(super) fn check_feature_ids(hierarchy: &HashMap<String, HierarchyRow>, r: &mut Reporter) {
     let mut ids: Vec<&String> = hierarchy.keys().collect();
     ids.sort();
@@ -756,8 +836,19 @@ pub(super) fn check_feature_ids(hierarchy: &HashMap<String, HierarchyRow>, r: &m
         let mut root = id;
         let mut seen = HashSet::new();
         let mut resolved = true;
-        while let Some(parent) = hierarchy.get(root).and_then(|h| h.first_parent.as_ref()) {
-            if !hierarchy.contains_key(parent) || !seen.insert(parent) {
+        loop {
+            let here = &hierarchy[root];
+            let Some(parent) = here.first_parent.as_ref() else {
+                break;
+            };
+            let Some(parent_row) = hierarchy.get(parent) else {
+                resolved = false;
+                break;
+            };
+            if parent_row.is_group && here.feature_id.as_ref() == Some(root) {
+                break;
+            }
+            if !seen.insert(parent) {
                 resolved = false;
                 break;
             }
@@ -774,8 +865,29 @@ pub(super) fn check_feature_ids(hierarchy: &HashMap<String, HierarchyRow>, r: &m
     }
 }
 
+/// spec 02 hierarchy columns: a `parents` or `children` id names an object
+/// of the package. One that does not (a group member the source did not
+/// hold) is kept, but a CityJSON export of it is not valid CityJSON.
+pub(super) fn check_references(hierarchy: &HashMap<String, HierarchyRow>, r: &mut Reporter) {
+    let mut ids: Vec<&String> = hierarchy.keys().collect();
+    ids.sort();
+    for id in ids {
+        let row = &hierarchy[id];
+        for other in row.parents.iter().chain(&row.children) {
+            if !hierarchy.contains_key(other) {
+                r.warn(
+                    "value.dangling-reference",
+                    OBJECT_TABLE,
+                    Some(&row.file),
+                    format!("`{id}` names `{other}`, which is not in the package"),
+                );
+            }
+        }
+    }
+}
+
 /// spec 03 "Spatial metadata": `bbox` is the union over the object's whole
-/// subtree, so every parent's box holds each child's (and so, by induction,
+/// subtree within its family, so every parent's box holds each child's (and so, by induction,
 /// every descendant's), and a parent's box is null only when nothing below
 /// it has one.
 pub(super) fn check_bbox_subtree(hierarchy: &HashMap<String, HierarchyRow>, r: &mut Reporter) {
@@ -788,6 +900,11 @@ pub(super) fn check_bbox_subtree(hierarchy: &HashMap<String, HierarchyRow>, r: &
             let Some(parent) = hierarchy.get(parent_id) else {
                 continue;
             };
+            // A group's member in a family of its own is outside the group's
+            // subtree.
+            if parent.is_group && parent.feature_id != child.feature_id {
+                continue;
+            }
             let problem = match parent.bbox {
                 None => Some("is null".to_string()),
                 Some(outer) if !box_contains(outer, inner) => {
@@ -1097,6 +1214,43 @@ mod tests {
             .with_converted_type(converted)
             .build()
             .unwrap()
+    }
+
+    fn row(first_parent: Option<&str>, feature_id: &str, is_group: bool) -> HierarchyRow {
+        HierarchyRow {
+            first_parent: first_parent.map(str::to_string),
+            parents: first_parent.into_iter().map(str::to_string).collect(),
+            children: Vec::new(),
+            feature_id: Some(feature_id.to_string()),
+            is_group,
+            bbox: None,
+            file: "f".to_string(),
+        }
+    }
+
+    /// A group's member may root a family of its own, and what hangs below
+    /// it then belongs to that family; no other parent starts a family.
+    #[test]
+    fn only_an_object_below_a_group_may_root_its_own_family() {
+        let hierarchy: HashMap<String, HierarchyRow> = [
+            ("G", row(None, "G", true)),
+            ("M", row(Some("G"), "M", false)),
+            ("X", row(Some("M"), "M", false)),
+            ("Y", row(Some("M"), "G", false)),
+            ("N", row(Some("G"), "G", false)),
+            ("Z", row(Some("N"), "N", false)),
+        ]
+        .into_iter()
+        .map(|(id, row)| (id.to_string(), row))
+        .collect();
+        let mut r = Reporter::default();
+        check_feature_ids(&hierarchy, &mut r);
+        let wrong: Vec<String> = r
+            .finish()
+            .errors()
+            .map(|v| v.message.split('`').nth(1).unwrap().to_string())
+            .collect();
+        assert_eq!(wrong, ["Y", "Z"]);
     }
 
     /// A writer may annotate a temporal column with the legacy converted
