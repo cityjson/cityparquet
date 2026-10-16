@@ -452,3 +452,39 @@ def test_escaped_ids_swapped_between_objects_fail_their_content(tmp_path):
     rep = cjcompare.compare(str(ROTTERDAM), write(tmp_path, d), pair_unmatched=True)
     assert status(rep, "coordinates") == "fail" or status(rep, "geometry") == "fail"
     assert status(rep, "attributes") == "fail"
+
+
+def _children_renamed(doc: dict) -> tuple[dict, list[str]]:
+    # Every child given a new id, as a reader names an object without a
+    # gml:id, and the objects in reverse order, as a writer may order them.
+    d = copy.deepcopy(doc)
+    children = [oid for oid, co in d["CityObjects"].items() if co.get("parents")]
+    new = {oid: f"generated_{k}" for k, oid in enumerate(reversed(children))}
+    objects = {}
+    for oid, co in reversed(list(d["CityObjects"].items())):
+        for k in ("parents", "children"):
+            if k in co:
+                co[k] = [new.get(x, x) for x in co[k]]
+        objects[new.get(oid, oid)] = co
+    d["CityObjects"] = objects
+    return d, [new[c] for c in children]
+
+
+def test_children_without_a_common_id_pair_within_their_parent(railway, tmp_path):
+    d, _ = _children_renamed(railway)
+    rep = cjcompare.compare(str(RAILWAY), write(tmp_path, d), pair_unmatched=True)
+    assert rep["ok"], rep["examples"]
+
+
+def test_siblings_with_swapped_attributes_still_fail(railway, tmp_path):
+    d, renamed = _children_renamed(railway)
+    objs = d["CityObjects"]
+
+    def differs(x: str, y: str) -> bool:
+        return x != y and objs[x]["type"] == objs[y]["type"] and objs[x].get("attributes") != objs[y].get("attributes")
+
+    x, y = next((x, y) for x in renamed for y in objs[objs[x]["parents"][0]]["children"] if differs(x, y))
+    a, b = objs[x], objs[y]
+    a["attributes"], b["attributes"] = b["attributes"], a["attributes"]
+    rep = cjcompare.compare(str(RAILWAY), write(tmp_path, d), pair_unmatched=True)
+    assert status(rep, "attributes") == "fail"
