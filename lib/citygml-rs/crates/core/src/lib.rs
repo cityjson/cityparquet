@@ -7,6 +7,8 @@
 //!
 //! What lives here:
 //! - [`sniff`]: which CityGML version a document is;
+//! - [`crs`]: the CRS an `srsName` names, and the quantisation step of its
+//!   axes;
 //! - [`xml`]: quick-xml helpers every reader uses;
 //! - [`gml`]: GML 3.1/3.2 geometry, and the assembly of one object's geometry
 //!   with its `xlink:href`s resolved ([`gml::ObjectBuilder`]);
@@ -18,6 +20,7 @@
 //! - [`write`]: what both writers share: XML, GML geometry and xAL.
 
 pub mod convert;
+pub mod crs;
 mod error;
 pub mod gml;
 pub mod model;

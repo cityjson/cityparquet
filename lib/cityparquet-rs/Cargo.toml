@@ -45,11 +45,9 @@ thiserror = "2"
 # is still moving. The `cli` feature (clap, rand) is not needed.
 cjseq = { version = "=0.5.0-alpha.1", default-features = false }
 quick-xml = "0.39"
-# The CityGML readers, from this monorepo's `lib/citygml-rs` workspace. They
+# The CityGML readers and writers, from this monorepo's `lib/citygml-rs` workspace. They
 # pin the same cjseq as above, so both resolve to one copy.
-citygml-core = { path = "../citygml-rs/crates/core", version = "0.1.0" }
-citygml2 = { path = "../citygml-rs/crates/citygml2", version = "0.1.0" }
-citygml3 = { path = "../citygml-rs/crates/citygml3", version = "0.1.0" }
+citygml = { path = "../citygml-rs/crates/citygml", version = "0.1.0" }
 chrono = "0.4"
 flate2 = "1"
 object_store = { version = "0.13", features = ["http"] }
