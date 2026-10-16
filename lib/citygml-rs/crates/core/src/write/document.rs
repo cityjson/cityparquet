@@ -113,9 +113,9 @@ pub trait VersionWriter<W: Write>: Sized {
         Ok(())
     }
 
-    /// `appearance`, one `app:Appearance` per theme in property `element`:
-    /// each material targeting the polygons of `targets` it names, each
-    /// texture the rings `rings` gives the polygon of.
+    /// `appearance`, one `app:Appearance` per run of a theme ([`themes`]) in
+    /// property `element`: each material targeting the polygons of `targets`
+    /// it names, each texture the rings `rings` gives the polygon of.
     fn appearance(
         &mut self,
         element: &str,
@@ -876,11 +876,13 @@ pub enum SurfaceData<'a> {
     Texture(&'a Texture),
 }
 
-/// `appearance` by theme, in the order the themes first occur, each
-/// theme's materials and then its textures.
+/// `appearance` as runs of one theme: its materials and then its textures,
+/// each in its own order, a run ending where the theme changes. A reader
+/// numbers materials and textures in document order, so a theme's surface
+/// data interrupted by another's is not gathered into one run.
 pub fn themes<'a>(appearance: &'a Appearance) -> Vec<(&'a str, Vec<SurfaceData<'a>>)> {
     let mut out: Vec<(&'a str, Vec<SurfaceData<'a>>)> = Vec::new();
-    let mut add = |theme: &'a str, data| match out.iter_mut().find(|(t, _)| *t == theme) {
+    let mut add = |theme: &'a str, data| match out.last_mut().filter(|(t, _)| *t == theme) {
         Some((_, list)) => list.push(data),
         None => out.push((theme, vec![data])),
     };
@@ -949,4 +951,61 @@ pub fn pairs<K: AsRef<str>, V: AsRef<str>>(attributes: &[(K, V)]) -> Vec<(&str, 
         .iter()
         .map(|(k, v)| (k.as_ref(), v.as_ref()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Material, Texture};
+
+    /// The kind, theme and image or name of each surface data in document
+    /// order.
+    fn order(appearance: &Appearance) -> Vec<String> {
+        themes(appearance)
+            .into_iter()
+            .flat_map(|(theme, data)| {
+                data.into_iter().map(move |d| match d {
+                    SurfaceData::Material(m) => format!("{theme} {:?}", m.name),
+                    SurfaceData::Texture(t) => format!("{theme} {:?}", t.image_uri),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn materials_and_textures_keep_their_order_across_themes() {
+        // A reader numbers materials and textures in document order, so
+        // grouping a theme's surface data that another theme's interrupts
+        // would renumber them on a re-read.
+        let material = |theme: &str, name: &str| Material {
+            theme: theme.into(),
+            name: Some(name.into()),
+            ..Material::default()
+        };
+        let texture = |theme: &str, image: &str| Texture {
+            theme: theme.into(),
+            image_uri: Some(image.into()),
+            ..Texture::default()
+        };
+        let appearance = Appearance {
+            materials: vec![material("summer", "m0"), material("winter", "m1")],
+            textures: vec![
+                texture("winter", "t0.jpg"),
+                texture("summer", "t1.jpg"),
+                texture("winter", "t2.jpg"),
+            ],
+        };
+        let order = order(&appearance);
+        let materials: Vec<_> = order.iter().filter(|d| d.contains("\"m")).collect();
+        let textures: Vec<_> = order.iter().filter(|d| d.contains(".jpg")).collect();
+        assert_eq!(materials, ["summer Some(\"m0\")", "winter Some(\"m1\")"]);
+        assert_eq!(
+            textures,
+            [
+                "winter Some(\"t0.jpg\")",
+                "summer Some(\"t1.jpg\")",
+                "winter Some(\"t2.jpg\")"
+            ]
+        );
+    }
 }

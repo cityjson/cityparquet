@@ -182,3 +182,31 @@ fn a_texture_s_type_is_its_image_s_when_no_mime_type_says() {
     assert_eq!(types(&oracle).len(), 2);
     assert_eq!(types(&ours), types(&oracle));
 }
+
+/// An object with no geometry (the railway's CityObjectGroup) has no
+/// `geometry` member, as citygml-tools writes it, rather than an empty one.
+#[test]
+fn an_object_without_geometry_has_no_geometry_member() {
+    fn without(lines: &[Value]) -> Vec<String> {
+        let mut ids: Vec<String> = lines
+            .iter()
+            .flat_map(|f| f["CityObjects"].as_object().cloned().unwrap_or_default())
+            .filter(|(_, co)| co.get("geometry").is_none())
+            .map(|(_, co)| co["type"].to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+    let transform = cjseq::Transform {
+        scale: [1e-3; 3],
+        translate: [0.0; 3],
+    };
+    let ours: Vec<Value> = FeatureReader::open(&data("railway_trees_fragment.gml"))
+        .unwrap()
+        .features(transform)
+        .map(|f| serde_json::to_value(f.unwrap()).unwrap())
+        .collect();
+    let (_, oracle) = read_seq(&data("oracle/railway_trees_fragment.city.jsonl"));
+    assert_eq!(without(&oracle), ["\"CityObjectGroup\""]);
+    assert_eq!(without(&ours), without(&oracle));
+}

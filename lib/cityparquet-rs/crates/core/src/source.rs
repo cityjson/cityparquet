@@ -214,53 +214,14 @@ impl Source {
     /// Open the 3DCityDB v5 database `config` names, inside a read-only
     /// transaction that lasts as long as the source.
     ///
-    /// The header is the database's own: its reference system is
-    /// `EPSG:<srid>` of `database_srs` (none for SRID 0, which `--crs` can
-    /// then supply), its extent the envelope of its top-level features, and
-    /// the transform steps by the reference system's units, as for a CityGML
-    /// document, from the grid point at or below the extent's lower corner.
-    /// The geometry templates are the relative geometries its implicit
-    /// geometries place.
+    /// The header is the database's own ([`citygml_citydb::CityDb::header`]).
+    /// A database with SRID 0 names no reference system, which `--crs` can
+    /// then supply.
     #[cfg(feature = "citydb")]
     pub fn open_citydb(config: &citygml_citydb::Config) -> Result<Self> {
         use crate::citygml::reader::error;
         let db = citygml_citydb::CityDb::connect(config).map_err(error)?;
-        let extent = db.extent().map_err(error)?;
-        let srid = db.srs().srid;
-        let code = (srid > 0).then(|| srid.to_string());
-        let scale = match code
-            .as_deref()
-            .and_then(|c| cityparquet_schema::crs::resolve_to_projjson(c).ok())
-        {
-            Some(projjson) => cityparquet_schema::crs::axis_scale(&projjson)?,
-            None => [cityparquet_schema::crs::MM; 3],
-        };
-        // The extent is computed, so its corner is on no grid: the origin
-        // is the grid point at or below it, so that coordinates on the
-        // step's grid stay on it.
-        let translate = extent.map_or([0.0; 3], |e| {
-            std::array::from_fn(|axis| (e[axis] / scale[axis]).floor() * scale[axis])
-        });
-        let mut header = CityJSON::new();
-        header.transform = cjseq::Transform { scale, translate };
-        if extent.is_some() || code.is_some() {
-            header.metadata = Some(cjseq::Metadata {
-                geographical_extent: extent,
-                identifier: None,
-                point_of_contact: None,
-                reference_date: None,
-                reference_system: code.as_deref().map(crate::citygml::crs::reference_system),
-                title: None,
-                other: serde_json::Map::new(),
-            });
-        }
-        let document = db.document().map_err(error)?;
-        if let Some((templates, appearance)) =
-            citygml_core::convert::cjseq::geometry_templates(document.templates()).map_err(error)?
-        {
-            header.geometry_templates = Some(templates);
-            header.appearance = appearance;
-        }
+        let header = db.header().map_err(error)?;
         Ok(Self {
             path: PathBuf::from(db.name()),
             format: SourceFormat::CityDb,
@@ -811,15 +772,7 @@ impl FeatureIter<'_> {
         match self {
             FeatureIter::CityGml(reader) => reader.skipped_members().clone(),
             #[cfg(feature = "citydb")]
-            FeatureIter::CityDb(features) => {
-                use citygml_core::reader::ObjectStream;
-                let objects = features.reader();
-                let mut left_out = objects.dropped().clone();
-                for (name, n) in objects.skipped_members() {
-                    *left_out.entry(name.clone()).or_insert(0) += n;
-                }
-                left_out
-            }
+            FeatureIter::CityDb(features) => features.reader().left_out(),
             FeatureIter::Chained(features) => features.left_out.clone(),
             _ => std::collections::BTreeMap::new(),
         }

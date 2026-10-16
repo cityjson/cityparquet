@@ -16,9 +16,7 @@ arrow-select = { workspace = true }
 arrow-ipc = { workspace = true }
 parquet = { workspace = true }
 cjseq = { workspace = true }
-citygml-core = { workspace = true }
-citygml2 = { workspace = true }
-citygml3 = { workspace = true }
+citygml = { workspace = true }
 glob = { workspace = true }
 quick-xml = { workspace = true }
 chrono = { workspace = true }

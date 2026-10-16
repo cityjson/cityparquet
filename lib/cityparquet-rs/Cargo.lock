@@ -885,6 +885,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "citygml"
+version = "0.1.0"
+dependencies = [
+ "citygml-core",
+ "citygml2",
+ "citygml3",
+ "cjseq 0.5.0-alpha.1",
+]
+
+[[package]]
 name = "citygml-citydb"
 version = "0.1.0"
 dependencies = [
@@ -943,10 +953,8 @@ dependencies = [
  "cardinality-estimator",
  "chrono",
  "city3d-stac-types",
+ "citygml",
  "citygml-citydb",
- "citygml-core",
- "citygml2",
- "citygml3",
  "cityparquet-schema",
  "cjseq 0.5.0-alpha.1",
  "fcb_core 0.7.6",

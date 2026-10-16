@@ -86,6 +86,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "citygml"
+version = "0.1.0"
+dependencies = [
+ "citygml-core",
+ "citygml2",
+ "citygml3",
+ "cjseq",
+ "serde_json",
+]
+
+[[package]]
 name = "citygml-citydb"
 version = "0.1.0"
 dependencies = [

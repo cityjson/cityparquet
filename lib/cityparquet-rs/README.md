@@ -94,8 +94,8 @@ cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite
 (`.gml`) or FlatCityBuf (`.fcb`) file, a directory of them, or a glob; several
 inputs merge into one dataset. The format is sniffed from the content.
 
-- **CityGML input is version 2.0 or 3.0**, read by the `citygml2` and
-  `citygml3` crates (`../citygml-rs`): every class of either version, its
+- **CityGML input is version 2.0 or 3.0**, read through the `citygml`
+  crate (`../citygml-rs`), which picks the `citygml2` or `citygml3` reader: every class of either version, its
   appearance, implicit geometries and ADEs. What they do not read is listed in
   [docs/citygml-reader-writer-limitations.md](docs/citygml-reader-writer-limitations.md).
 - **FlatCityBuf input** is behind the `fcb` cargo feature (on for the CLI): the

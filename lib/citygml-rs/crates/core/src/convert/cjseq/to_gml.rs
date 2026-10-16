@@ -1595,8 +1595,9 @@ fn xal_name(key: &str) -> String {
 }
 
 /// An object's materials and textures as geometries name them: one entry
-/// per theme and palette index, in the order first met, with what it
-/// covers.
+/// per theme and palette index, with what it covers. They are written in
+/// palette order, the order a reader numbers them in, so that a document
+/// read back numbers them as the CityJSON did.
 #[derive(Default)]
 struct AppearanceBuilder {
     materials: Vec<(String, usize, Vec<String>)>,
@@ -1624,7 +1625,9 @@ impl AppearanceBuilder {
         self.textures[at].2.push(ring);
     }
 
-    fn finish(self, palette: Option<&CjAppearance>) -> Result<Appearance> {
+    fn finish(mut self, palette: Option<&CjAppearance>) -> Result<Appearance> {
+        self.materials.sort_by_key(|(_, index, _)| *index);
+        self.textures.sort_by_key(|(_, index, _)| *index);
         let materials = self
             .materials
             .into_iter()

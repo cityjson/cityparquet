@@ -2,7 +2,7 @@
 resolver = "3"
 # Short directory names; the package names (`citygml-core`, `citygml2`,
 # `citygml3`) are what crates.io sees.
-members = ["crates/core", "crates/citygml2", "crates/citygml3", "crates/citydb"]
+members = ["crates/core", "crates/citygml2", "crates/citygml3", "crates/citygml", "crates/citydb"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,8 @@ repository = "https://github.com/cityjson/cityparquet"
 
 [workspace.dependencies]
 citygml-core = { path = "crates/core", version = "0.1.0", default-features = false }
+citygml2 = { path = "crates/citygml2", version = "0.1.0" }
+citygml3 = { path = "crates/citygml3", version = "0.1.0" }
 # The exact pin `lib/cityparquet-rs` carries too. Every tool that links these
 # crates must resolve the same cjseq, or it builds two incompatible copies of
 # cjseq's types.

@@ -213,6 +213,52 @@ impl CityDb {
 
 #[cfg(feature = "cjseq")]
 impl CityDb {
+    /// The CityJSON header of the database. Its reference system is
+    /// `EPSG:<srid>` of `database_srs` (none for SRID 0), its extent the
+    /// envelope of its top-level features, and its transform steps by the
+    /// reference system's units, as a CityGML document's does
+    /// ([`citygml_core::crs`]), from the grid point at or below the extent's
+    /// lower corner. Its geometry templates are the relative geometries the
+    /// database's implicit geometries place.
+    pub fn header(&self) -> Result<cjseq::CityJSON> {
+        use citygml_core::crs::{self, MM};
+        let extent = self.extent()?;
+        let crs = (self.srs.srid > 0)
+            .then(|| crs::resolve(&format!("EPSG:{}", self.srs.srid)))
+            .flatten();
+        let scale = match &crs {
+            Some(crs) => crs.scale()?,
+            None => [MM; 3],
+        };
+        // The extent is computed, so its corner is on no grid: the origin
+        // is the grid point at or below it, so that coordinates on the
+        // step's grid stay on it.
+        let translate = extent.map_or([0.0; 3], |e| {
+            std::array::from_fn(|axis| (e[axis] / scale[axis]).floor() * scale[axis])
+        });
+        let mut header = cjseq::CityJSON::new();
+        header.transform = cjseq::Transform { scale, translate };
+        if extent.is_some() || crs.is_some() {
+            header.metadata = Some(cjseq::Metadata {
+                geographical_extent: extent,
+                identifier: None,
+                point_of_contact: None,
+                reference_date: None,
+                reference_system: crs.as_ref().map(crs::Crs::reference_system),
+                title: None,
+                other: serde_json::Map::new(),
+            });
+        }
+        let document = self.document()?;
+        if let Some((templates, appearance)) =
+            citygml_core::convert::cjseq::geometry_templates(document.templates())?
+        {
+            header.geometry_templates = Some(templates);
+            header.appearance = appearance;
+        }
+        Ok(header)
+    }
+
     /// The objects as `cjseq::CityJSONFeature`s, each with its own vertex
     /// pool quantised against `transform`.
     pub fn features(&self, transform: cjseq::Transform) -> Result<Features<'_>> {

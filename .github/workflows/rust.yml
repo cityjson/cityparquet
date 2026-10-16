@@ -1,7 +1,7 @@
 name: Rust
 
 # The gate for the Rust workspaces — the library (lib/cityparquet-rs), the
-# CityGML readers it depends on (lib/citygml-rs) and the read-benchmark harness
+# CityGML readers and writers it depends on (lib/citygml-rs) and the read-benchmark harness
 # (benchmark/readbench) — plus the harness's own two non-Rust suites.
 #
 # The BENCHMARKS THEMSELVES ARE NOT HERE and should not be added: they are

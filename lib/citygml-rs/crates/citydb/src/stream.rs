@@ -181,6 +181,17 @@ impl<'a> Objects<'a> {
         &self.tally.dropped
     }
 
+    /// Everything the reader has left out so far, by name: what
+    /// [`Self::dropped`] counts and the members of classes it does not read.
+    /// Complete once the stream is drained.
+    pub fn left_out(&self) -> BTreeMap<String, usize> {
+        let mut left_out = self.tally.dropped.clone();
+        for (name, n) in &self.tally.skipped_members {
+            *left_out.entry(name.clone()).or_insert(0) += n;
+        }
+        left_out
+    }
+
     fn next_batch(&mut self) -> Result<()> {
         let limit = self.db.batch_features as i64;
         let sql = format!(
