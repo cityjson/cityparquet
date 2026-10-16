@@ -110,6 +110,9 @@ const NS_XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
 
 /// What every CityGML namespace URI, of any version, begins with.
 const CITYGML: &str = "http://www.opengis.net/citygml/";
+/// The property of a surface geometry its class holds only in its boundary
+/// surfaces, followed by its LoD.
+const BOUNDED: &str = "bounded:";
 
 impl<W: Write> DocumentWriter<W> {
     /// Start a document on `out`: its root, declaring every CityGML 2.0
@@ -385,8 +388,16 @@ impl<W: Write> DocumentWriter<W> {
         let own = |local: &str| rank(&order, &o.class, &QName::new(module.clone(), local));
         let mut items: Vec<(usize, Item)> = Vec::new();
         for (g, property) in plan.property.iter().enumerate() {
-            if let Some(p) = property {
-                items.push((own(p), Item::Geometry(g)));
+            match property {
+                Some(p) if p.starts_with(BOUNDED) => {
+                    for _ in plan.tags[g].iter().filter(|t| t.is_none()) {
+                        self.b.losses.note(
+                            "faces at a LoD their class holds only in boundary surfaces, in none",
+                        );
+                    }
+                }
+                Some(p) => items.push((own(p), Item::Geometry(g))),
+                None => {}
             }
         }
         items.push((own("boundedBy"), Item::Surfaces));
@@ -869,7 +880,7 @@ impl PlanRules for Rules {
                 .into_iter()
                 .collect();
         }
-        candidates(&geometry.shape, n)
+        let mut fits: Vec<String> = candidates(&geometry.shape, n)
             .into_iter()
             .filter(|c| {
                 self.ade_class
@@ -878,7 +889,18 @@ impl PlanRules for Rules {
                         .iter()
                         .any(|s| matches!(s, Slot::Geometry(name) if name == c))
             })
-            .collect()
+            .collect();
+        // Surfaces at a LoD the class has no surface property for (a water
+        // body's LoDs 2 to 4) are written in its boundary surfaces alone.
+        let surfaces = matches!(
+            geometry.shape,
+            Shape::MultiSurface(_) | Shape::CompositeSurface(_)
+        );
+        if surfaces && fits.is_empty() && self.slots.iter().any(|s| matches!(s, Slot::Surfaces(_)))
+        {
+            fits.push(format!("{BOUNDED}lod{n}"));
+        }
+        fits
     }
 
     fn surface_holder(&self, surfaces: &[BoundarySurface], s: usize) -> Option<&'static str> {

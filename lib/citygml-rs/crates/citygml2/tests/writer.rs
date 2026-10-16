@@ -230,6 +230,13 @@ fn railway_textures_survive_the_writer() {
     survives("railway_textures_fragment.gml", &[]);
 }
 
+/// A water body holds its LoD 2 to 4 surfaces only in its boundary
+/// surfaces: it has no MultiSurface property at those LoDs.
+#[test]
+fn a_water_body_keeps_its_boundary_surfaces() {
+    survives("railway_water_body_fragment.gml", &[]);
+}
+
 #[test]
 fn plateau_buildings_survive_the_writer() {
     survives("plateau/udx/bldg/53394519_bldg_6697_op.gml", &[]);
