@@ -53,3 +53,22 @@ fn a_citygml_3_ade_round_trips() {
     );
     assert!(pkg.join("building.parquet").exists());
 }
+
+/// A CityGML source records its own version, not the CityJSON version of the
+/// header it is read into.
+#[test]
+fn a_citygml_source_records_its_citygml_version() {
+    use cityparquet::scan::scan;
+    use cityparquet::source::Source;
+    for (path, version) in [
+        (citygml3_data("b1_lod2_cs_w_sem.gml"), "3.0"),
+        (
+            citygml3_data("../../../citygml2/tests/data/b1_lod2_cs_w_sem.gml"),
+            "2.0",
+        ),
+    ] {
+        let s = scan(&Source::open(&path).unwrap()).unwrap();
+        let city = s.base_city_metadata().unwrap();
+        assert_eq!(city.source_version.as_deref(), Some(version), "{path:?}");
+    }
+}
