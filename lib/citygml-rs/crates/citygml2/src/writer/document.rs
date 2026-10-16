@@ -32,7 +32,7 @@ use citygml_core::model::{
 };
 use citygml_core::write::document::{
     BLANK, Base, ContentOf, Head, Plan, PlanRules, VersionWriter, blank, content_class, envelope,
-    pairs, rank, text, tin, writes_generic,
+    pairs, rank, relief_lod, text, tin, writes_generic,
 };
 use citygml_core::write::gml::{self, Member};
 use citygml_core::write::{is_ncname, numbers, xal};
@@ -819,6 +819,13 @@ impl<W: Write> VersionWriter<W> for DocumentWriter<W> {
 
     fn texture(&mut self, t: &Texture, rings: &HashMap<String, String>) -> Result<()> {
         DocumentWriter::texture(self, t, rings)
+    }
+
+    fn relief_feature_lod(&self, o: &GmlObject) -> Option<String> {
+        let class = content_class(&self.content_of, &o.class);
+        let def = class.as_ref().and_then(class_def);
+        def.is_some_and(|d| d.content.contains(&Slot::Tin))
+            .then(|| relief_lod(o))
     }
 }
 

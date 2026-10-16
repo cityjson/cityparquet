@@ -75,6 +75,17 @@ pub trait PlanRules {
 /// A version's document writer, for what both versions write alike around
 /// what each writes its own way: the top-level objects, the appearances
 /// and the end of the document.
+/// The integer LoD a relief component's `dem:lod` states: its first
+/// geometry's, without the CityJSON refinement (`"2.1"` is 2).
+pub fn relief_lod(o: &GmlObject) -> String {
+    o.geometries
+        .first()
+        .and_then(|g| g.lod.split('.').next())
+        .filter(|l| !l.is_empty())
+        .unwrap_or("1")
+        .to_string()
+}
+
 pub trait VersionWriter<W: Write>: Sized {
     /// The element of an `app:Appearance` holding one material or texture.
     const SURFACE_DATA: &'static str;
@@ -91,6 +102,13 @@ pub trait VersionWriter<W: Write>: Sized {
     fn object(&mut self, o: GmlObject, hoisted: &mut Vec<GmlObject>) -> Result<()>;
     /// A texture, on the rings of `rings` (ring -> its polygon) it names.
     fn texture(&mut self, t: &Texture, rings: &HashMap<String, String>) -> Result<()>;
+    /// The LoD of the `dem:ReliefFeature` `o` is written in, when `o` is a
+    /// relief component: CityJSON has no ReliefFeature, so the reader passes
+    /// through it, and the writer puts it back, since common readers
+    /// (citygml4j) read a relief component only inside one.
+    fn relief_feature_lod(&self, _o: &GmlObject) -> Option<String> {
+        None
+    }
 
     /// `object` as a top-level object, and what it cannot hold, each in a
     /// `core:cityObjectMember`.
@@ -104,8 +122,18 @@ pub trait VersionWriter<W: Write>: Sized {
                 continue;
             }
             self.base().x.open("core:cityObjectMember", &[])?;
+            let relief = self.relief_feature_lod(&o);
+            if let Some(lod) = &relief {
+                self.base().x.open("dem:ReliefFeature", &[])?;
+                self.base().x.leaf("dem:lod", &[], lod)?;
+                self.base().x.open("dem:reliefComponent", &[])?;
+            }
             let mut hoisted = Vec::new();
             self.object(o, &mut hoisted)?;
+            if relief.is_some() {
+                self.base().x.close()?;
+                self.base().x.close()?;
+            }
             self.base().x.close()?;
             self.base().objects += 1;
             pending.extend(hoisted.into_iter().rev());
