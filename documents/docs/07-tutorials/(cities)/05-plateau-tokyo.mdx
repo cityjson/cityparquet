@@ -222,8 +222,10 @@ its CRS — the `spatial` extension reads it with no help. Before reprojecting, 
 SET geometry_always_xy = true;
 ```
 
-Without it, `spatial` follows EPSG's declared latitude-first order for JGD2011, reads
-the coordinates the wrong way round, and every area comes back `NaN`. With it, the
+Without it, DuckDB 1.5 follows EPSG's declared latitude-first order for JGD2011,
+reads the coordinates the wrong way round, and every area comes back `NaN`; DuckDB
+2.0 refuses to guess and raises an error that `ST_Transform` is sensitive to the
+coordinate axis order. With it, the
 two-argument `ST_Transform(geometry, target_crs)` takes the source CRS from the
 column itself:
 
