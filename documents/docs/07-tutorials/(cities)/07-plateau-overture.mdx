@@ -36,8 +36,8 @@ below use it several times:
 
 ```sql
 CREATE TABLE places AS
-SELECT id, names.primary AS name, categories.primary AS category, geometry
-FROM read_parquet('s3://overturemaps-us-west-2/release/2026-08-19.0/theme=places/type=place/*',
+SELECT id, names.primary AS name, taxonomy.primary AS category, geometry
+FROM read_parquet('s3://overturemaps-us-west-2/release/2026-10-21.0/theme=places/type=place/*',
                   hive_partitioning = true)
 WHERE bbox.xmin BETWEEN 139.6614 AND 139.7238
   AND bbox.ymin BETWEEN 35.6416 AND 35.6921;
@@ -49,14 +49,16 @@ SELECT count(*) AS places, count(DISTINCT category) AS categories FROM places;
 ┌────────┬────────────┐
 │ places │ categories │
 ├────────┼────────────┤
-│ 56398  │ 863        │   -- ~30 s from S3
+│ 58837  │ 864        │
 └────────┴────────────┘
 ```
 
 Overture publishes a new release every month. Substitute the current one: its
 [release calendar](https://docs.overturemaps.org/release-calendar/) lists them, and
 the `latest` field of its STAC catalogue at `https://stac.overturemaps.org/catalog.json`
-names the newest.
+names the newest. The schema changes between releases as well: this one files a
+place's category under `taxonomy.primary`, so check the column names if a query
+fails to bind.
 
 ## Take the buildings
 
@@ -84,6 +86,8 @@ SELECT count(*) FROM places p JOIN buildings b ON ST_Within(p.geometry, b.footpr
 Binder Error: Cannot call function 'ST_Within' with geometries of different coordinate
 reference systems (CRS).
 First geometry type is in 'OGC:CRS84' which is not compatible with 'EPSG:6697'.
+ * Use 'ST_Transform' to convert geometries to the same CRS before passing them to this function.
+ * Use 'ST_SetCRS' to explicitly override the CRS of a geometry expression, without performing a transformation.
 ```
 
 Both columns are typed `GEOMETRY` with their CRS attached — Overture's in WGS 84
@@ -106,7 +110,7 @@ FROM matched;
 ┌─────────────────────┬───────────────────────┐
 │ places_in_buildings │ buildings_with_places │
 ├─────────────────────┼───────────────────────┤
-│ 23128               │ 8112                  │
+│ 24070               │ 8221                  │
 └─────────────────────┴───────────────────────┘
 ```
 
@@ -116,7 +120,7 @@ places. What the transform changes is the declared CRS, so that the comparison i
 between like and like and says so. Against another dataset, the same step would move
 the points as well.
 
-The rest of the 56 398 places lie outside any Shibuya building: on the street, in
+The rest of the 58 837 places lie outside any Shibuya building: on the street, in
 buildings of neighbouring wards inside the rectangular window, or placed where no
 footprint is.
 
@@ -133,12 +137,12 @@ FROM matched GROUP BY ALL ORDER BY places DESC LIMIT 6;
 ┌─────────────────────┬────────┐
 │      category       │ places │
 ├─────────────────────┼────────┤
-│ japanese_restaurant │ 2088   │
-│ bar                 │ 950    │
-│ restaurant          │ 838    │
-│ hair_salon          │ 803    │
-│ clothing_store      │ 744    │
-│ cafe                │ 722    │
+│ japanese_restaurant │ 2105   │
+│ bar                 │ 1013   │
+│ restaurant          │ 941    │
+│ hair_salon          │ 818    │
+│ clothing_store      │ 782    │
+│ cafe                │ 728    │
 └─────────────────────┴────────┘
 ```
 
@@ -164,14 +168,14 @@ GROUP BY ALL ORDER BY height_band;
 ┌──────────────────┬───────────┬────────┬─────────────────────┐
 │   height_band    │ buildings │ places │ places_per_building │
 ├──────────────────┼───────────┼────────┼─────────────────────┤
-│ 1: under 10 m    │ 16949     │ 1696   │ 0.1                 │
-│ 2: 10–30 m       │ 18961     │ 13342  │ 0.7                 │
-│ 3: 30–60 m       │ 1856      │ 6373   │ 3.43                │
-│ 4: 60 m and over │ 90        │ 1673   │ 18.59               │
+│ 1: under 10 m    │ 16949     │ 1768   │ 0.1                 │
+│ 2: 10–30 m       │ 18961     │ 13889  │ 0.73                │
+│ 3: 30–60 m       │ 1856      │ 6614   │ 3.56                │
+│ 4: 60 m and over │ 90        │ 1752   │ 19.47               │
 └──────────────────┴───────────┴────────┴─────────────────────┘
 ```
 
-The 90 buildings of 60 m and more average 18.6 places each; the 17 000 under 10 m
+The 90 buildings of 60 m and more average 19.5 places each; the 17 000 under 10 m
 average one place for every ten buildings. And the busiest individual
 buildings:
 
@@ -185,11 +189,11 @@ GROUP BY ALL ORDER BY places DESC LIMIT 5;
 ┌───────────────────────────────────────────┬────────┬─────────┬────────┬─────────────────────┐
 │                 building                  │ height │ storeys │ places │ commonest_category  │
 ├───────────────────────────────────────────┼────────┼─────────┼────────┼─────────────────────┤
-│ bldg_c2144cb0-0e0e-4208-84a9-83059ece20a3 │ 68.6   │ 14      │ 198    │ japanese_restaurant │
-│ bldg_9ad5b600-360f-4627-8a89-fca39aad5576 │ 173.6  │ 34      │ 182    │ japanese_restaurant │
-│ bldg_e199100f-cb89-4a81-8e38-0abee12cb1d4 │ 80.4   │ 5       │ 145    │ clothing_store      │
-│ bldg_6a5be1be-eea6-45ce-80cb-5a228581b362 │ 133.7  │ 4       │ 123    │ clothing_store      │
-│ bldg_884b7aea-8fa7-4447-8d45-d691cfec7237 │ 98.0   │ 23      │ 118    │ japanese_restaurant │
+│ bldg_c2144cb0-0e0e-4208-84a9-83059ece20a3 │ 68.6   │ 14      │ 207    │ japanese_restaurant │
+│ bldg_9ad5b600-360f-4627-8a89-fca39aad5576 │ 173.6  │ 34      │ 193    │ japanese_restaurant │
+│ bldg_e199100f-cb89-4a81-8e38-0abee12cb1d4 │ 80.4   │ 5       │ 147    │ clothing_store      │
+│ bldg_6a5be1be-eea6-45ce-80cb-5a228581b362 │ 133.7  │ 4       │ 131    │ clothing_store      │
+│ bldg_884b7aea-8fa7-4447-8d45-d691cfec7237 │ 98.0   │ 23      │ 125    │ japanese_restaurant │
 └───────────────────────────────────────────┴────────┴─────────┴────────┴─────────────────────┘
 ```
 
