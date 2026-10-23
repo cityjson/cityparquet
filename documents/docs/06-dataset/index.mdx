@@ -32,6 +32,9 @@ https://cityparquet.open3d.city/data/
   aura-zae/
     collection.json
     …
+  montreal-terrain/            -- and montreal-2009/, montreal-2016/, montreal-2020/
+    collection.json
+    …
 ```
 
 The page reads that catalogue in your browser and renders what it finds: the city
@@ -81,6 +84,12 @@ collection are the source's.
   vertical CRS (NGF-IGN69 height, EPSG:5720) over Lambert-93 coordinates; its
   package keeps the declared CRS, so it has no geographic extent and is absent
   from the map.
+- **Montréal** (Canada), four collections from the Ville de Montréal, all in
+  NAD83(CSRS) / MTM zone 8 (EPSG:2950). The 2015 terrain model as CityGML 2.0 TIN
+  reliefs, one package per borough or municipality; LoD2 buildings with textures as
+  captured in 2016 (six boroughs) and in 2020 (three boroughs), CityGML 2.0, one
+  package per borough; and the LoD2 buildings of the 2009 tile VM05, converted from
+  its CityJSON edition.
 
 Where a source has no LoD0 footprint, the converter derives one from the object's
 ground surfaces — its `GroundSurface` faces, or failing those its downward-facing

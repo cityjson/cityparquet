@@ -35,13 +35,17 @@ WHERE l.rel = 'child';
 ```
 
 ```text
-┌────────────────────────────┐
-│         collection         │
-├────────────────────────────┤
-│ ./plateau/collection.json  │
-│ ./3dbag/collection.json    │
-│ ./aura-zae/collection.json │
-└────────────────────────────┘
+┌────────────────────────────────────┐
+│             collection             │
+├────────────────────────────────────┤
+│ ./plateau/collection.json          │
+│ ./3dbag/collection.json            │
+│ ./aura-zae/collection.json         │
+│ ./montreal-terrain/collection.json │
+│ ./montreal-2009/collection.json    │
+│ ./montreal-2016/collection.json    │
+│ ./montreal-2020/collection.json    │
+└────────────────────────────────────┘
 ```
 
 Each collection carries its source's title and licence, and one `item` link per
@@ -72,7 +76,7 @@ SET VARIABLE items = (
 ```
 
 `l.href[3:]` drops the leading `./` of the relative link. Reading all 63 Items is one
-`read_json` over the list, and takes a second or two.
+`read_json` over the list.
 
 ## Find the packages that cover a place
 
@@ -139,7 +143,7 @@ ORDER BY package;
 └────────────┘
 ```
 
-Three packages, in a few seconds: Shibuya itself, and the two neighbours whose
+Three packages: Shibuya itself, and the two neighbours whose
 tiles overlap it. The query rules packages in or out on their tables'
 statistics, without reading a row of data.
 
@@ -216,11 +220,11 @@ LIMIT 8;
 │ Shibuya  │ 38211     │ 10.3            │ 0.24         │ 240.6     │
 │ Shinjuku │ 52788     │ 9.7             │ 0.22         │ 243.3     │
 │ Kōtō     │ 56591     │ 9.7             │ 0.24         │ 182.7     │
-│ Toshima  │ 53321     │ 9.4             │ 0.08         │ 234.1     │   -- ~2–4 s
+│ Toshima  │ 53321     │ 9.4             │ 0.08         │ 234.1     │
 └──────────┴───────────┴─────────────────┴──────────────┴───────────┘
 ```
 
-Two million buildings from 23 packages, in seconds: the query reads four columns of
+Two million buildings from 23 packages in one query: it reads four columns of
 each building table and none of the geometry. Buildings whose `usage` is unknown carry
 no municipality code, so the join drops them; the
 [PLATEAU Tokyo tutorial](/tutorials/plateau-tokyo#place-the-buildings-that-have-no-code)
