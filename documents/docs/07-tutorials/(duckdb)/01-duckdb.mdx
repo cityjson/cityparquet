@@ -31,13 +31,12 @@ FORCE INSTALL cityjson FROM community;
 
 Restart DuckDB and run `LOAD cityjson;` to use the updated extension.
 
-:::note[Package-operation availability]
-The package steps use `cityparquet_init`, `cityparquet_write`,
-`cityparquet_read`, and `insert_cityjson`. These were absent from the community
-version tested for this walkthrough. If your registry version does not yet
-provide them after updating, use [CLI conversion](/tutorials/cli-conversion)
-for package creation and export. The examples below document those package
-operations, but require a release that includes them.
+:::note[DuckDB 1.5 only]
+The community registry carries `cityjson` builds for DuckDB 1.5 only. DuckDB 2.0
+has none yet: `INSTALL cityjson FROM community` fails there with `HTTP 404`. The
+DuckDB 1.5 build provides every package operation used below —
+`cityparquet_init`, `cityparquet_write`, `cityparquet_read`, `cityparquet_validate`
+and the `insert_*` pragmas.
 :::
 
 Run the SQL blocks below **separately and in order**. Package pragmas inspect the
