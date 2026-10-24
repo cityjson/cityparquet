@@ -600,8 +600,15 @@ impl<'a> Conv<'a> {
             })
             .map(|p| ncname(p).into_owned())
             .collect();
+        let gml_id = ncname(id);
+        if let Cow::Owned(_) = gml_id {
+            self.losses.note(
+                "ids that are not XML names (written with `_` for each character a name \
+                 cannot hold)",
+            );
+        }
         let mut object = GmlObject {
-            id: Some(ncname(id).into_owned()),
+            id: Some(gml_id.into_owned()),
             class: class.name.clone(),
             attributes: Vec::new(),
             ade: Vec::new(),

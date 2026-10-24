@@ -611,10 +611,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         module_geo,
         bloom_attributes,
         source_format: to_schema_source_format(source.format()),
-        source_version: serde_json::to_value(header.version)?
-            .as_str()
-            .expect("a CityJSON version serialises as a string")
-            .to_string(),
+        source_version: source.source_version(),
     })
 }
 

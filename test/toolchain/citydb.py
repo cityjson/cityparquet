@@ -79,14 +79,22 @@ class Server:
              "-e", f"POSTGRES_PASSWORD={PASSWORD}", PG_IMAGE],
             check=True, capture_output=True,
         )
-        for _ in range(120):
+        # The image's entrypoint creates template_postgis on a temporary
+        # server, stops it and starts the real one: the template is visible
+        # before that restart, so wait for the init process to say it is
+        # done as well.
+        for _ in range(240):
+            logs = subprocess.run([CONTAINER, "logs", NAME], capture_output=True, text=True)
             ready = self.psql("postgres", "SELECT 1 FROM pg_database WHERE datname = 'template_postgis'")
-            if ready.returncode == 0 and ready.stdout.strip() == "1":
+            if (
+                "PostgreSQL init process complete" in logs.stdout + logs.stderr
+                and ready.returncode == 0
+                and ready.stdout.strip() == "1"
+            ):
                 break
             time.sleep(1)
         else:
             raise RuntimeError("the 3DCityDB server did not start")
-        time.sleep(2)
         return self
 
     def __exit__(self, *_) -> None:

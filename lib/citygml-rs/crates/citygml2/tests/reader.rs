@@ -84,6 +84,34 @@ fn citymodel_appearance_reaches_the_feature_it_targets() {
     assert_eq!(appearance.vertices_texture.as_ref().map(Vec::len), Some(3));
 }
 
+/// A texture coordinate list's `ring` is an `anyURI`: the published
+/// LoD3_Railway.gml names its rings without the `#` (`ring="PolyID…_0"`),
+/// and every one of its 30 textured faces keeps its texture.
+#[cfg(feature = "cjseq")]
+#[test]
+fn a_ring_named_without_a_hash_keeps_its_texture() {
+    let transform = cjseq::Transform {
+        scale: [0.001; 3],
+        translate: [0.0; 3],
+    };
+    let features: Vec<_> = FeatureReader::open(&data("railway_bare_ring_fragment.gml"))
+        .unwrap()
+        .features(transform)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(features.len(), 1);
+    let appearance = features[0].appearance.as_ref().expect("appearance");
+    assert_eq!(appearance.textures.as_ref().map(Vec::len), Some(2));
+    let textured = serde_json::to_value(&features[0].city_objects["GMLID_BUI205585_1385_1373"])
+        .unwrap()["geometry"][0]["texture"]["visual"]["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|face| face[0][0].is_number())
+        .count();
+    assert_eq!(textured, 30);
+}
+
 /// The SIG3D LoD 4 sample: a building with a room holding a chair, doors and
 /// windows in its walls' openings, an address with a location, and a TIN
 /// relief beside it.
