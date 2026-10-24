@@ -8,8 +8,8 @@ sidebar:
 
 The `cityparquet` command-line tool converts local city-model files into
 CityParquet packages and exports them again. This walkthrough uses a Delft
-CityJSONSeq file and shows the equivalent commands for CityJSON and CityGML.
-For FlatCityBuf or SQL-based conversion, use the
+CityJSONSeq file and shows the equivalent commands for CityJSON, CityGML and
+FlatCityBuf. For SQL-based conversion, use the
 [DuckDB format-conversion tutorial](/tutorials/duckdb).
 
 ## Install the CLI
@@ -62,14 +62,15 @@ when the source contains those data. See the
 Use a new output directory for another conversion. To replace an existing
 package deliberately, add `--overwrite`.
 
-## Convert CityJSON or CityGML
+## Convert CityJSON, CityGML or FlatCityBuf
 
-The same command accepts a CityJSON document or CityGML 2.0 file. Replace these
-example input names with your own local files:
+The same command accepts a CityJSON document, a CityGML 2.0 or 3.0 file, or a
+FlatCityBuf file. Replace these example input names with your own local files:
 
 ```bash
 cityparquet convert model.city.json --output cityjson_package
 cityparquet convert model.gml --output citygml_package
+cityparquet convert model.fcb --output flatcitybuf_package
 ```
 
 If a source lacks a coordinate reference system, supply its known EPSG code with
@@ -98,16 +99,22 @@ references before treating the conversion as lossless.
 
 ## Export to CityGML
 
-A `.gml` suffix selects the CityGML 2.0 writer:
+A `.gml` suffix selects the CityGML writer. It writes CityGML 2.0 unless
+`--citygml-version 3.0` asks for 3.0:
 
 ```bash
 cityparquet export delft_package delft_export.gml
+cityparquet export delft_package delft_export_3.gml --citygml-version 3.0
 ```
 
-CityGML export has narrower coverage than CityJSON export. Its report lists
-buildings written, non-building objects skipped, missing geometry, unsupported
-multi-solids, and skipped LoDs or attributes. Check that report for your model;
-a successful command does not mean every source object was exported.
+Every city object is written, with its geometry, semantic surfaces, attributes,
+appearance and ADE content, in the order the version's schema requires. What the
+target version cannot hold is left out, and the export prints one
+`warning: CityGML:` line per kind with its count: a class the version lacks (a
+`BuildingStorey` in 2.0), or a LoD 4 geometry in 3.0 whose object already has
+geometry at LoD 3. Check those warnings for your model: no warning means the
+CityGML writer left nothing out. The report line's last two numbers count what
+the export itself dropped, as for CityJSON.
 
 ## Check the CityJSONSeq round trip
 
@@ -117,10 +124,18 @@ Compare the exported CityJSONSeq with the downloaded source:
 cityparquet compare delft.city.jsonl delft_export.city.jsonl
 ```
 
+```text
+equal (excluded: 21)
+```
+
 The comparator checks semantic equality rather than identical file bytes. It
-prints `equal` and exits with code 0 when the models match; differences produce
-exit code 2 and a report. The comparator accepts CityJSON and CityJSONSeq, not
-CityGML.
+prints `equal` and exits with code 0 when the models match; the count in brackets
+is how many things it set aside rather than compared, such as the
+`geographicalExtent` it derives from the bounding box. Differences produce exit
+code 2 and a report. The comparator reads CityGML too, but a CityGML export does
+not compare equal to its CityJSON source: CityGML has no LoD 1.2 or 2.2, and the
+writer stores boolean attributes as text, so `compare delft.city.jsonl
+delft_export.gml` reports those differences and exits with code 2.
 
 You now have a CityParquet package for analysis and exported files for exchange.
 Continue with [Getting started](/getting-started) to query a package, or inspect

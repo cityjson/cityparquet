@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
-use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::validate::validate_package;
@@ -103,11 +102,7 @@ fn a_citygml_lod4_solid_round_trips_through_the_package() {
     // Package -> CityGML keeps the LoD4 solid as `bldg:lod4Solid`, and that
     // document reads back to the same LoD4 geometry.
     let gml = dir.path().join("written.gml");
-    write_package(&WriteOptions {
-        package_dir: pkg.clone(),
-        output: gml.clone(),
-    })
-    .unwrap();
+    export(&ExportOptions::new(pkg.clone(), gml.clone())).unwrap();
     assert!(
         std::fs::read_to_string(&gml)
             .unwrap()
@@ -120,11 +115,7 @@ fn a_citygml_lod4_solid_round_trips_through_the_package() {
     // Package -> CityJSON writes the LoD as "4.0" and counts it, so the CLI
     // can warn that CityJSON 2.0 defines no LoD 4.
     let json = dir.path().join("exported.city.json");
-    let exported = export(&ExportOptions {
-        package_dir: pkg,
-        output: json.clone(),
-    })
-    .unwrap();
+    let exported = export(&ExportOptions::new(pkg, json.clone())).unwrap();
     assert!(
         std::fs::read_to_string(&json)
             .unwrap()
@@ -293,13 +284,13 @@ fn a_deep_chain_of_xlinked_aggregates_is_refused() {
 /// counted once. Wrapping one polygon in many nested identified aggregates
 /// adds tags, not polygons, and must not raise it: otherwise those wrappers
 /// would pay for a fan-out of the same order. Derived from the real fixture
-/// like the fan-out test, with one polygon wrapped 2 000 deep beside a
-/// 2^11-copy fan-out of it — far beyond the document's few dozen polygons,
-/// but within a budget that counted the polygon once per wrapper.
+/// like the fan-out test, with one polygon wrapped 3 000 deep beside a
+/// 2^13-copy fan-out of it — twice what the document's thousand polygons
+/// allow, but within a budget that counted the polygon once per wrapper.
 #[test]
 fn nested_aggregate_wrappers_do_not_raise_the_expansion_budget() {
-    const WRAPPERS: usize = 2_000;
-    const FAN_DEPTH: usize = 11;
+    const WRAPPERS: usize = 3_000;
+    const FAN_DEPTH: usize = 13;
     let mut members = String::from("<gml:surfaceMember>");
     for i in 0..WRAPPERS {
         members.push_str(&format!(

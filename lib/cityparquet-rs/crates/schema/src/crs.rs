@@ -192,16 +192,18 @@ impl AxisOrder {
 
 /// The committed EPSG -> PROJJSON table, gzipped. Regenerate with
 /// `tools/gen_projjson.py` when the pinned PROJ/EPSG dataset is bumped (the
-/// version pins live in the asset's `_meta`).
+/// version pins live in the asset's `_meta`), then the CityGML crates' table
+/// of steps derived from it: `CITYGML_CRS_STEPS_WRITE=1 cargo test -p
+/// cityparquet --test citygml_crs_steps`.
 static ASSET: &[u8] = include_bytes!("../assets/epsg_projjson.json.gz");
 
 /// The parsed table: `"7415"` / `"OGC:CRS84"` -> the entry's raw PROJJSON
-/// text. Decompressed and indexed once, lazily (only the first CRS resolution
-/// pays for it); each entry is parsed into a `Value` only when it is looked
-/// up, so a process resolving one CRS builds a DOM for one entry, not all of
-/// them.
-fn table() -> &'static HashMap<String, Box<RawValue>> {
-    static TABLE: OnceLock<HashMap<String, Box<RawValue>>> = OnceLock::new();
+/// text, and the PROJ version it was generated with. Decompressed and
+/// indexed once, lazily (only the first CRS resolution pays for it); each
+/// entry is parsed into a `Value` only when it is looked up, so a process
+/// resolving one CRS builds a DOM for one entry, not all of them.
+fn vendored() -> &'static (HashMap<String, Box<RawValue>>, String) {
+    static TABLE: OnceLock<(HashMap<String, Box<RawValue>>, String)> = OnceLock::new();
     TABLE.get_or_init(|| {
         let mut gz = flate2::read::GzDecoder::new(ASSET);
         let mut json = String::new();
@@ -209,9 +211,28 @@ fn table() -> &'static HashMap<String, Box<RawValue>> {
             .expect("vendored PROJJSON asset must gunzip");
         let mut map: HashMap<String, Box<RawValue>> =
             serde_json::from_str(&json).expect("vendored PROJJSON asset must parse");
-        map.remove("_meta");
-        map
+        let meta = map
+            .remove("_meta")
+            .expect("vendored PROJJSON asset has a _meta");
+        let meta: Value = serde_json::from_str(meta.get()).expect("_meta must parse");
+        let proj = meta["proj_version"].as_str().unwrap_or("?").to_string();
+        (map, proj)
     })
+}
+
+fn table() -> &'static HashMap<String, Box<RawValue>> {
+    &vendored().0
+}
+
+/// Every key the vendored table resolves (`"7415"`, `"OGC:CRS84"`), in no
+/// particular order.
+pub fn vendored_keys() -> impl Iterator<Item = &'static str> {
+    table().keys().map(String::as_str)
+}
+
+/// The PROJ version the vendored table was generated with.
+pub fn vendored_proj_version() -> &'static str {
+    &vendored().1
 }
 
 /// Extract the lookup key (an EPSG code, or `OGC:CRS84`/`OGC:CRS84h`) from a

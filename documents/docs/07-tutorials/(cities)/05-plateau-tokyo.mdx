@@ -45,10 +45,12 @@ INSTALL spatial; LOAD spatial;
 INSTALL three_d FROM community; LOAD three_d;
 ```
 
-:::note[DuckDB 1.5.5 or newer]
+:::note[DuckDB 1.5.5 or a later 1.5 release]
 The community `three_d` build that carries the `ST_3D*` functions used below, and that
 loads alongside `spatial`, targets **DuckDB 1.5.5**. On earlier releases the two
-extensions conflict and these functions are absent.
+extensions conflict and these functions are absent. The community registry carries
+`three_d` builds for DuckDB 1.5 only: DuckDB 2.0 has none yet, and
+`INSTALL three_d FROM community` fails there with `HTTP 404`.
 :::
 
 ## Coordinates in degrees
@@ -222,8 +224,10 @@ its CRS — the `spatial` extension reads it with no help. Before reprojecting, 
 SET geometry_always_xy = true;
 ```
 
-Without it, `spatial` follows EPSG's declared latitude-first order for JGD2011, reads
-the coordinates the wrong way round, and every area comes back `NaN`. With it, the
+Without it, DuckDB 1.5 follows EPSG's declared latitude-first order for JGD2011,
+reads the coordinates the wrong way round, and every area comes back `NaN`; DuckDB
+2.0 refuses to guess and raises an error that `ST_Transform` is sensitive to the
+coordinate axis order. With it, the
 two-argument `ST_Transform(geometry, target_crs)` takes the source CRS from the
 column itself:
 

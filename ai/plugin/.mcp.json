@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cityparquet": {
+      "command": "npx",
+      "args": ["-y", "@cityjson/cityparquet-mcp"]
+    }
+  }
+}

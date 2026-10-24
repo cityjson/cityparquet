@@ -1,12 +1,11 @@
-use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
-use cityparquet::export::{ExportOptions, export};
+use cityparquet::export::{CityGmlVersion, ExportOptions, export};
 use cityparquet::inputs::resolve_inputs;
 use cityparquet::merge::merge_sources;
 use cityparquet::package::{ConvertOptions, RowOrder, convert_source};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::recipe::{BloomPolicy, Codec, RecipePreset, WriterRecipe};
-use cityparquet::source::{Source, SourceFormat};
+use cityparquet::source::Source;
 use cityparquet::validate::validate_package;
 use cityparquet_cli::bench::{self, BenchOptions};
 use cityparquet_schema::Result as CpResult;
@@ -23,14 +22,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Convert CityJSON/CityJSONSeq/CityGML 2.0/FlatCityBuf to a CityParquet package
+    /// Convert CityJSON/CityJSONSeq/CityGML 2.0 or 3.0/FlatCityBuf to a CityParquet package
     Convert {
         /// Input files, directories, or glob patterns (CityJSON, CityJSONSeq,
-        /// CityGML 2.0, FlatCityBuf). Multiple inputs are merged into one
+        /// CityGML 2.0 or 3.0, FlatCityBuf). Multiple inputs are merged into one
         /// dataset; directories contribute their immediate
-        /// .json/.jsonl/.gml/.fcb children.
+        /// .json/.jsonl/.gml/.fcb children. A `postgresql://` URL is a
+        /// 3DCityDB v5 database, converted on its own; what the URL leaves
+        /// out comes from the PG* environment variables and ~/.pgpass, as
+        /// for libpq (`sslmode` goes in the URL).
         #[arg(value_name = "INPUTS", required = true, num_args = 1..)]
         inputs: Vec<PathBuf>,
+
+        /// The schema of a 3DCityDB database input's instance (default
+        /// citydb)
+        #[arg(long, value_name = "SCHEMA")]
+        citydb_schema: Option<String>,
 
         /// Output directory for the CityParquet package (parent directory of
         /// per-partition packages when --partition is given)
@@ -103,12 +110,22 @@ enum Commands {
 
         /// Row-emission order for the main table: "hilbert" (the default:
         /// features sorted by the Hilbert index of their centre, improving
-        /// bbox row-group pruning; a CityJSON or CityJSONSeq input is read
-        /// back in that order, a CityGML or FlatCityBuf input is held parsed
-        /// in memory) or "source" (stream features as the input yields them,
-        /// one at a time — the low-memory path for any input).
+        /// bbox row-group pruning; the sort holds up to --memory-budget of
+        /// encoded rows and spills sorted runs to disk beyond it) or "source"
+        /// (rows written as the input yields them, with no sort).
         #[arg(long, value_enum, default_value = "hilbert")]
         ordering: OrderingArg,
+
+        /// Encoded rows the Hilbert sort holds in memory before spilling a
+        /// sorted run to disk: bytes, or with a K, M or G suffix (binary).
+        #[arg(long, default_value = "2G", value_parser = parse_size)]
+        memory_budget: usize,
+
+        /// Directory to spill the Hilbert sort's runs in (default: the
+        /// package's scratch directory). The runs go in a directory of their
+        /// own inside it, removed when the conversion ends.
+        #[arg(long)]
+        spill_dir: Option<PathBuf>,
 
         /// Synthesise an LoD0 footprint into `geometry_lod0_0` for every
         /// object that lacks a source LoD0, derived from its higher-LoD
@@ -158,6 +175,21 @@ enum Commands {
         /// Output file (.city.jsonl for Seq, .city.json for doc, .gml for CityGML)
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
+
+        /// The CityGML version a .gml output is written in: 2.0 or 3.0
+        #[arg(long, default_value = "2.0", value_parser = parse_citygml_version)]
+        citygml_version: CityGmlVersion,
+
+        /// The XML namespace of an extension whose declaration names none,
+        /// as NAME=URI; repeatable
+        #[arg(long, value_name = "NAME=URI", value_parser = parse_pair)]
+        ade_xmlns: Vec<(String, String)>,
+
+        /// Where an ADE's XML Schema is, by its namespace, as URI=LOCATION,
+        /// for the document's xsi:schemaLocation in place of the declared
+        /// one; repeatable
+        #[arg(long, value_name = "URI=LOCATION", value_parser = parse_pair)]
+        ade_schema: Vec<(String, String)>,
     },
 
     /// Compare two CityJSON/CityJSONSeq datasets for semantic equality
@@ -177,6 +209,10 @@ enum Commands {
         /// Exclude GeometryInstance geometries from comparison
         #[arg(long)]
         exclude_instances: bool,
+
+        /// Print every difference, not the first 20
+        #[arg(long)]
+        all: bool,
     },
 
     /// Write a STAC Collection (`collection.json`) over several packages'
@@ -287,6 +323,58 @@ impl RecipeArg {
     }
 }
 
+/// A byte count, optionally with a binary `K`, `M` or `G` suffix
+/// (`--memory-budget`).
+fn parse_citygml_version(text: &str) -> Result<CityGmlVersion, String> {
+    match text {
+        "2.0" => Ok(CityGmlVersion::V2_0),
+        "3.0" => Ok(CityGmlVersion::V3_0),
+        other => Err(format!(
+            "CityGML {other} is not written; expected 2.0 or 3.0"
+        )),
+    }
+}
+
+/// `KEY=VALUE`, split at the first `=`.
+fn parse_pair(text: &str) -> Result<(String, String), String> {
+    match text.split_once('=') {
+        Some((key, value)) if !key.is_empty() && !value.is_empty() => {
+            Ok((key.to_string(), value.to_string()))
+        }
+        _ => Err(format!("expected KEY=VALUE, got {text:?}")),
+    }
+}
+
+/// The pairs `flag` was given, by key; a key given twice is refused.
+fn unique_pairs(
+    flag: &str,
+    pairs: Vec<(String, String)>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for (key, value) in pairs {
+        if out.insert(key.clone(), value).is_some() {
+            return Err(format!("{flag} {key} given twice"));
+        }
+    }
+    Ok(out)
+}
+
+fn parse_size(text: &str) -> Result<usize, String> {
+    let text = text.trim();
+    let (digits, shift) = match text.chars().last().map(|c| c.to_ascii_uppercase()) {
+        Some('K') => (&text[..text.len() - 1], 10),
+        Some('M') => (&text[..text.len() - 1], 20),
+        Some('G') => (&text[..text.len() - 1], 30),
+        _ => (text, 0),
+    };
+    let n: usize = digits
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{text}` is not a size (e.g. 512M, 2G)"))?;
+    n.checked_mul(1usize << shift)
+        .ok_or_else(|| format!("`{text}` is too large"))
+}
+
 /// CLI mirror of [`RowOrder`] (`--ordering`).
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum OrderingArg {
@@ -319,38 +407,47 @@ fn resolve_and_open(inputs: &[PathBuf]) -> CpResult<Vec<Source>> {
     Ok(sources)
 }
 
+/// `input` as a database URL, when it is one (`postgresql://` or
+/// `postgres://`).
+fn database_url(input: &std::path::Path) -> Option<&str> {
+    input
+        .to_str()
+        .filter(|s| s.starts_with("postgresql://") || s.starts_with("postgres://"))
+}
+
+/// Open the 3DCityDB database at `url`, its instance in `schema`.
+#[cfg(feature = "citydb")]
+fn open_database(url: &str, schema: Option<&str>) -> CpResult<Source> {
+    use cityparquet::citydb::{Config, has_password};
+    if has_password(url) {
+        eprintln!(
+            "warning: the database URL carries a password, which other users of this machine \
+             can see on the command line; PGPASSWORD or ~/.pgpass keeps it off it"
+        );
+    }
+    let mut config = Config::new(url);
+    if let Some(schema) = schema {
+        config.schema = schema.to_string();
+    }
+    Source::open_citydb(&config)
+}
+
+#[cfg(not(feature = "citydb"))]
+fn open_database(_url: &str, _schema: Option<&str>) -> CpResult<Source> {
+    Err(cityparquet::CityParquetError::Schema(
+        "reading a 3DCityDB database needs the `citydb` feature".to_string(),
+    ))
+}
+
 /// Collapse `sources` to one [`Source`]: the lone input directly, or — for
-/// several — a merged in-memory source ([`merge_sources`] enforces a shared
-/// CRS and requantises onto one transform).
-///
-/// An operator-supplied CRS is a property of the header, so it travels onto
-/// the merged source — but only when EVERY input got its CRS from `--crs`.
-/// `merge_sources` enforces one shared CRS across the inputs, so a single
-/// input that declared that CRS itself makes the merged CRS source-declared:
-/// the operator's value was, for that input, a no-op. Asking `any` instead
-/// would stamp a whole mixed batch `crs_source: "operator-supplied"` and strip
-/// the genuine `referenceSystem` out of the verbatim `source_metadata`,
-/// leaving a footer that denies a declaration the source did make.
+/// several — a merged source that reads them in turn ([`merge_sources`]
+/// enforces a shared CRS, requantises onto one transform, and carries the
+/// operator-supplied-CRS provenance only when every input had it).
 fn merge_to_one(sources: Vec<Source>) -> CpResult<Source> {
     if sources.len() == 1 {
         return Ok(sources.into_iter().next().expect("one source"));
     }
-    let crs_is_operator_supplied = sources.iter().all(Source::crs_is_operator_supplied);
-    let merged = merge_sources(&sources)?;
-    if merged.duplicate_ids > 0 {
-        eprintln!(
-            "warning: {} duplicate feature id(s) across inputs; all kept (a package with \
-             duplicate ids cannot faithfully round-trip through export)",
-            merged.duplicate_ids
-        );
-    }
-    Ok(Source::from_parts(
-        merged.header,
-        merged.features,
-        merged.doc_appearance,
-        SourceFormat::CityJsonSeq,
-    )
-    .with_crs_operator_supplied(crs_is_operator_supplied))
+    merge_sources(sources)
 }
 
 /// Build a [`PartitionSpec`] from the `--partition` method and its sizing flag,
@@ -442,6 +539,7 @@ fn main() -> std::process::ExitCode {
     match cli.command {
         Commands::Convert {
             inputs,
+            citydb_schema,
             output,
             partition,
             number,
@@ -456,6 +554,8 @@ fn main() -> std::process::ExitCode {
             no_bloom,
             bloom_fpp,
             ordering,
+            memory_budget,
+            spill_dir,
             lod0,
             crs,
             tolerate_invalid_appearance,
@@ -507,6 +607,8 @@ fn main() -> std::process::ExitCode {
                 batch_size,
                 recipe,
                 ordering,
+                memory_budget,
+                spill_dir,
                 generate_lod0: lod0,
                 lod0: cityparquet::lod0::Lod0Options::default(),
                 crs_override: None,
@@ -524,7 +626,23 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
 
-            let mut sources = match resolve_and_open(&inputs) {
+            let opened = match inputs.iter().find_map(|i| database_url(i)) {
+                Some(_) if inputs.len() > 1 => {
+                    eprintln!(
+                        "error: a database is converted on its own: give its URL as the only input"
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+                Some(url) => open_database(url, citydb_schema.as_deref()).map(|s| vec![s]),
+                None if citydb_schema.is_some() => {
+                    eprintln!(
+                        "error: --citydb-schema applies only to a database input (postgresql://…)"
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+                None => resolve_and_open(&inputs),
+            };
+            let mut sources = match opened {
                 Ok(sources) => sources,
                 Err(e) => {
                     eprintln!("error: {}", render_error(&e));
@@ -609,7 +727,7 @@ fn main() -> std::process::ExitCode {
                                 }
                             }
                             // Summed across partitions and printed once,
-                            // same shape as `partitions=`/`duplicate_ids=`
+                            // same shape as `partitions=`
                             // above: a dataset-level fact, not a
                             // per-partition one. Also appended to each
                             // partition's own line, since a dropped
@@ -631,9 +749,8 @@ fn main() -> std::process::ExitCode {
                                 );
                             }
                             println!(
-                                "partitions={} duplicate_ids={} invalid_appearance_refs_dropped={}",
+                                "partitions={} invalid_appearance_refs_dropped={}",
                                 report.partitions.len(),
-                                report.duplicate_ids,
                                 invalid_appearance_refs_dropped
                             );
                             for (label, r) in &report.partitions {
@@ -683,6 +800,16 @@ fn main() -> std::process::ExitCode {
                                     report.invalid_appearance_refs_dropped
                                 );
                             }
+                            for (name, n) in &report.source_left_out {
+                                eprintln!("warning: left out by the reader: {n} × {name}");
+                            }
+                            if report.sort_runs > 0 {
+                                eprintln!(
+                                    "note: the Hilbert sort spilled {} sorted run(s) to disk \
+                                     (--memory-budget)",
+                                    report.sort_runs
+                                );
+                            }
                             println!(
                                 "{} {} {} {} {} {} {} {} {} {}",
                                 report.object_count,
@@ -710,70 +837,56 @@ fn main() -> std::process::ExitCode {
         Commands::Export {
             package_dir,
             output,
+            citygml_version,
+            ade_xmlns,
+            ade_schema,
         } => {
-            // A `.gml` output goes to the native CityGML 2.0 writer; every
-            // other extension is CityJSON/CityJSONSeq via `export`.
-            if output.extension().and_then(|e| e.to_str()) == Some("gml") {
-                let opts = WriteOptions {
-                    package_dir,
-                    output,
-                };
-                match write_package(&opts) {
-                    Ok(report) => {
-                        println!(
-                            "{} buildings written; {} non-building skipped, {} without geometry, \
-                             {} composite solids written, {} multi-solids skipped, \
-                             {} lod columns skipped, {} attributes written, {} attributes skipped",
-                            report.buildings_written,
-                            report.non_building_skipped,
-                            report.buildings_without_solid_skipped,
-                            report.composite_solids_written,
-                            report.multi_solids_skipped,
-                            report.lod_columns_skipped,
-                            report.attributes_written,
-                            report.attributes_skipped,
-                        );
-                        std::process::ExitCode::SUCCESS
-                    }
-                    Err(e) => {
-                        eprintln!("error: {}", render_error(&e));
-                        std::process::ExitCode::FAILURE
-                    }
+            let mut opts = ExportOptions::new(package_dir, output);
+            opts.citygml.version = citygml_version;
+            match (
+                unique_pairs("--ade-xmlns", ade_xmlns),
+                unique_pairs("--ade-schema", ade_schema),
+            ) {
+                (Ok(xmlns), Ok(schemas)) => {
+                    opts.citygml.ade_xmlns = xmlns;
+                    opts.citygml.ade_schemas = schemas;
                 }
-            } else {
-                let opts = ExportOptions {
-                    package_dir,
-                    output,
-                };
-
-                match export(&opts) {
-                    Ok(report) => {
-                        println!(
-                            "{} {} {} {}",
-                            report.feature_count,
-                            report.object_count,
-                            report.instance_geometries_dropped,
-                            report.appearance_refs_dropped
-                        );
-                        if !report.lod4_geometries.is_empty() {
-                            let count: usize = report.lod4_geometries.values().sum();
-                            let labels = report
-                                .lod4_geometries
-                                .keys()
-                                .map(|l| format!("\"{l}\""))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            eprintln!(
-                                "warning: {count} geometries are LoD 4, written as {labels}; \
-                                 CityJSON 2.0 defines LoDs 0 to 3 only"
-                            );
+                (Err(e), _) | (_, Err(e)) => {
+                    eprintln!("error: {e}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            }
+            match export(&opts) {
+                Ok(report) => {
+                    println!(
+                        "{} {} {} {}",
+                        report.feature_count,
+                        report.object_count,
+                        report.instance_geometries_dropped,
+                        report.appearance_refs_dropped
+                    );
+                    if let Some(citygml) = &report.citygml {
+                        for (what, count) in citygml.losses.iter() {
+                            eprintln!("warning: CityGML: {what}: {count}");
                         }
-                        std::process::ExitCode::SUCCESS
+                    } else if !report.lod4_geometries.is_empty() {
+                        let count: usize = report.lod4_geometries.values().sum();
+                        let labels = report
+                            .lod4_geometries
+                            .keys()
+                            .map(|l| format!("\"{l}\""))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        eprintln!(
+                            "warning: {count} geometries are LoD 4, written as {labels}; \
+                             CityJSON 2.0 defines LoDs 0 to 3 only"
+                        );
                     }
-                    Err(e) => {
-                        eprintln!("error: {}", render_error(&e));
-                        std::process::ExitCode::FAILURE
-                    }
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: {}", render_error(&e));
+                    std::process::ExitCode::FAILURE
                 }
             }
         }
@@ -783,6 +896,7 @@ fn main() -> std::process::ExitCode {
             b,
             exclude_appearance,
             exclude_instances,
+            all,
         } => {
             let opts = CompareOptions {
                 coord_tolerance: [0.0; 3],
@@ -804,15 +918,12 @@ fn main() -> std::process::ExitCode {
                         }
                         std::process::ExitCode::SUCCESS
                     } else {
-                        const MAX_PRINTED_DIFFERENCES: usize = 20;
-                        for diff in report.differences.iter().take(MAX_PRINTED_DIFFERENCES) {
+                        let printed = if all { usize::MAX } else { 20 };
+                        for diff in report.differences.iter().take(printed) {
                             println!("{diff}");
                         }
-                        if report.differences.len() > MAX_PRINTED_DIFFERENCES {
-                            println!(
-                                "... ({} more)",
-                                report.differences.len() - MAX_PRINTED_DIFFERENCES
-                            );
+                        if report.differences.len() > printed {
+                            println!("... ({} more)", report.differences.len() - printed);
                         }
                         std::process::ExitCode::from(2)
                     }

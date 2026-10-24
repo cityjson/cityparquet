@@ -53,6 +53,7 @@ use arrow_array::{Array, MapArray, RecordBatch};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
+use crate::citygml::crs::Crs;
 use cityparquet_schema::crs::AxisOrder;
 use cityparquet_schema::extensions::cityjson_extensions_member;
 use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
@@ -64,6 +65,7 @@ use cjseq::{
 
 use crate::appearance_columns::{read_material_cell, read_texture_cell};
 use crate::decode::{DecodedObject, decode_batch};
+use crate::family::{Families, FamilyRow};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{
     ImplicitGeometryRow, read_implicit_geometries, read_materials, read_textures,
@@ -71,14 +73,56 @@ use crate::sidecar::{
 use crate::stac::properties::PackageTables;
 use crate::wkb_read::{DecodedKind, wkb_to_geometry};
 
-/// Options controlling one package -> CityJSON/CityJSONSeq export.
+/// Options controlling one package -> CityJSON, CityJSONSeq or CityGML
+/// export.
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
     pub package_dir: PathBuf,
     /// Output path; `.city.jsonl` writes CityJSONSeq (header line + one
     /// feature per line), `.city.json` writes a single whole CityJSON
-    /// document via `cjseq::cjseq_to_cj`.
+    /// document via `cjseq::cjseq_to_cj`, and `.gml` a CityGML document, as
+    /// [`ExportOptions::citygml`] says.
     pub output: PathBuf,
+    /// How a `.gml` output is written; ignored for the others.
+    pub citygml: CityGmlOptions,
+}
+
+impl ExportOptions {
+    /// An export of `package_dir` to `output`, a `.gml` one as CityGML 2.0.
+    pub fn new(package_dir: PathBuf, output: PathBuf) -> Self {
+        Self {
+            package_dir,
+            output,
+            citygml: CityGmlOptions::default(),
+        }
+    }
+}
+
+/// The CityGML version a `.gml` export writes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CityGmlVersion {
+    #[default]
+    V2_0,
+    V3_0,
+}
+
+/// How a `.gml` export writes its document. The features the package
+/// rebuilds are written by the version's writer, through `citygml`, which
+/// leaves out what the version cannot hold and counts it in
+/// [`ExportReport::citygml`].
+#[derive(Debug, Clone, Default)]
+pub struct CityGmlOptions {
+    pub version: CityGmlVersion,
+    /// The XML namespace of an extension, by its name, for one whose
+    /// declaration names none (an extension that did not come from a
+    /// CityGML ADE). A document using an extension with no namespace is
+    /// refused.
+    pub ade_xmlns: BTreeMap<String, String>,
+    /// Where the XML Schema of an ADE is, by its namespace URI, for the
+    /// document's `xsi:schemaLocation`, in place of its declaration's `url`.
+    /// A CityGML reader finds a schema named by a relative path or a local
+    /// file, and fetches none named by URL.
+    pub ade_schemas: BTreeMap<String, String>,
 }
 
 /// Outcome of one [`export`] call.
@@ -103,6 +147,14 @@ pub struct ExportReport {
     /// document carries a LoD its specification does not; the CLI warns when
     /// this is non-empty.
     pub lod4_geometries: BTreeMap<String, usize>,
+    /// Feature families held back across object tables because a table
+    /// ended before they were complete: a CityObjectGroup and its members,
+    /// or an extension child, each in its own module's table. Every other
+    /// family is written as soon as its run in its table ends.
+    pub parked_features: usize,
+    /// For a `.gml` output, what the document holds and what its version
+    /// could not; `None` for the others.
+    pub citygml: Option<citygml::Report>,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -123,14 +175,17 @@ pub(crate) fn table_display_name(path: &std::path::Path) -> &str {
 enum OutputFormat {
     Seq,
     Doc,
+    Gml,
 }
 
 fn output_format(output: &std::path::Path) -> Result<OutputFormat> {
     match output.extension().and_then(|e| e.to_str()) {
         Some("jsonl") => Ok(OutputFormat::Seq),
         Some("json") => Ok(OutputFormat::Doc),
+        Some("gml") => Ok(OutputFormat::Gml),
         other => Err(err(format!(
-            "unsupported export output extension {other:?}: expected .city.jsonl or .city.json"
+            "unsupported export output extension {other:?}: expected .city.jsonl, .city.json \
+             or .gml"
         ))),
     }
 }
@@ -625,50 +680,6 @@ fn rebuild_semantics(
     ))
 }
 
-/// Groups items by a string key, preserving first-appearance order.
-struct OrderedGroups<T> {
-    order: Vec<String>,
-    index: HashMap<String, usize>,
-    items: Vec<Vec<T>>,
-}
-
-impl<T> Default for OrderedGroups<T> {
-    fn default() -> Self {
-        Self {
-            order: Vec::new(),
-            index: HashMap::new(),
-            items: Vec::new(),
-        }
-    }
-}
-
-impl<T> OrderedGroups<T> {
-    fn push(&mut self, key: String, item: T) {
-        let idx = match self.index.get(&key) {
-            Some(&i) => i,
-            None => {
-                let i = self.items.len();
-                self.order.push(key.clone());
-                self.items.push(Vec::new());
-                self.index.insert(key, i);
-                i
-            }
-        };
-        self.items[idx].push(item);
-    }
-
-    /// Consumes the groups in first-appearance order.
-    fn into_ordered(mut self) -> Vec<(String, Vec<T>)> {
-        self.order
-            .into_iter()
-            .map(|key| {
-                let idx = self.index[&key];
-                (key, std::mem::take(&mut self.items[idx]))
-            })
-            .collect()
-    }
-}
-
 /// The source CityJSON header's `metadata` object, when a writer chose to
 /// keep it — folded into `city.other.source_metadata` (spec-alignment M3:
 /// `source_metadata` is no longer its own footer key). **Informational
@@ -718,9 +729,9 @@ pub(crate) fn source_metadata_from_other(meta: &CityMetadata) -> Option<Value> {
 /// exact obligation is a **spec** question — is an absent `crs` over
 /// coordinates a file to reject, to read as CRS84, or to treat as unknown? A
 /// spec clarification is being added; this comment is the placeholder its
-/// resolution replaces. Referenced from the two sibling CRS consumers that
-/// inherit the same gap: `crate::citygml::writer`'s `srsName` and
-/// `crate::stac`'s `epsg_crs`.
+/// resolution replaces. A CityGML export's `srsName` is this function's
+/// result, so it shares the gap, as does the sibling CRS consumer
+/// `crate::stac`'s `epsg_crs`, which references this comment.
 fn reference_system(meta: &CityMetadata) -> Result<Option<ReferenceSystem>> {
     let Some(crs) = meta.crs.known() else {
         return Ok(None);
@@ -740,24 +751,13 @@ fn reference_system(meta: &CityMetadata) -> Result<Option<ReferenceSystem>> {
         _ => None,
     };
     match (authority, code.as_deref()) {
-        (Some("EPSG"), Some(code)) => Ok(Some(crate::citygml::crs::reference_system(code))),
+        (Some("EPSG"), Some(code)) => Ok(Some(Crs::Epsg(code.to_string()).reference_system())),
         // OGC:CRS84 / CRS84h are the only non-EPSG CRSs in the vendored table;
-        // rebuild their registered OGC CRS URLs (versions per the OGC
-        // definitions server) so a lon/lat package without source_metadata
-        // still exports its referenceSystem rather than silently dropping it
-        // (sol-review G1).
-        (Some("OGC"), Some(code @ "CRS84")) => Ok(Some(ReferenceSystem::new(
-            None,
-            "OGC".to_string(),
-            "1.3".to_string(),
-            code.to_string(),
-        ))),
-        (Some("OGC"), Some(code @ "CRS84h")) => Ok(Some(ReferenceSystem::new(
-            None,
-            "OGC".to_string(),
-            "0".to_string(),
-            code.to_string(),
-        ))),
+        // rebuild their registered OGC CRS URLs so a lon/lat package without
+        // source_metadata still exports its referenceSystem rather than
+        // silently dropping it (sol-review G1).
+        (Some("OGC"), Some("CRS84")) => Ok(Some(Crs::Crs84.reference_system())),
+        (Some("OGC"), Some("CRS84h")) => Ok(Some(Crs::Crs84h.reference_system())),
         // Any other non-EPSG PROJJSON CRS has no CityJSON referenceSystem URL
         // form here.
         _ => Ok(None),
@@ -1577,17 +1577,34 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         rebuilt.id_to_pos
     };
 
-    // Group decoded objects by feature_id (own id fallback), preserving
-    // first-appearance order for deterministic feature emission; carry each
-    // object's row-local material/texture JSON alongside it since
-    // `decode_batch` deliberately excludes those columns.
-    let mut groups: OrderedGroups<(DecodedObject, Option<Value>, Option<Value>)> =
-        OrderedGroups::default();
+    let mut builder = FeatureBuilder {
+        scale,
+        translate,
+        axis_order,
+        naming: &naming,
+        restore_appearance,
+        global_materials: &global_materials,
+        global_textures: &global_textures,
+        implicit_geometries: !implicit_geometry_rows.is_empty(),
+        implicit_geometry_id_to_pos: &implicit_geometry_id_to_pos,
+        appearance_defaults: meta.appearance_defaults.as_ref(),
+        instance_geometries_dropped: 0,
+        appearance_refs_dropped: 0,
+        lod4_geometries: BTreeMap::new(),
+    };
+    let mut out = OutputWriter::create(format, opts, header)?;
+    let mut feature_count = 0usize;
+    let mut emit = |feature_id: String, entries: Vec<Entry>| -> Result<()> {
+        feature_count += 1;
+        out.write(builder.build(feature_id, entries)?)
+    };
+
+    // Every table the manifest lists, in manifest order, each read front to
+    // back. A family's rows are contiguous within a table (spec 02 "Feature
+    // families are contiguous"), so a family is written as soon as it is
+    // complete, and only one spanning tables is held until the rest arrive.
+    let mut families = Families::<Entry>::default();
     let mut object_count = 0usize;
-    // Iterate EVERY table the manifest lists (M5 task 5), not just the
-    // first: decode order follows manifest order, and the feature grouping
-    // above already tolerates one feature's objects arriving split across
-    // batches (or, here, across whole tables) — see `OrderedGroups`.
     for (idx, table_path) in tables.tables.iter().enumerate() {
         let (reader, table_meta) = if idx == 0 {
             first_reader
@@ -1647,23 +1664,65 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 )?;
                 let texture =
                     read_lod_keyed_appearance(&batch, &texture_cols, row, AppearanceKind::Texture)?;
-                let key = obj.feature_id.clone().unwrap_or_else(|| obj.id.clone());
                 object_count += 1;
-                groups.push(key, (obj, material, texture));
+                families.push(table_path, (obj, material, texture), &mut emit)?;
             }
         }
+        families.end_table(&mut emit)?;
     }
+    let parked_features = families.finish(&mut emit)?;
+    let citygml = out.finish()?;
+    let FeatureBuilder {
+        instance_geometries_dropped,
+        appearance_refs_dropped,
+        lod4_geometries,
+        ..
+    } = builder;
 
-    let mut instance_geometries_dropped = 0usize;
-    let mut appearance_refs_dropped = 0usize;
-    let mut lod4_geometries: BTreeMap<String, usize> = BTreeMap::new();
-    let mut features: Vec<CityJSONFeature> = Vec::with_capacity(groups.items.len());
-    for (feature_id, entries) in groups.into_ordered() {
+    Ok(ExportReport {
+        feature_count,
+        object_count,
+        instance_geometries_dropped,
+        appearance_refs_dropped,
+        lod4_geometries,
+        parked_features,
+        citygml,
+    })
+}
+
+/// One decoded row with its row-local material and texture JSON, which
+/// `decode_batch` leaves out.
+type Entry = (DecodedObject, Option<Value>, Option<Value>);
+
+/// Rebuilds one CityJSON feature from its family's rows, counting what it
+/// drops on the way.
+struct FeatureBuilder<'a> {
+    scale: [f64; 3],
+    translate: [f64; 3],
+    axis_order: AxisOrder,
+    naming: &'a ExtensionNaming,
+    /// The package carries the appearance-definition sidecars, so material
+    /// and texture maps are restored rather than dropped (see the module doc).
+    restore_appearance: bool,
+    global_materials: &'a HashMap<i64, Value>,
+    global_textures: &'a HashMap<i64, Value>,
+    /// The implicit-geometries sidecar is listed and holds rows.
+    implicit_geometries: bool,
+    implicit_geometry_id_to_pos: &'a HashMap<i64, usize>,
+    appearance_defaults: Option<&'a Value>,
+    instance_geometries_dropped: usize,
+    appearance_refs_dropped: usize,
+    lod4_geometries: BTreeMap<String, usize>,
+}
+
+impl FeatureBuilder<'_> {
+    fn build(&mut self, feature_id: String, entries: Vec<Entry>) -> Result<CityJSONFeature> {
         let mut feature = CityJSONFeature::new();
         feature.id = feature_id;
         let mut interner = VertexInterner::default();
-        let mut local_appearance =
-            restore_appearance.then(|| LocalAppearance::new(&global_materials, &global_textures));
+        let mut local_appearance = self
+            .restore_appearance
+            .then(|| LocalAppearance::new(self.global_materials, self.global_textures));
 
         for (obj, material, texture) in entries {
             let mut co = obj.object;
@@ -1673,13 +1732,14 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             co.attributes = co.attributes.take().map(|attributes| {
                 attributes
                     .into_iter()
-                    .map(|(name, value)| (naming.decode_name(&name), value))
+                    .map(|(name, value)| (self.naming.decode_name(&name), value))
                     .collect()
             });
             // `bbox` is stored in WKB order and decoded verbatim; a CityJSON
             // `geographicalExtent` is in the dataset's own order.
             if let Some(extent) = co.geographical_extent {
-                co.geographical_extent = Some(crate::encode::reorder_extent(extent, axis_order));
+                co.geographical_extent =
+                    Some(crate::encode::reorder_extent(extent, self.axis_order));
             }
             let mut geoms = Vec::with_capacity(obj.geometries.len());
             for (lod, decoded, props) in &obj.geometries {
@@ -1694,10 +1754,16 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     })
                     .and_then(crate::geometry_properties::cityjson_geometry_type)?;
 
-                let vmap = vertex_map(&decoded.coords, scale, translate, axis_order, &mut interner);
+                let vmap = vertex_map(
+                    &decoded.coords,
+                    self.scale,
+                    self.translate,
+                    self.axis_order,
+                    &mut interner,
+                );
                 let boundaries =
                     reconstruct_boundaries(&decoded.kind, &gtype, props.as_ref(), &vmap)?;
-                let semantics = rebuild_semantics(props.as_ref(), &gtype, &naming)?;
+                let semantics = rebuild_semantics(props.as_ref(), &gtype, self.naming)?;
 
                 // Look appearance up by this geometry's CANONICAL LoD. Both
                 // this key and the map's keys (see `read_lod_keyed_appearance`)
@@ -1745,13 +1811,13 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                         if has_appearance_for_lod(&material, &lod_key)
                             || has_appearance_for_lod(&texture, &lod_key)
                         {
-                            appearance_refs_dropped += 1;
+                            self.appearance_refs_dropped += 1;
                         }
                     }
                 }
 
                 if let Some(l) = lod.filter(|l| l.major() == 4) {
-                    *lod4_geometries.entry(l.to_string()).or_default() += 1;
+                    *self.lod4_geometries.entry(l.to_string()).or_default() += 1;
                 }
                 let lod = lod.ok_or_else(|| {
                     err(format!("object {}: a stored geometry has no LoD", obj.id))
@@ -1769,20 +1835,23 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 );
             }
             if let Some(tpl) = &obj.implicit_geometry {
-                if implicit_geometry_rows.is_empty() {
+                if !self.implicit_geometries {
                     // No implicit-geometries sidecar: the reference cannot be resolved
                     // to anything real (see the module doc) — count the drop,
                     // don't fabricate a geometry.
-                    instance_geometries_dropped += 1;
+                    self.instance_geometries_dropped += 1;
                 } else {
-                    let pos = implicit_geometry_id_to_pos.get(&tpl.id).copied().ok_or_else(|| {
-                        err(format!(
-                            "object {}: implicit_geometry id {:?} does not name a row in implicit_geometries.parquet",
-                            obj.id, tpl.id
-                        ))
-                    })?;
-                    let point_idx =
-                        interner.intern(quantise(axis_order.apply(tpl.point), scale, translate));
+                    let pos = self.implicit_geometry_id_to_pos.get(&tpl.id).copied().ok_or_else(|| {
+                            err(format!(
+                                "object {}: implicit_geometry id {:?} does not name a row in implicit_geometries.parquet",
+                                obj.id, tpl.id
+                            ))
+                        })?;
+                    let point_idx = interner.intern(quantise(
+                        self.axis_order.apply(tpl.point),
+                        self.scale,
+                        self.translate,
+                    ));
                     let matrix: [f64; 16] = tpl
                         .transformation_matrix
                         .clone()
@@ -1791,7 +1860,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                         .map_err(|e| {
                             err(format!(
                                 "object {}: implicit_geometry.transformationMatrix is not 16 \
-                                 numbers: {e}",
+                                     numbers: {e}",
                                 obj.id
                             ))
                         })?
@@ -1815,9 +1884,9 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 co.address = Some(build_addresses(
                     entries,
                     &mut interner,
-                    scale,
-                    translate,
-                    axis_order,
+                    self.scale,
+                    self.translate,
+                    self.axis_order,
                 )?);
             }
             feature.add_co(obj.id, co);
@@ -1825,7 +1894,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
 
         feature.vertices = interner.finish();
         feature.appearance = match local_appearance {
-            Some(local) => local.into_appearance(meta.appearance_defaults.as_ref())?,
+            Some(local) => local.into_appearance(self.appearance_defaults)?,
             // No appearance-definition sidecars restored for this package
             // (the Core profile, or a Compatibility one with no
             // materials/textures at all): there is no per-feature slicer to
@@ -1836,79 +1905,183 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             // own emptiness/defaults rule rather than duplicating it: with
             // both global slices empty it can only ever produce a
             // defaults-only block (or `None` when there are no defaults).
-            None => match meta.appearance_defaults.as_ref() {
+            None => match self.appearance_defaults {
                 Some(defaults) => LocalAppearance::new(&HashMap::new(), &HashMap::new())
                     .into_appearance(Some(defaults))?,
                 None => None,
             },
         };
-        features.push(feature);
+        Ok(feature)
     }
-
-    let feature_count = features.len();
-    write_output(format, &opts.output, header, features)?;
-
-    Ok(ExportReport {
-        feature_count,
-        object_count,
-        instance_geometries_dropped,
-        appearance_refs_dropped,
-        lod4_geometries,
-    })
 }
 
-fn write_output(
-    format: OutputFormat,
-    output: &std::path::Path,
-    header: CityJSON,
-    features: Vec<CityJSONFeature>,
-) -> Result<()> {
-    if let Some(parent) = output.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).map_err(|e| {
-            CityParquetError::io_source(format!("cannot create {}", parent.display()), e)
-        })?;
+impl FamilyRow for Entry {
+    fn id(&self) -> &str {
+        &self.0.id
     }
-    let file = fs::File::create(output).map_err(|e| {
-        CityParquetError::io_source(format!("cannot create {}", output.display()), e)
-    })?;
-    // One buffered writer for the whole output: the Seq arm writes one line
-    // per feature, and an unbuffered `writeln!` per feature was one write
-    // syscall per feature (review P5c).
-    let mut file = std::io::BufWriter::new(file);
-    match format {
-        OutputFormat::Seq => {
-            writeln!(file, "{}", serde_json::to_string(&header)?)
-                .map_err(|e| CityParquetError::io_source("write error", e))?;
-            // Serialised a chunk at a time across cores, written in order.
-            use rayon::prelude::*;
-            for chunk in features.chunks(1024) {
-                let lines = chunk
-                    .par_iter()
-                    .map(serde_json::to_string)
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                for line in lines {
-                    writeln!(file, "{line}")
-                        .map_err(|e| CityParquetError::io_source("write error", e))?;
+    fn feature_id(&self) -> Option<&str> {
+        self.0.feature_id.as_deref()
+    }
+    fn children(&self) -> &[String] {
+        self.0.object.children.as_deref().unwrap_or_default()
+    }
+}
+
+/// The export file, written to a sibling partial file and renamed into place
+/// only once every feature is written, so a failed export leaves no
+/// truncated output behind.
+struct OutputWriter {
+    partial: PathBuf,
+    output: PathBuf,
+    /// `None` before it is started and once finished.
+    kind: Option<OutputKind>,
+    /// Whether the partial file is in place as the output.
+    renamed: bool,
+}
+
+type OutputFile = std::io::BufWriter<fs::File>;
+
+enum OutputKind {
+    /// Features waiting to be serialised, a chunk at a time across cores.
+    Seq(OutputFile, Vec<CityJSONFeature>),
+    /// A document has one vertex pool, so every feature is collected first.
+    Doc(OutputFile, Box<CityJSON>, Vec<CityJSONFeature>),
+    /// A CityGML document, written a feature at a time.
+    Gml(Box<citygml::Writer<OutputFile>>),
+}
+
+/// Features serialised per parallel chunk of a CityJSONSeq export.
+const SEQ_CHUNK: usize = 1024;
+
+fn write_error(e: std::io::Error) -> CityParquetError {
+    CityParquetError::io_source("write error", e)
+}
+
+impl OutputWriter {
+    fn create(format: OutputFormat, opts: &ExportOptions, header: CityJSON) -> Result<Self> {
+        let output = opts.output.as_path();
+        if let Some(parent) = output.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|e| {
+                CityParquetError::io_source(format!("cannot create {}", parent.display()), e)
+            })?;
+        }
+        let name = output
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let partial = output.with_file_name(format!(".{name}.partial"));
+        let file = fs::File::create(&partial).map_err(|e| {
+            CityParquetError::io_source(format!("cannot create {}", partial.display()), e)
+        })?;
+        // From here the partial file is removed again on any error.
+        let mut writer = Self {
+            partial,
+            output: output.to_path_buf(),
+            kind: None,
+            renamed: false,
+        };
+        let mut file = std::io::BufWriter::new(file);
+        writer.kind = Some(match format {
+            OutputFormat::Seq => {
+                writeln!(file, "{}", serde_json::to_string(&header)?).map_err(write_error)?;
+                OutputKind::Seq(file, Vec::new())
+            }
+            OutputFormat::Doc => OutputKind::Doc(file, Box::new(header), Vec::new()),
+            OutputFormat::Gml => {
+                let options = citygml::WriterOptions {
+                    ade_xmlns: opts.citygml.ade_xmlns.clone(),
+                    ade_schemas: opts.citygml.ade_schemas.clone(),
+                    ..Default::default()
+                };
+                let version = match opts.citygml.version {
+                    CityGmlVersion::V2_0 => citygml::Version::V2_0,
+                    CityGmlVersion::V3_0 => citygml::Version::V3_0,
+                };
+                OutputKind::Gml(Box::new(
+                    citygml::Writer::new(&version, file, &header, options)
+                        .map_err(crate::citygml::reader::error)?,
+                ))
+            }
+        });
+        Ok(writer)
+    }
+
+    fn write(&mut self, feature: CityJSONFeature) -> Result<()> {
+        match self.kind.as_mut().expect("written before it is finished") {
+            OutputKind::Seq(_, pending) => {
+                pending.push(feature);
+                if pending.len() == SEQ_CHUNK {
+                    self.flush_seq()?;
                 }
             }
+            OutputKind::Doc(_, _, features) => features.push(feature),
+            OutputKind::Gml(w) => w
+                .write_feature(&feature)
+                .map_err(crate::citygml::reader::error)?,
         }
-        OutputFormat::Doc => {
-            let doc = cjseq::cjseq_to_cj(header, features).map_err(|e| {
-                err(format!(
-                    "cannot collect the features into one document: {e}"
-                ))
-            })?;
-            write!(file, "{}", serde_json::to_string(&doc)?)
-                .map_err(|e| CityParquetError::io_source("write error", e))?;
+        Ok(())
+    }
+
+    fn flush_seq(&mut self) -> Result<()> {
+        use rayon::prelude::*;
+        let Some(OutputKind::Seq(file, pending)) = &mut self.kind else {
+            return Ok(());
+        };
+        let lines = pending
+            .par_iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        pending.clear();
+        for line in lines {
+            writeln!(file, "{line}").map_err(write_error)?;
+        }
+        Ok(())
+    }
+
+    /// Ends the output; a CityGML document's report.
+    fn finish(mut self) -> Result<Option<citygml::Report>> {
+        self.finish_inner()
+    }
+
+    fn finish_inner(&mut self) -> Result<Option<citygml::Report>> {
+        self.flush_seq()?;
+        let (mut file, report) = match self.kind.take().expect("finished once") {
+            OutputKind::Seq(file, _) => (file, None),
+            OutputKind::Doc(mut file, header, features) => {
+                let doc = cjseq::cjseq_to_cj(*header, features).map_err(|e| {
+                    err(format!(
+                        "cannot collect the features into one document: {e}"
+                    ))
+                })?;
+                write!(file, "{}", serde_json::to_string(&doc)?).map_err(write_error)?;
+                (file, None)
+            }
+            OutputKind::Gml(w) => {
+                let (file, report) = w.finish().map_err(crate::citygml::reader::error)?;
+                (file, Some(report))
+            }
+        };
+        // Explicit: `BufWriter`'s `Drop` swallows flush errors, so a full disk
+        // would otherwise truncate the export silently.
+        file.flush().map_err(write_error)?;
+        fs::rename(&self.partial, &self.output).map_err(|e| {
+            CityParquetError::io_source(format!("cannot create {}", self.output.display()), e)
+        })?;
+        self.renamed = true;
+        Ok(report)
+    }
+}
+
+impl Drop for OutputWriter {
+    /// An export that failed, starting the output included, leaves no
+    /// partial file behind.
+    fn drop(&mut self) {
+        if !self.renamed {
+            let _ = fs::remove_file(&self.partial);
         }
     }
-    // Explicit: `BufWriter`'s `Drop` swallows flush errors, so a full disk
-    // would otherwise truncate the export silently.
-    file.flush()
-        .map_err(|e| CityParquetError::io_source("write error", e))?;
-    Ok(())
 }
 
 #[cfg(test)]

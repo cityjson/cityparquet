@@ -1,7 +1,8 @@
 //! Unified feature access over CityJSON documents, CityJSONSeq streams,
-//! CityGML 2.0 documents (via [`crate::citygml`], which synthesises a
-//! CityJSON header and streams `bldg:Building`s as features) and, with the
-//! `fcb` feature, FlatCityBuf files (via `crate::fcb`).
+//! CityGML 2.0 and 3.0 documents (via [`crate::citygml`], which synthesises
+//! a CityJSON header and streams top-level city objects as features), with
+//! the `fcb` feature FlatCityBuf files (via `crate::fcb`), and with the
+//! `citydb` feature 3DCityDB v5 databases (via `citygml-citydb`).
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
@@ -9,6 +10,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use cityparquet_schema::{CityParquetError, Result};
 use cjseq::{Appearance, CityJSON, CityJSONFeature};
@@ -19,6 +21,8 @@ pub enum SourceFormat {
     CityJsonSeq,
     CityGml,
     FlatCityBuf,
+    /// A 3DCityDB v5 database ([`Source::open_citydb`]).
+    CityDb,
 }
 
 pub struct Source {
@@ -28,11 +32,26 @@ pub struct Source {
     /// Parsed whole document (CityJson format only), pre-sorted for
     /// deterministic feature emission.
     doc: Option<CityJSON>,
+    /// What a CityGML document says document-wide (CityModel appearance,
+    /// implicit-geometry templates, ADEs), read once when the source opens
+    /// and shared with every feature pass (CityGml format only).
+    citygml: Option<(
+        crate::citygml::CityGmlVersion,
+        Arc<crate::citygml::Document>,
+    )>,
     /// In-memory features + doc appearance, set by [`Source::from_parts`] for
     /// a synthetic source (the merge/partition pipeline). When present it is
     /// the sole feature source — `path`/`doc` are unused — so `features()`
     /// yields from it directly rather than reopening any file.
     buffered: Option<BufferedSource>,
+    /// The inputs of a merged source ([`Source::chained`]), read one after
+    /// another; like `buffered`, the sole feature source when present.
+    chained: Option<ChainedSource>,
+    /// The database a [`SourceFormat::CityDb`] source reads, connected and
+    /// inside its read-only transaction for as long as the source lives, so
+    /// that every pass sees the same snapshot.
+    #[cfg(feature = "citydb")]
+    citydb: Option<citygml_citydb::CityDb>,
     /// Whether `header.metadata.reference_system` was declared by an OPERATOR
     /// ([`Source::set_reference_system`]) rather than carried by the source
     /// itself. The one place this fact lives: the writer's `crs_source`
@@ -50,6 +69,12 @@ struct BufferedSource {
     doc_appearance: Option<Appearance>,
 }
 
+/// The backing store for a merged [`Source`] (see [`Source::chained`]).
+struct ChainedSource {
+    parts: Vec<Source>,
+    doc_appearance: Option<Appearance>,
+}
+
 fn err(msg: String) -> CityParquetError {
     CityParquetError::Schema(msg)
 }
@@ -60,31 +85,28 @@ impl Source {
         // CityJSON/Seq sniff below. A CityGML document of an unsupported
         // version is reported as such: letting it fall through to the JSON
         // branch produced "invalid CityJSON: expected value at line 1 column 1"
-        // for an XML file, which is actively misleading. For 2.0 the reader
-        // synthesises a CityJSON header (transform + CRS) and streams
-        // `bldg:Building`s as features.
+        // for an XML file, which is actively misleading. The reader of the
+        // document's version synthesises a CityJSON header (transform + CRS)
+        // and streams its top-level city objects as features.
         // FlatCityBuf is binary: recognised by its magic bytes.
         if crate::fcb::is_flatcitybuf(path) {
             return Self::open_flatcitybuf(path);
         }
-        match crate::citygml::sniff_citygml(path) {
-            Some(crate::citygml::CityGmlVersion::V2_0) => {
-                let header = crate::citygml::parse_header(path)?;
-                return Ok(Self {
-                    path: path.to_path_buf(),
-                    format: SourceFormat::CityGml,
-                    header,
-                    doc: None,
-                    buffered: None,
-                    crs_is_operator_supplied: false,
-                });
-            }
-            Some(crate::citygml::CityGmlVersion::Other(version)) => {
-                return Err(err(format!(
-                    "unsupported CityGML version {version} (only CityGML 2.0 is supported)"
-                )));
-            }
-            None => {}
+        if let Some(version) = crate::citygml::sniff_citygml(path) {
+            let document = crate::citygml::read_document(path, &version)?;
+            let header = crate::citygml::parse_header_with(path, &document)?;
+            return Ok(Self {
+                path: path.to_path_buf(),
+                format: SourceFormat::CityGml,
+                header,
+                doc: None,
+                citygml: Some((version, Arc::new(document))),
+                buffered: None,
+                chained: None,
+                #[cfg(feature = "citydb")]
+                citydb: None,
+                crs_is_operator_supplied: false,
+            });
         }
 
         // CityJSONSeq: first line is a CityJSON header, later lines are features.
@@ -133,7 +155,11 @@ impl Source {
                 format: SourceFormat::CityJsonSeq,
                 header,
                 doc: None,
+                citygml: None,
                 buffered: None,
+                chained: None,
+                #[cfg(feature = "citydb")]
+                citydb: None,
                 crs_is_operator_supplied: false,
             })
         } else {
@@ -151,7 +177,11 @@ impl Source {
                 format: SourceFormat::CityJson,
                 header,
                 doc: Some(doc),
+                citygml: None,
                 buffered: None,
+                chained: None,
+                #[cfg(feature = "citydb")]
+                citydb: None,
                 crs_is_operator_supplied: false,
             })
         }
@@ -164,7 +194,11 @@ impl Source {
             format: SourceFormat::FlatCityBuf,
             header: crate::fcb::read_header(path)?,
             doc: None,
+            citygml: None,
             buffered: None,
+            chained: None,
+            #[cfg(feature = "citydb")]
+            citydb: None,
             crs_is_operator_supplied: false,
         })
     }
@@ -175,6 +209,30 @@ impl Source {
             "{} is a FlatCityBuf file; reading one needs the `fcb` feature",
             path.display()
         )))
+    }
+
+    /// Open the 3DCityDB v5 database `config` names, inside a read-only
+    /// transaction that lasts as long as the source.
+    ///
+    /// The header is the database's own ([`citygml_citydb::CityDb::header`]).
+    /// A database with SRID 0 names no reference system, which `--crs` can
+    /// then supply.
+    #[cfg(feature = "citydb")]
+    pub fn open_citydb(config: &citygml_citydb::Config) -> Result<Self> {
+        use crate::citygml::reader::error;
+        let db = citygml_citydb::CityDb::connect(config).map_err(error)?;
+        let header = db.header().map_err(error)?;
+        Ok(Self {
+            path: PathBuf::from(db.name()),
+            format: SourceFormat::CityDb,
+            header,
+            doc: None,
+            citygml: None,
+            buffered: None,
+            chained: None,
+            citydb: Some(db),
+            crs_is_operator_supplied: false,
+        })
     }
 
     /// Build an in-memory source from already-parsed parts: a `header`
@@ -197,16 +255,67 @@ impl Source {
             format,
             header,
             doc: None,
+            citygml: None,
             buffered: Some(BufferedSource {
                 features,
                 doc_appearance,
             }),
+            chained: None,
+            #[cfg(feature = "citydb")]
+            citydb: None,
+            crs_is_operator_supplied: false,
+        }
+    }
+
+    /// One source reading `parts` one after another under `header`, which
+    /// carries their merged transform: a part whose own transform differs has
+    /// its vertices requantised onto it as its features are read. Built by
+    /// [`crate::merge::merge_sources`], which checks the parts agree first.
+    pub(crate) fn chained(
+        header: CityJSON,
+        parts: Vec<Source>,
+        doc_appearance: Option<Appearance>,
+    ) -> Self {
+        Self {
+            path: PathBuf::new(),
+            format: SourceFormat::CityJsonSeq,
+            header,
+            doc: None,
+            citygml: None,
+            buffered: None,
+            chained: Some(ChainedSource {
+                parts,
+                doc_appearance,
+            }),
+            #[cfg(feature = "citydb")]
+            citydb: None,
             crs_is_operator_supplied: false,
         }
     }
 
     pub fn format(&self) -> SourceFormat {
         self.format
+    }
+
+    /// The version of the schema the source is written in: the CityGML
+    /// version of a CityGML document, the 3DCityDB version of a database,
+    /// and the CityJSON version otherwise.
+    pub fn source_version(&self) -> String {
+        if let Some((version, _)) = &self.citygml {
+            return match version {
+                crate::citygml::CityGmlVersion::V2_0 => "2.0".to_string(),
+                crate::citygml::CityGmlVersion::V3_0 => "3.0".to_string(),
+                crate::citygml::CityGmlVersion::Other(v) => v.clone(),
+            };
+        }
+        #[cfg(feature = "citydb")]
+        if let Some(db) = &self.citydb {
+            return db.version().to_string();
+        }
+        serde_json::to_value(self.header.version)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .expect("a CityJSON version serialises as a string")
     }
 
     pub fn header(&self) -> &CityJSON {
@@ -249,14 +358,14 @@ impl Source {
         }
         metadata.reference_system = Some(rs);
         self.crs_is_operator_supplied = true;
-        // A CityGML source has not been quantised yet — `parse_header` only
+        // A CityGML or database source has not been quantised yet — `parse_header` only
         // chose a transform, and `features()` applies it when the document is
         // streamed — so an operator-supplied CRS must re-derive the step from
         // the units it declares, or a degree-valued override would be read at
         // a metre-sized one. A CityJSON/Seq source is the opposite case: its
         // vertices are ALREADY integers against its own `transform`, and
         // changing the scale would silently reinterpret every one of them.
-        if self.format == SourceFormat::CityGml
+        if matches!(self.format, SourceFormat::CityGml | SourceFormat::CityDb)
             && let Some(rs) = self.header.metadata.as_ref().and_then(|m| {
                 m.reference_system
                     .as_ref()
@@ -304,6 +413,9 @@ impl Source {
         if let Some(buffered) = &self.buffered {
             return buffered.doc_appearance.as_ref();
         }
+        if let Some(chained) = &self.chained {
+            return chained.doc_appearance.as_ref();
+        }
         self.header.appearance.as_ref()
     }
 
@@ -312,6 +424,13 @@ impl Source {
     /// caller doing enough per feature to overlap with (a conversion). Every
     /// other source streams exactly as [`Source::features`] does.
     pub fn features_batched(&self) -> Result<FeatureIter<'_>> {
+        if let Some(chained) = &self.chained {
+            return Ok(FeatureIter::Chained(Box::new(ChainedFeatures::new(
+                &chained.parts,
+                &self.header.transform,
+                true,
+            ))));
+        }
         if self.buffered.is_none() && self.format == SourceFormat::CityJsonSeq {
             let file = File::open(&self.path).map_err(|e| {
                 CityParquetError::io_source(format!("cannot reopen {}", self.path.display()), e)
@@ -330,6 +449,13 @@ impl Source {
         if let Some(buffered) = &self.buffered {
             return Ok(FeatureIter::Buffered(buffered.features.iter()));
         }
+        if let Some(chained) = &self.chained {
+            return Ok(FeatureIter::Chained(Box::new(ChainedFeatures::new(
+                &chained.parts,
+                &self.header.transform,
+                false,
+            ))));
+        }
         match self.format {
             SourceFormat::CityJsonSeq => {
                 let file = File::open(&self.path).map_err(|e| {
@@ -346,9 +472,17 @@ impl Source {
                     ids: feature_ids(doc).into_iter(),
                 })
             }
-            SourceFormat::CityGml => Ok(FeatureIter::CityGml(Box::new(
-                crate::citygml::FeatureReader::open(&self.path, &self.header.transform)?,
-            ))),
+            SourceFormat::CityGml => {
+                let (version, document) = self.citygml.as_ref().expect("citygml set");
+                Ok(FeatureIter::CityGml(Box::new(
+                    crate::citygml::FeatureReader::with_document(
+                        &self.path,
+                        version,
+                        &self.header.transform,
+                        Arc::clone(document),
+                    )?,
+                )))
+            }
             #[cfg(feature = "fcb")]
             SourceFormat::FlatCityBuf => Ok(FeatureIter::FlatCityBuf(Box::new(
                 crate::fcb::FcbFeatures::open(&self.path)?,
@@ -359,188 +493,19 @@ impl Source {
                 "{}: reading FlatCityBuf needs the `fcb` feature",
                 self.path.display()
             ))),
-        }
-    }
-}
-
-impl Source {
-    /// The features [`Source::features`] yields, in the order `order` gives
-    /// as indices into that sequence — without holding them all parsed at
-    /// once where the source allows random access: a CityJSONSeq line is
-    /// re-read by its byte span, a CityJSON document feature built from the
-    /// parsed document by index, an in-memory one cloned. A CityGML or
-    /// FlatCityBuf source streams only front to back, so its features are
-    /// parsed once and handed out in order.
-    pub fn features_in_order(&self, order: Vec<usize>) -> Result<OrderedFeatures<'_>> {
-        let access = if let Some(buffered) = &self.buffered {
-            Access::Buffered(&buffered.features)
-        } else {
-            match self.format {
-                SourceFormat::CityJsonSeq => {
-                    let (file, spans) = seq_line_spans(&self.path)?;
-                    Access::Lines {
-                        file,
-                        spans,
-                        ready: Vec::new().into_iter(),
-                    }
-                }
-                SourceFormat::CityJson => {
-                    let doc = self.doc.as_ref().expect("doc set");
-                    Access::Doc(doc, feature_ids(doc))
-                }
-                SourceFormat::CityGml | SourceFormat::FlatCityBuf => {
-                    return Ok(OrderedFeatures::parsed(
-                        self.features()?.collect::<Result<Vec<_>>>()?,
-                        order,
-                    ));
-                }
+            #[cfg(feature = "citydb")]
+            SourceFormat::CityDb => {
+                let db = self.citydb.as_ref().expect("citydb set");
+                Ok(FeatureIter::CityDb(Box::new(
+                    db.features(self.header.transform.clone())
+                        .map_err(crate::citygml::reader::error)?,
+                )))
             }
-        };
-        Ok(OrderedFeatures {
-            order: order.into_iter(),
-            access,
-        })
-    }
-
-    /// Whether this source can only be read front to back — a CityGML or
-    /// FlatCityBuf file — so that reading its features in another order
-    /// means holding them all parsed.
-    pub(crate) fn reads_front_to_back(&self) -> bool {
-        self.buffered.is_none()
-            && matches!(
-                self.format,
-                SourceFormat::CityGml | SourceFormat::FlatCityBuf
-            )
-    }
-}
-
-impl OrderedFeatures<'static> {
-    /// `features` — every feature of a source, already parsed in its
-    /// [`Source::features`] order — handed out in `order`.
-    pub(crate) fn parsed(features: Vec<CityJSONFeature>, order: Vec<usize>) -> Self {
-        OrderedFeatures {
-            order: order.into_iter(),
-            access: Access::Parsed(features.into_iter().map(Some).collect()),
+            // Only `Source::open_citydb` makes one.
+            #[cfg(not(feature = "citydb"))]
+            SourceFormat::CityDb => Err(err("reading 3DCityDB needs the `citydb` feature".into())),
         }
     }
-}
-
-/// The byte span (start, length) of every feature line of a CityJSONSeq
-/// file — the lines [`FeatureIter::Seq`] parses: every line after the header
-/// line that is not blank, without its line terminator.
-fn seq_line_spans(path: &Path) -> Result<(File, Vec<(u64, usize)>)> {
-    let io = |e| CityParquetError::io_source(format!("cannot read {}", path.display()), e);
-    let file = File::open(path).map_err(io)?;
-    let mut reader = BufReader::with_capacity(1 << 20, &file);
-    let mut spans = Vec::new();
-    let mut line = Vec::new();
-    let mut at = 0u64;
-    let mut first = true;
-    loop {
-        line.clear();
-        let read = reader.read_until(b'\n', &mut line).map_err(io)?;
-        if read == 0 {
-            break;
-        }
-        let start = at;
-        at += read as u64;
-        if std::mem::take(&mut first) {
-            continue;
-        }
-        let mut len = line.len();
-        if line.ends_with(b"\n") {
-            len -= 1;
-            if line[..len].ends_with(b"\r") {
-                len -= 1;
-            }
-        }
-        if line[..len].iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        spans.push((start, len));
-    }
-    drop(reader);
-    Ok((file, spans))
-}
-
-/// The iterator [`Source::features_in_order`] returns.
-pub struct OrderedFeatures<'a> {
-    order: std::vec::IntoIter<usize>,
-    access: Access<'a>,
-}
-
-enum Access<'a> {
-    Lines {
-        file: File,
-        spans: Vec<(u64, usize)>,
-        ready: std::vec::IntoIter<Result<CityJSONFeature>>,
-    },
-    /// The document and its feature ids, in [`Source::features`] order.
-    Doc(&'a CityJSON, Vec<&'a str>),
-    Buffered(&'a [CityJSONFeature]),
-    /// Taken out as they are handed over, so each is moved, never cloned.
-    Parsed(Vec<Option<CityJSONFeature>>),
-}
-
-impl Iterator for OrderedFeatures<'_> {
-    type Item = Result<CityJSONFeature>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Access::Lines { file, spans, ready } = &mut self.access {
-            if let Some(next) = ready.next() {
-                return Some(next);
-            }
-            // The next batch of lines in order, read by their spans, then
-            // parsed across cores.
-            let mut batch = Vec::new();
-            let mut bytes = 0;
-            let mut failure = None;
-            while batch.len() < PARSE_BATCH_LINES && bytes < PARSE_BATCH_BYTES {
-                let Some(i) = self.order.next() else { break };
-                let Some(&(start, len)) = spans.get(i) else {
-                    failure = Some(err(format!("feature {i} is not in the source")));
-                    break;
-                };
-                match read_span(file, start, len) {
-                    Ok(line) => {
-                        bytes += line.len();
-                        batch.push(line);
-                    }
-                    Err(e) => {
-                        failure = Some(e);
-                        break;
-                    }
-                }
-            }
-            let mut parsed = parse_feature_lines(batch);
-            parsed.extend(failure.map(Err));
-            *ready = parsed.into_iter();
-            return ready.next();
-        }
-        let i = self.order.next()?;
-        let missing = || err(format!("feature {i} is not in the source"));
-        Some(match &mut self.access {
-            Access::Lines { .. } => unreachable!("handled above"),
-            Access::Doc(doc, ids) => match ids.get(i) {
-                Some(id) => doc_feature(doc, id),
-                None => Err(missing()),
-            },
-            Access::Buffered(features) => features.get(i).cloned().ok_or_else(missing),
-            Access::Parsed(features) => features
-                .get_mut(i)
-                .and_then(Option::take)
-                .ok_or_else(missing),
-        })
-    }
-}
-
-fn read_span(file: &mut File, start: u64, len: usize) -> Result<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let io = |e| CityParquetError::io_source("read error", e);
-    file.seek(SeekFrom::Start(start)).map_err(io)?;
-    let mut bytes = vec![0; len];
-    file.read_exact(&mut bytes).map_err(io)?;
-    String::from_utf8(bytes).map_err(|e| err(format!("invalid CityJSONFeature line: {e}")))
 }
 
 /// Up to how many feature lines, and bytes of them, are parsed together.
@@ -710,10 +675,80 @@ pub enum FeatureIter<'a> {
     CityGml(Box<crate::citygml::FeatureReader>),
     #[cfg(feature = "fcb")]
     FlatCityBuf(Box<crate::fcb::FcbFeatures>),
+    #[cfg(feature = "citydb")]
+    CityDb(Box<citygml_citydb::Features<'a>>),
     /// In-memory features (an [`Source::from_parts`] source); each is cloned
     /// on yield so the iterator can hand back owned `CityJSONFeature`s like
     /// every other arm while the buffer stays intact for re-iteration.
     Buffered(std::slice::Iter<'a, CityJSONFeature>),
+    /// A merged source's parts, one after another.
+    Chained(Box<ChainedFeatures<'a>>),
+}
+
+/// The features of a [`Source::chained`] source.
+pub struct ChainedFeatures<'a> {
+    parts: std::slice::Iter<'a, Source>,
+    /// What the parts read so far left out ([`FeatureIter::left_out`]).
+    left_out: std::collections::BTreeMap<String, usize>,
+    merged: &'a cjseq::Transform,
+    batched: bool,
+    /// The part being read, with its own transform when that differs from
+    /// the merged one.
+    current: Option<(FeatureIter<'a>, Option<&'a cjseq::Transform>)>,
+}
+
+impl<'a> ChainedFeatures<'a> {
+    fn new(parts: &'a [Source], merged: &'a cjseq::Transform, batched: bool) -> Self {
+        Self {
+            parts: parts.iter(),
+            left_out: std::collections::BTreeMap::new(),
+            merged,
+            batched,
+            current: None,
+        }
+    }
+}
+
+impl Iterator for ChainedFeatures<'_> {
+    type Item = Result<CityJSONFeature>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some((features, own)) = &mut self.current {
+                match features.next() {
+                    Some(Ok(mut feature)) => {
+                        if let Some(own) = own {
+                            crate::merge::requantise_vertices(
+                                &mut feature.vertices,
+                                own,
+                                self.merged,
+                            );
+                        }
+                        return Some(Ok(feature));
+                    }
+                    Some(Err(e)) => return Some(Err(e)),
+                    None => {
+                        for (name, n) in features.left_out() {
+                            *self.left_out.entry(name).or_insert(0) += n;
+                        }
+                        self.current = None;
+                    }
+                }
+            }
+            let part = self.parts.next()?;
+            let features = if self.batched {
+                part.features_batched()
+            } else {
+                part.features()
+            };
+            let own = &part.header().transform;
+            let differs = !crate::merge::transform_eq(own, self.merged);
+            match features {
+                Ok(features) => self.current = Some((features, differs.then_some(own))),
+                Err(e) => return Some(Err(e)),
+            }
+        }
+    }
 }
 
 impl Iterator for FeatureIter<'_> {
@@ -738,7 +773,29 @@ impl Iterator for FeatureIter<'_> {
             FeatureIter::CityGml(reader) => reader.next(),
             #[cfg(feature = "fcb")]
             FeatureIter::FlatCityBuf(reader) => reader.next(),
+            #[cfg(feature = "citydb")]
+            FeatureIter::CityDb(features) => {
+                Some(features.next()?.map_err(crate::citygml::reader::error))
+            }
             FeatureIter::Buffered(iter) => iter.next().map(|f| Ok(f.clone())),
+            FeatureIter::Chained(features) => features.next(),
+        }
+    }
+}
+
+impl FeatureIter<'_> {
+    /// What the source's reader has left out so far, by name: members of a
+    /// class it does not read (`tran:Track`), and for a database also
+    /// properties, appearances and geometries the model has no place for
+    /// (`app:GeoreferencedTexture`). Empty for a source that leaves nothing
+    /// out. Complete once the stream is drained.
+    pub fn left_out(&self) -> std::collections::BTreeMap<String, usize> {
+        match self {
+            FeatureIter::CityGml(reader) => reader.skipped_members().clone(),
+            #[cfg(feature = "citydb")]
+            FeatureIter::CityDb(features) => features.reader().left_out(),
+            FeatureIter::Chained(features) => features.left_out.clone(),
+            _ => std::collections::BTreeMap::new(),
         }
     }
 }
@@ -770,58 +827,6 @@ mod tests {
         assert_eq!(mem.format(), SourceFormat::CityJsonSeq);
         // Re-iteration works (buffer is not consumed).
         assert_eq!(mem.features().unwrap().count(), 3);
-    }
-
-    /// `features_in_order` yields exactly the features `features()` does,
-    /// in the order asked for — for every kind of source: a CityJSONSeq
-    /// (read back line by line), a CityJSON document (by index), a CityGML
-    /// document (parsed and reordered) and an in-memory source.
-    #[test]
-    fn features_in_order_yields_the_features_in_the_given_order() {
-        let fixtures =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
-        let delft = Source::open(&fixtures.join("delft.city.jsonl")).unwrap();
-        let buffered = Source::from_parts(
-            delft.header().clone(),
-            delft
-                .features()
-                .unwrap()
-                .map(|f| f.unwrap())
-                .take(50)
-                .collect(),
-            None,
-            SourceFormat::CityJsonSeq,
-        );
-        for source in [
-            delft,
-            Source::open(&fixtures.join("lod3_railway.city.json")).unwrap(),
-            Source::open(&fixtures.join("b1_lod2_cs_w_sem.gml")).unwrap(),
-            buffered,
-        ] {
-            let forward: Vec<CityJSONFeature> =
-                source.features().unwrap().map(|f| f.unwrap()).collect();
-            // Reversed, with every other feature first, so no order is
-            // accidentally the natural one.
-            let order: Vec<usize> = (0..forward.len())
-                .rev()
-                .filter(|i| i % 2 == 0)
-                .chain((0..forward.len()).filter(|i| i % 2 == 1))
-                .collect();
-            let got: Vec<CityJSONFeature> = source
-                .features_in_order(order.clone())
-                .unwrap()
-                .map(|f| f.unwrap())
-                .collect();
-            assert_eq!(got.len(), forward.len(), "{:?}", source.format());
-            for (feature, &i) in got.iter().zip(&order) {
-                assert_eq!(
-                    serde_json::to_value(feature).unwrap(),
-                    serde_json::to_value(&forward[i]).unwrap(),
-                    "{:?} feature {i}",
-                    source.format()
-                );
-            }
-        }
     }
 
     #[test]

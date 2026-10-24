@@ -337,28 +337,25 @@ fn count_is_member_level_while_attr_scenarios_reach_nested_city_objects() {
 // Unmapped member types: a silent zero is worse than a loud failure.
 // ---------------------------------------------------------------------------
 
-/// **The measurement-integrity guard.** The reader maps `bldg:Building` plus a
-/// fixed list of 1st-level non-building types; a `cityObjectMember` of any
-/// other type used to be skipped silently, so a real PLATEAU `trk` tile
-/// (`tran:Track`), a `dem` tile (`dem:ReliefFeature`), an `lsld` or a `urf`
-/// tile all returned `count = 0` with exit status 0 — in a fraction of the
-/// time a real read takes, because nothing was ever materialised.
+/// **The measurement-integrity guard.** The reader maps the CityGML 2.0
+/// classes CityJSON has a type for; a `cityObjectMember` of any other class
+/// (a PLATEAU `urf` or `lsld` tile's ADE classes) is skipped. Counted
+/// silently, such a tile would return `count = 0` with exit status 0, in a
+/// fraction of the time a real read takes, because nothing was ever
+/// materialised.
 ///
-/// That is not a defensible benchmark row. Every other format's artefact for
-/// the same tile is produced by citygml-tools, which DOES map
-/// `dem:ReliefFeature` to CityJSON `TINRelief` (a type this repository treats
-/// as first class — it writes `relief.parquet`), so the CSV would print
-/// `citygml 0` beside `cityjsonseq N`, with CityGML's timing flattered by the
-/// work it never did. The CityGML 1.0 refusal already in this file exists for
-/// exactly this failure mode; an unmapped member type is the same failure.
+/// That is not a defensible benchmark row: the CSV would print `citygml 0`
+/// beside another format's `N` for the same tile, with CityGML's timing
+/// flattered by the work it never did. The CityGML 1.0 refusal already in
+/// this file exists for exactly this failure mode; an unmapped member type is
+/// the same failure.
 ///
-/// So the runner now hard-fails, naming the offending types and counts. The
-/// fixture is three `tran:Track` members lifted verbatim from the real
-/// Tachikawa `trk` tile named in the retired catalogue corpus's provenance
-/// file, `the retired catalogue corpus/catalogue_benchmark_urls.txt`.
+/// So the runner hard-fails, naming the offending types and counts. The
+/// fixture is three `urf:FirePreventionDistrict` members lifted verbatim from
+/// the PLATEAU Chiyoda-ku `urf` tile.
 #[test]
 fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
-    let input = data_fixture("plateau_trk_fragment.gml");
+    let input = data_fixture("plateau_urf_fragment.gml");
 
     // Every scenario, not just `count`: a guard that only covered the counting
     // scenarios would still publish a silently-truncated `attr-filter` or
@@ -383,7 +380,7 @@ fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
              cityObjectMembers, got stderr:\n{stderr}"
         );
         assert!(
-            stderr.contains("tran:Track"),
+            stderr.contains("urf:FirePreventionDistrict"),
             "the refusal must NAME the offending element type so the operator \
              can act on it ({scenario}); got stderr:\n{stderr}"
         );
@@ -409,8 +406,8 @@ fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
 /// `count` child per format per dataset before any scenario runs, `count`
 /// drains and consults the guard, and its failure aborts the whole run with
 /// `?`. This test pins all three halves of that argument on the purpose-built
-/// `railway_then_unmapped_trk.gml` — a findable id in front of three
-/// unmapped `tran:Track` members.
+/// `railway_then_unmapped_urf.gml` — a findable id in front of three
+/// unmapped `urf:FirePreventionDistrict` members.
 #[test]
 fn id_lookup_stops_at_the_hit_while_count_still_refuses_the_document() {
     // The premise: this id really is present, and really is in the FIRST
@@ -428,7 +425,7 @@ fn id_lookup_stops_at_the_hit_while_count_still_refuses_the_document() {
          would pass for the wrong reason"
     );
 
-    let composed = data_fixture("railway_then_unmapped_trk.gml");
+    let composed = data_fixture("railway_then_unmapped_urf.gml");
 
     // 1. The hit now stops early, so it never reaches the guard.
     assert_eq!(
@@ -448,7 +445,7 @@ fn id_lookup_stops_at_the_hit_while_count_still_refuses_the_document() {
     //    row for it.
     let stderr = run_child_expect_failure("citygml", "count", &composed, &[]);
     assert!(
-        stderr.contains("does not map") && stderr.contains("tran:Track"),
+        stderr.contains("does not map") && stderr.contains("urf:FirePreventionDistrict"),
         "count must still refuse a document with unmapped members; got stderr:\n{stderr}"
     );
     assert!(

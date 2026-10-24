@@ -24,18 +24,19 @@ decision-records skill for the index before making an architectural change.
 
 ## Layout
 
-| Path                   | What                                                                                                                                               | Authoritative instructions                  |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `documents/`           | Blume docs site — the **normative CityParquet specification**, design decisions; `open-questions.md` beside it                                     | `documents/blume.config.ts`; skill: `blume` |
-| `lib/cityparquet-rs/`  | **Rust reference implementation** — the reader/writer that _owns_ the encoding; the `cityparquet` CLI                                              | its `CLAUDE.md`                             |
-| `lib/citylake/`        | Rust data-lake framework + web API; the lakehouse runtime. **Work in progress.** Its own Cargo workspace                                           | its `CLAUDE.md`                             |
-| `lib/duckdb-cityjson/` | DuckDB CityJSON extension — SQL-native CityJSON I/O and an executable prototype of the encoding. **Submodule**                                     | its `CLAUDE.md`                             |
-| `lib/duckdb-3d/`       | DuckDB 3D extension — 3D solid processing (`SOLID_3D`). Strict TDD. **Submodule**                                                                  | its `CLAUDE.md`                             |
-| `benchmark/`           | Three benchmark families: `formats/` (cross-format), `databases/` (vs cjdb / 3DCityDB v5), `plot/` (renderers)                                     | `benchmark/README.md`                       |
-| `test/`                | `TESTING.md`, the cross-module manual walkthrough, and `run-all.sh`                                                                                | —                                           |
-| `ai/mcp/`              | The **MCP server** — the specification, the function references, dataset description and sandboxed SQL, for agents                                 | its `CLAUDE.md`                             |
-| `ai/plugin/`           | The **agent skills** — four Markdown skills, shipped as a Claude Code plugin (`.claude-plugin/marketplace.json` at the root) and as an APM package | its `README.md`                             |
-| `example/`             | Small inputs; anything worth measuring is fetch-scripted                                                                                           | —                                           |
+| Path                   | What                                                                                                                                                         | Authoritative instructions                  |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- |
+| `documents/`           | Blume docs site — the **normative CityParquet specification**, design decisions; `open-questions.md` beside it                                               | `documents/blume.config.ts`; skill: `blume` |
+| `lib/cityparquet-rs/`  | **Rust reference implementation** — the reader/writer that _owns_ the encoding; the `cityparquet` CLI                                                        | its `CLAUDE.md`                             |
+| `lib/citygml-rs/`      | CityGML readers and writers (`citygml`, `citygml-core`, `citygml2`, `citygml3`) — a Cargo workspace of their own, shared by `cityparquet-rs` and FlatCityBuf | its `CLAUDE.md`                             |
+| `lib/citylake/`        | Rust data-lake framework + web API; the lakehouse runtime. **Work in progress.** Its own Cargo workspace                                                     | its `CLAUDE.md`                             |
+| `lib/duckdb-cityjson/` | DuckDB CityJSON extension — SQL-native CityJSON I/O and an executable prototype of the encoding. **Submodule**                                               | its `CLAUDE.md`                             |
+| `lib/duckdb-3d/`       | DuckDB 3D extension — 3D solid processing (`SOLID_3D`). Strict TDD. **Submodule**                                                                            | its `CLAUDE.md`                             |
+| `benchmark/`           | Three benchmark families: `formats/` (cross-format), `databases/` (vs cjdb / 3DCityDB v5), `plot/` (renderers)                                               | `benchmark/README.md`                       |
+| `test/`                | `TESTING.md`, the cross-module manual walkthrough, `run-all.sh`, and `toolchain/`: every tool chain on real datasets, with its own comparator                | skill: `testing-cityparquet-toolchain`      |
+| `ai/mcp/`              | The **MCP server** — the specification, the function references, dataset description and sandboxed SQL, for agents                                           | its `CLAUDE.md`                             |
+| `ai/plugin/`           | The **agent skills** — four Markdown skills, shipped as a Claude Code plugin (`.claude-plugin/marketplace.json` at the root) and as an APM package           | its `README.md`                             |
+| `example/`             | Small inputs; anything worth measuring is fetch-scripted                                                                                                     | —                                           |
 
 Generated benchmark inputs, evidence and summaries belong in the ignored `benchmark/runs/` directory. Do not place new benchmark outputs in a sibling checkout.
 
@@ -61,16 +62,19 @@ Generated benchmark inputs, evidence and summaries belong in the ignored `benchm
 - Recurring design principle: **separation of geometry from appearance**
   (material/texture), following OBJ/COLLADA/glTF precedent.
 
-## Three Cargo workspaces, and why
+## Four Cargo workspaces, and why
 
-`lib/cityparquet-rs` is the library. `benchmark/readbench` is the read
-benchmark's harness — **its own workspace**, living with the corpora, results,
-scripts and renderers it belongs to. `lib/citylake` is a third. Consequences:
+`lib/cityparquet-rs` is the library. `lib/citygml-rs` holds the CityGML
+readers and writers it path-depends on, a workspace of their own because FlatCityBuf uses
+them too and they may move to a repository of their own. `benchmark/readbench`
+is the read benchmark's harness — **its own workspace**, living with the
+corpora, results, scripts and renderers it belongs to. `lib/citylake` is a
+fourth. Consequences:
 
 - `cd lib/cityparquet-rs && just check` gates the **library alone** and is
   self-contained: no `uv`, no `jq`, no corpus, no local extension build. That
-  is the point of the split. The root `just check` runs all three workspaces
-  — the library's own gate, `benchmark/readbench`'s own gate, the two harness
+  is the point of the split. The root `just check` runs all four workspaces
+  — the library's own gate, `lib/citygml-rs`'s, `benchmark/readbench`'s, the two harness
   suites (`plot-test` for `benchmark/plot`, `scripts-test` for
   `benchmark/scripts`) and `citylake-check` — plus the MCP server's gate.
 - `benchmark/readbench` path-depends on `../../lib/cityparquet-rs/crates/core`,
@@ -146,11 +150,12 @@ specification states, because that is the contract all three implement. The
 whole stack is meant to be used together; the rule keeps them coupled through
 the spec rather than through each other's internals.
 
-`lib/cityparquet-rs` and `lib/citylake` are _not_ submodules: they live in this
+`lib/cityparquet-rs`, `lib/citygml-rs` and `lib/citylake` are _not_ submodules: they live in this
 tree and are edited here.
 
-`cjseq` is a **git dependency** of `lib/cityparquet-rs` (the workspace
-`Cargo.toml`), not vendored and not a submodule.
+`cjseq` is a crates.io dependency of `lib/cityparquet-rs` and `lib/citygml-rs`
+(each workspace `Cargo.toml`), pinned exactly (`=0.5.0-alpha.1`) in both while
+its API is moving; it is not vendored and not a submodule.
 
 ## Conventions
 

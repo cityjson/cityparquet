@@ -1,0 +1,813 @@
+//! Streaming GML geometry parsing.
+//!
+//! Two concerns live here:
+//! - Parsing a `gml:Solid` / `gml:CompositeSolid` into an *unresolved* tree of
+//!   [`SurfaceRef`]s: each surface member is either an `xlink:href` to a polygon
+//!   defined elsewhere in the same object, or an inline `gml:Polygon`, with an
+//!   optional orientation flip (`gml:OrientableSurface orientation="-"`).
+//!   Resolution against the object's polygon registry happens in
+//!   [`super::ObjectBuilder`].
+//! - Harvesting inline `gml:Polygon`s (with their `gml:id`) from a subtree
+//!   ([`collect_polygons`]), used for `boundedBy` semantic surfaces and the
+//!   standalone `lodNMultiSurface` polygons the solid references.
+//!
+//! Coordinates come from `gml:posList` or per-point `gml:pos`; the GML closing
+//! duplicate ring point is dropped. The reader
+//! runs with `expand_empty_elements`, so a self-closing `<... xlink:href=.../>`
+//! arrives as a `Start`+`End` pair.
+
+use std::io::BufRead;
+
+use quick_xml::events::Event;
+use quick_xml::reader::NsReader;
+
+use crate::model::{Line, Polygon, Ring};
+use crate::xml::{
+    NS_GML, get_attr, gml_id, ns_is, read_text, skip_element, unexpected_eof, xlink_fragment,
+    xml_err,
+};
+use crate::{Error, Result};
+
+/// How deep surface collections and orientable surfaces may nest inside one
+/// solid shell: a guard against attacker-controlled recursion. GML has no
+/// reason to nest them more than a few levels.
+const MAX_NESTING: usize = 64;
+
+/// One level deeper than `depth`, or an error past [`MAX_NESTING`].
+fn deeper(depth: usize) -> Result<usize> {
+    if depth >= MAX_NESTING {
+        return Err(Error::invalid(format!(
+            "GML surfaces nest more than {MAX_NESTING} levels deep"
+        )));
+    }
+    Ok(depth + 1)
+}
+
+/// One surface of a solid shell, before xlink resolution.
+#[derive(Debug, Clone)]
+pub struct SurfaceRef {
+    /// `true` when the surface's orientation is reversed (its rings must be
+    /// wound backwards so the outward normal flips).
+    pub reverse: bool,
+    pub target: RefTarget,
+}
+
+#[derive(Debug, Clone)]
+pub enum RefTarget {
+    /// A `#fragment` reference to a polygon defined elsewhere in the object.
+    Xlink(String),
+    /// A polygon defined inline in the solid.
+    Inline(Polygon),
+}
+
+/// A shell: an ordered list of surface references.
+pub type Shell = Vec<SurfaceRef>;
+
+/// A `gml:Solid`: exterior shell first, then interior shells.
+#[derive(Debug, Clone)]
+pub struct RawSolid {
+    pub shells: Vec<Shell>,
+}
+
+/// The solid geometry of a `bldg:lodNSolid`.
+#[derive(Debug, Clone)]
+pub enum SolidGeom {
+    Solid(RawSolid),
+    Composite(Vec<RawSolid>),
+}
+
+/// Parse a `gml:CompositeSolid` (positioned after its `Start`) into its solids.
+pub fn read_composite_solid<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<RawSolid>> {
+    let mut solids = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                if gml && local.as_ref() == b"solidMember" {
+                    solids.push(read_solid_member(reader, buf)?);
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"CompositeSolid" => break,
+            Event::Eof => return Err(eof("CompositeSolid")),
+            _ => {}
+        }
+    }
+    Ok(solids)
+}
+
+/// A `gml:solidMember`: wraps one `gml:Solid`.
+fn read_solid_member<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<RawSolid> {
+    let mut solid: Option<RawSolid> = None;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                if gml && local.as_ref() == b"Solid" {
+                    solid = Some(read_solid(reader, buf)?);
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"solidMember" => break,
+            Event::Eof => return Err(eof("solidMember")),
+            _ => {}
+        }
+    }
+    solid.ok_or_else(|| Error::invalid("gml:solidMember without gml:Solid".to_string()))
+}
+
+/// Parse a `gml:Solid` (positioned after its `Start`).
+pub fn read_solid<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<RawSolid> {
+    let mut exterior: Option<Shell> = None;
+    let mut interiors: Vec<Shell> = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                match (gml, local.as_ref()) {
+                    (true, b"exterior") => exterior = Some(read_shell(reader, buf, b"exterior")?),
+                    (true, b"interior") => interiors.push(read_shell(reader, buf, b"interior")?),
+                    _ => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"Solid" => break,
+            Event::Eof => return Err(eof("Solid")),
+            _ => {}
+        }
+    }
+    let mut shells = Vec::new();
+    if let Some(ext) = exterior {
+        shells.push(ext);
+    }
+    shells.extend(interiors);
+    Ok(RawSolid { shells })
+}
+
+/// A shell wrapper (`gml:exterior`/`gml:interior`), holding the surface
+/// members of a GML 3.2 `gml:Shell`, or of GML 3.1's `gml:CompositeSurface`
+/// (or `gml:Surface`).
+fn read_shell<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    end: &[u8],
+) -> Result<Shell> {
+    let mut refs = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                match (gml, local.as_ref()) {
+                    (true, b"Shell" | b"CompositeSurface" | b"Surface") => {
+                        let end = local.as_ref().to_vec();
+                        refs = read_surface_refs(reader, buf, end, 0)?
+                    }
+                    _ => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == end => break,
+            Event::Eof => return Err(eof("shell")),
+            _ => {}
+        }
+    }
+    Ok(refs)
+}
+
+/// The `gml:surfaceMember`s of a `CompositeSurface`/`MultiSurface`, each a
+/// [`SurfaceRef`].
+fn read_surface_refs<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    end: Vec<u8>,
+    depth: usize,
+) -> Result<Vec<SurfaceRef>> {
+    let depth = deeper(depth)?;
+    let mut refs = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                if gml && local.as_ref() == b"surfaceMember" {
+                    // An xlink on the surfaceMember itself references a polygon
+                    // defined elsewhere.
+                    if let Some(id) = xlink_fragment(&e)? {
+                        refs.push(SurfaceRef {
+                            reverse: false,
+                            target: RefTarget::Xlink(id),
+                        });
+                        skip_element(reader, buf)?;
+                    } else {
+                        refs.append(&mut read_surface_member_children(reader, buf, depth)?);
+                    }
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == end.as_slice() => break,
+            Event::Eof => return Err(eof("surface collection")),
+            _ => {}
+        }
+    }
+    Ok(refs)
+}
+
+/// The inline content of a non-xlink `gml:surfaceMember`: an inline
+/// `gml:Polygon`, a `gml:OrientableSurface`, or a nested surface collection.
+fn read_surface_member_children<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    depth: usize,
+) -> Result<Vec<SurfaceRef>> {
+    let mut refs = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                match (gml, local.as_ref()) {
+                    (true, b"Polygon") => {
+                        let id = gml_id(&e);
+                        let mut poly = read_polygon(reader, buf)?;
+                        poly.id = id;
+                        refs.push(SurfaceRef {
+                            reverse: false,
+                            target: RefTarget::Inline(poly),
+                        });
+                    }
+                    (true, b"OrientableSurface") => {
+                        let reverse = orientation_reversed(&e);
+                        refs.push(read_orientable_surface(reader, buf, reverse, depth)?);
+                    }
+                    (true, b"CompositeSurface") | (true, b"MultiSurface") => {
+                        let end = local.as_ref().to_vec();
+                        refs.append(&mut read_surface_refs(reader, buf, end, depth)?);
+                    }
+                    _ => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"surfaceMember" => break,
+            Event::Eof => return Err(eof("surfaceMember")),
+            _ => {}
+        }
+    }
+    Ok(refs)
+}
+
+/// A `gml:OrientableSurface` (positioned after its `Start`): a single
+/// `gml:baseSurface` whose orientation is flipped when `reverse` is set.
+/// Nested orientable surfaces XOR their flips.
+fn read_orientable_surface<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    reverse: bool,
+    depth: usize,
+) -> Result<SurfaceRef> {
+    let depth = deeper(depth)?;
+    let mut result: Option<SurfaceRef> = None;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                if gml && local.as_ref() == b"baseSurface" {
+                    if let Some(id) = xlink_fragment(&e)? {
+                        result = Some(SurfaceRef {
+                            reverse,
+                            target: RefTarget::Xlink(id),
+                        });
+                        skip_element(reader, buf)?;
+                    } else {
+                        let inner = read_base_surface_inline(reader, buf, depth)?;
+                        result = Some(SurfaceRef {
+                            reverse: reverse ^ inner.reverse,
+                            target: inner.target,
+                        });
+                    }
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"OrientableSurface" => break,
+            Event::Eof => return Err(eof("OrientableSurface")),
+            _ => {}
+        }
+    }
+    result.ok_or_else(|| Error::invalid("gml:OrientableSurface without baseSurface"))
+}
+
+/// The inline content of a `gml:baseSurface`: a `gml:Polygon` or a nested
+/// `gml:OrientableSurface`.
+fn read_base_surface_inline<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    depth: usize,
+) -> Result<SurfaceRef> {
+    let mut result: Option<SurfaceRef> = None;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                match (gml, local.as_ref()) {
+                    (true, b"Polygon") => {
+                        let id = gml_id(&e);
+                        let mut poly = read_polygon(reader, buf)?;
+                        poly.id = id;
+                        result = Some(SurfaceRef {
+                            reverse: false,
+                            target: RefTarget::Inline(poly),
+                        })
+                    }
+                    (true, b"OrientableSurface") => {
+                        let reverse = orientation_reversed(&e);
+                        result = Some(read_orientable_surface(reader, buf, reverse, depth)?);
+                    }
+                    _ => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"baseSurface" => break,
+            Event::Eof => return Err(eof("baseSurface")),
+            _ => {}
+        }
+    }
+    result.ok_or_else(|| Error::invalid("gml:baseSurface without a surface"))
+}
+
+fn orientation_reversed(e: &quick_xml::events::BytesStart) -> bool {
+    get_attr(e, b"orientation").as_deref() == Some("-")
+}
+
+/// What [`collect_surfaces`] harvests from a geometry subtree.
+#[derive(Debug, Default)]
+pub struct Collected {
+    /// Every inline `gml:Polygon`, with its `gml:id` if any, in document order.
+    pub polygons: Vec<(Option<String>, Polygon)>,
+    /// The `xlink:href` references in place of inline polygons: those of
+    /// `gml:surfaceMember`s, and those of the `gml:baseSurface` of a
+    /// `gml:OrientableSurface`, with its orientation.
+    pub xlinks: Vec<Xlink>,
+    /// Where each of [`Self::xlinks`] stands among the polygons: how many
+    /// polygons come before it in the document.
+    pub xlinks_at: Vec<usize>,
+    /// Every surface aggregate (`gml:CompositeSurface`, `gml:MultiSurface`,
+    /// and a TIN's `gml:TriangulatedSurface` or `gml:Tin`) carrying a `gml:id`, with its members in document order — what an
+    /// `xlink:href` to the aggregate stands for.
+    pub aggregates: Vec<(String, Vec<AggregateMember>)>,
+}
+
+/// An `xlink:href` to a surface, by fragment id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Xlink {
+    pub id: String,
+    /// `true` inside a `gml:OrientableSurface orientation="-"` (or an odd
+    /// number of them).
+    pub reverse: bool,
+}
+
+/// One member of an identified surface aggregate. A member is recorded once,
+/// in the innermost identified aggregate holding it; an identified aggregate
+/// nested in another is a [`AggregateMember::Ref`] member of it, so the
+/// record stays linear in the document however deep aggregates nest.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AggregateMember {
+    /// The polygon at this index of [`Collected::polygons`].
+    Polygon(usize),
+    /// An `xlink:href` member, or a nested identified aggregate: the
+    /// `gml:id` it names.
+    Ref(String),
+}
+
+/// Harvest every `gml:Polygon` (with its `gml:id`, if any) inside the current
+/// element's subtree. Call right after the subtree's `Start`; consumes through
+/// its matching `End`.
+pub fn collect_polygons<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<(Option<String>, Polygon)>> {
+    Ok(collect_surfaces(reader, buf)?.polygons)
+}
+
+/// Harvest a geometry subtree's inline polygons, its `xlink:href` surface
+/// members, and its identified surface aggregates (see [`Collected`]). The
+/// reader's `boundedBy` path uses the xlinks so a semantic surface whose
+/// geometry is xlinked to polygons defined elsewhere (typically inline in the
+/// building's `lodNSolid`) still contributes its semantics (CG-1); the
+/// aggregates let a solid's shell reference a whole `gml:CompositeSurface` by
+/// its id, as GML permits. Call right after the subtree's `Start`; consumes
+/// through its matching `End`.
+pub fn collect_surfaces<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Collected> {
+    let mut out = Collected::default();
+    // Open identified aggregates: (depth inside them, id, members so far).
+    let mut open: Vec<(usize, String, Vec<AggregateMember>)> = Vec::new();
+    // Open orientable surfaces: (depth inside them, reversed).
+    let mut orientable: Vec<(usize, bool)> = Vec::new();
+    let mut depth = 1usize;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                if gml && matches!(local.as_ref(), b"Polygon" | b"Triangle" | b"PolygonPatch") {
+                    // A polygon, or a triangle or polygon patch of a
+                    // `gml:TriangulatedSurface` / `gml:Surface`, which GML
+                    // spells the same way. Reading it consumes the whole
+                    // subtree, so the depth is unchanged by this branch.
+                    let id = gml_id(&e);
+                    let end = local.as_ref().to_vec();
+                    let mut poly = read_polygon_element(reader, buf, &end)?;
+                    poly.id = id.clone();
+                    poly.groups = open.iter().rev().map(|(_, id, _)| id.clone()).collect();
+                    if let Some((_, _, members)) = open.last_mut() {
+                        members.push(AggregateMember::Polygon(out.polygons.len()));
+                    }
+                    out.polygons.push((id, poly));
+                } else if gml
+                    && matches!(local.as_ref(), b"surfaceMember" | b"baseSurface")
+                    && let Some(frag) = xlink_fragment(&e)?
+                {
+                    // An xlink surfaceMember, or the xlinked base surface of
+                    // an orientable surface (empty under
+                    // expand_empty_elements): record the fragment and consume
+                    // through its End. It is a member of the innermost
+                    // enclosing identified aggregate.
+                    if let Some((_, _, members)) = open.last_mut() {
+                        members.push(AggregateMember::Ref(frag.clone()));
+                    }
+                    let reverse = orientable.iter().fold(false, |r, (_, flip)| r ^ flip);
+                    out.xlinks.push(Xlink { id: frag, reverse });
+                    out.xlinks_at.push(out.polygons.len());
+                    skip_element(reader, buf)?;
+                } else {
+                    depth += 1;
+                    if gml && local.as_ref() == b"OrientableSurface" {
+                        orientable.push((depth, orientation_reversed(&e)));
+                    }
+                    if gml
+                        && matches!(
+                            local.as_ref(),
+                            b"CompositeSurface" | b"MultiSurface" | b"TriangulatedSurface" | b"Tin"
+                        )
+                        && let Some(id) = gml_id(&e)
+                    {
+                        if let Some((_, _, members)) = open.last_mut() {
+                            members.push(AggregateMember::Ref(id.clone()));
+                        }
+                        open.push((depth, id, Vec::new()));
+                    }
+                }
+            }
+            Event::End(_) => {
+                if open.last().is_some_and(|(d, _, _)| *d == depth) {
+                    let (_, id, members) = open.pop().expect("checked above");
+                    out.aggregates.push((id, members));
+                }
+                if orientable.last().is_some_and(|(d, _)| *d == depth) {
+                    orientable.pop();
+                }
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => return Err(eof("polygon collection")),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// Every coordinate inside the current element's subtree, from each
+/// `gml:pos` and `gml:posList` in document order: the points of a
+/// `gml:MultiPoint`. Call right after the subtree's `Start`; consumes through
+/// its matching `End`.
+pub fn collect_points<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<[f64; 3]>> {
+    let mut points = Vec::new();
+    let mut depth = 1usize;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                if ns_is(&rr, NS_GML) && matches!(e.local_name().as_ref(), b"pos" | b"posList") {
+                    let dim = srs_dimension(&e).unwrap_or(3);
+                    let text = read_text(reader, buf)?;
+                    points.extend(parse_coords(&text, dim)?);
+                } else {
+                    depth += 1;
+                }
+            }
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => return Err(eof("point collection")),
+            _ => {}
+        }
+    }
+    Ok(points)
+}
+
+/// A `gml:boundedBy` (positioned after its `Start`; consumes through its
+/// matching `End`) as `[minx, miny, minz, maxx, maxy, maxz]`: its
+/// `gml:Envelope`'s corners, when both are three numbers. A `gml:Null`, a
+/// two-dimensional envelope or a missing or unreadable corner gives `None`,
+/// since the envelope only restates what the geometry says.
+pub fn read_envelope<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Option<[f64; 6]>> {
+    let (mut lower, mut upper) = (None, None);
+    let mut depth = 1usize;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                let corner = match e.local_name().as_ref() {
+                    b"lowerCorner" => Some(&mut lower),
+                    b"upperCorner" => Some(&mut upper),
+                    _ => None,
+                };
+                match corner {
+                    Some(corner) if ns_is(&rr, NS_GML) => {
+                        let text = read_text(reader, buf)?;
+                        *corner = text
+                            .split_whitespace()
+                            .map(str::parse)
+                            .collect::<std::result::Result<Vec<f64>, _>>()
+                            .ok()
+                            .and_then(|v| <[f64; 3]>::try_from(v).ok());
+                    }
+                    _ => depth += 1,
+                }
+            }
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => return Err(eof("envelope")),
+            _ => {}
+        }
+    }
+    Ok(lower
+        .zip(upper)
+        .map(|(l, u)| [l[0], l[1], l[2], u[0], u[1], u[2]]))
+}
+
+/// Every line inside the current element's subtree: each `gml:LineString`,
+/// and each `gml:Curve` with its segments joined into one line. An `xlink`
+/// to a curve elsewhere is not followed. Call right after the subtree's
+/// `Start`; consumes through its matching `End`.
+pub fn collect_lines<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Vec<Line>> {
+    let mut lines = Vec::new();
+    let mut depth = 1usize;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                if ns_is(&rr, NS_GML) && is_line(e.local_name().as_ref()) {
+                    lines.extend(line_of(collect_points(reader, buf)?));
+                } else {
+                    depth += 1;
+                }
+            }
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => return Err(eof("curve collection")),
+            _ => {}
+        }
+    }
+    Ok(lines)
+}
+
+/// The lines of a GML curve element named `local` (positioned after its
+/// `Start`): a `gml:LineString` or `gml:Curve` is one line, and a curve
+/// aggregate (`gml:MultiCurve`, `gml:CompositeCurve`, …) each line inside it.
+pub fn read_curve<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    local: &[u8],
+) -> Result<Vec<Line>> {
+    if is_line(local) {
+        Ok(line_of(collect_points(reader, buf)?).into_iter().collect())
+    } else {
+        collect_lines(reader, buf)
+    }
+}
+
+fn is_line(local: &[u8]) -> bool {
+    matches!(local, b"LineString" | b"Curve")
+}
+
+/// A line from its points, a point repeated where two curve segments join
+/// dropped; `None` for fewer than two points.
+fn line_of(mut points: Vec<[f64; 3]>) -> Option<Line> {
+    points.dedup();
+    (points.len() >= 2).then_some(points)
+}
+
+/// A `gml:Polygon` (positioned after its `Start`): exterior ring + holes.
+pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Polygon> {
+    read_polygon_element(reader, buf, b"Polygon")
+}
+
+/// An element spelled as a `gml:Polygon` is (a `Triangle`, a
+/// `PolygonPatch`), ending at `End(end)`.
+fn read_polygon_element<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    end: &[u8],
+) -> Result<Polygon> {
+    let mut exterior: Option<(Ring, Option<String>)> = None;
+    let mut interiors: Vec<(Ring, Option<String>)> = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                match (gml, local.as_ref()) {
+                    (true, b"exterior") => {
+                        exterior = Some(read_ring_container(reader, buf, b"exterior")?)
+                    }
+                    (true, b"interior") => {
+                        interiors.push(read_ring_container(reader, buf, b"interior")?)
+                    }
+                    _ => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == end => break,
+            Event::Eof => return Err(eof("Polygon")),
+            _ => {}
+        }
+    }
+    let (exterior, ext_id) =
+        exterior.ok_or_else(|| Error::invalid("gml:Polygon without exterior ring".to_string()))?;
+    let mut ring_ids = Vec::with_capacity(1 + interiors.len());
+    ring_ids.push(ext_id);
+    let interior_rings = interiors
+        .into_iter()
+        .map(|(ring, id)| {
+            ring_ids.push(id);
+            ring
+        })
+        .collect();
+    Ok(Polygon {
+        id: None,
+        exterior,
+        interiors: interior_rings,
+        ring_ids,
+        groups: Vec::new(),
+    })
+}
+
+/// The `gml:exterior`/`gml:interior` of a Polygon, wrapping a `gml:LinearRing`.
+/// Returns the ring coords plus the `gml:LinearRing`'s `gml:id` (for texture
+/// coordinate targeting), if any.
+fn read_ring_container<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    end: &[u8],
+) -> Result<(Ring, Option<String>)> {
+    let mut ring: Option<(Ring, Option<String>)> = None;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                if gml && local.as_ref() == b"LinearRing" {
+                    let id = gml_id(&e);
+                    ring = Some((read_linear_ring(reader, buf)?, id));
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == end => break,
+            Event::Eof => return Err(eof("ring container")),
+            _ => {}
+        }
+    }
+    ring.ok_or_else(|| Error::invalid("gml ring without LinearRing".to_string()))
+}
+
+/// A `gml:LinearRing`: points from `gml:posList` or per-point `gml:pos`. Drops
+/// the GML closing duplicate point.
+fn read_linear_ring<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Ring> {
+    let mut ring: Ring = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                match (gml, local.as_ref()) {
+                    (true, b"pos") | (true, b"posList") => {
+                        let dim = srs_dimension(&e).unwrap_or(3);
+                        let text = read_text(reader, buf)?;
+                        ring.extend(parse_coords(&text, dim)?);
+                    }
+                    _ => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"LinearRing" => break,
+            Event::Eof => return Err(eof("LinearRing")),
+            _ => {}
+        }
+    }
+    if ring.len() >= 2 && ring.first() == ring.last() {
+        ring.pop();
+    }
+    Ok(ring)
+}
+
+fn srs_dimension(e: &quick_xml::events::BytesStart) -> Option<usize> {
+    get_attr(e, b"srsDimension").and_then(|s| s.trim().parse().ok())
+}
+
+/// Parse a whitespace-separated coordinate string into `[x, y, z]` points,
+/// `stride` values per point (z defaults to 0 when 2D).
+fn parse_coords(text: &str, stride: usize) -> Result<Vec<[f64; 3]>> {
+    if stride < 2 {
+        return Err(Error::invalid(format!(
+            "invalid srsDimension {stride} in CityGML geometry"
+        )));
+    }
+    let nums: std::result::Result<Vec<f64>, _> =
+        text.split_whitespace().map(|t| t.parse::<f64>()).collect();
+    let nums = nums
+        .map_err(|e| Error::invalid(format!("invalid coordinate in CityGML posList/pos: {e}")))?;
+    if nums.is_empty() || nums.len() % stride != 0 {
+        return Err(Error::invalid(format!(
+            "CityGML coordinate list length {} not a multiple of dimension {stride}",
+            nums.len()
+        )));
+    }
+    Ok(nums
+        .chunks(stride)
+        .map(|c| [c[0], c[1], if stride >= 3 { c[2] } else { 0.0 }])
+        .collect())
+}
+
+fn eof(ctx: &str) -> Error {
+    unexpected_eof(ctx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_coords_pos_and_poslist() {
+        let pts = parse_coords("0 0 0 100 0 0", 3).unwrap();
+        assert_eq!(pts, vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]]);
+        assert!(parse_coords("0 0 0 1", 3).is_err()); // not a multiple of 3
+        let two_d = parse_coords("1 2 3 4", 2).unwrap();
+        assert_eq!(two_d, vec![[1.0, 2.0, 0.0], [3.0, 4.0, 0.0]]);
+    }
+}

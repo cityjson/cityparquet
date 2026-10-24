@@ -55,7 +55,9 @@ fn a_reader_built_from_a_bufread_yields_the_same_features_as_the_path_reader() {
         let header = parse_header(&path).unwrap();
         let by_path = FeatureReader::open_without_appearance(&path, &header.transform).unwrap();
         let file = BufReader::new(File::open(&path).unwrap());
-        let by_reader = FeatureReader::from_reader(Box::new(file), &header.transform).unwrap();
+        let by_reader =
+            FeatureReader::from_reader(Box::new(file), &CityGmlVersion::V2_0, &header.transform)
+                .unwrap();
         let (a, b) = (ids(by_path), ids(by_reader));
         assert!(!a.is_empty(), "{name}: no features");
         assert_eq!(a, b, "{name}");
@@ -88,6 +90,7 @@ fn a_reader_dropped_after_the_first_feature_does_not_read_the_rest() {
     };
     let mut reader = FeatureReader::from_reader(
         Box::new(BufReader::with_capacity(512, counting)),
+        &CityGmlVersion::V2_0,
         &header.transform,
     )
     .unwrap();

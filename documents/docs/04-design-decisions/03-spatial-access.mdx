@@ -11,7 +11,7 @@ How CityParquet makes spatial window queries prune cheaply over object storage: 
 
 <Badge variant="success">decided</Badge>
 
-**Decision.** Every row carries a 3D `bbox` STRUCT `[xmin, ymin, zmin, xmax, ymax, zmax]` in the geometry CRS. Rows are written in Hilbert-curve order on the bbox centroid by default; source order remains conformant, and is the streaming choice for an input too large to hold in memory. A parent without its own geometry gets the **union** of its descendants' bboxes; bbox is null only when nothing in the subtree has geometry. See the [specification](/specification/geometry-semantics) → *Spatial metadata*.
+**Decision.** Every row carries a 3D `bbox` STRUCT `[xmin, ymin, zmin, xmax, ymax, zmax]` in the geometry CRS. Rows are written in Hilbert-curve order on the bbox centroid by default, one key per feature family so a family's rows stay together; source order remains conformant and needs no sort. A parent without its own geometry gets the **union** of its descendants' bboxes; bbox is null only when nothing in the subtree has geometry. See the [specification](/specification/geometry-semantics) → *Spatial metadata*.
 
 **Alternatives considered.**
 
@@ -20,6 +20,6 @@ How CityParquet makes spatial window queries prune cheaply over object storage: 
 
 **Why this.** A typed `bbox` column feeds Parquet's per-row-group **min/max statistics**, which is how a spatial window query prunes row groups over object storage *without downloading the file*. Hilbert ordering clusters spatially-near rows into the same row group, tightening those per-group bboxes so pruning is more selective. Null bboxes were shown **not** to corrupt min/max statistics, so pruning stays sound.
 
-**Trade-off.** One `bbox` per row must cover everything the row stores — every LoD, and every descendant — so it is a **union**, and therefore looser than a per-geometry box would be. A loose box costs false-positive reads; a tight one drawn from a single LoD would wrongly prune rows whose other LoDs extend beyond it, which is the error that actually loses data. Hilbert ordering costs a sort at write time, and the sort needs every row in memory before the first is written, so peak writer memory grows with the dataset; writing in source order streams instead, at the cost of looser per-group bboxes.
+**Trade-off.** One `bbox` per row must cover everything the row stores — every LoD, and every descendant — so it is a **union**, and therefore looser than a per-geometry box would be. A loose box costs false-positive reads; a tight one drawn from a single LoD would wrongly prune rows whose other LoDs extend beyond it, which is the error that actually loses data. Hilbert ordering costs a sort at write time: no row can be written before every key is known. The reference writer bounds its memory by sorting runs that fit a memory budget, spilling them to temporary Arrow IPC files and merging them, so the price of a larger dataset is temporary disk and a second read of the encoded rows rather than memory; writing in source order streams with neither, at the cost of looser per-group bboxes.
 
 **Status.** Decided. Null-bbox soundness — that null bboxes do not corrupt the row-group min/max statistics — is confirmed; the pruning selectivity and window-query gains from Hilbert ordering are to be measured and reported in the paper.

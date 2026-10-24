@@ -98,8 +98,10 @@ def _placeholder_extension_build(request, tmp_path_factory, monkeypatch):
     """Unit tests never depend on a local DuckDB CityJSON extension build.
 
     `cmd_bench` refuses to start without one (`citybench.extension`); a
-    placeholder file satisfies that check in unit tests, which never load
-    it. Integration tests resolve the real build.
+    placeholder file satisfies the path check. `cmd_bench` also loads the
+    build before starting, which the placeholder fails, so a unit test that
+    drives `cmd_bench` past that point stubs `cli._extension_reported_version`
+    or `extension.load`. Integration tests resolve the real build.
     """
     if request.node.get_closest_marker("integration") is None:
         from citybench import extension

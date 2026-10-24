@@ -1,0 +1,525 @@
+# The tool-chain test corpus.
+#
+# Every entry is a file as it was published, pinned by size and sha256: a
+# mismatch is an error, never a reason to fetch again, because a dataset that
+# changed under the test changes what the report means. `run.py fetch`
+# downloads the entries of a profile into the work directory's `corpus/`.
+#
+# profile    quick (every run), full (adds the large city datasets), xl (adds
+#            the whole Helsinki CityJSONSeq)
+# kind       real (published data), derived (published data cut or converted
+#            by a stated, reproducible step), fixture (a small file written to
+#            exercise one feature; real data carries none of it)
+# derive     head:N (the header line and first N-1 features of a CityJSONSeq,
+#            fetched as a byte range), or fix:NAME (a fixture that is not
+#            valid CityJSON, repaired by run.py's FIXES[NAME]); both pin the
+#            original as source_bytes/source_sha256
+# exercises  what the entry is in the corpus for; the report prints it
+# rs_convert_args  extra `cityparquet convert` flags the source needs, each
+#            with a comment saying why
+# status     active, or pending with a `reason` (listed in the report, never run)
+#
+# Formats: cityjson, cityjsonseq, citygml2, citygml3, fcb.
+
+# --------------------------------------------------------------------------
+# CityJSON
+# --------------------------------------------------------------------------
+
+[[dataset]]
+id = "railway"
+format = "cityjson"
+file = "LoD3_Railway.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/LoD3_Railway.city.json"
+bytes = 4522415
+sha256 = "60a80c34d50e167556d858c4fe3b4b11b297c3b450c7785db289e90dcc289b4e"
+profile = "quick"
+kind = "real"
+exercises = "14 object types across 10 modules, CityObjectGroup, 85 materials, 34 textures, 3 geometry templates with 15 GeometryInstances, LoD3"
+
+[[dataset]]
+id = "rotterdam"
+format = "cityjson"
+file = "3-20-DELFSHAVEN.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json"
+bytes = 2731804
+sha256 = "958460c670b4cb85a9159d1e5e566905fba8812864f64b554ecad38333badcf6"
+profile = "quick"
+kind = "real"
+exercises = "148 textures, semantics, ids with braces"
+
+[[dataset]]
+id = "denhaag"
+format = "cityjson"
+file = "DenHaag_01.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DenHaag_01.city.json"
+bytes = 3150451
+sha256 = "7d500b53f7e1e7dfc8f6bd0b2b4ab26c06a27b71b86ec1005f05f1d35afb17f8"
+profile = "quick"
+kind = "real"
+exercises = "5,970 materials, Building/BuildingPart, a TINRelief (second module table)"
+
+[[dataset]]
+id = "3dbag-tile"
+format = "cityjson"
+file = "9-284-556.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/9-284-556.city.json"
+bytes = 7032849
+sha256 = "2bb5d22ae2cbfe2096041e3a79b3e826f43d3a8c9824eeb019feab4e0a2742ba"
+profile = "quick"
+kind = "real"
+exercises = "LoD 0, 1.2, 1.3 and 2.2 on one object, Solids, many typed attributes, degenerate rings"
+
+[[dataset]]
+id = "vienna"
+format = "cityjson"
+file = "Vienna_102081.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json"
+bytes = 5635634
+sha256 = "849a148b5fb91ebfa6e3efe7bd78be47cc5cdd2fb6699e0cb042f44dd702cc62"
+profile = "quick"
+kind = "real"
+exercises = "Building/BuildingPart nesting, two geometries at one LoD (a MultiSurface and a Solid: the spec's admitted loss)"
+
+[[dataset]]
+id = "ingolstadt"
+format = "cityjson"
+file = "Ingolstadt.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Ingolstadt.city.json"
+bytes = 5051369
+sha256 = "91e45df269dec5a22f80af6c149dca0d64c85ce1796b8fefc6296ae6bfa5cfe5"
+profile = "quick"
+kind = "real"
+exercises = "LoD3, Window/Door semantic surfaces, BuildingInstallation, MultiLineString"
+
+[[dataset]]
+id = "montreal-2009"
+format = "cityjson"
+file = "VM05_2009.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/VM05_2009.city.json"
+bytes = 5644656
+sha256 = "49ac2c8c54a687392b43839290fa1758d558c3b701cb1fc07fa74a63d336918b"
+profile = "full"
+kind = "real"
+exercises = "294 textures (overlaps Rotterdam in the quick profile)"
+
+[[dataset]]
+id = "noise-extension"
+format = "cityjson"
+file = "noise_data.city.json"
+url = "https://www.cityjson.org/tutorials/files/noise_data.city.json"
+bytes = 2934
+sha256 = "058a211a0ee77b5fc7914415833b0a2c21849f641277aa10ec1254235ff22f91"
+profile = "quick"
+kind = "fixture"
+exercises = "a CityJSON Extension (Noise) with + attributes, from the cityjson.org tutorial"
+
+[[dataset]]
+id = "energy-extension"
+format = "cityjson"
+file = "extension_energy.city.json"
+url = "https://raw.githubusercontent.com/cityjson/duckdb-cityjson/294a595a5e13e701f4157fa2afa68a051edbb674/test/data/extension_energy.city.json"
+bytes = 1398
+sha256 = "f8a769951235a865b35c6f1aeb3e8d6b5760d4bd4cbeffb42c922f485a43ea50"
+profile = "quick"
+kind = "fixture"
+exercises = "an Extension's + attribute, + semantic surface and + object type"
+
+[[dataset]]
+id = "hollow-solid"
+format = "cityjson"
+file = "hollow_solid_int.city.json"
+url = "https://raw.githubusercontent.com/cityjson/duckdb-cityjson/294a595a5e13e701f4157fa2afa68a051edbb674/test/data/hollow_solid.city.json"
+# The fixture writes its integer vertices as 0.0, 10.0, …, which CityJSON
+# does not allow; the repair writes the same values as integers.
+derive = "fix:integer-vertices"
+source_bytes = 1912
+source_sha256 = "537bd402a105fed46465afa64b32b1a8ef2d132e3968f8b1d268805f9353b97c"
+bytes = 494
+sha256 = "9fbdb18ec6fa552b3d1f5f372cb566f63d92731fe4154eead1a7503915e342e0"
+profile = "quick"
+kind = "fixture"
+exercises = "a Solid with an inner shell (no published dataset has one)"
+
+[[dataset]]
+id = "multisolid"
+format = "cityjson"
+file = "msol.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/simplegeom/v2.0/msol.city.json"
+bytes = 2079
+sha256 = "1db6a9734ae2c33909315bdd873506fd48214f624ade121b5631dc81263e9335"
+profile = "quick"
+kind = "fixture"
+exercises = "MultiSolid (cityjson.org simple geometries)"
+
+[[dataset]]
+id = "compositesolid"
+format = "cityjson"
+file = "csol.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/simplegeom/v2.0/csol.city.json"
+bytes = 1950
+sha256 = "47db3204b3c31aa8dd5869e6da29807cecedd7bb2af88e40ff825786a49bd981"
+profile = "quick"
+kind = "fixture"
+exercises = "CompositeSolid (cityjson.org simple geometries)"
+
+[[dataset]]
+id = "textured-holes"
+format = "cityjson"
+file = "textured_holes.city.json"
+url = "https://raw.githubusercontent.com/cityjson/duckdb-cityjson/294a595a5e13e701f4157fa2afa68a051edbb674/test/data/textured_holes.city.json"
+bytes = 25784
+sha256 = "ed8bbb7cf14123545929e6a082a5f008d003c220066292eb4b3f04210f6d6c86"
+profile = "quick"
+kind = "fixture"
+exercises = "textures on interior rings"
+
+[[dataset]]
+id = "degenerate-texture"
+format = "cityjson"
+file = "degenerate_rings_texture.city.json"
+url = "https://raw.githubusercontent.com/cityjson/duckdb-cityjson/294a595a5e13e701f4157fa2afa68a051edbb674/test/data/degenerate_rings_texture.city.json"
+bytes = 25773
+sha256 = "7acb6a9236ab3644ed22077690319e5faa8a46b3ab53434aa3e91f1c6b815c57"
+profile = "quick"
+kind = "fixture"
+exercises = "textured rings a writer may drop as degenerate"
+
+[[dataset]]
+id = "nyc"
+format = "cityjson"
+file = "DA13_3D_Buildings_Merged.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json"
+bytes = 110083137
+sha256 = "c885bb6af297531c95b097aff5d38e694935ac22fe1b973cbad15948021f6cb8"
+profile = "full"
+kind = "real"
+exercises = "23,777 buildings, scale"
+
+[[dataset]]
+id = "zurich"
+format = "cityjson"
+file = "Zurich_Building_LoD2_V10.city.json"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json"
+bytes = 292500409
+sha256 = "a7dde7f306e69a4134b2bf30b8ead58fe11d3499f8b30d7596ba346aeae6f0f8"
+profile = "full"
+kind = "real"
+exercises = "198,699 objects, Building/BuildingPart, Hilbert-key ties between neighbouring features"
+
+[[dataset]]
+id = "tokyo"
+format = "cityjson"
+file = "tokyo.city.json"
+url = "https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/tokyo.city.json"
+bytes = 315968009
+sha256 = "4a3e2e01bf5136e14f4d43bc993861d6d19234488f2867cc4e83e4d7dd8822ac"
+profile = "full"
+kind = "derived"
+exercises = "35,067 addresses, LoD 0 to 3, textures, latitude-first CRS (EPSG:6697); PLATEAU Chiyoda via citygml-tools (benchmark/formats/corpus_urls.txt)"
+
+[[dataset]]
+id = "montreal-2020"
+format = "cityjson"
+file = "montreal.city.json"
+url = "https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json"
+bytes = 498371022
+sha256 = "e54940e3aec2d2e4157b4dc0b5575c903066a2502e7d4a2e99c95e6180fc74cb"
+profile = "full"
+kind = "derived"
+exercises = "31,415 textured buildings, LoD 0 and 2 (benchmark/formats/corpus_urls.txt)"
+
+# --------------------------------------------------------------------------
+# CityJSONSeq
+# --------------------------------------------------------------------------
+
+[[dataset]]
+id = "delft-seq"
+format = "cityjsonseq"
+file = "delft.city.jsonl"
+url = "https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl"
+bytes = 6605724
+sha256 = "2f3d95698bf5871999aac04744fc74a7de0609e88d9e5af6a1dd5fd050635067"
+profile = "quick"
+kind = "real"
+exercises = "3DBAG Delft, 2,231 objects, four LoDs"
+
+[[dataset]]
+id = "helsinki-seq-2000"
+format = "cityjsonseq"
+file = "helsinki_tex_2000.city.jsonl"
+url = "https://cityjson.open3d.city/cityjsonseq/Helsinki_tex.city.jsonl"
+derive = "head:2001"
+source_bytes = 674971888
+source_sha256 = "fbfa370a0ab9701e3830816bfa91e9e28dd345bffee9a96b3840de02044153fa"
+bytes = 17075581
+sha256 = "d84a1782d2a26af2d61a51a3b1bcc0440ce4b7f1182e7158e05d9662e3fbc82d"
+profile = "quick"
+kind = "derived"
+exercises = "per-feature textures in a CityJSONSeq; the header line and the first 2,000 features of Helsinki_tex"
+# One texture ring in the source has 74 UVs for 75 vertices, which
+# cityparquet-rs refuses unless told to drop the invalid reference.
+rs_convert_args = ["--tolerate-invalid-appearance"]
+
+[[dataset]]
+id = "rotterdam-seq"
+format = "cityjsonseq"
+file = "v8_rotterdam_delfshaven.city.jsonl"
+url = "https://other-data.open3d.city/cityparquet-paper/benchmark/v8/cityjsonseq/rotterdam_delfshaven.city.jsonl"
+bytes = 2822644
+sha256 = "71f3306334680de031a4b74c5836abd5814e744223fa91d2c6b8c825679ed455"
+profile = "quick"
+kind = "derived"
+exercises = "Rotterdam as the benchmark corpus's CityJSONSeq (cjseq cat)"
+
+[[dataset]]
+id = "address-seq"
+format = "cityjsonseq"
+file = "address_location_lod.city.jsonl"
+url = "https://raw.githubusercontent.com/cityjson/duckdb-cityjson/294a595a5e13e701f4157fa2afa68a051edbb674/test/data/address_location.city.jsonl"
+# The fixture's address locations are MultiPoints without the `lod` every
+# Geometry Object needs; the repair adds "1", as the specification's example.
+derive = "fix:address-location-lod"
+source_bytes = 7316
+source_sha256 = "aa247c95f81ed8f81351b06a36c3624708df72d64da154e059f78fa8d48484fc"
+bytes = 6684
+sha256 = "c0b5f2c76ca84fb05223598fc73b64c91ed1a6554ba6cfe52dfe4098b769a1bb"
+profile = "quick"
+kind = "fixture"
+exercises = "addresses with a location MultiPoint"
+
+[[dataset]]
+id = "helsinki-seq"
+format = "cityjsonseq"
+file = "Helsinki_tex.city.jsonl"
+url = "https://cityjson.open3d.city/cityjsonseq/Helsinki_tex.city.jsonl"
+bytes = 674971888
+sha256 = "fbfa370a0ab9701e3830816bfa91e9e28dd345bffee9a96b3840de02044153fa"
+profile = "xl"
+kind = "real"
+exercises = "77,231 textured features"
+
+# --------------------------------------------------------------------------
+# CityGML 2.0
+# --------------------------------------------------------------------------
+
+[[dataset]]
+id = "railway-gml"
+format = "citygml2"
+file = "LoD3_Railway.gml"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/citygml/LoD3_Railway.gml"
+bytes = 46976190
+sha256 = "b05c12db79c68e761f6c183a421512e37e4cd03f1831903f8db91fccaee7a54a"
+profile = "quick"
+kind = "real"
+exercises = "the published CityGML 2.0 original of railway: non-building modules, appearance, ImplicitGeometry"
+
+[[dataset]]
+id = "rotterdam-gml"
+format = "citygml2"
+file = "v8_rotterdam_delfshaven.gml"
+url = "https://other-data.open3d.city/cityparquet-paper/benchmark/v8/citygml/rotterdam_delfshaven.gml"
+bytes = 14046392
+sha256 = "f4b69f5cba06564c9164fa14c7a087838321c6d5c73c5e4c766d4b53498d4ff2"
+profile = "quick"
+kind = "derived"
+exercises = "textured buildings as CityGML 2.0 (citygml-tools from-cityjson, benchmark corpus)"
+
+[[dataset]]
+id = "vienna-gml"
+format = "citygml2"
+file = "v8_vienna_102081.gml"
+url = "https://other-data.open3d.city/cityparquet-paper/benchmark/v8/citygml/vienna_102081.gml"
+bytes = 21064612
+sha256 = "81b50623d721ec3554d7336319d38f65807edd82da04a7224e1ee922499b9fcc"
+profile = "quick"
+kind = "derived"
+exercises = "Building/BuildingPart solids as CityGML 2.0 (citygml-tools from-cityjson, benchmark corpus)"
+
+[[dataset]]
+id = "lod4-gml"
+format = "citygml2"
+file = "lod4_building_v2.gml"
+url = "https://raw.githubusercontent.com/citygml4j/citygml4j/8f5a21bb956df032da91ed6aa096c145968a2335/citygml4j-samples/input/datasets/lod4_building_v2.gml"
+bytes = 775379
+sha256 = "46d6942bd8dfab0fd3c3245d19d5cb108f015cffd6531b70a7228b9e93cfddeb"
+profile = "quick"
+kind = "fixture"
+exercises = "SIG3D LoD4 building: xlinked shells, Door/Window openings, an interior Room"
+
+[[dataset]]
+id = "b1-gml"
+format = "citygml2"
+file = "b1_lod2_cs_w_sem.gml"
+url = "https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_cs_w_sem.gml"
+bytes = 10725
+sha256 = "5cced4e4ace3dc5d8e2db4b6760a03864f657acfcb1eafd63e6eea1fd3f4be68"
+profile = "quick"
+kind = "fixture"
+exercises = "LoD2 solid with boundedBy semantics by xlink (libcitygml)"
+
+# --------------------------------------------------------------------------
+# FlatCityBuf
+# --------------------------------------------------------------------------
+
+[[dataset]]
+id = "delft-fcb"
+format = "fcb"
+file = "delft.fcb"
+url = "https://flatcitybuf.open3d.city/data/delft.fcb"
+bytes = 5152424
+sha256 = "b02dde5182782cca992f0e96134aa61020af55c8ff521bb78231de6c1bb9b0a9"
+profile = "quick"
+kind = "real"
+exercises = "the published FlatCityBuf of Delft"
+
+[[dataset]]
+id = "rotterdam-fcb"
+format = "fcb"
+file = "v8_rotterdam_delfshaven.fcb"
+url = "https://other-data.open3d.city/cityparquet-paper/benchmark/v8/flatcitybuf/rotterdam_delfshaven.fcb"
+bytes = 3017520
+sha256 = "782ba2648107e7a2f0f5932d554e60147e70a2717b3a6402b2bf8b7d42bd432f"
+profile = "quick"
+kind = "derived"
+exercises = "textures in FlatCityBuf (fcb_core writer, benchmark corpus)"
+
+[[dataset]]
+id = "vienna-fcb"
+format = "fcb"
+file = "v8_vienna_102081.fcb"
+url = "https://other-data.open3d.city/cityparquet-paper/benchmark/v8/flatcitybuf/vienna_102081.fcb"
+bytes = 3619146
+sha256 = "482c9ba6d9324fb164b1c4de559c538ddc0144abececd238d3fdc02b0b79002d"
+profile = "quick"
+kind = "derived"
+exercises = "Building/BuildingPart in FlatCityBuf (fcb_core writer, benchmark corpus)"
+
+# --------------------------------------------------------------------------
+# CityGML 3.0
+# --------------------------------------------------------------------------
+
+[[dataset]]
+id = "ingolstadt-gml3"
+format = "citygml3"
+file = "Ingolstadt.gml"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/citygml/Ingolstadt.gml"
+bytes = 29744133
+sha256 = "3c6704e83088edf8ebc792538a0285abe0498cc895e49ec383f01841bc124a6c"
+source_bytes = 29744141
+source_sha256 = "507eec11a46b525718b6dd33a0dea9cc18c546c9fc173734988269d20f0f3966"
+derive = "fix:python-bytes-literal"
+profile = "quick"
+kind = "real"
+exercises = "LoD3 with openings, as CityGML 3.0 (published as a Python bytes literal, b'<?xml …', which no XML parser reads; the fix evaluates the literal)"
+
+[[dataset]]
+id = "3dbag-tile-gml3"
+format = "citygml3"
+file = "9-284-556.gml"
+url = "https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/citygml/9-284-556.gml"
+bytes = 56469489
+sha256 = "507b0969eee567496c9838580afbbfbb6d7e95df6f61853ef259d68334c6b5fd"
+profile = "quick"
+kind = "real"
+exercises = "multi-LoD 3DBAG tile as CityGML 3.0"
+
+# --------------------------------------------------------------------------
+# 3DCityDB (`run.py citydb`, citydb.py)
+# --------------------------------------------------------------------------
+#
+# Each entry loads one source into a 3DCityDB v5 database with citydb-tool and
+# reads it back. The source is a corpus dataset (`dataset`), a file in this
+# repository (`path`, relative to its root), or a file in the citydb-tool image
+# (`image_path`).
+#
+# srid, srs_name     the reference system the database is created in, as
+#                    3DCityDB's create-db.sql takes it
+# vertex_precision   decimals citydb-tool's CityJSON export keeps (3 for
+#                    metres; 9 for degrees, the step cityparquet uses)
+# any_face_order     compare a surface's faces paired by geometry, not by
+#                    position (cjcompare --any-face-order): citydb-tool's
+#                    exporter reorders them, where the direct reader keeps
+#                    the order the source file has
+#
+# The published Ingolstadt.gml (ingolstadt-gml3) is not XML: it holds the
+# text of a Python bytes literal (b'<?xml ...), which citydb-tool refuses, so
+# Ingolstadt is loaded from its CityJSON only. CityGML 3.0 loads are covered
+# by citygml-citydb's own tests (lib/citygml-rs/crates/citydb/tests).
+
+[[citydb]]
+dataset = "3dbag-tile"
+srid = 7415
+srs_name = "urn:ogc:def:crs,crs:EPSG::28992,crs:EPSG::5109"
+exercises = "CityJSON import: solids with semantics, LoD 0, 1.2, 1.3 and 2.2 (citydb-tool keeps one LoD 1 geometry), typed attributes"
+
+[[citydb]]
+dataset = "ingolstadt"
+srid = 32632
+srs_name = "urn:ogc:def:crs:EPSG::32632"
+# The buildings' faces: of the 4368 pairs of consecutive faces building
+# 4018215 has in Ingolstadt.city.json, citydb-tool's export keeps 4302
+# together and the direct reader 4366.
+any_face_order = true
+exercises = "CityJSON import: LoD 3 buildings with openings and installations"
+
+[[citydb]]
+id = "railway-scene"
+format = "citygml2"
+image_path = "/opt/citydb-tool/samples/datasets/railway_scene_lod3_v2.zip"
+srid = 25833
+srs_name = "urn:ogc:def:crs:EPSG::25833"
+exercises = "the KIT LoD 3 railway scene citydb-tool ships: textures with their images, materials, 14 feature types"
+
+[[citydb]]
+id = "plateau-bldg"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/bldg/53394519_bldg_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU 13101 buildings (CityGML 2.0): LoD 0 to 2, xlinked solids, addresses, textures without their images, i-UR ADE"
+
+[[citydb]]
+id = "plateau-tran"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/tran/53394529_tran_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU roads: TrafficArea and AuxiliaryTrafficArea, LoD 1 to 3"
+
+[[citydb]]
+id = "plateau-brid"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/brid/53394610_brid_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU bridges"
+
+[[citydb]]
+id = "plateau-frn"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/frn/53394631_frn_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU city furniture: implicit geometries"
+
+[[citydb]]
+id = "plateau-veg"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/veg/53394600_veg_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU vegetation"
+
+[[citydb]]
+id = "plateau-wtr"
+format = "citygml2"
+path = "lib/citygml-rs/crates/citygml2/tests/data/plateau/udx/wtr/533945_wtr_6697_op.gml"
+srid = 6697
+srs_name = "urn:ogc:def:crs:EPSG::6697"
+vertex_precision = 9
+exercises = "PLATEAU water bodies"

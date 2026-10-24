@@ -1,0 +1,134 @@
+# Failures that are understood and decided elsewhere.
+#
+# A failing step becomes `known` only when every one of its failure lines
+# matches an entry here (`dataset` and `step` are regular expressions over the
+# dataset id and the step name, `match` over one failure line). Each entry
+# names where the issue is recorded. An entry is for a decision or a tracked
+# defect, never for silencing a failure nobody has looked at: a new failure
+# stays a failure in the report until someone says whose it is.
+
+[[issue]]
+id = "gml-id-escape"
+dataset = "^(rotterdam-gml|ingolstadt-gml3)$"
+step = "^round trip"
+match = "^fail:objects: \\S+ written as _\\S*$"
+summary = "gml:id must be an XML name, so the CityGML writers escape an id that is not one (`_` for each character a name cannot hold) and report it as a loss; whether to escape, refuse, or escape reversibly is an open specification question"
+reference = "toolchain-test-2026-10-16 report, finding 11 and Specification questions"
+
+[[issue]]
+id = "helsinki-invalid-texture-rings"
+dataset = "^helsinki-seq"
+step = ".*"
+match = "BID_(048465dc|18d4a090|242d9a9d|8beab8ee)\\S* (Solid@lod2\\.0 face 1 ring [0-2] theme 'rgbTexture'|geometry at lod Some\\(\"2\\.0\"\\): texture differs)"
+summary = "five texture rings in Helsinki_tex carry one UV fewer than they have vertices (a repeated vertex has no UV of its own), which is not valid CityJSON; cityparquet-rs refuses the file unless told --tolerate-invalid-appearance, then leaves those rings untextured"
+reference = "corpus.toml, helsinki-seq-2000; `cityparquet convert --help`"
+
+# --------------------------------------------------------------------------
+# 3DCityDB (`run.py citydb`). citydb.py already sets aside what citydb-tool
+# writes of its own accord (import stamps, generated ids, image renames);
+# these are the differences that remain and are understood.
+# --------------------------------------------------------------------------
+
+[[issue]]
+id = "citydb-tool-compound-crs"
+dataset = "^citydb:3dbag-tile$"
+step = "^C2 "
+match = "CRS http://www.opengis.net/def/crs/EPSG/0/28992 vs https://www.opengis.net/def/crs/EPSG/0/7415"
+summary = "for a database in the compound EPSG:7415, citydb-tool's CityJSON exporter declares only its horizontal part, EPSG:28992; the database reader declares the database's SRID"
+reference = "citydb.py; the database's database_srs row"
+
+[[issue]]
+id = "citydb-semantic-surface-order"
+dataset = "^citydb:"
+step = "^C[23] "
+match = "^fail:semantics: \\S+ \\w+@lod[0-9.]+: semantic surfaces array "
+summary = "a database keeps no order for a geometry's semantic surfaces: citydb-tool's exporter lists them in the order of their first face, the CityGML conversion in the order of the boundary surfaces. The per-face lines in the same step judge the content"
+reference = "lib/citygml-rs/crates/citydb/src/assemble.rs (boundary); 03-geometry-semantics.mdx"
+
+[[issue]]
+id = "citygml-boundary-surface-ids"
+dataset = "^citydb:"
+step = "^C[23] "
+match = "^fail:semantics: \\S+ \\w+@lod[0-9.]+ face \\d+: \\{'type': '(\\w+)', 'id': '[^']+'((?:, '[^@'][^']*': (?:'[^']*'|[^,{}]+))*)((?:, '@[^}]*)?)\\} vs \\{'type': '\\1'\\2(?:, 'relativeTo(?:Water|Terrain)': '\\w+')*\\3\\}$"
+summary = "a boundary surface's id does not reach the package: the CityGML crates' model has no id for a boundary surface (crate request on the 3DCityDB PR; the tool-chain report's defect 11 for the CityGML readers). The line is otherwise equal, but for the surface's relativeToWater and relativeToTerrain, which the direct reader keeps and citydb-tool's CityJSON exporter does not write"
+reference = "the tool-chain test report of 2026-10-14, defect 11; the crate requests in the 3DCityDB pull request"
+
+[[issue]]
+id = "citygml-generic-thematic-surface"
+dataset = "^citydb:"
+step = "^C[23] "
+match = "'\\+GenericSurface'"
+summary = "a gen:GenericThematicSurface becomes untyped faces of its object, as the citygml3 reader reads one (CityJSON has no type for it); citydb-tool's exporter writes an undeclared '+GenericSurface' type, which cityparquet refuses as invalid CityJSON. citydb-tool's CityJSON importer stores every Window and Door semantic surface as one, with a CityJSONType attribute"
+reference = "lib/citygml-rs/crates/citygml3/src/reader/walker.rs, is_generic_surface"
+
+[[issue]]
+id = "citygml-lod0-roof-edge"
+dataset = "^citydb:plateau-bldg$"
+step = "^C[23] "
+match = "MultiSurface@lod0\\.0( face \\d+)?: (semantic surfaces array )?\\[?\\{'type': 'RoofSurface'\\}\\]? vs None$"
+summary = "citydb-tool's exporter gives a bldg:lod0RoofEdge a RoofSurface semantic; the CityGML conversion leaves it untyped, as for a CityGML file"
+reference = "the CityGML crates' lod0RoofEdge mapping (raised with the CityGML reader thread)"
+
+[[issue]]
+id = "citygml-whitespace-value"
+dataset = "^citydb:plateau-bldg$"
+step = "^C[23] "
+match = "only in source \\['説明注記'\\], only in output \\[\\], differing \\[\\], type changed \\[\\]$"
+summary = "PLATEAU's 説明注記 is a single space; the CityGML readers, and the database reader after them, read whitespace-only text as no value; citydb-tool keeps it"
+reference = "lib/citygml-rs/crates/citydb/src/assemble.rs, scalar"
+
+[[issue]]
+id = "citydb-texture-without-image"
+dataset = "^citydb:plateau-"
+step = "^C[23] "
+match = "theme 'rgbTexture': \\{'image': 'None'\\} vs None$"
+summary = "PLATEAU's texture images are not committed with its CityGML, so the database holds textures without an image; CityJSON requires one, so the database reader leaves them out and counts them (app:ParameterizedTexture without an image), while citydb-tool exports an invalid texture with image 'None'"
+reference = "lib/citygml-rs/crates/citydb/src/appearance.rs; `cityparquet convert` warning"
+
+[[issue]]
+id = "citydb-tool-exporter-material-on-xlinked-face"
+dataset = "^citydb:plateau-brid$"
+step = "^C2 "
+match = "Solid@lod2\\.0 face \\d+ theme 'rgbTexture': None vs \\{'name': 'material', 'diffuseColor': \\[1\\.0, 1\\.0, 1\\.0\\], 'shininess': 0\\.0\\}$"
+summary = "the PLATEAU bridge's X3DMaterials target polygons its solid shares by xlink; the database maps them, the citygml2 reader of the file has them on the same faces, and citydb-tool's CityJSON exporter leaves them out"
+reference = "lib/citygml-rs/crates/citydb/tests/oracle.rs, plateau_2_0_bridges"
+
+[[issue]]
+id = "keep-links-group-members"
+dataset = "^citydb:railway-scene$"
+step = "^C2 "
+match = "^fail:hierarchy: (GMLID_SO0200811_525_4986|GMLID_SO015374_872_14131|GMLID_SO0158953_776_12462|GMLID_SO0321978_1466_7441|GMLID_SO0286258_965_2893|GMLID_SO0410128_214_10515|GMLID_SO0283142_1335_8999|GMLID_SO086970_1053_8814|GMLID_SO0107241_3793_12555|GMLID_SO081792_2341_11961|GMLID_SO0260143_1214_1315|GMLID_SO0400934_2926_3381|GMLID_SO0124800_3522_13577|GMLID_SO0443764_1492_9667): parents \\(\\)/\\('UUID_f488e8ce-b953-4b35-a3fe-a394fb203868',\\) children \\(\\)/\\(\\) roles \\(\\)/\\(\\)$"
+summary = "an xlinked CityObjectGroup member stays a feature of its own listing the group in parents (decided 2026-10-14, keep links); citydb-tool's exporter lists the member only in the group's children"
+reference = "CityObjectGroup decision of 2026-10-14 (keep links)"
+
+[[issue]]
+id = "keep-links-citydb-tool-import"
+dataset = "^citydb:railway-scene$"
+step = "^C[34] "
+match = "^fail:(objects: (GMLID_SO0200811_525_4986|GMLID_SO015374_872_14131|GMLID_SO0158953_776_12462|GMLID_SO0321978_1466_7441|GMLID_SO0286258_965_2893|GMLID_SO0410128_214_10515|GMLID_SO0283142_1335_8999|GMLID_SO086970_1053_8814|GMLID_SO0107241_3793_12555|GMLID_SO081792_2341_11961|GMLID_SO0260143_1214_1315|GMLID_SO0400934_2926_3381|GMLID_SO0124800_3522_13577|GMLID_SO0443764_1492_9667) \\(SolitaryVegetationObject\\) missing from the output|hierarchy: UUID_f488e8ce-b953-4b35-a3fe-a394fb203868: parents \\(\\)/\\(\\) children \\(|object (GMLID_SO0200811_525_4986|GMLID_SO015374_872_14131|GMLID_SO0158953_776_12462|GMLID_SO0321978_1466_7441|GMLID_SO0286258_965_2893|GMLID_SO0410128_214_10515|GMLID_SO0283142_1335_8999|GMLID_SO086970_1053_8814|GMLID_SO0107241_3793_12555|GMLID_SO081792_2341_11961|GMLID_SO0260143_1214_1315|GMLID_SO0400934_2926_3381|GMLID_SO0124800_3522_13577|GMLID_SO0443764_1492_9667): present in A, missing in B|object UUID_f488e8ce-b953-4b35-a3fe-a394fb203868: children(_roles)? differ: )"
+summary = "citydb-tool's CityJSON importer drops a CityJSONSeq feature whose root lists a parent in another feature, so the reverse leg loses the xlinked group members keep-links writes that way (valid once collected into one CityJSON file, not per feature)"
+reference = "CityObjectGroup decision of 2026-10-14 (keep links); cjseq per-feature validation"
+
+[[issue]]
+id = "reverse-leg-images"
+dataset = "^citydb:railway-scene$"
+step = "^C[34] "
+match = "^fail:(textures: .* theme 'visual': \\{'image': 'image'.* vs \\{'image': 'None'|templates: GMLID_SO\\S+: template geometry differs \\(textures\\)|object \\S+: geometry at lod Some\\(\"3\\.0\"\\): texture differs|object GMLID_SO\\S+: geometry at lod None: instance template texture differs)"
+summary = "a package holds texture image names, not images, so the CityJSONSeq the reverse leg imports names files citydb-tool cannot find and DB2 holds textures without an image"
+reference = "the 3DCityDB PR, known gaps (texture images)"
+
+[[issue]]
+id = "citydb-tool-cityjson-lod1-surface"
+dataset = "^citydb:plateau-(tran|wtr)$"
+step = "^C[34] "
+match = "(MultiSurface at lod 1\\.0 (came back as Solid|missing from the output)|type differs: MultiSurface vs Solid)"
+summary = "citydb-tool's CityJSON importer stores a road's or water body's LoD 1 MultiSurface as an LoD 1 solid, which its exporter then writes as a Solid (water bodies) or not at all (roads)"
+reference = "citydb.py (C3, C4)"
+
+[[issue]]
+id = "citydb-tool-cityjson-tinrelief-id"
+dataset = "^citydb:railway-scene$"
+step = "^C[34] "
+match = "^fail:(objects: UUID_5aa70b07-6bbf-427b-8222-d72ed77dbfa9 \\(TINRelief\\) missing from the output|objects: ID_[0-9a-f-]{36} \\(TINRelief\\) (not in the source|only in the output)|object UUID_5aa70b07-6bbf-427b-8222-d72ed77dbfa9: present in A, missing in B|object ID_[0-9a-f-]{36}: present in B, missing in A)$"
+summary = "citydb-tool's CityJSON importer stores a CityJSON TINRelief as a ReliefFeature with a generated id, which both exporters then name the object by"
+reference = "citydb.py (C3, C4)"

@@ -262,7 +262,91 @@ pub struct ExtensionDeclaration {
     /// The ADE's XML namespace URI (CityGML ADEs only).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub xmlns: Option<String>,
+    /// The XML attributes every occurrence of an ADE element carries with
+    /// one value, by element local name, then attribute name (CityGML ADEs
+    /// only): stated here once rather than on every value.
+    #[serde(
+        rename = "xmlAttributes",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub xml_attributes: Option<XmlAttributes>,
+    /// The names the extension adds, as a CityJSON Extension document lists
+    /// them, when the source states them with the declaration: what
+    /// attributes a `+` name to one of several extensions (spec
+    /// "Attributing names to an extension"). Kept verbatim.
+    #[serde(flatten)]
+    pub adds: ExtensionAdds,
+    /// Where a CityGML writer puts the ADE's elements, when the source
+    /// states it (CityGML ADEs only). Kept verbatim.
+    #[serde(flatten)]
+    pub layout: AdeLayout,
 }
+
+/// The members of an [`ExtensionDeclaration`] saying where a CityGML writer
+/// puts an ADE's elements: `substitutionGroups`, the CityGML element each
+/// property, class and container substitutes for; `containers`, the element
+/// a CityGML 3.0 `adeOf…` hook holds each property in; and `propertyOrder`,
+/// the order of the properties of each class and container. Each kept
+/// verbatim.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdeLayout {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub substitution_groups: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub containers: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub property_order: Option<Value>,
+}
+
+impl AdeLayout {
+    /// The three members, by their names in the declaration.
+    pub fn members(&self) -> [(&'static str, Option<&Value>); 3] {
+        [
+            ("substitutionGroups", self.substitution_groups.as_ref()),
+            ("containers", self.containers.as_ref()),
+            ("propertyOrder", self.property_order.as_ref()),
+        ]
+    }
+}
+
+/// The members of an [`ExtensionDeclaration`] naming what the extension
+/// adds: `extraCityObjects`, `extraSemanticSurfaces` and
+/// `extraRootProperties` (keyed by `+` name) and `extraAttributes` (keyed
+/// by City Object type, then `+` name), each kept verbatim.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionAdds {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub extra_city_objects: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub extra_semantic_surfaces: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub extra_attributes: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub extra_root_properties: Option<Value>,
+}
+
+impl ExtensionAdds {
+    /// The four members, by their CityJSON names.
+    pub fn members(&self) -> [(&'static str, Option<&Value>); 4] {
+        [
+            ("extraCityObjects", self.extra_city_objects.as_ref()),
+            (
+                "extraSemanticSurfaces",
+                self.extra_semantic_surfaces.as_ref(),
+            ),
+            ("extraAttributes", self.extra_attributes.as_ref()),
+            ("extraRootProperties", self.extra_root_properties.as_ref()),
+        ]
+    }
+}
+
+/// An ADE's constant XML attributes: by element local name, then attribute
+/// name, the value (see [`ExtensionDeclaration::xml_attributes`]).
+pub type XmlAttributes =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>;
 
 /// `city.extensions`: every declared extension, keyed by its namespace
 /// (`^[a-z][a-z0-9]*$`, unique within the package). `BTreeMap` for
@@ -526,6 +610,9 @@ mod tests {
                 url: "https://example.org/energy.ext.json".to_string(),
                 version: Some("3.0".to_string()),
                 xmlns: None,
+                xml_attributes: None,
+                adds: ExtensionAdds::default(),
+                layout: AdeLayout::default(),
             },
         );
         city.extensions = Some(decls);

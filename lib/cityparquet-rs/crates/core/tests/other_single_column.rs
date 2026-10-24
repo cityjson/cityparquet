@@ -56,11 +56,7 @@ fn colliding_unmapped_member_and_reserved_attribute_keeps_the_attribute() {
         "diagnostic must name the colliding key: {diagnostic}"
     );
 
-    export(&ExportOptions {
-        package_dir: pkg.clone(),
-        output: out.clone(),
-    })
-    .unwrap();
+    export(&ExportOptions::new(pkg.clone(), out.clone())).unwrap();
     let exported = std::fs::read_to_string(&out).unwrap();
     let line = exported.lines().nth(1).expect("one feature line");
     let feature: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -122,11 +118,7 @@ fn colliding_unmapped_member_and_ordinary_attribute_is_dropped() {
 
     // Export must succeed — `other` must not carry an entry duplicating the
     // `height` column's own attribute (the reader hard-errors on that).
-    export(&ExportOptions {
-        package_dir: pkg.clone(),
-        output: out.clone(),
-    })
-    .unwrap();
+    export(&ExportOptions::new(pkg.clone(), out.clone())).unwrap();
     let exported = std::fs::read_to_string(&out).unwrap();
     let line = exported.lines().nth(1).expect("one feature line");
     let feature: serde_json::Value = serde_json::from_str(line).unwrap();

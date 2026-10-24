@@ -31,9 +31,22 @@ hashing the bytes. After an upload the keys are verified by size with
 `rclone lsjson`; the content itself is checked by rclone's own transfer
 checksum (MD5 for a single-part S3 upload). `manifest.json` is written last,
 so a partial upload is visible as an artefact the manifest does not list.
+
+When the chain version changes, a dataset whose artefacts the new chain
+writes byte for byte is carried forward rather than rebuilt and uploaded:
+`carry-forward` copies its objects from `v<old>/` to `v<new>/` inside the
+bucket (a server-side copy; nothing passes through the machine) and merges
+its manifest entry, marked `carried_from`, into `v<new>/manifest.json`,
+written last. With `--artefacts` only those artefacts are carried, so a
+dataset whose other artefacts are rebuilt keeps an unchanged one, and the
+rebuild's upload then finds it recorded and skips it without hashing it
+remotely.
+
+    python3 corpus_bucket.py carry-forward --from 8 --to 9 DATASET... [--artefacts citygml]
 """
 from __future__ import annotations
 
+import argparse
 import datetime as _dt
 import hashlib
 import json
@@ -326,3 +339,80 @@ def publish_manifest(cfg: dict[str, str], chain: int, entries: dict[str, dict]) 
         local.write_text(dumps(manifest))
         rclone("copyto", str(local), remote_path(cfg, chain, MANIFEST_NAME), capture=False)
     return manifest
+
+
+def carry_forward(cfg: dict[str, str], from_chain: int, to_chain: int, dataset_ids: list[str], artefacts: list[str] | None = None) -> dict[str, list[str]]:
+    """Copy datasets' hosted artefacts (all, or `artefacts`) from v<from>/ to
+    v<to>/ inside the bucket and merge their manifest entries into
+    v<to>/manifest.json, written last; returns {"copied": [...], "skipped": [...]}.
+
+    Refuses, before anything is copied, when a dataset or artefact is not in
+    v<from>/'s manifest or a key exists in v<to>/ with different content."""
+    old = remote_manifest(cfg, from_chain)
+    if old is None or old.get("chain_version") != from_chain:
+        raise CorpusError(f"no manifest for chain version {from_chain} at {remote_path(cfg, from_chain, MANIFEST_NAME)}")
+    new = remote_manifest(cfg, to_chain)
+    sizes = remote_sizes(cfg, to_chain)
+    plan, differing, entries = [], [], {}
+    for dataset_id in dataset_ids:
+        hosted = old.get("datasets", {}).get(dataset_id)
+        if hosted is None:
+            raise CorpusError(f"the v{from_chain} manifest has no dataset {dataset_id}")
+        wanted = artefacts or sorted(hosted.get("artefacts", {}))
+        entry = require_entry(old, dataset_id, wanted)
+        current = ((new or {}).get("datasets") or {}).get(dataset_id)
+        recorded = {}
+        for artefact, record in (current or {}).get("artefacts", {}).items():
+            recorded.update(file_records(artefact, dataset_id, record))
+        carried = {artefact: entry["artefacts"][artefact] for artefact in wanted}
+        for artefact, record in carried.items():
+            for key, info in file_records(artefact, dataset_id, record).items():
+                if key in sizes:
+                    known = recorded.get(key, {}).get("sha256") if recorded.get(key, {}).get("bytes") == sizes[key] else None
+                    if sizes[key] == info["bytes"] and (known or remote_sha256(cfg, to_chain, key)) == info["sha256"]:
+                        plan.append((key, info["bytes"], False))
+                        continue
+                    differing.append(key)
+                plan.append((key, info["bytes"], True))
+        if current is not None:
+            entries[dataset_id] = {**current, "artefacts": {**current.get("artefacts", {}), **carried}}
+        else:
+            entries[dataset_id] = {"source": entry["source"], "built": entry["built"], "carried_from": from_chain, "artefacts": carried}
+    if differing:
+        raise CorpusError(f"these keys already exist in v{to_chain}/ with different content: {', '.join(differing)}")
+    done = {"copied": [], "skipped": []}
+    for key, _, send in plan:
+        if send:
+            rclone("copyto", remote_path(cfg, from_chain, key), remote_path(cfg, to_chain, key), capture=False)
+        done["copied" if send else "skipped"].append(key)
+    after = remote_sizes(cfg, to_chain)
+    wrong = [key for key, size, _ in plan if after.get(key) != size]
+    if wrong:
+        raise CorpusError(f"copy not verified by size for {', '.join(wrong)}")
+    if done["copied"] or any(((new or {}).get("datasets") or {}).get(d) != e for d, e in entries.items()):
+        publish_manifest(cfg, to_chain, entries)
+    return done
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="The hosted benchmark corpus (benchmark/README.md, \"The hosted corpus\").")
+    commands = parser.add_subparsers(dest="command", required=True)
+    carry = commands.add_parser("carry-forward", help="copy datasets' artefacts from v<from>/ to v<to>/ inside the bucket, with their manifest entries (needs the rclone credentials)")
+    carry.add_argument("--from", dest="from_chain", type=int, required=True, help="the chain version the artefacts are hosted under")
+    carry.add_argument("--to", dest="to_chain", type=int, required=True, help="the chain version they are carried to")
+    carry.add_argument("--artefacts", help="comma-separated artefacts to carry (default: every artefact of the dataset)")
+    carry.add_argument("datasets", nargs="+", help="dataset ids (file stems, e.g. rotterdam_delfshaven)")
+    args = parser.parse_args(argv)
+    cfg = config()
+    try:
+        artefacts = args.artefacts.split(",") if args.artefacts else None
+        done = carry_forward(cfg, args.from_chain, args.to_chain, args.datasets, artefacts)
+    except CorpusError as error:
+        raise SystemExit(f"corpus_bucket: {error}") from error
+    print(f"v{args.from_chain} -> v{args.to_chain}: {len(done['copied'])} copied, {len(done['skipped'])} identical and skipped")
+    print(f"manifest: {public_url(cfg, args.to_chain, MANIFEST_NAME)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

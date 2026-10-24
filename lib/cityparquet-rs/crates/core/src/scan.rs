@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use cityparquet_schema::{
     AttributeInferer, AttributeType, CITYPARQUET_VERSION, CityColumnEntry, CityMetadata,
     CityParquetError, CityParquetSchema, CrsState, ExtensionDeclarations, ExtensionNaming,
-    ExtensionRegistry, GeoColumnEntry, GeoMetadata, GeometryEncoding, Lod, ModuleKey,
-    ModuleKeyResolver, Result, SourceFormat as SchemaSourceFormat, geometry_column_name,
+    GeoColumnEntry, GeoMetadata, GeometryEncoding, Lod, ModuleKey, ModuleKeyResolver, Result,
+    SourceFormat as SchemaSourceFormat, geometry_column_name,
 };
 
 use cardinality_estimator::CardinalityEstimator;
@@ -21,6 +21,7 @@ use cjseq::{CityJSONFeature, GeometryType};
 
 use crate::source::{Source, SourceFormat};
 use cityparquet_schema::crs::AxisOrder;
+use cityparquet_schema::extensions::{NameKind, class_registry};
 
 use crate::wkb_write::{VertexPool, geometry_bbox};
 
@@ -65,13 +66,12 @@ pub struct ScanResult {
     /// [`scan`] rejects any that does not (§9, CityJSON 2.0 §3).
     pub lods: Vec<Lod>,
     pub object_count: usize,
+    /// What the source's reader left out, by name
+    /// ([`crate::source::FeatureIter::left_out`]).
+    pub source_left_out: std::collections::BTreeMap<String, usize>,
     /// Union of every analysis geometry's bbox, `None` if none contributed one
     /// (`GeometryInstance`s produce no WKB, so they contribute nothing here).
     pub dataset_bbox: Option<[f64; 6]>,
-    /// Each feature's [`crate::order::feature_centre`], in
-    /// [`Source::features`] order: what the Hilbert row order sorts by,
-    /// kept so it needs no second pass over the features.
-    pub feature_centres: Vec<Option<[f64; 2]>>,
     /// The dataset's reference system as the raw OGC CRS URL string (from
     /// CityJSON header metadata), before PROJJSON resolution.
     pub crs_url: Option<String>,
@@ -135,7 +135,8 @@ pub struct ScanResult {
     /// every distinct `object_type` this scan encounters, whether or not that
     /// object carries geometry, so `crate::package::TableWriters` never needs
     /// to fall back to "module absent from the map means empty". Resolved
-    /// with an EMPTY [`ExtensionRegistry`] — see [`scan`]'s doc comment.
+    /// with the classes the declarations say specialise another — see
+    /// [`scan`]'s doc comment.
     pub module_lods: BTreeMap<ModuleKey, Vec<Lod>>,
     /// Per-[`ModuleKey`] realised WKB type sets, mirroring
     /// [`Self::geoparquet_columns`] but broken out per module rather than
@@ -199,6 +200,7 @@ fn to_schema_source_format(format: SourceFormat) -> SchemaSourceFormat {
         SourceFormat::CityGml => SchemaSourceFormat::CityGml,
         // spec 05: an other-source token for a format the spec does not enumerate.
         SourceFormat::FlatCityBuf => SchemaSourceFormat::Other("FlatCityBuf".to_string()),
+        SourceFormat::CityDb => SchemaSourceFormat::Other("3DCityDB".to_string()),
     }
 }
 
@@ -219,31 +221,49 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 /// Scan every feature and object in `source` once, inferring the attribute
 /// and LoD schema and accumulating the dataset-level bbox, CRS, and transform.
 ///
-/// [`ScanResult::module_lods`] is resolved with an EMPTY [`ExtensionRegistry`]
-/// — matching `crate::package::extension_registry`'s present-day stub (no
-/// Extension/ADE schema parsing yet, tracked separately: spec
-/// `city.extensions` declaration storage). A genuine `+`-marked extension
-/// class therefore hard-errors here exactly as it already does at write time
-/// (see `extension_module_real_data.rs`'s
-/// `unresolvable_extension_type_is_a_clean_schema_error`), just one pass
-/// earlier — fail fast rather than fail during encode.
+/// [`ScanResult::module_lods`] is resolved with the [`class_registry`] of
+/// the source's declarations — matching `crate::package::extension_registry`
+/// — so an extension class routes by the class it specialises, to a core
+/// module, or to its extension's own file, exactly as at write time.
 ///
 /// Extension names are attributed here too (spec "Extensions"): a CityJSON
 /// `+` attribute is inferred under its namespace-prefixed column name, and a
 /// `+` name the declared extensions cannot attribute — or a core attribute
 /// or class carrying a declared namespace prefix — rejects the source before
 /// anything is written.
-pub fn scan(source: &Source) -> Result<ScanResult> {
-    scan_keeping(source, None)
+///
+/// The error for object `id`, met a second time in `feature`.
+///
+/// An object with several parents (a building in two `CityObjectGroup`s) is
+/// valid CityJSON, but a document's feature split puts it, or its
+/// descendant, in every parent's feature. Spec 02 ("feature_id rule") writes
+/// it once, under the root of its first parent's chain; this writer does not
+/// do that yet, and says so rather than blaming the input.
+fn repeated_id(id: &str, feature: &CityJSONFeature) -> CityParquetError {
+    let mut current = feature.city_objects.get(id);
+    // Bounded, so a cycle of parent links cannot loop.
+    for _ in 0..=feature.city_objects.len() {
+        let Some(parents) = current.and_then(|co| co.parents.as_deref()) else {
+            break;
+        };
+        if parents.len() > 1 {
+            return CityParquetError::Schema(format!(
+                "City Object `{id}` is reached through more than one parent, so the \
+                 feature split repeats it; writing such an object once, under its first \
+                 parent's root (spec 02 \"feature_id rule\"), is not supported yet"
+            ));
+        }
+        current = parents.first().and_then(|p| feature.city_objects.get(p));
+    }
+    CityParquetError::Schema(format!(
+        "City Object id `{id}` occurs more than once; object ids must be unique across the \
+         dataset"
+    ))
 }
 
-/// [`scan`], also moving every feature it reads into `keep` when given — so
-/// a source that can only be read front to back need not be read twice by a
-/// caller that wants the features afterwards.
-pub(crate) fn scan_keeping(
-    source: &Source,
-    mut keep: Option<&mut Vec<CityJSONFeature>>,
-) -> Result<ScanResult> {
+/// Object ids are unique across the dataset (spec 02 "Reserved columns"): a
+/// repeated id rejects the source.
+pub fn scan(source: &Source) -> Result<ScanResult> {
     let header = source.header();
     let extensions_json = header
         .extensions
@@ -263,7 +283,7 @@ pub(crate) fn scan_keeping(
     // types actually written to each LoD's geometry column, dataset-wide.
     let mut lod_geo: std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>> =
         std::collections::BTreeMap::new();
-    let mut resolver = ModuleKeyResolver::new(ExtensionRegistry::new());
+    let mut resolver = ModuleKeyResolver::new(class_registry(extensions.as_ref())?);
     let mut module_lod_sets: BTreeMap<ModuleKey, BTreeSet<Lod>> = BTreeMap::new();
     let mut module_geo: BTreeMap<ModuleKey, BTreeMap<Lod, BTreeSet<String>>> = BTreeMap::new();
     // Whether the source carries any `GeometryInstance` — its `implicit_geometry.point`
@@ -317,30 +337,20 @@ pub(crate) fn scan_keeping(
         None => (AxisOrder::default(), false),
     };
 
-    let mut feature_centres = Vec::new();
-    for feature in source.features_batched()? {
-        let owned;
-        let feature: &CityJSONFeature = match keep.as_deref_mut() {
-            Some(kept) => {
-                kept.push(feature?);
-                kept.last().expect("just pushed")
-            }
-            None => {
-                owned = feature?;
-                &owned
-            }
-        };
-        feature_centres.push(crate::order::feature_centre(
-            &feature.vertices,
-            &header.transform,
-        ));
+    let mut ids: std::collections::HashSet<u128> = std::collections::HashSet::new();
+    let mut features = source.features_batched()?;
+    for feature in features.by_ref() {
+        let feature: CityJSONFeature = feature?;
         let pool = VertexPool::new(&feature.vertices, &header.transform, axis_order);
 
         for (id, co) in &feature.city_objects {
             object_count += 1;
+            if !ids.insert(crate::id_hash::id_hash(id)) {
+                return Err(repeated_id(id, &feature));
+            }
             let thetype = crate::cjtypes::object_type_name(&co.thetype);
-            naming.encode_name(&thetype, "city-object type")?;
-            let module_key = resolver.resolve(&thetype)?;
+            let stored_type = naming.encode_name(&thetype, NameKind::CityObjectType)?;
+            let module_key = resolver.resolve(&thetype, naming.namespace(&stored_type))?;
             // Every module actually encountered gets an entry, even one with
             // no analysis geometry at all — see the field's doc comment.
             module_lod_sets.entry(module_key.clone()).or_default();
@@ -579,12 +589,13 @@ pub(crate) fn scan_keeping(
         .map(|(key, set)| (key, set.into_iter().collect()))
         .collect();
 
+    let source_left_out = features.left_out();
     Ok(ScanResult {
         schema,
         lods,
         object_count,
+        source_left_out,
         dataset_bbox,
-        feature_centres,
         crs_url,
         axis_order,
         horizontal_is_angular,
@@ -600,10 +611,7 @@ pub(crate) fn scan_keeping(
         module_geo,
         bloom_attributes,
         source_format: to_schema_source_format(source.format()),
-        source_version: serde_json::to_value(header.version)?
-            .as_str()
-            .expect("a CityJSON version serialises as a string")
-            .to_string(),
+        source_version: source.source_version(),
     })
 }
 

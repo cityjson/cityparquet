@@ -262,10 +262,10 @@ fn synthesis_is_idempotent_through_a_round_trip() {
     let pkg1 = convert_railway(true);
     let dir1 = tempfile::tempdir().unwrap();
     let export1 = dir1.path().join("export1.city.jsonl");
-    export(&ExportOptions {
-        package_dir: pkg1.path().to_path_buf(),
-        output: export1.clone(),
-    })
+    export(&ExportOptions::new(
+        pkg1.path().to_path_buf(),
+        export1.clone(),
+    ))
     .unwrap();
     assert!(
         std::fs::read_to_string(&export1)
@@ -282,10 +282,10 @@ fn synthesis_is_idempotent_through_a_round_trip() {
     convert(&opts).unwrap();
     let dir2 = tempfile::tempdir().unwrap();
     let export2 = dir2.path().join("export2.city.jsonl");
-    export(&ExportOptions {
-        package_dir: pkg2.path().to_path_buf(),
-        output: export2.clone(),
-    })
+    export(&ExportOptions::new(
+        pkg2.path().to_path_buf(),
+        export2.clone(),
+    ))
     .unwrap();
 
     let report = compare_datasets(&export1, &export2, &CompareOptions::default()).unwrap();
