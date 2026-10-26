@@ -1,0 +1,27 @@
+# What GitHub should treat as generated or vendored. `linguist-generated`
+# collapses a file in pull-request diffs and leaves it out of the language
+# statistics; `linguist-vendored` only leaves it out of the statistics.
+# Lockfiles need no entry: GitHub already recognises them.
+
+# --- documents/ --------------------------------------------------------------
+# The benchmark summary, figures and tables, copied unmodified from a
+# `just bench-summary` run (see provenance.json). summary.html is one 2.6 MB
+# line of inlined data, so it is also kept out of local `git diff`.
+documents/public/benchmarks/** linguist-generated
+documents/public/benchmarks/summary.html -diff
+
+# --- test data ---------------------------------------------------------------
+# Fixtures (CityGML, CityJSON, schemas, Parquet, results CSVs) under every
+# tests/data/ and tests/fixtures/. Test code stays visible, and so do the
+# READMEs and the script that describe and rebuild the fixtures.
+**/tests/data/** linguist-generated
+**/tests/fixtures/** linguist-generated
+**/tests/data/**/README.md -linguist-generated
+**/tests/fixtures/**/README.md -linguist-generated
+**/tests/fixtures/**/*.py -linguist-generated
+
+# --- other generated or third-party files ------------------------------------
+# The MCP server's documentation corpus, built by ai/mcp/src/build-corpus.ts.
+ai/mcp/corpus/corpus.json linguist-generated
+# A patch against upstream cjdb, kept for the database benchmark.
+benchmark/databases/vendor/** linguist-vendored
