@@ -1,0 +1,717 @@
+{
+  "dataset": "3dbag_n1000000.city.jsonl",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.010000989999010002,
+      "window": [
+        189399.48101342772,
+        441787.853,
+        -10.729597492218018,
+        190469.858,
+        446625.59899279784,
+        150.75789300918578
+      ],
+      "approx": false,
+      "objects": 10001,
+      "features": 4993
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.05000094999905,
+      "window": [
+        188830.10449865722,
+        439214.333,
+        -10.729597492218018,
+        191039.2135,
+        449199.17994531256,
+        150.75789300918578
+      ],
+      "approx": false,
+      "objects": 50001,
+      "features": 24983
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.24999975000025,
+      "window": [
+        186549.79799462893,
+        428907.9135,
+        -10.729597492218018,
+        193319.501,
+        459504.87798828125,
+        150.75789300918578
+      ],
+      "approx": false,
+      "objects": 250000,
+      "features": 124945
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "NL.IMBAG.Pand.0202100000251277",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "NL.IMBAG.Pand.0268100000030371",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "NL.IMBAG.Pand.0269100000023289",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "NL.IMBAG.Pand.0228100000075740-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "attr_filter": {
+    "column": "b3_dak_type",
+    "pred": {
+      "eq": "slanted"
+    },
+    "matched": 338875,
+    "share": 0.33887466112533887,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "NL.IMBAG.Pand.0268100000030371",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "NL.IMBAG.Pand.0228100000075740-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "numeric_attr": "b3_bag_bag_overlap",
+  "cp_object_total": 1000001,
+  "cp_feature_total": 499703,
+  "swap_xy": false,
+  "quantum": [
+    0.001,
+    0.001,
+    0.001
+  ],
+  "sampling": {
+    "repeat": 25,
+    "cell_budget_s": null,
+    "min_repeat": 7
+  },
+  "isolation": {
+    "command_prefix": [
+      "systemd-run",
+      "--user",
+      "--scope",
+      "--quiet",
+      "-p",
+      "MemoryMax=64000000000",
+      "--",
+      "numactl",
+      "--all",
+      "--physcpubind=1-31,64-95",
+      "--membind=0"
+    ],
+    "pinning": {
+      "requested": "auto",
+      "node": 0,
+      "tool": "numactl",
+      "child_cores": "1-31,64-95",
+      "coordinator_core": 0,
+      "status": "applied",
+      "memory_binding": "applied",
+      "coordinator_note": null,
+      "allowed_cpus": "0-127",
+      "cores_note": null
+    },
+    "coordinator_pinning": "applied",
+    "memory_max": {
+      "requested_bytes": 64000000000,
+      "status": "applied"
+    },
+    "memory": {
+      "mem_total_bytes": 540725084160,
+      "mem_available_bytes_at_start": 522825920512,
+      "status": "recorded"
+    },
+    "max_load": {
+      "requested": "auto",
+      "threshold": 32.0,
+      "node_cores": 64,
+      "total_cores": 128,
+      "wait_s": 600,
+      "status": "applied"
+    },
+    "load": {
+      "status": "recorded per sample",
+      "waits": [],
+      "cells": [
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 6.8,
+          "runnable_max": 8,
+          "mem_available_min_bytes": 522768904192,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 6.57,
+          "runnable_max": 8,
+          "mem_available_min_bytes": 522654822400,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 9.71,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520670707712,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 19.78,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 518968553472,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 10.39,
+          "runnable_max": 25,
+          "mem_available_min_bytes": 519246802944,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "attr-filter",
+          "query_tag": "attr=b3_dak_type=slanted",
+          "load1_max": 10.38,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 519143534592,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "attr-stats",
+          "query_tag": "attr=b3_bag_bag_overlap",
+          "load1_max": 10.0,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 518974595072,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 10.33,
+          "runnable_max": 23,
+          "mem_available_min_bytes": 518916177920,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 11.38,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 518804815872,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 10.29,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 518664400896,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 11.24,
+          "runnable_max": 31,
+          "mem_available_min_bytes": 518421946368,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 11.61,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 517831163904,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 9.49,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 517862289408,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 12.35,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 517775192064,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 9.9,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520280244224,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 11.91,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520142606336,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "attr-filter",
+          "query_tag": "attr=b3_dak_type=slanted",
+          "load1_max": 8.92,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520226975744,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "attr-stats",
+          "query_tag": "attr=b3_bag_bag_overlap",
+          "load1_max": 8.24,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520061313024,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 10.3,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520159535104,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.48,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 520132866048,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 10.4,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520140972032,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.43,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520201232384,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.73,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520302120960,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.84,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520616517632,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 9.23,
+          "runnable_max": 29,
+          "mem_available_min_bytes": 520643219456,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 11.29,
+          "runnable_max": 25,
+          "mem_available_min_bytes": 520614481920,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 11.52,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520662474752,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "attr-filter",
+          "query_tag": "attr=b3_dak_type=slanted",
+          "load1_max": 9.23,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520559935488,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "attr-stats",
+          "query_tag": "attr=b3_bag_bag_overlap",
+          "load1_max": 9.88,
+          "runnable_max": 31,
+          "mem_available_min_bytes": 520751206400,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.39,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520332140544,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 7.91,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520477085696,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.22,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520607469568,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 9.02,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520522108928,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 10.55,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520687108096,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.8,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520666894336,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.8,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520767946752,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.8,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520682856448,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 9.34,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520647585792,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "attr-filter",
+          "query_tag": "attr=b3_dak_type=slanted",
+          "load1_max": 9.07,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520622407680,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "attr-stats",
+          "query_tag": "attr=b3_bag_bag_overlap",
+          "load1_max": 8.21,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520595943424,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.13,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520539025408,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.31,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520646131712,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 9.04,
+          "runnable_max": 27,
+          "mem_available_min_bytes": 520651276288,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 9.11,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520664764416,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 11.01,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 520689315840,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.33,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520671076352,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.75,
+          "runnable_max": 27,
+          "mem_available_min_bytes": 520511836160,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.75,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 520493047808,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 8.98,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520613027840,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "attr-filter",
+          "query_tag": "attr=b3_dak_type=slanted",
+          "load1_max": 8.21,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520358719488,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "attr-stats",
+          "query_tag": "attr=b3_bag_bag_overlap",
+          "load1_max": 8.11,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520418983936,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.11,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520291840000,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.18,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520067424256,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.18,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 519859306496,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.16,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 519904059392,
+          "busy": false
+        }
+      ]
+    }
+  }
+}

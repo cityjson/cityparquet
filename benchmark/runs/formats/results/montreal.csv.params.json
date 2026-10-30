@@ -1,0 +1,717 @@
+{
+  "dataset": "montreal.city.json",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.00999522521088652,
+      "window": [
+        294918.732,
+        5038845.091,
+        0.17383399999999938,
+        295898.00100000005,
+        5039640.7195,
+        319.672294
+      ],
+      "approx": false,
+      "objects": 314,
+      "features": 314
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.050007957981855804,
+      "window": [
+        294519.637,
+        5038520.964,
+        0.17383399999999938,
+        296296.8559999975,
+        5039965.2115,
+        319.672294
+      ],
+      "approx": false,
+      "objects": 1571,
+      "features": 1571
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.2500079579818558,
+      "window": [
+        293308.835,
+        5037536.268,
+        0.17383399999999938,
+        297507.39625,
+        5040949.080999999,
+        319.672294
+      ],
+      "approx": false,
+      "objects": 7854,
+      "features": 7854
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "CNNDG05_2020.3320452",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "CNNDG010_2020.2088307",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "VM05_2020.VW05_00197",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "CNNDG15_2020.2173460-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "attr_filter": {
+    "column": "measuredHeight",
+    "pred": {
+      "ge": 15.543
+    },
+    "matched": 7858,
+    "share": 0.25013528569154864,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "CNNDG010_2020.2088307",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "CNNDG15_2020.2173460-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "numeric_attr": "measuredHeight",
+  "cp_object_total": 31415,
+  "cp_feature_total": 31415,
+  "swap_xy": false,
+  "quantum": [
+    0.00001,
+    0.001,
+    1e-6
+  ],
+  "sampling": {
+    "repeat": 25,
+    "cell_budget_s": null,
+    "min_repeat": 7
+  },
+  "isolation": {
+    "command_prefix": [
+      "systemd-run",
+      "--user",
+      "--scope",
+      "--quiet",
+      "-p",
+      "MemoryMax=64000000000",
+      "--",
+      "numactl",
+      "--all",
+      "--physcpubind=1-31,64-95",
+      "--membind=0"
+    ],
+    "pinning": {
+      "requested": "auto",
+      "node": 0,
+      "tool": "numactl",
+      "child_cores": "1-31,64-95",
+      "coordinator_core": 0,
+      "status": "applied",
+      "memory_binding": "applied",
+      "coordinator_note": null,
+      "allowed_cpus": "0-127",
+      "cores_note": null
+    },
+    "coordinator_pinning": "applied",
+    "memory_max": {
+      "requested_bytes": 64000000000,
+      "status": "applied"
+    },
+    "memory": {
+      "mem_total_bytes": 540725084160,
+      "mem_available_bytes_at_start": 521023410176,
+      "status": "recorded"
+    },
+    "max_load": {
+      "requested": "auto",
+      "threshold": 32.0,
+      "node_cores": 64,
+      "total_cores": 128,
+      "wait_s": 600,
+      "status": "applied"
+    },
+    "load": {
+      "status": "recorded per sample",
+      "waits": [],
+      "cells": [
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.86,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520701648896,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 9.19,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520807690240,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 9.34,
+          "runnable_max": 30,
+          "mem_available_min_bytes": 520738344960,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.09,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520782606336,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 8.95,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520741711872,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "attr-filter",
+          "query_tag": "attr=measuredHeight>=15.543",
+          "load1_max": 9.87,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520730791936,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 8.56,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520733687808,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.17,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520700678144,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.65,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 520585912320,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.83,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 520742342656,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.39,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520745967616,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.39,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 518858260480,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.12,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 518782943232,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.75,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 519183794176,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.45,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 518894231552,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 13.25,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 518961917952,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "attr-filter",
+          "query_tag": "attr=measuredHeight>=15.543",
+          "load1_max": 13.88,
+          "runnable_max": 49,
+          "mem_available_min_bytes": 518890283008,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 10.34,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 518976778240,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.96,
+          "runnable_max": 24,
+          "mem_available_min_bytes": 519056969728,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 14.74,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 519014825984,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 9.41,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 518749655040,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.68,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 518807617536,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 11.94,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 518841778176,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 9.43,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 518890455040,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.31,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 519090880512,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.58,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 519226290176,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 8.42,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 519199932416,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "attr-filter",
+          "query_tag": "attr=measuredHeight>=15.543",
+          "load1_max": 9.47,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 519089324032,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 10.17,
+          "runnable_max": 50,
+          "mem_available_min_bytes": 518983319552,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.53,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 516956225536,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 9.95,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 516828569600,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 9.75,
+          "runnable_max": 32,
+          "mem_available_min_bytes": 518132256768,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.67,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 519271952384,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.12,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 519319371776,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 7.87,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 519917645824,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 7.87,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520040488960,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 7.8,
+          "runnable_max": 29,
+          "mem_available_min_bytes": 520060719104,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 7.82,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 520074289152,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "attr-filter",
+          "query_tag": "attr=measuredHeight>=15.543",
+          "load1_max": 8.23,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520161759232,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 8.23,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 520239239168,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.76,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520483012608,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.76,
+          "runnable_max": 23,
+          "mem_available_min_bytes": 520559673344,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.7,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520527532032,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 9.0,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520683679744,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 9.16,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520045297664,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.51,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520360878080,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.51,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 519315763200,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.2,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 519077429248,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 7.74,
+          "runnable_max": 28,
+          "mem_available_min_bytes": 519139053568,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "attr-filter",
+          "query_tag": "attr=measuredHeight>=15.543",
+          "load1_max": 7.61,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520340025344,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 7.61,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 520391094272,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 7.61,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520363569152,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 7.87,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520372039680,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 7.87,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520345690112,
+          "busy": false
+        },
+        {
+          "dataset": "montreal.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 7.41,
+          "runnable_max": 9,
+          "mem_available_min_bytes": 520605523968,
+          "busy": false
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,717 @@
+{
+  "dataset": "rotterdam_delfshaven.city.json",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.010550996483001172,
+      "window": [
+        90752.278,
+        435738.6695,
+        -1.41158,
+        90824.619,
+        435784.29099999997,
+        42.56958
+      ],
+      "approx": false,
+      "objects": 9,
+      "features": 9
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.05041031652989449,
+      "window": [
+        90731.01450000002,
+        435724.9635,
+        -1.41158,
+        90846.43900000001,
+        435797.6575,
+        42.56958
+      ],
+      "approx": false,
+      "objects": 43,
+      "features": 43
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.24970691676436108,
+      "window": [
+        90656.18900000001,
+        435679.365,
+        -1.41158,
+        90921.24,
+        435843.396,
+        42.56958
+      ],
+      "approx": false,
+      "objects": 213,
+      "features": 213
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "{838B7E31-4962-4F6A-94DE-2D8EE46FADBB}",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "{CB274268-79F8-406D-B076-BE541704402D}",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "{DDCDD410-09D9-4A02-97F2-085588DBDB1C}",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "{7AF44121-2EED-499F-9F4C-65363751AE64}-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "attr_filter": {
+    "column": "TerrainHeight",
+    "pred": {
+      "ge": 2.45
+    },
+    "matched": 217,
+    "share": 0.2543962485345838,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "{CB274268-79F8-406D-B076-BE541704402D}",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "{7AF44121-2EED-499F-9F4C-65363751AE64}-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "numeric_attr": "TerrainHeight",
+  "cp_object_total": 853,
+  "cp_feature_total": 853,
+  "swap_xy": false,
+  "quantum": [
+    0.001,
+    0.001,
+    0.001
+  ],
+  "sampling": {
+    "repeat": 25,
+    "cell_budget_s": null,
+    "min_repeat": 7
+  },
+  "isolation": {
+    "command_prefix": [
+      "systemd-run",
+      "--user",
+      "--scope",
+      "--quiet",
+      "-p",
+      "MemoryMax=64000000000",
+      "--",
+      "numactl",
+      "--all",
+      "--physcpubind=1-31,64-95",
+      "--membind=0"
+    ],
+    "pinning": {
+      "requested": "auto",
+      "node": 0,
+      "tool": "numactl",
+      "child_cores": "1-31,64-95",
+      "coordinator_core": 0,
+      "status": "applied",
+      "memory_binding": "applied",
+      "coordinator_note": null,
+      "allowed_cpus": "0-127",
+      "cores_note": null
+    },
+    "coordinator_pinning": "applied",
+    "memory_max": {
+      "requested_bytes": 64000000000,
+      "status": "applied"
+    },
+    "memory": {
+      "mem_total_bytes": 540725084160,
+      "mem_available_bytes_at_start": 520831856640,
+      "status": "recorded"
+    },
+    "max_load": {
+      "requested": "auto",
+      "threshold": 32.0,
+      "node_cores": 64,
+      "total_cores": 128,
+      "wait_s": 600,
+      "status": "applied"
+    },
+    "load": {
+      "status": "recorded per sample",
+      "waits": [],
+      "cells": [
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.19,
+          "runnable_max": 24,
+          "mem_available_min_bytes": 520722112512,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.01,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520648425472,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 7.55,
+          "runnable_max": 23,
+          "mem_available_min_bytes": 520675241984,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 7.3,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520683057152,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 7.26,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520760102912,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "attr-filter",
+          "query_tag": "attr=TerrainHeight>=2.45",
+          "load1_max": 7.31,
+          "runnable_max": 23,
+          "mem_available_min_bytes": 520698122240,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "attr-stats",
+          "query_tag": "attr=TerrainHeight",
+          "load1_max": 7.58,
+          "runnable_max": 29,
+          "mem_available_min_bytes": 520561278976,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 7.58,
+          "runnable_max": 28,
+          "mem_available_min_bytes": 520552034304,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 7.87,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520577724416,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.04,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520654651392,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 7.83,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520661962752,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 7.68,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520615149568,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 7.79,
+          "runnable_max": 44,
+          "mem_available_min_bytes": 520558362624,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 7.79,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520518373376,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 7.96,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520482172928,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 7.97,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520642891776,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "attr-filter",
+          "query_tag": "attr=TerrainHeight>=2.45",
+          "load1_max": 7.97,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520626364416,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "attr-stats",
+          "query_tag": "attr=TerrainHeight",
+          "load1_max": 8.13,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520657567744,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.13,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520676941824,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.04,
+          "runnable_max": 25,
+          "mem_available_min_bytes": 520640270336,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.04,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 520633757696,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 7.72,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520658284544,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 7.9,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520733569024,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 7.9,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520689975296,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 7.75,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 520708550656,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 7.77,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 520792150016,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 7.95,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520680493056,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "attr-filter",
+          "query_tag": "attr=TerrainHeight>=2.45",
+          "load1_max": 7.95,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520607227904,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "attr-stats",
+          "query_tag": "attr=TerrainHeight",
+          "load1_max": 7.95,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520662376448,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 7.79,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520713146368,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 7.79,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 520683065344,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 7.73,
+          "runnable_max": 24,
+          "mem_available_min_bytes": 520793473024,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.15,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 520788299776,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.15,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520747520000,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.15,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520846700544,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.38,
+          "runnable_max": 51,
+          "mem_available_min_bytes": 520929488896,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.38,
+          "runnable_max": 10,
+          "mem_available_min_bytes": 520921681920,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 8.38,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520771592192,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "attr-filter",
+          "query_tag": "attr=TerrainHeight>=2.45",
+          "load1_max": 8.38,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520754978816,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "attr-stats",
+          "query_tag": "attr=TerrainHeight",
+          "load1_max": 8.38,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520957095936,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.38,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 521106653184,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.38,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 521010896896,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.43,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520842346496,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.43,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520926306304,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.43,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520841904128,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.43,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520646090752,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.43,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520662880256,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.23,
+          "runnable_max": 29,
+          "mem_available_min_bytes": 520798064640,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 8.23,
+          "runnable_max": 31,
+          "mem_available_min_bytes": 520676954112,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "attr-filter",
+          "query_tag": "attr=TerrainHeight>=2.45",
+          "load1_max": 8.23,
+          "runnable_max": 10,
+          "mem_available_min_bytes": 520708403200,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "attr-stats",
+          "query_tag": "attr=TerrainHeight",
+          "load1_max": 8.23,
+          "runnable_max": 29,
+          "mem_available_min_bytes": 520782135296,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 7.97,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520634667008,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 7.97,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520639553536,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.22,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520697638912,
+          "busy": false
+        },
+        {
+          "dataset": "rotterdam_delfshaven.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.22,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520691773440,
+          "busy": false
+        }
+      ]
+    }
+  }
+}

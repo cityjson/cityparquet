@@ -1,0 +1,1108 @@
+{
+  "axis_order": {
+    "3dcitydb": "package order",
+    "cjdb": "package order"
+  },
+  "baseline": "3dcitydb",
+  "count_check": {
+    "relative_spread_tolerance": 0.001,
+    "statuses": {
+      "id-mismatch": "the counts agree but the systems returned different object identifiers or non-null geometry counts (untimed verification pass, `citybench.identity`); the run exits non-zero and the row is not citable",
+      "mismatch": "the spread exceeds the tolerance; the run exits non-zero and the row is not citable",
+      "ok": "every answering system returned the same count",
+      "ok-deviation": "the counts differ, but the relative spread (max - min) / max is within the tolerance; the `count-mismatch: ...` detail stays in `notes` and the run does not fail"
+    }
+  },
+  "crs": {
+    "assumed": false,
+    "declared": {
+      "$schema": "https://proj.org/schemas/v0.7/projjson.schema.json",
+      "area": "Netherlands - onshore, including Waddenzee, Dutch Wadden Islands and 12-mile offshore coastal zone.",
+      "bbox": {
+        "east_longitude": 7.22,
+        "north_latitude": 53.7,
+        "south_latitude": 50.75,
+        "west_longitude": 3.2
+      },
+      "components": [
+        {
+          "base_crs": {
+            "coordinate_system": {
+              "axis": [
+                {
+                  "abbreviation": "Lat",
+                  "direction": "north",
+                  "name": "Geodetic latitude",
+                  "unit": "degree"
+                },
+                {
+                  "abbreviation": "Lon",
+                  "direction": "east",
+                  "name": "Geodetic longitude",
+                  "unit": "degree"
+                }
+              ],
+              "subtype": "ellipsoidal"
+            },
+            "datum": {
+              "ellipsoid": {
+                "inverse_flattening": 299.1528128,
+                "name": "Bessel 1841",
+                "semi_major_axis": 6377397.155
+              },
+              "name": "Amersfoort",
+              "type": "GeodeticReferenceFrame"
+            },
+            "id": {
+              "authority": "EPSG",
+              "code": 4289
+            },
+            "name": "Amersfoort"
+          },
+          "conversion": {
+            "method": {
+              "id": {
+                "authority": "EPSG",
+                "code": 9809
+              },
+              "name": "Oblique Stereographic"
+            },
+            "name": "RD New",
+            "parameters": [
+              {
+                "id": {
+                  "authority": "EPSG",
+                  "code": 8801
+                },
+                "name": "Latitude of natural origin",
+                "unit": "degree",
+                "value": 52.1561605555556
+              },
+              {
+                "id": {
+                  "authority": "EPSG",
+                  "code": 8802
+                },
+                "name": "Longitude of natural origin",
+                "unit": "degree",
+                "value": 5.38763888888889
+              },
+              {
+                "id": {
+                  "authority": "EPSG",
+                  "code": 8805
+                },
+                "name": "Scale factor at natural origin",
+                "unit": "unity",
+                "value": 0.9999079
+              },
+              {
+                "id": {
+                  "authority": "EPSG",
+                  "code": 8806
+                },
+                "name": "False easting",
+                "unit": "metre",
+                "value": 155000
+              },
+              {
+                "id": {
+                  "authority": "EPSG",
+                  "code": 8807
+                },
+                "name": "False northing",
+                "unit": "metre",
+                "value": 463000
+              }
+            ]
+          },
+          "coordinate_system": {
+            "axis": [
+              {
+                "abbreviation": "X",
+                "direction": "east",
+                "name": "Easting",
+                "unit": "metre"
+              },
+              {
+                "abbreviation": "Y",
+                "direction": "north",
+                "name": "Northing",
+                "unit": "metre"
+              }
+            ],
+            "subtype": "Cartesian"
+          },
+          "name": "Amersfoort / RD New",
+          "type": "ProjectedCRS"
+        },
+        {
+          "coordinate_system": {
+            "axis": [
+              {
+                "abbreviation": "H",
+                "direction": "up",
+                "name": "Gravity-related height",
+                "unit": "metre"
+              }
+            ],
+            "subtype": "vertical"
+          },
+          "datum": {
+            "name": "Normaal Amsterdams Peil",
+            "type": "VerticalReferenceFrame"
+          },
+          "name": "NAP height",
+          "type": "VerticalCRS"
+        }
+      ],
+      "id": {
+        "authority": "EPSG",
+        "code": 7415
+      },
+      "name": "Amersfoort / RD New + NAP height",
+      "scope": "Engineering survey, topographic mapping.",
+      "type": "CompoundCRS"
+    },
+    "srid": 7415,
+    "swap_xy": false
+  },
+  "dataset": "3dbag_n1000000",
+  "execution": {
+    "configurations": [
+      {
+        "duckdb_threads": 1,
+        "name": "single",
+        "postgresql_max_parallel_workers_per_gather": 0,
+        "primary": true
+      },
+      {
+        "duckdb_threads": 16,
+        "name": "parallel",
+        "postgresql_max_parallel_workers_per_gather": 8,
+        "primary": false
+      }
+    ],
+    "postgresql_planner_thresholds": "parallel_setup_cost and min_parallel_table_scan_size are left at their defaults under both configurations",
+    "postgresql_session_resolved": {
+      "parallel": {
+        "3dcitydb": {
+          "max_parallel_workers": "16",
+          "max_parallel_workers_per_gather": "8",
+          "max_worker_processes": "16",
+          "min_parallel_table_scan_size": "8MB",
+          "parallel_setup_cost": "1000"
+        },
+        "cjdb": {
+          "max_parallel_workers": "16",
+          "max_parallel_workers_per_gather": "8",
+          "max_worker_processes": "16",
+          "min_parallel_table_scan_size": "8MB",
+          "parallel_setup_cost": "1000"
+        }
+      },
+      "single": {
+        "3dcitydb": {
+          "max_parallel_workers": "16",
+          "max_parallel_workers_per_gather": "0",
+          "max_worker_processes": "16",
+          "min_parallel_table_scan_size": "8MB",
+          "parallel_setup_cost": "1000"
+        },
+        "cjdb": {
+          "max_parallel_workers": "16",
+          "max_parallel_workers_per_gather": "0",
+          "max_worker_processes": "16",
+          "min_parallel_table_scan_size": "8MB",
+          "parallel_setup_cost": "1000"
+        }
+      }
+    },
+    "postgresql_session_resolved_note": "read back from each benchmark session while that configuration was live; `max_worker_processes` is the cluster-wide pool that bounds how many workers a query actually receives",
+    "read_tier": "every read scenario is measured under BOTH configurations; CSV `notes` carry threads=<name>",
+    "repeat": 25,
+    "repeat_note": "timed samples per cell after one discarded warm-up (--repeat); the CSV's repeat column holds the samples each row took",
+    "write_tier": "measured once, under the single configuration, after every read row"
+  },
+  "format_params": {
+    "path": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/databases/results/format-params/3dbag_n1000000.csv.params.json",
+    "sha256": "b5d4471a215d9d459e6ba7b358a3e67e1f334206eee9e52732a1bda52fc1db04"
+  },
+  "host": {
+    "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "python": "3.12.1"
+  },
+  "ingest": {
+    "caveat": "Ingest timings are context only and are NOT comparable across systems. Encoding a CityParquet package and populating an indexed relational schema are different operations; this benchmark is scoped to steady-state query performance.",
+    "index_build_s": {
+      "3dcitydb": 66.36559725482948,
+      "cjdb": 2.8527827030047774,
+      "duckdb-cityparquet": null,
+      "duckdb-cityparquet-writeback": null
+    },
+    "wall_clock_s": {
+      "3dcitydb": 2223.3666930438485,
+      "cjdb": 2486.1049722658936,
+      "duckdb-cityparquet": 0.0,
+      "duckdb-cityparquet-writeback": 0.0
+    }
+  },
+  "isolation": {
+    "cityparquet_reader": "child process: inherits the client's CPU affinity",
+    "client": {
+      "cpu": "applied: sched_setaffinity to node 0 cores 0-31,64-95"
+    },
+    "containers": {
+      "args": [],
+      "cpus": "16",
+      "cpuset": "not applied: cpuset controller not delegated to the user",
+      "engine": {
+        "binary": "/usr/bin/podman",
+        "capabilities": {
+          "bind_mount_ownership": "applied",
+          "cpu_limit": "applied",
+          "cpuset": "applied",
+          "host_network": "applied",
+          "host_proc": "applied",
+          "memory_limit": "applied",
+          "shm_size": "applied"
+        },
+        "name": "podman",
+        "version": "podman version 4.9.3",
+        "virtual_machine": false
+      },
+      "inherited_affinity": "the container engine was launched from the pinned client, so the container processes are expected to inherit its CPU affinity; no cgroup enforces it",
+      "memory": "32g",
+      "sharing": "the node's cores are shared with the client; the matrix runs one system at a time",
+      "started_by_run": true
+    },
+    "cores": "0-31,64-95",
+    "duckdb": "in-process: inherits the client's CPU affinity",
+    "host_memory": {
+      "mem_available_bytes": 520335773696,
+      "mem_total_bytes": 540725084160
+    },
+    "load": {
+      "busy_cells": 0,
+      "cells": [
+        {
+          "busy": false,
+          "label": "threads=single geometry-scan duckdb-cityparquet",
+          "load1_max": 10.32,
+          "mem_available_min_bytes": 506612187136,
+          "runnable_max": 6,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single geometry-scan cjdb",
+          "load1_max": 10.32,
+          "mem_available_min_bytes": 500568240128,
+          "runnable_max": 8,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single geometry-scan 3dcitydb",
+          "load1_max": 9.37,
+          "mem_available_min_bytes": 500549599232,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single bbox-query bbox-1pct achieved=0.010001 duckdb-cityparquet",
+          "load1_max": 8.3,
+          "mem_available_min_bytes": 500463656960,
+          "runnable_max": 12,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single bbox-query bbox-1pct achieved=0.010001 cjdb",
+          "load1_max": 8.71,
+          "mem_available_min_bytes": 500463656960,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single bbox-query bbox-1pct achieved=0.010001 3dcitydb",
+          "load1_max": 8.71,
+          "mem_available_min_bytes": 500514476032,
+          "runnable_max": 12,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single bbox-query bbox-5pct achieved=0.050001 duckdb-cityparquet",
+          "load1_max": 8.6,
+          "mem_available_min_bytes": 500402622464,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single bbox-query bbox-5pct achieved=0.050001 cjdb",
+          "load1_max": 17.28,
+          "mem_available_min_bytes": 500402622464,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single bbox-query bbox-5pct achieved=0.050001 3dcitydb",
+          "load1_max": 17.28,
+          "mem_available_min_bytes": 500375015424,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single bbox-query bbox-25pct achieved=0.250000 duckdb-cityparquet",
+          "load1_max": 9.04,
+          "mem_available_min_bytes": 499800928256,
+          "runnable_max": 8,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single bbox-query bbox-25pct achieved=0.250000 cjdb",
+          "load1_max": 9.17,
+          "mem_available_min_bytes": 499800928256,
+          "runnable_max": 11,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single bbox-query bbox-25pct achieved=0.250000 3dcitydb",
+          "load1_max": 9.17,
+          "mem_available_min_bytes": 500208193536,
+          "runnable_max": 11,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-filter duckdb-cityparquet",
+          "load1_max": 9.94,
+          "mem_available_min_bytes": 500291567616,
+          "runnable_max": 8,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-filter cjdb",
+          "load1_max": 11.2,
+          "mem_available_min_bytes": 500291567616,
+          "runnable_max": 8,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-filter 3dcitydb",
+          "load1_max": 11.2,
+          "mem_available_min_bytes": 500219424768,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-range duckdb-cityparquet",
+          "load1_max": 9.29,
+          "mem_available_min_bytes": 500063399936,
+          "runnable_max": 11,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-range cjdb",
+          "load1_max": 9.29,
+          "mem_available_min_bytes": 500063399936,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-range 3dcitydb",
+          "load1_max": 9.17,
+          "mem_available_min_bytes": 500298190848,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-stats duckdb-cityparquet",
+          "load1_max": 9.24,
+          "mem_available_min_bytes": 500371324928,
+          "runnable_max": 15,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-stats cjdb",
+          "load1_max": 15.65,
+          "mem_available_min_bytes": 500436467712,
+          "runnable_max": 14,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-stats 3dcitydb",
+          "load1_max": 15.65,
+          "mem_available_min_bytes": 500290265088,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single id-lookup id-lookup id=NL.IMBAG.Pand.0268100000030371 position=0.50 duckdb-cityparquet",
+          "load1_max": 10.51,
+          "mem_available_min_bytes": 500290265088,
+          "runnable_max": 8,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single id-lookup id-lookup id=NL.IMBAG.Pand.0268100000030371 position=0.50 cjdb",
+          "load1_max": 10.2,
+          "mem_available_min_bytes": 500385705984,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single id-lookup id-lookup id=NL.IMBAG.Pand.0268100000030371 position=0.50 3dcitydb",
+          "load1_max": 10.23,
+          "mem_available_min_bytes": 500385705984,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single id-lookup id-miss duckdb-cityparquet",
+          "load1_max": 10.23,
+          "mem_available_min_bytes": 500348534784,
+          "runnable_max": 6,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single id-lookup id-miss cjdb",
+          "load1_max": 10.05,
+          "mem_available_min_bytes": 500348534784,
+          "runnable_max": 8,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single id-lookup id-miss 3dcitydb",
+          "load1_max": 10.31,
+          "mem_available_min_bytes": 500539604992,
+          "runnable_max": 15,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single lod-query duckdb-cityparquet",
+          "load1_max": 10.31,
+          "mem_available_min_bytes": 499529322496,
+          "runnable_max": 13,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single lod-query cjdb",
+          "load1_max": 9.52,
+          "mem_available_min_bytes": 499529322496,
+          "runnable_max": 8,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single lod-query 3dcitydb",
+          "load1_max": 9.52,
+          "mem_available_min_bytes": 499830796288,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single parts-per-building duckdb-cityparquet",
+          "load1_max": 9.21,
+          "mem_available_min_bytes": 499430047744,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single parts-per-building cjdb",
+          "load1_max": 9.24,
+          "mem_available_min_bytes": 499529490432,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single parts-per-building 3dcitydb",
+          "load1_max": 9.24,
+          "mem_available_min_bytes": 499791335424,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single parts-per-building-join duckdb-cityparquet",
+          "load1_max": 8.63,
+          "mem_available_min_bytes": 499763228672,
+          "runnable_max": 11,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel geometry-scan duckdb-cityparquet",
+          "load1_max": 8.8,
+          "mem_available_min_bytes": 506016137216,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel geometry-scan cjdb",
+          "load1_max": 9.84,
+          "mem_available_min_bytes": 499939262464,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel geometry-scan 3dcitydb",
+          "load1_max": 9.84,
+          "mem_available_min_bytes": 499746578432,
+          "runnable_max": 8,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel bbox-query bbox-1pct achieved=0.010001 duckdb-cityparquet",
+          "load1_max": 8.76,
+          "mem_available_min_bytes": 499519279104,
+          "runnable_max": 11,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel bbox-query bbox-1pct achieved=0.010001 cjdb",
+          "load1_max": 9.09,
+          "mem_available_min_bytes": 499519279104,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel bbox-query bbox-1pct achieved=0.010001 3dcitydb",
+          "load1_max": 10.17,
+          "mem_available_min_bytes": 499748003840,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel bbox-query bbox-5pct achieved=0.050001 duckdb-cityparquet",
+          "load1_max": 10.12,
+          "mem_available_min_bytes": 506228707328,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel bbox-query bbox-5pct achieved=0.050001 cjdb",
+          "load1_max": 10.12,
+          "mem_available_min_bytes": 506228707328,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel bbox-query bbox-5pct achieved=0.050001 3dcitydb",
+          "load1_max": 9.62,
+          "mem_available_min_bytes": 506275278848,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel bbox-query bbox-25pct achieved=0.250000 duckdb-cityparquet",
+          "load1_max": 9.3,
+          "mem_available_min_bytes": 505118375936,
+          "runnable_max": 8,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel bbox-query bbox-25pct achieved=0.250000 cjdb",
+          "load1_max": 9.93,
+          "mem_available_min_bytes": 505091018752,
+          "runnable_max": 11,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel bbox-query bbox-25pct achieved=0.250000 3dcitydb",
+          "load1_max": 9.93,
+          "mem_available_min_bytes": 505089986560,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel attr-filter duckdb-cityparquet",
+          "load1_max": 9.44,
+          "mem_available_min_bytes": 504091512832,
+          "runnable_max": 13,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel attr-filter cjdb",
+          "load1_max": 9.8,
+          "mem_available_min_bytes": 504275509248,
+          "runnable_max": 13,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel attr-filter 3dcitydb",
+          "load1_max": 10.36,
+          "mem_available_min_bytes": 504090677248,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel attr-range duckdb-cityparquet",
+          "load1_max": 10.7,
+          "mem_available_min_bytes": 505968979968,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel attr-range cjdb",
+          "load1_max": 10.7,
+          "mem_available_min_bytes": 506025443328,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel attr-range 3dcitydb",
+          "load1_max": 10.44,
+          "mem_available_min_bytes": 505940721664,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel attr-stats duckdb-cityparquet",
+          "load1_max": 10.09,
+          "mem_available_min_bytes": 506123698176,
+          "runnable_max": 6,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel attr-stats cjdb",
+          "load1_max": 10.88,
+          "mem_available_min_bytes": 506156281856,
+          "runnable_max": 6,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel attr-stats 3dcitydb",
+          "load1_max": 12.38,
+          "mem_available_min_bytes": 505860063232,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel id-lookup id-lookup id=NL.IMBAG.Pand.0268100000030371 position=0.50 duckdb-cityparquet",
+          "load1_max": 12.38,
+          "mem_available_min_bytes": 505860063232,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel id-lookup id-lookup id=NL.IMBAG.Pand.0268100000030371 position=0.50 cjdb",
+          "load1_max": 12.03,
+          "mem_available_min_bytes": 506074394624,
+          "runnable_max": 10,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel id-lookup id-lookup id=NL.IMBAG.Pand.0268100000030371 position=0.50 3dcitydb",
+          "load1_max": 12.02,
+          "mem_available_min_bytes": 506139111424,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel id-lookup id-miss duckdb-cityparquet",
+          "load1_max": 10.84,
+          "mem_available_min_bytes": 506361290752,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel id-lookup id-miss cjdb",
+          "load1_max": 10.84,
+          "mem_available_min_bytes": 506293952512,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel id-lookup id-miss 3dcitydb",
+          "load1_max": 10.53,
+          "mem_available_min_bytes": 506293952512,
+          "runnable_max": 8,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel lod-query duckdb-cityparquet",
+          "load1_max": 9.92,
+          "mem_available_min_bytes": 505413173248,
+          "runnable_max": 12,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel lod-query cjdb",
+          "load1_max": 9.36,
+          "mem_available_min_bytes": 502088024064,
+          "runnable_max": 11,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel lod-query 3dcitydb",
+          "load1_max": 9.35,
+          "mem_available_min_bytes": 502037929984,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel parts-per-building duckdb-cityparquet",
+          "load1_max": 10.22,
+          "mem_available_min_bytes": 498702643200,
+          "runnable_max": 7,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel parts-per-building cjdb",
+          "load1_max": 10.55,
+          "mem_available_min_bytes": 498702643200,
+          "runnable_max": 12,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel parts-per-building 3dcitydb",
+          "load1_max": 12.63,
+          "mem_available_min_bytes": 498899828736,
+          "runnable_max": 13,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=parallel parts-per-building-join duckdb-cityparquet",
+          "load1_max": 12.63,
+          "mem_available_min_bytes": 498667245568,
+          "runnable_max": 11,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-add duckdb-cityparquet",
+          "load1_max": 12.29,
+          "mem_available_min_bytes": 502226255872,
+          "runnable_max": 17,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-add duckdb-cityparquet-writeback",
+          "load1_max": 11.77,
+          "mem_available_min_bytes": 496376758272,
+          "runnable_max": 19,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-add cjdb",
+          "load1_max": 7.91,
+          "mem_available_min_bytes": 496376758272,
+          "runnable_max": 9,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-add 3dcitydb",
+          "load1_max": 2.77,
+          "mem_available_min_bytes": 496687927296,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-update duckdb-cityparquet",
+          "load1_max": 2.77,
+          "mem_available_min_bytes": 496687927296,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-update duckdb-cityparquet-writeback",
+          "load1_max": 2.77,
+          "mem_available_min_bytes": 494348963840,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-update cjdb",
+          "load1_max": 2.92,
+          "mem_available_min_bytes": 494348963840,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-update 3dcitydb",
+          "load1_max": 2.97,
+          "mem_available_min_bytes": 494363717632,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-delete duckdb-cityparquet",
+          "load1_max": 2.97,
+          "mem_available_min_bytes": 494363717632,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-delete duckdb-cityparquet-writeback",
+          "load1_max": 5.36,
+          "mem_available_min_bytes": 497198944256,
+          "runnable_max": 2,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-delete cjdb",
+          "load1_max": 5.36,
+          "mem_available_min_bytes": 497198931968,
+          "runnable_max": 2,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single attr-delete 3dcitydb",
+          "load1_max": 3.12,
+          "mem_available_min_bytes": 497697431552,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single append-object duckdb-cityparquet",
+          "load1_max": 2.52,
+          "mem_available_min_bytes": 495822139392,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single append-object duckdb-cityparquet-writeback",
+          "load1_max": 2.19,
+          "mem_available_min_bytes": 488769015808,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single append-object cjdb",
+          "load1_max": 3.37,
+          "mem_available_min_bytes": 485737283584,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        },
+        {
+          "busy": false,
+          "label": "threads=single append-object 3dcitydb",
+          "load1_max": 5.28,
+          "mem_available_min_bytes": 485737283584,
+          "runnable_max": 1,
+          "waited_s": 0.0
+        }
+      ],
+      "granularity": "per cell, before and after each system's cell",
+      "load1_max": 17.28,
+      "mem_available_min_bytes": 485737283584,
+      "recording": "applied",
+      "runnable_max": 19
+    },
+    "max_load": 32.0,
+    "memory_binding": "not applied: in-process pinning (sched_setaffinity) binds CPUs only and a numactl --membind re-exec is not implemented; first-touch allocation favours the pinned node's memory but does not enforce it",
+    "memory_max": "not applied to the database family: the client is not re-executed under systemd-run; the PostgreSQL containers keep their podman --memory limit",
+    "node": 0,
+    "node_reason": "auto: most MemFree at run start",
+    "requested": {
+      "max_load": "auto",
+      "max_load_wait_s": 600.0,
+      "memory_max": "64000000000",
+      "numa_node": "auto"
+    },
+    "total_cores": 128
+  },
+  "memory_measurement": {
+    "cityparquet": "allocator peak (peak_heap_bytes) of the fresh reader child process",
+    "duckdb": "each read scenario runs in a fresh spawned process; with procfs, the peak RssAnon of that process (includes DuckDB's idle baseline); without procfs (macOS) the process's peak RSS from getrusage ru_maxrss stands in. Write scenarios stay in the long-lived process",
+    "metric": "peak_working_mem_bytes",
+    "postgresql": "peak over sampling instants of the summed RssAnon (/proc/<pid>/status) of the query's backend and, under the parallel configuration, its parallel worker processes (pg_stat_activity.leader_pid, read from a second connection). Excludes RssShmem (shared_buffers), RssFile and the OS page cache, other backends, background processes and the client. One reading before and one after the query are included, so a query shorter than the interval records the backend at its edges (a lower bound)",
+    "provisioned": {
+      "container_memory_limit": "32g",
+      "duckdb_memory_limit": "32GB",
+      "shared_buffers": {
+        "3dcitydb": "8GB",
+        "cjdb": "8GB"
+      },
+      "work_mem": {
+        "3dcitydb": "256MB",
+        "cjdb": "256MB"
+      }
+    },
+    "read_path": {
+      "postgresql": "host /proc"
+    },
+    "sampling_interval_ms": {
+      "engine_exec": "50 between readings, plus the exec round trip itself",
+      "host_proc": 5
+    }
+  },
+  "patches": {
+    "cjdb": {
+      "built_from": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/databases/.cjdb-patched/cjdb-2.2.0+a54a9fd1909a",
+      "patch_file": "vendor/cjdb/ground-surfaces-tie.patch",
+      "patch_sha256": "a54a9fd1909a0ce9d6414eb0971c19b565efca5fa3d6d2847723b0c8c4d16f29",
+      "patch_summary": "get_ground_surfaces() retains tied-Z footprint faces; the CityJSONSeq importer also streams input and uses 5,000-row INSERT batches. Object batches share cjdb's original object transaction; relationship batches remain deferred until all objects are present. See vendor/cjdb/README.md.",
+      "patched": "true",
+      "upstream_version": "2.2.0"
+    }
+  },
+  "pg_settings": {
+    "3dcitydb": {
+      "effective_cache_size": "24GB",
+      "max_parallel_workers": "16",
+      "random_page_cost": "1.1",
+      "shared_buffers": "8GB",
+      "work_mem": "256MB"
+    },
+    "cjdb": {
+      "effective_cache_size": "24GB",
+      "max_parallel_workers": "16",
+      "random_page_cost": "1.1",
+      "shared_buffers": "8GB",
+      "work_mem": "256MB"
+    }
+  },
+  "servers": {
+    "3dcitydb": {
+      "3dcitydb": "5.1.2",
+      "citydb-tool": "citydb-tool 1.3.2",
+      "postgis": "3.4.3",
+      "postgresql": "16.4"
+    },
+    "cjdb": {
+      "postgis": "3.4.3",
+      "postgresql": "16.4 (Debian 16.4-1.pgdg110+2)"
+    },
+    "images": {
+      "citybench/citydb-tool": "sha256:821da12cfee7d2a4a1b990fb903b90d015c16178cf475b494060e1c78e94945f",
+      "docker.io/3dcitydb/3dcitydb-pg:16-3.4-5.1.2-alpine": "sha256:2fafa2076e3b19643162c4c452319de21b38a7ba1b069f4c05c996fa03302b9e",
+      "docker.io/postgis/postgis:16-3.4": "sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5"
+    }
+  },
+  "size_definitions": {
+    "no_index_bytes": {
+      "cityparquet": "the package without the Bloom filters and page indexes (column and offset index) inside its Parquet files; the footer, which holds the schema and the row-group min/max statistics, is kept, since a reader cannot read the file without it",
+      "postgresql": "pg_table_size over the same tables: heap and TOAST, no index"
+    },
+    "policy": "Every queried predicate is indexed where the system supports it, and index sizes are reported separately.",
+    "total_bytes": {
+      "cityparquet": "every file of the package directory",
+      "postgresql": "pg_total_relation_size over every table of the system's schema: heap, TOAST and all indexes"
+    }
+  },
+  "sizes": {
+    "3dcitydb": {
+      "index_bytes": 12755542016,
+      "no_index_bytes": 12563259392,
+      "total_bytes": 25318801408
+    },
+    "cjdb": {
+      "index_bytes": 1561001984,
+      "no_index_bytes": 2172461056,
+      "total_bytes": 3733463040
+    },
+    "duckdb-cityparquet": {
+      "bloom_filter_bytes": 3998512,
+      "footer_bytes": 278142,
+      "index_bytes": 4484438,
+      "no_index_bytes": 596849518,
+      "page_index_bytes": 485926,
+      "total_bytes": 601333956
+    },
+    "duckdb-cityparquet-writeback": {
+      "bloom_filter_bytes": 3998512,
+      "footer_bytes": 278142,
+      "index_bytes": 4484438,
+      "no_index_bytes": 596849518,
+      "page_index_bytes": 485926,
+      "total_bytes": 601333956
+    }
+  },
+  "source": "4d477e7e07f13c758d34dba30b69a942e1e0a961d5e7db2d512f0349fff3c52f",
+  "srid": {
+    "3dcitydb": 7415,
+    "cjdb": 7415
+  },
+  "temporary_storage": {
+    "citydb_tool_tmpdir": "/data2/hideba/tmp/citybench-4svrg871/citydb-tool",
+    "description": "Per-run scratch directories are under host_tmpdir; PostgreSQL containers receive separate /tmp binds, and DuckDB sets temp_directory explicitly.",
+    "duckdb_tmpdir": "/data2/hideba/tmp/citybench-4svrg871/duckdb",
+    "host_tmpdir": null,
+    "run_root": "/data2/hideba/tmp/citybench-4svrg871"
+  },
+  "versions": {
+    "cjdb": "2.2.0+ground-surfaces-tie-patch",
+    "duckdb": "1.5.5",
+    "duckdb-cityjson": "310c2c7",
+    "duckdb-cityjson-commit": "310c2c77ef385c584df95db02f2c65bbe875e393",
+    "duckdb-cityjson-path": "/data2/hideba/cityparquet-paper/cityparquet/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension",
+    "duckdb-cityjson-sha256": "e470bfa751433f63e718489c7caeed7898fc272e2817bbe151bd3505259cd30d"
+  }
+}

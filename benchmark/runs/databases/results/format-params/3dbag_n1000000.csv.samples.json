@@ -1,0 +1,40 @@
+[
+  {
+    "dataset": "3dbag_n1000000.city.json",
+    "format": "cityparquet",
+    "scenario": "count",
+    "query_tag": "",
+    "sample_index": 0,
+    "warmup": true,
+    "time_s": 0.005277,
+    "peak_rss_bytes": 10784768,
+    "peak_heap_bytes": 1174743,
+    "result_count": 1000001,
+    "cell_budget_s": null,
+    "min_repeat": 1,
+    "load1": 9.33,
+    "runnable": 10,
+    "mem_available_bytes": 520079429632,
+    "bytes_read": null,
+    "http_requests": null
+  },
+  {
+    "dataset": "3dbag_n1000000.city.json",
+    "format": "cityparquet",
+    "scenario": "count",
+    "query_tag": "",
+    "sample_index": 1,
+    "warmup": false,
+    "time_s": 0.005433,
+    "peak_rss_bytes": 11051008,
+    "peak_heap_bytes": 1174743,
+    "result_count": 1000001,
+    "cell_budget_s": null,
+    "min_repeat": 1,
+    "load1": 9.33,
+    "runnable": 8,
+    "mem_available_bytes": 520075300864,
+    "bytes_read": null,
+    "http_requests": null
+  }
+]

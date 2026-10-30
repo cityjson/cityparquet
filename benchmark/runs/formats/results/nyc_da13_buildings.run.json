@@ -1,0 +1,625 @@
+{
+  "code": {
+    "git_head": "e695262f0e1cc550fffcdcdea23ca44ce074b64d",
+    "tracked_diff_sha256": "5ccadfab085fef3d9c6a224ec927b6441e1151388cd482c3b7206887d7d2d5f5",
+    "untracked_sources_sha256": {
+      "benchmark/formats/compression_results/plots/3dbag_9-284-556-codec-size.png": "9e6a7e0896b65560d115aba4d719145870c1fab2f7f0e4d8315727b5037186ee",
+      "benchmark/formats/compression_results/plots/3dbag_9-284-556-codec-time.png": "9197fe2913583cce9f094729735f5730f6edec58bf171b41a883ee50598a4282",
+      "benchmark/formats/compression_results/plots/3dbag_9-284-556-rowgroup.png": "9ea8123386e948a318571b2c9fd4057e713dfa16dc0ce307513293863d6595e2",
+      "benchmark/formats/compression_results/plots/ingolstadt-codec-size.png": "c704cf4fdff048357b384acddd342acdc53bd00e4368a2dfdad7f7094261c6b2",
+      "benchmark/formats/compression_results/plots/ingolstadt-codec-time.png": "df7861ab29f7ab14cc7ec4df5686842d73d165be5d2c0add75cbfb7f96df9ea7",
+      "benchmark/formats/compression_results/plots/ingolstadt-rowgroup.png": "9df601c7cae7eb9c7e7ef03cd2e48f8f7c10a97b707c2004cc3bf405d33a0a12",
+      "benchmark/formats/compression_results/plots/nyc_da13_buildings-codec-size.png": "ee22ade3a497a19160c6364391d445e28511e341be1d5423699a059ab8a253cc",
+      "benchmark/formats/compression_results/plots/nyc_da13_buildings-codec-time.png": "0bfe870504a394ddb36e1ab6c9c93398b47c1422f44d83f8f11713348260550f",
+      "benchmark/formats/compression_results/plots/nyc_da13_buildings-rowgroup.png": "45932ed243b93cbe334118235c0e4668d11881c9f3bfa26379d2459ab188ec96",
+      "benchmark/formats/compression_results/plots/rotterdam_delfshaven-codec-size.png": "6f8b8f548a1f04bea4c8238c7eb190d2ebed384ab1b4dfbe12d6df511058c59b",
+      "benchmark/formats/compression_results/plots/rotterdam_delfshaven-codec-time.png": "27ee01e9cd367beb96346cc7d679d02be5519b90bfb42cdadefff67c6a9452cc",
+      "benchmark/formats/compression_results/plots/rotterdam_delfshaven-rowgroup.png": "f14d0950c2d35c89888387edd0b4eeeef4fa50059394b4505f279afe3c73586a",
+      "benchmark/formats/compression_results/plots/vienna_102081-codec-size.png": "0341af4deb4767f0b3952be2acc32ee070c8edc2190bd5c01b61ca22dc13c701",
+      "benchmark/formats/compression_results/plots/vienna_102081-codec-time.png": "6b89e72b851ef9ab30408af1ec82aa8dfa7b31f52527bc4b0198b77cc92b20a1",
+      "benchmark/formats/compression_results/plots/vienna_102081-rowgroup.png": "8fffad6d610402d8171a63ad8f4a6084c20f836696e8a25d8115d129a53953a5",
+      "benchmark/formats/compression_results/plots/zurich_building_lod2-codec-size.png": "1cfc7ef6333ab9c6d7ec61f4bb80662ad85de0c45cf295e44fa11444311b55f7",
+      "benchmark/formats/compression_results/plots/zurich_building_lod2-codec-time.png": "b8325fddc329d7075c87dd7926094806021496f6675572a012a739157bcfb59b",
+      "benchmark/formats/compression_results/plots/zurich_building_lod2-rowgroup.png": "3fc40c79dbd79bce4f54de39f41723cad7ebbb3e3dcdacab61f781a1d1cf981e",
+      "lib/cityparquet-rs/vendor/cjseq/Cargo.lock": "271c3f24fd37ba8295c4f11d81765f44758967de166ac554da350e255b9e39e0"
+    }
+  },
+  "corpus": {
+    "origin": "local"
+  },
+  "family": "formats",
+  "machine": {
+    "machine": "x86_64",
+    "processor": "x86_64",
+    "python": "3.11.5",
+    "release": "6.8.0-142-generic",
+    "system": "Linux"
+  },
+  "measurement": {
+    "cell_budget_s": null,
+    "fixed_configuration": "CityParquet=Hilbert",
+    "isolation": {
+      "applied": {
+        "command_prefix": [
+          "systemd-run",
+          "--user",
+          "--scope",
+          "--quiet",
+          "-p",
+          "MemoryMax=64000000000",
+          "--",
+          "numactl",
+          "--all",
+          "--physcpubind=1-31,64-95",
+          "--membind=0"
+        ],
+        "coordinator_pinning": "applied",
+        "load": {
+          "cells": [
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "citygml",
+              "load1_max": 7.51,
+              "mem_available_min_bytes": 520691822592,
+              "query_tag": "",
+              "runnable_max": 12,
+              "scenario": "full-read"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "citygml",
+              "load1_max": 8.04,
+              "mem_available_min_bytes": 520797900800,
+              "query_tag": "",
+              "runnable_max": 15,
+              "scenario": "count"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "citygml",
+              "load1_max": 9.02,
+              "mem_available_min_bytes": 520806133760,
+              "query_tag": "bbox-1pct",
+              "runnable_max": 18,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "citygml",
+              "load1_max": 8.6,
+              "mem_available_min_bytes": 520815722496,
+              "query_tag": "bbox-5pct",
+              "runnable_max": 33,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "citygml",
+              "load1_max": 8.66,
+              "mem_available_min_bytes": 520782483456,
+              "query_tag": "bbox-25pct",
+              "runnable_max": 24,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "citygml",
+              "load1_max": 8.99,
+              "mem_available_min_bytes": 520785653760,
+              "query_tag": "attr=BIN=1000000",
+              "runnable_max": 20,
+              "scenario": "attr-filter"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "citygml",
+              "load1_max": 8.22,
+              "mem_available_min_bytes": 520826277888,
+              "query_tag": "id-10pct",
+              "runnable_max": 17,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "citygml",
+              "load1_max": 8.94,
+              "mem_available_min_bytes": 520799363072,
+              "query_tag": "id-50pct",
+              "runnable_max": 13,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "citygml",
+              "load1_max": 11.85,
+              "mem_available_min_bytes": 520693104640,
+              "query_tag": "id-90pct",
+              "runnable_max": 15,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "citygml",
+              "load1_max": 9.55,
+              "mem_available_min_bytes": 520739278848,
+              "query_tag": "id-miss",
+              "runnable_max": 30,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjson",
+              "load1_max": 9.38,
+              "mem_available_min_bytes": 516625166336,
+              "query_tag": "",
+              "runnable_max": 11,
+              "scenario": "full-read"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjson",
+              "load1_max": 9.14,
+              "mem_available_min_bytes": 516604174336,
+              "query_tag": "",
+              "runnable_max": 11,
+              "scenario": "count"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjson",
+              "load1_max": 12.26,
+              "mem_available_min_bytes": 516616085504,
+              "query_tag": "bbox-1pct",
+              "runnable_max": 13,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjson",
+              "load1_max": 11.01,
+              "mem_available_min_bytes": 516551389184,
+              "query_tag": "bbox-5pct",
+              "runnable_max": 14,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjson",
+              "load1_max": 8.67,
+              "mem_available_min_bytes": 516011343872,
+              "query_tag": "bbox-25pct",
+              "runnable_max": 21,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjson",
+              "load1_max": 8.6,
+              "mem_available_min_bytes": 516012851200,
+              "query_tag": "attr=BIN=1000000",
+              "runnable_max": 18,
+              "scenario": "attr-filter"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjson",
+              "load1_max": 8.66,
+              "mem_available_min_bytes": 516801867776,
+              "query_tag": "id-10pct",
+              "runnable_max": 91,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjson",
+              "load1_max": 9.05,
+              "mem_available_min_bytes": 516072869888,
+              "query_tag": "id-50pct",
+              "runnable_max": 14,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjson",
+              "load1_max": 8.48,
+              "mem_available_min_bytes": 516583804928,
+              "query_tag": "id-90pct",
+              "runnable_max": 13,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjson",
+              "load1_max": 8.57,
+              "mem_available_min_bytes": 516373487616,
+              "query_tag": "id-miss",
+              "runnable_max": 51,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjsonseq",
+              "load1_max": 9.39,
+              "mem_available_min_bytes": 516410970112,
+              "query_tag": "",
+              "runnable_max": 12,
+              "scenario": "full-read"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjsonseq",
+              "load1_max": 8.57,
+              "mem_available_min_bytes": 520427397120,
+              "query_tag": "",
+              "runnable_max": 14,
+              "scenario": "count"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjsonseq",
+              "load1_max": 8.29,
+              "mem_available_min_bytes": 520347070464,
+              "query_tag": "bbox-1pct",
+              "runnable_max": 26,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjsonseq",
+              "load1_max": 7.67,
+              "mem_available_min_bytes": 520362622976,
+              "query_tag": "bbox-5pct",
+              "runnable_max": 12,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjsonseq",
+              "load1_max": 8.01,
+              "mem_available_min_bytes": 520369926144,
+              "query_tag": "bbox-25pct",
+              "runnable_max": 32,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjsonseq",
+              "load1_max": 7.93,
+              "mem_available_min_bytes": 520335151104,
+              "query_tag": "attr=BIN=1000000",
+              "runnable_max": 20,
+              "scenario": "attr-filter"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjsonseq",
+              "load1_max": 7.5,
+              "mem_available_min_bytes": 519638499328,
+              "query_tag": "id-10pct",
+              "runnable_max": 24,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjsonseq",
+              "load1_max": 7.49,
+              "mem_available_min_bytes": 520039739392,
+              "query_tag": "id-50pct",
+              "runnable_max": 15,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjsonseq",
+              "load1_max": 9.64,
+              "mem_available_min_bytes": 520064262144,
+              "query_tag": "id-90pct",
+              "runnable_max": 14,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityjsonseq",
+              "load1_max": 8.67,
+              "mem_available_min_bytes": 520295280640,
+              "query_tag": "id-miss",
+              "runnable_max": 14,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "flatcitybuf",
+              "load1_max": 7.5,
+              "mem_available_min_bytes": 520498462720,
+              "query_tag": "",
+              "runnable_max": 20,
+              "scenario": "full-read"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "flatcitybuf",
+              "load1_max": 7.38,
+              "mem_available_min_bytes": 520732721152,
+              "query_tag": "",
+              "runnable_max": 12,
+              "scenario": "count"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "flatcitybuf",
+              "load1_max": 7.38,
+              "mem_available_min_bytes": 520752500736,
+              "query_tag": "bbox-1pct",
+              "runnable_max": 12,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "flatcitybuf",
+              "load1_max": 7.59,
+              "mem_available_min_bytes": 520807649280,
+              "query_tag": "bbox-5pct",
+              "runnable_max": 17,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "flatcitybuf",
+              "load1_max": 7.59,
+              "mem_available_min_bytes": 520817344512,
+              "query_tag": "bbox-25pct",
+              "runnable_max": 23,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "flatcitybuf",
+              "load1_max": 7.59,
+              "mem_available_min_bytes": 520864870400,
+              "query_tag": "attr=BIN=1000000",
+              "runnable_max": 13,
+              "scenario": "attr-filter"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "flatcitybuf",
+              "load1_max": 7.62,
+              "mem_available_min_bytes": 520875986944,
+              "query_tag": "id-10pct",
+              "runnable_max": 16,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "flatcitybuf",
+              "load1_max": 7.62,
+              "mem_available_min_bytes": 520845955072,
+              "query_tag": "id-50pct",
+              "runnable_max": 28,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "flatcitybuf",
+              "load1_max": 7.62,
+              "mem_available_min_bytes": 520782356480,
+              "query_tag": "id-90pct",
+              "runnable_max": 11,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "flatcitybuf",
+              "load1_max": 7.61,
+              "mem_available_min_bytes": 520858464256,
+              "query_tag": "id-miss",
+              "runnable_max": 14,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityparquet",
+              "load1_max": 8.01,
+              "mem_available_min_bytes": 520700362752,
+              "query_tag": "",
+              "runnable_max": 16,
+              "scenario": "full-read"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityparquet",
+              "load1_max": 7.51,
+              "mem_available_min_bytes": 520778907648,
+              "query_tag": "",
+              "runnable_max": 11,
+              "scenario": "count"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityparquet",
+              "load1_max": 7.51,
+              "mem_available_min_bytes": 520546713600,
+              "query_tag": "bbox-1pct",
+              "runnable_max": 16,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityparquet",
+              "load1_max": 7.55,
+              "mem_available_min_bytes": 520422309888,
+              "query_tag": "bbox-5pct",
+              "runnable_max": 24,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityparquet",
+              "load1_max": 7.83,
+              "mem_available_min_bytes": 520379211776,
+              "query_tag": "bbox-25pct",
+              "runnable_max": 24,
+              "scenario": "bbox-query"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityparquet",
+              "load1_max": 7.76,
+              "mem_available_min_bytes": 520477208576,
+              "query_tag": "attr=BIN=1000000",
+              "runnable_max": 34,
+              "scenario": "attr-filter"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityparquet",
+              "load1_max": 7.76,
+              "mem_available_min_bytes": 520553373696,
+              "query_tag": "id-10pct",
+              "runnable_max": 11,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityparquet",
+              "load1_max": 7.94,
+              "mem_available_min_bytes": 520562352128,
+              "query_tag": "id-50pct",
+              "runnable_max": 24,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityparquet",
+              "load1_max": 8.19,
+              "mem_available_min_bytes": 520597053440,
+              "query_tag": "id-90pct",
+              "runnable_max": 14,
+              "scenario": "id-lookup"
+            },
+            {
+              "busy": false,
+              "dataset": "nyc_da13_buildings.city.json",
+              "format": "cityparquet",
+              "load1_max": 8.19,
+              "mem_available_min_bytes": 520662757376,
+              "query_tag": "id-miss",
+              "runnable_max": 22,
+              "scenario": "id-lookup"
+            }
+          ],
+          "status": "recorded per sample",
+          "waits": []
+        },
+        "max_load": {
+          "node_cores": 64,
+          "requested": "auto",
+          "status": "applied",
+          "threshold": 32.0,
+          "total_cores": 128,
+          "wait_s": 600
+        },
+        "memory": {
+          "mem_available_bytes_at_start": 520691822592,
+          "mem_total_bytes": 540725084160,
+          "status": "recorded"
+        },
+        "memory_max": {
+          "requested_bytes": 64000000000,
+          "status": "applied"
+        },
+        "pinning": {
+          "allowed_cpus": "0-127",
+          "child_cores": "1-31,64-95",
+          "coordinator_core": 0,
+          "coordinator_note": null,
+          "cores_note": null,
+          "memory_binding": "applied",
+          "node": 0,
+          "requested": "auto",
+          "status": "applied",
+          "tool": "numactl"
+        }
+      },
+      "requested": {
+        "max_load": "auto",
+        "max_load_wait_s": 600,
+        "memory_max": 64000000000,
+        "numa_node": "auto"
+      }
+    },
+    "min_repeat": 7,
+    "read_repeat": 25
+  },
+  "profile": "full",
+  "result": {
+    "csv": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/formats/results/nyc_da13_buildings.csv",
+    "files_sha256": {
+      "nyc_da13_buildings.csv": "4e84d9ec5b233217513da8f3e2cbbced14f178819a9dbca5f0e1dbdd0c37e2cc",
+      "nyc_da13_buildings.csv.params.json": "3896ae51afe5827270064a2b121f98253f184993d5e962b327a5d89fe2e9348c",
+      "nyc_da13_buildings.csv.samples.json": "4738f9f64dcf7d05f63263f976f2aaaaf3cc50fe1d7ffc6bc663851aa23d90cb"
+    },
+    "params_sha256": "3896ae51afe5827270064a2b121f98253f184993d5e962b327a5d89fe2e9348c"
+  },
+  "schema": 1,
+  "smoke": false,
+  "source": {
+    "path": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/data/benchmark/nyc_da13_buildings.city.json",
+    "sha256": "c885bb6af297531c95b097aff5d38e694935ac22fe1b973cbad15948021f6cb8"
+  },
+  "tools": {
+    "cityparquet": "unavailable",
+    "cjseq": "cjseq 0.3.1",
+    "fcb": "fcb 0.7.8",
+    "rust": "rustc 1.93.1 (01f6ddf75 2026-02-11)"
+  }
+}
