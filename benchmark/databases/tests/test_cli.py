@@ -711,8 +711,8 @@ def test_an_extension_duckdb_cannot_load_stops_the_run_before_anything_starts(
     reached, _ = _record_preparation(monkeypatch, cli)
     mismatch = (
         "Invalid Input Error: Failed to load 'x', The file was built "
-        "specifically for DuckDB version 'v1.5.4' and can only be loaded "
-        "with that version of DuckDB. (this version of DuckDB is 'v1.5.5')"
+        "specifically for DuckDB version 'v1.5.5' and can only be loaded "
+        "with that version of DuckDB. (this version of DuckDB is 'v2.0.0')"
     )
 
     def refuse(conn, path):

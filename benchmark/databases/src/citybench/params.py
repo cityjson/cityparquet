@@ -719,10 +719,10 @@ def epsg_of(crs: dict[str, Any] | None) -> int | None:
 def package_crs(package: Path) -> dict[str, Any] | None:
     """The `city.crs` PROJJSON from the package's object-table footer."""
     files = object_table_files(package)
-    row = duckdb.sql(
+    rows = duckdb.sql(
         f"SELECT decode(value) FROM parquet_kv_metadata('{files[0]}') "
-        "WHERE decode(key) = 'city'").fetchone()
-    return json.loads(row[0]).get("crs") if row else None
+        "WHERE decode(key) = 'city' LIMIT 1").fetchall()
+    return json.loads(rows[0][0]).get("crs") if rows else None
 
 
 def lods_from_columns(columns) -> tuple[str, ...]:

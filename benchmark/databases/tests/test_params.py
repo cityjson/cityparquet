@@ -681,3 +681,25 @@ def test_the_crs_comes_from_the_package_footer():
     assert params.epsg_of(tokyo) == 6697
     assert params.epsg_of(compound) == 28992
     assert params.epsg_of(None) is None
+
+
+def test_package_crs_reads_the_city_footers_crs(tmp_path):
+    """`package_crs` reads `city.crs` off the object table's footer, and
+    answers None for a footer that declares none."""
+    from citybench.params import package_crs
+
+    row = {"id": "o0", "object_type": "Building",
+           "bbox": (0.0, 0.0, 0.0, 1.0, 1.0, 1.0), "height": 1.0}
+    bare = build_package(tmp_path / "bare", [row], ["height"])
+    assert package_crs(bare) is None
+
+    declared = build_package(tmp_path / "declared", [row], ["height"])
+    target = declared / "building.parquet"
+    crs = {"type": "ProjectedCRS", "id": {"authority": "EPSG", "code": 28992}}
+    footer = json.dumps({"attributes": ["height"], "version": "1.0.0",
+                         "crs": crs}).replace("'", "''")
+    conn = duckdb.connect()
+    conn.execute(f"CREATE TABLE t AS FROM read_parquet('{target}')")
+    conn.execute(f"COPY t TO '{target}' (FORMAT PARQUET, KV_METADATA {{city: '{footer}'}})")
+    conn.close()
+    assert package_crs(declared) == crs
