@@ -830,7 +830,7 @@ pub(crate) fn geometry_columns_by_lod_desc(schema: &Schema) -> Vec<String> {
                 .map(|lod| (Some(lod), name.clone()))
         })
         .collect();
-    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    ranked.sort_by_key(|(lod, _)| std::cmp::Reverse(*lod));
     ranked.into_iter().map(|(_, name)| name).collect()
 }
 

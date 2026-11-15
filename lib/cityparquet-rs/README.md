@@ -73,7 +73,7 @@ just fixtures     # download the CityJSON test fixtures (one-off, network)
 just check        # clippy -D warnings, tests, schema isolation, fmt --check
 ```
 
-Requires Rust 1.93.1 (pinned in `rust-toolchain.toml`, so rustup selects and
+Requires Rust 1.99.1 (pinned in `rust-toolchain.toml`, so rustup selects and
 installs it for you) and, for the `just` recipes,
 [`just`](https://github.com/casey/just). `just interop` and the benchmark
 baseline additionally use `duckdb` if it's on `PATH`.

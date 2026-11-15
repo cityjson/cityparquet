@@ -86,8 +86,8 @@ impl AdeScan {
                 && self.frames.is_empty()
             {
                 let words: Vec<&str> = value.split_whitespace().collect();
-                for pair in words.chunks_exact(2) {
-                    self.builder.schema_location(pair[0], pair[1]);
+                for [namespace, location] in words.as_chunks::<2>().0 {
+                    self.builder.schema_location(namespace, location);
                 }
             } else if ade && key != "xmlns" {
                 attributes.push((key.to_string(), value.into_owned()));
