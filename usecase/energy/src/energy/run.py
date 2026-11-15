@@ -80,17 +80,17 @@ def run_features(input_glob: str, lod: str, output: str,
         FROM read_parquet($input) WHERE object_type = 'BuildingPart'
         """,
         params={"input": input_glob},
-    ).fetchone()
+    ).fetchall()[0]
     n_open = con.sql(
         "SELECT count(*) FROM features_t WHERE NOT is_closed"
-    ).fetchone()[0]
+    ).fetchall()[0][0]
     n_buildings_total = con.sql(
         """
         SELECT count(DISTINCT id) FROM read_parquet($input)
         WHERE object_type = 'Building'
         """,
         params={"input": input_glob},
-    ).fetchone()[0]
+    ).fetchall()[0][0]
     n_buildings_missing_geometry = n_buildings_total - features.num_rows
     return RunSummary(
         n_buildings=features.num_rows, n_parts=n_parts,

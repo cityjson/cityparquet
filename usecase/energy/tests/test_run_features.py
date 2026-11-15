@@ -33,7 +33,7 @@ def test_class_areas_match_3dbag_references(fixture_path):
         WHERE b.object_type = 'Building'
         """,
         params=[str(fixture_path)],
-    ).fetchone()[0]
+    ).fetchall()[0][0]
     assert median_err < 0.05, f"median ground-area error {median_err:.4f}"
 
 
@@ -75,12 +75,12 @@ def test_missing_geometry_buildings_are_counted(fixture_path, tmp_path):
         "SELECT id FROM read_parquet($p) WHERE object_type = 'Building' "
         "ORDER BY id LIMIT 1",
         params={"p": str(fixture_path)},
-    ).fetchone()[0]
+    ).fetchall()[0][0]
     part_id = con.sql(
         "SELECT id FROM read_parquet($p) WHERE object_type = 'BuildingPart' "
         "AND parents[1] = $b LIMIT 1",
         params={"p": str(fixture_path), "b": building_id},
-    ).fetchone()[0]
+    ).fetchall()[0][0]
 
     new_building_id = building_id + "-nogeom"
     new_part_id = part_id + "-nogeom"
@@ -123,12 +123,12 @@ def test_multipart_building_aggregates(fixture_path, tmp_path):
         "SELECT id FROM read_parquet($p) WHERE object_type = 'Building' "
         "ORDER BY id LIMIT 1",
         params={"p": str(fixture_path)},
-    ).fetchone()[0]
+    ).fetchall()[0][0]
     part_id = con.sql(
         "SELECT id FROM read_parquet($p) WHERE object_type = 'BuildingPart' "
         "AND parents[1] = $b LIMIT 1",
         params={"p": str(fixture_path), "b": building_id},
-    ).fetchone()[0]
+    ).fetchall()[0][0]
 
     # Baseline: this building's single-part metrics on the unmodified fixture.
     baseline_out = tmp_path / "baseline.parquet"
@@ -138,7 +138,7 @@ def test_multipart_building_aggregates(fixture_path, tmp_path):
         "SELECT volume_m3, a_wall_m2, a_ground_m2 FROM read_parquet($p) "
         "WHERE building_id = $b",
         params={"p": str(baseline_out), "b": building_id},
-    ).fetchone()
+    ).fetchall()[0]
 
     # Give the chosen building a second part: a copy of its one BuildingPart
     # row, same parents, same geometry, new id.
@@ -170,7 +170,7 @@ def test_multipart_building_aggregates(fixture_path, tmp_path):
         "SELECT n_parts, volume_m3, a_wall_m2, a_ground_m2 "
         "FROM read_parquet($p) WHERE building_id = $b",
         params={"p": str(out), "b": building_id},
-    ).fetchone()
+    ).fetchall()[0]
     assert n_parts == 2
     assert volume_m3 == pytest.approx(2 * base_volume, rel=1e-6)
     assert a_wall_m2 == pytest.approx(2 * base_wall, rel=1e-6)

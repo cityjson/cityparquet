@@ -1605,11 +1605,11 @@ textures and templates. A difference is a failure unless the specification
 allows it, and the comparator says which rule allows it.
 
 ```sh
-uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 --with pytest \
+uv run --python 3.12 --with duckdb==2.0.0 --with flatcitybuf==0.5.2 --with pytest \
   pytest -q test/toolchain/test_cjcompare.py     # the comparator against mutated real data
-uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 \
+uv run --python 3.12 --with duckdb==2.0.0 --with flatcitybuf==0.5.2 \
   test/toolchain/run.py fetch --profile quick
-uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 \
+uv run --python 3.12 --with duckdb==2.0.0 --with flatcitybuf==0.5.2 \
   test/toolchain/run.py run --profile quick
 ```
 
@@ -1632,7 +1632,7 @@ path's time against export and convert (C6). Without docker every step is a
 skip.
 
 ```sh
-uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 \
+uv run --python 3.12 --with duckdb==2.0.0 --with flatcitybuf==0.5.2 \
   test/toolchain/run.py citydb [--only plateau-bldg,railway-scene] [--keep]
 ```
 
