@@ -210,6 +210,42 @@ FEATURE_NOTE_RE = re.compile(r"^feature-(?:\d+pct|miss)$")
 # that is present) and `attr-<column>-miss` (a value verified absent).
 ATTR_NOTE_RE = re.compile(r"^attr-(?P<column>.+)-(?:\d+pct|miss)$")
 COLD_RE = re.compile(r"\bcold\b", re.IGNORECASE)
+# A whole-file format's cell the run did not time: it took one check sample
+# and its time and memory are those of the format's read all (READ_BENCHMARK.md,
+# "Cells that reuse read all").
+REUSED_TAG = "derived-from=full-read"
+REUSED_SCENARIO = "full-read"
+REUSED_COLUMNS = (*TIMING_BLOCK, "peak_heap_bytes", "peak_rss_bytes", "repeat")
+REUSED_MARK = "="
+REUSED_NOTE = "reused from read all: the reader parses the whole file for every query; one check sample, not timed"
+REUSED_FOOTNOTE = (
+    f"{REUSED_MARK} not timed: the format has no index, so the cell shows its read all "
+    "(one check sample confirmed the answer)."
+)
+
+
+def is_reused(row: dict[str, str]) -> bool:
+    """Whether a read row reuses its format's read all rather than a measurement of its own."""
+    return REUSED_TAG in str(row.get("notes", "") or "").split(";")
+
+
+def _fill_reused(dataset: str, rows: list[dict[str, str]]) -> None:
+    """Give every reused row the timing block and peaks of its format's read all.
+
+    A reused row whose format has no measured read all in the same CSV keeps
+    its empty time, and so stays unavailable.
+    """
+    full = {row["format"]: row for row in rows if row["scenario"] == REUSED_SCENARIO and not is_reused(row)}
+    for row in rows:
+        if not is_reused(row):
+            continue
+        if row["scenario"] == REUSED_SCENARIO:
+            raise PrepError(f"{dataset}: a read all row of {row['format']} is tagged {REUSED_TAG}")
+        source = full.get(row["format"])
+        if source is None or unavailable_reason(source) is not None:
+            continue
+        for column in REUSED_COLUMNS:
+            row[column] = source[column]
 
 AXIS_BASELINE = "cityparquet"
 # The bloom axis measures the lookups a filter can answer: the identifier
@@ -496,6 +532,7 @@ def load_read(
                 excluded.record(row["format"], "read")
                 continue
             kept.append(row)
+        _fill_reused(dataset, kept)
         per_dataset[dataset] = kept
 
     if cold_rows:
@@ -556,6 +593,7 @@ def load_read(
                         "base_unavailable": base_unavailable,
                         "notes": row["notes"],
                         "status": row.get("status", ""),
+                        "reused": REUSED_SCENARIO if is_reused(row) else "",
                     }
                 )
     return records, anomalies

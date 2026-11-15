@@ -339,6 +339,16 @@ and carries the `budget` tag in `notes`. The database family always takes
 `--repeat` samples. `benchmark/formats/READ_BENCHMARK.md` ("Sampling") has
 the rule.
 
+In the formats family the three text formats (`citygml`, `cityjson`,
+`cityjsonseq`) are timed on read all and the identifier lookups. Their
+reader parses the whole file for every other query, so those cells take one
+check sample, which keeps their answer in the cross-format check, and reuse
+the time and memory of read all (`derived-from=full-read` in `notes`, `=` in
+the heatmaps). On the 3DBAG slice this removes about 6.8 h of CityGML
+sampling at 25 repetitions. `just bench-run --formats-whole-file-scenarios
+all` measures every cell instead; `benchmark/formats/READ_BENCHMARK.md`
+("Cells that reuse read all", Caveat 44) has the rule and what it assumes.
+
 ## Full run
 
 Run the full matrix only after the smoke run succeeds:

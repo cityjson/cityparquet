@@ -159,6 +159,7 @@ def test_the_query_table_orients_every_factor_against_citygml(tmp_path: Path):
         "citygml_peak_rss_bytes",
         "time_factor_vs_citygml",
         "rss_factor_vs_citygml",
+        "reused",
         "note",
     ]
     by = {(r["dataset"], r["query"], r["format_id"]): r for r in rows}
@@ -268,3 +269,61 @@ def test_a_manifest_dataset_without_results_stays_explicitly_missing(tmp_path: P
     section = text.split("<h2>3DBAG — read time</h2>", 1)[1].split("</section>", 1)[0]
     assert "Not rendered" in section and "<img" not in section
     assert not any(r["dataset"] == "kyoto" for r in tables.size_table(data))
+
+
+REUSED = "derived-from=full-read;status=derived"
+
+
+def _reused_bench(tmp_path: Path) -> Path:
+    """`alpha` with its CityGML and CityJSONSeq spatial cells reusing read all."""
+    bench = _bench(tmp_path)
+    path = bench / "results" / "alpha.csv"
+    lines = []
+    for line in path.read_text().splitlines():
+        fields = line.split(",")
+        if fields[1] in ("citygml", "cityjsonseq") and fields[2] == "bbox-query":
+            fields[5:14] = [""] * 9
+            fields[14] = "0"
+            fields[15] = f"bbox-1pct;{REUSED}"
+            line = ",".join(fields)
+        lines.append(line)
+    path.write_text("\n".join(lines) + "\n")
+    return bench
+
+
+def test_a_reused_cell_shows_its_formats_read_all(tmp_path: Path):
+    data, _ = prep.build(prep.Inputs(_reused_bench(tmp_path)))
+    by = {(r["dataset"], r["scenario_key"], r["format"]): r for r in data["read"]}
+    full, reused = by[("alpha", "full-read", "citygml")], by[("alpha", "bbox-1pct", "citygml")]
+    assert reused["reused"] == "full-read" and full["reused"] == ""
+    assert reused["unavailable"] is None
+    assert (reused["time_s"], reused["rss_b"]) == (full["time_s"], full["rss_b"])
+    # The answer is the cell's own: the check sample's result count.
+    assert reused["result_count"] == 2000
+    # A measured format's factor is taken against the reused CityGML value.
+    parquet = by[("alpha", "bbox-1pct", "cityparquet")]
+    assert parquet["reused"] == "" and parquet["time_factor"] == 5.0
+    table = {(r["dataset"], r["query"], r["format_id"]): r for r in tables.query_table(data)}
+    assert table[("alpha", "bbox-1pct", "cityjsonseq")]["reused"] == "full-read"
+    assert "reused from read all" in table[("alpha", "bbox-1pct", "cityjsonseq")]["note"]
+    assert table[("alpha", "bbox-1pct", "flatcitybuf")]["note"] == ""
+
+
+def test_a_reused_cell_is_marked_in_the_figure(tmp_path: Path):
+    data, _ = prep.build(prep.Inputs(_reused_bench(tmp_path)))
+    dataset = next(d for d in data["datasets"] if d["id"] == "alpha")
+    queries, cells = figures.format_cells(data, dataset, "time_s")
+    row = cells[queries.index("bbox-1pct")]
+    assert row[prep.FORMATS.index("citygml")][1].startswith(prep.REUSED_MARK)
+    assert not row[prep.FORMATS.index("cityparquet")][1].startswith(prep.REUSED_MARK)
+
+
+def test_a_reused_cell_without_a_measured_read_all_stays_unavailable(tmp_path: Path):
+    bench = _reused_bench(tmp_path)
+    path = bench / "results" / "alpha.csv"
+    path.write_text(
+        "\n".join(l for l in path.read_text().splitlines() if not l.startswith("alpha,citygml,full-read")) + "\n"
+    )
+    data, _ = prep.build(prep.Inputs(bench))
+    by = {(r["scenario_key"], r["format"]): r for r in data["read"] if r["dataset"] == "alpha"}
+    assert by[("bbox-1pct", "citygml")]["unavailable"] == "no time recorded"

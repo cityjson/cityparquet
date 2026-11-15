@@ -254,9 +254,11 @@ struct RunArgs {
     #[arg(long, requires = "network_latency_ms")]
     network_bandwidth_mbps: Option<f64>,
     /// The scenarios the whole-file formats (citygml, cityjson, cityjsonseq)
-    /// are measured on in a network run: `full-read,id-lookup` (default),
-    /// `full-read` (derive the identifier lookups too) or `all` (derive
-    /// nothing). Every other scenario is derived from their read all.
+    /// are measured on: `full-read,id-lookup` (default), `full-read` (the
+    /// identifier lookups reuse read all too) or `all` (every cell measured).
+    /// On every other scenario their cell reuses read all: a local run takes
+    /// one check sample and reports no time of its own, a network run copies
+    /// the transfer once its samples prove one whole-object GET.
     #[arg(long, default_value = "full-read,id-lookup")]
     whole_file_scenarios: derive::WholeFileScenarios,
     #[arg(long, requires = "network_bandwidth_mbps")]
@@ -301,6 +303,7 @@ fn run(cli: Cli) -> Result<()> {
             feature_probes: run_args.feature_probes,
             bloom_attributes: run_args.bloom_attributes,
             cold: run_args.cold,
+            local_whole_file: run_args.whole_file_scenarios,
             transport,
             base_url: run_args.base_url,
             key_layout: run_args.key_layout,

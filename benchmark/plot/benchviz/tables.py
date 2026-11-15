@@ -113,6 +113,8 @@ def query_table(data: dict) -> list[dict]:
                     note = record["unavailable"]
                 elif base_reason:
                     note = f"CityGML unavailable: {base_reason}"
+                elif record.get("reused"):
+                    note = prep.REUSED_NOTE
                 else:
                     note = ""
                 record = record or {}
@@ -133,6 +135,7 @@ def query_table(data: dict) -> list[dict]:
                         "citygml_peak_rss_bytes": record.get("base_rss_b"),
                         "time_factor_vs_citygml": record.get("time_factor"),
                         "rss_factor_vs_citygml": record.get("rss_factor"),
+                        "reused": record.get("reused", ""),
                         "note": note,
                     }
                 )
@@ -186,6 +189,7 @@ def write_tables(data: dict, out: Path) -> list[Path]:
         "citygml_peak_rss_bytes",
         "time_factor_vs_citygml",
         "rss_factor_vs_citygml",
+        "reused",
         "note",
     ]
     return [
