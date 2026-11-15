@@ -212,6 +212,126 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(calls[0][-4], "off")
 
 
+class NationalDatasetTest(unittest.TestCase):
+    """The whole of 3DBAG: opt-in, three formats, sizes and formats only, always built here."""
+
+    def setUp(self):
+        import tempfile
+        self.manifest = bench_suite.load_manifest()
+        self.root = Path(tempfile.mkdtemp())
+        self.locations = bench_suite.paths(self.root)
+
+    def test_no_profile_selects_it(self):
+        for profile in bench_suite.PROFILES:
+            self.assertNotIn("3dbag_national", bench_suite.dataset_selection(self.manifest, list(bench_suite.FAMILIES), "", profile))
+
+    def test_the_national_flag_adds_it_and_the_alias_names_it(self):
+        selected = bench_suite.dataset_selection(self.manifest, ["sizes", "formats"], "", "full", national=True)
+        self.assertEqual(selected[-1], "3dbag_national")
+        self.assertEqual(len(selected), 8)
+        self.assertEqual(bench_suite.dataset_selection(self.manifest, ["formats"], "3dbag-national", "full"), ["3dbag_national"])
+        with self.assertRaises(SystemExit):
+            bench_suite.dataset_selection(self.manifest, ["bloom"], "", "full", national=True)
+
+    def test_it_is_produced_in_three_formats(self):
+        entry = self.manifest["datasets"]["3dbag_national"]
+        self.assertEqual(bench_suite.dataset_formats(entry), ["cityjsonseq", "flatcitybuf", "cityparquet"])
+        self.assertIsNone(bench_suite.dataset_formats(self.manifest["datasets"]["tokyo"]))
+        with self.assertRaises(SystemExit):
+            bench_suite.dataset_formats({"formats": ["gltf"]})
+        argv = bench_suite.sizes_command(Path("/d/3dbag_national.city.jsonl"), Path("/p"), Path("/o.csv"), ["cityjsonseq", "cityparquet"])
+        self.assertEqual(argv[argv.index("--formats") + 1], "cityjsonseq,cityparquet")
+
+    def _prep(self, mode, datasets):
+        from unittest import mock
+        calls = []
+        bucket = bench_suite.corpus_bucket
+        def refuse(*a, **k): raise AssertionError("the national dataset reached the bucket")
+        def fake_just(*a):
+            calls.append(a)
+            if a[0] == "fetch-3dbag-national":
+                Path(a[1]).mkdir(parents=True, exist_ok=True)
+                (Path(a[1]) / "3dbag_national.city.jsonl").write_text("{}")
+        with mock.patch.object(bench_suite, "just", fake_just), \
+             mock.patch.object(bench_suite, "command", lambda *a: calls.append(a)), \
+             mock.patch.object(bench_suite, "build_variants", lambda *a: None), \
+             mock.patch.object(bucket, "fetch_manifest", refuse), \
+             mock.patch.object(bucket, "remote_manifest", refuse), \
+             mock.patch.object(bucket, "upload_dataset", refuse):
+            bench_suite.prepare(self.manifest, self.locations, ["sizes", "formats"], datasets, "full", mode=mode)
+        return calls
+
+    def test_every_prep_mode_builds_it_here_and_touches_no_bucket(self):
+        for mode in ("download", "local", "no-cache", "rebuild-sources"):
+            calls = self._prep(mode, ["3dbag_national"])
+            self.assertIn(("fetch-3dbag-national", str(self.locations["3dbag"])), calls, mode)
+            prepare = [c for c in calls if c[0] == "readbench-prepare"]
+            self.assertEqual(prepare, [("readbench-prepare", str(self.locations["3dbag"] / "3dbag_national.city.jsonl"), str(self.locations["prepared"]), "cityjsonseq,flatcitybuf,cityparquet")], mode)
+            self.assertIn(("fetch-tools",), calls, mode)
+        self.assertFalse((self.locations["prepared"] / bench_suite.CORPUS_ORIGIN).exists())
+
+    def _run(self, families, datasets, **kwargs):
+        from unittest import mock
+        calls, manifests = [], []
+        with mock.patch.object(bench_suite, "just", lambda *a: calls.append(a)), \
+             mock.patch.object(bench_suite, "command", lambda *a: calls.append(a)), \
+             mock.patch.object(bench_suite, "require_prepared", lambda *a: None), \
+             mock.patch.object(bench_suite, "stage", lambda locations, name, inputs: Path(name)), \
+             mock.patch.object(bench_suite, "write_model_times", lambda *a: None), \
+             mock.patch.object(bench_suite, "write_run_manifest", lambda source, csv, **k: manifests.append((csv.name, k))):
+            bench_suite.run_suite(self.manifest, self.locations, families, datasets, "full", **kwargs)
+        return calls, manifests
+
+    def test_the_formats_family_runs_it_apart_with_its_three_formats(self):
+        calls, manifests = self._run(["formats"], ["tokyo", "3dbag_national"])
+        bench = [(c[1], c[3]) for c in calls if c[0] == "bench"]
+        self.assertEqual(bench, [("formats", ""), ("formats-cityjsonseq+flatcitybuf+cityparquet", "cityjsonseq,flatcitybuf,cityparquet")])
+        by_name = dict(manifests)
+        self.assertEqual(by_name["3dbag_national.csv"]["corpus"], {"origin": "local"})
+        self.assertIn("dataset-formats=cityjsonseq,flatcitybuf,cityparquet", by_name["3dbag_national.csv"]["fixed_configuration"])
+        self.assertNotIn("dataset-formats", by_name["tokyo.csv"]["fixed_configuration"])
+
+    def test_a_read_subset_narrows_its_formats_or_skips_it(self):
+        calls, _ = self._run(["formats"], ["3dbag_national"], read_formats="cityparquet,citygml")
+        self.assertEqual([c[3] for c in calls if c[0] == "bench"], ["cityparquet"])
+        calls, _ = self._run(["formats"], ["3dbag_national"], read_formats="citygml")
+        self.assertEqual([c for c in calls if c[0] == "bench"], [])
+
+    def test_the_sizes_family_names_its_formats(self):
+        calls, _ = self._run(["sizes"], ["3dbag_national"])
+        sizes = next(c for c in calls if "benchmark/scripts/measure_sizes.py" in c)
+        self.assertEqual(sizes[sizes.index("--formats") + 1], "cityjsonseq,flatcitybuf,cityparquet")
+
+    def test_the_network_bloom_and_database_families_do_not_measure_it(self):
+        calls, _ = self._run(["network", "bloom"], ["3dbag_national"])
+        self.assertEqual(calls, [])
+        calls, _ = self._run(["network"], ["tokyo", "3dbag_national"])
+        (bench,) = [c for c in calls if c[0] == "bench"]
+        self.assertEqual(bench[1], "network")
+        with self.assertRaises(SystemExit):
+            self._run(["databases"], ["3dbag_national"], database_datasets="3dbag-national")
+
+    def test_a_ceiling_below_its_largest_artefact_is_refused(self):
+        prepared = self.locations["prepared"]; prepared.mkdir(parents=True)
+        (prepared / "3dbag_national.city.jsonl").write_bytes(b"x" * 100)
+        (prepared / "3dbag_national.fcb").write_bytes(b"x" * 50)
+        source = Path("3dbag_national.city.jsonl")
+        self.assertEqual(bench_suite.ceiling_below_artefacts(prepared, source, 99), 100)
+        self.assertIsNone(bench_suite.ceiling_below_artefacts(prepared, source, 100))
+        self.assertIsNone(bench_suite.ceiling_below_artefacts(prepared, source, None))
+        isolation = {"numa_node": "off", "memory_max": 99, "max_load": "off", "max_load_wait_s": 1}
+        with self.assertRaises(SystemExit) as raised:
+            self._run(["formats"], ["3dbag_national"], isolation=isolation)
+        self.assertIn("--memory-max", str(raised.exception))
+
+    def test_a_missing_source_names_bench_prep(self):
+        missing = self.locations["3dbag"] / "3dbag_national.city.jsonl"
+        self.locations["prepared"].mkdir(parents=True)
+        with self.assertRaises(SystemExit) as raised:
+            bench_suite.require_prepared([missing], self.locations, frozenset({missing}))
+        self.assertIn("just bench-prep --datasets 3dbag-national", str(raised.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
 

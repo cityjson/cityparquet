@@ -1326,8 +1326,27 @@ def _system_name(system: str) -> str:
     }.get(system, system)
 
 
+def applicable(dataset: dict, fmt: str) -> bool:
+    """Whether `dataset` is produced in `fmt`: every format, unless its
+    manifest entry names its own `formats` (the national dataset)."""
+    own = dataset.get("formats")
+    return own is None or fmt in own
+
+
+def not_applicable_note(dataset: dict) -> str:
+    """The sentence a figure of a dataset without all five formats carries."""
+    absent = [FORMAT_NAMES.get(f, f) for f in FORMATS if not applicable(dataset, f)]
+    if not absent:
+        return ""
+    note = f"n/a: {' and '.join(absent)} are not applicable; this dataset is too large to be produced in them."
+    if not applicable(dataset, BASELINE_FORMAT):
+        note += " It therefore has no factor against CityGML."
+    return note
+
+
 def manifest_labels(path: Path = MANIFEST_PATH) -> dict[str, dict]:
-    """Each manifest dataset's display title and, for a slice, its nominal size.
+    """Each manifest dataset's display title, for a slice its nominal size, and
+    the formats it is produced in when that is not all five.
 
     Keyed by the dataset id the results use (the source file's stem). A
     slice's `target_objects` is the size it was cut to; its actual CityObject
@@ -1344,6 +1363,8 @@ def manifest_labels(path: Path = MANIFEST_PATH) -> dict[str, dict]:
             label["title"] = entry["title"]
         if entry.get("role") == "slice" and entry.get("target_objects"):
             label["nominal_objects"] = entry["target_objects"]
+        if entry.get("formats"):
+            label["formats"] = list(entry["formats"])
         labels[_manifest_stem(entry.get("source", ""))] = label
     return labels
 

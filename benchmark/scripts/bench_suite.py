@@ -47,12 +47,22 @@ FAMILIES = ("sizes", "formats", "bloom", "databases", "network")
 #          of a day;
 #   smoke  Rotterdam alone, 1 repetition, `<family>/smoke/`; a pipeline check,
 #          never a measurement.
+# No profile selects the national dataset (the whole of 3DBAG): `--national`
+# adds it to a profile's selection and `--datasets 3dbag-national` names it.
 # Under `short` and `smoke` the database family measures the manifest's
 # `small_database_dataset` (Rotterdam) in the slice's place. The bloom family
 # measures the slice alone, so it runs under `full` and `quick` only.
 PROFILES = ("full", "quick", "short", "smoke")
-# The dataset roles that are format, size and bloom inputs.
-INPUT_ROLES = frozenset({"corpus", "slice"})
+# The dataset roles that are format and size inputs.
+INPUT_ROLES = frozenset({"corpus", "slice", "national"})
+# The roles whose artefacts are always built on this host from the published
+# source and never hosted in the corpus bucket: the national dataset's three
+# artefacts are about 150 GB.
+LOCAL_ONLY_ROLES = frozenset({"national"})
+# The families that measure a local-only dataset. The network family would
+# transfer its 66 GB stream once per sample, the bloom family measures the
+# slice, and the database family would ingest it into three systems.
+LOCAL_ONLY_FAMILIES = frozenset({"sizes", "formats"})
 # The read recipes' shared-host isolation (benchmark/README.md, "Running on
 # a shared host"): NUMA node, children's memory ceiling, load gate.
 DEFAULT_ISOLATION = {"numa_node": os.environ.get("BENCH_NUMA_NODE", "auto"), "memory_max": None, "max_load": "auto", "max_load_wait_s": 600}
@@ -61,6 +71,23 @@ DEFAULT_ISOLATION = {"numa_node": os.environ.get("BENCH_NUMA_NODE", "auto"), "me
 def slice_dataset(manifest: dict) -> str:
     """The manifest key of the 3DBAG slice."""
     return manifest["suite"]["slice_dataset"]
+
+
+def national_dataset(manifest: dict) -> str | None:
+    """The manifest key of the national dataset (the whole of 3DBAG), if any."""
+    return manifest["suite"].get("national_dataset")
+
+
+def dataset_formats(entry: dict) -> list[str] | None:
+    """The formats a dataset can be produced in (`formats` in the manifest),
+    in the canonical order; None when it is produced in all five."""
+    own = entry.get("formats")
+    if own is None:
+        return None
+    unknown = sorted(set(own) - set(FULL_ARTEFACTS))
+    if unknown or not own:
+        raise SystemExit(f"manifest: unknown or empty dataset formats: {', '.join(unknown) or own!r}")
+    return [fmt for fmt in FULL_ARTEFACTS if fmt in own]
 
 
 def database_dataset(manifest: dict, profile: str) -> str:
@@ -100,10 +127,19 @@ def family_selection(text: str) -> list[str]:
     return list(dict.fromkeys(selected))
 
 
-def dataset_selection(manifest: dict, families: list[str], requested: str, profile: str) -> list[str]:
+def dataset_alias(manifest: dict, item: str) -> str:
+    """`3dbag` names the slice and `3dbag-national` the national dataset."""
+    if item == "3dbag":
+        return slice_dataset(manifest)
+    if item == "3dbag-national" and national_dataset(manifest):
+        return national_dataset(manifest)
+    return item
+
+
+def dataset_selection(manifest: dict, families: list[str], requested: str, profile: str, national: bool = False) -> list[str]:
     datasets = manifest["datasets"]
     if requested:
-        result = [slice_dataset(manifest) if item == "3dbag" else item for item in values(requested)]
+        result = [dataset_alias(manifest, item) for item in values(requested)]
     elif profile == "smoke":
         result = ["rotterdam"]
     else:
@@ -111,7 +147,7 @@ def dataset_selection(manifest: dict, families: list[str], requested: str, profi
         if any(family in {"sizes", "formats", "network"} for family in families):
             result.extend(
                 key for key, entry in datasets.items()
-                if entry["role"] in INPUT_ROLES
+                if entry["role"] in INPUT_ROLES - LOCAL_ONLY_ROLES
                 and (profile != "short" or entry["role"] != "slice")
             )
         # The bloom family measures the slice alone, and only under the
@@ -122,6 +158,12 @@ def dataset_selection(manifest: dict, families: list[str], requested: str, profi
             result.append(slice_dataset(manifest))
         if "databases" in families:
             result.append(database_dataset(manifest, profile))
+    if national:
+        if not national_dataset(manifest):
+            raise SystemExit("--national: the manifest names no national dataset")
+        if not LOCAL_ONLY_FAMILIES.intersection(families):
+            raise SystemExit(f"--national: the national dataset is measured by {', '.join(sorted(LOCAL_ONLY_FAMILIES))} only")
+        result.append(national_dataset(manifest))
     unknown = sorted(set(result) - set(datasets))
     if unknown:
         raise SystemExit(f"unknown benchmark dataset: {', '.join(unknown)}")
@@ -164,9 +206,12 @@ def dataset_stem(path: Path) -> str:
     return path.name
 
 
-def sizes_command(input_path: Path, prepared: Path, output: Path) -> list[str]:
-    """The size script's argv; the suite names the dataset, the script never re-derives it."""
-    return [sys.executable, "benchmark/scripts/measure_sizes.py", "--dataset", dataset_stem(input_path), "--prepared", str(prepared), "--out", str(output)]
+def sizes_command(input_path: Path, prepared: Path, output: Path, formats: list[str] | None = None) -> list[str]:
+    """The size script's argv; the suite names the dataset, the script never re-derives it.
+
+    `formats` names the formats a dataset is produced in when that is not all five."""
+    argv = [sys.executable, "benchmark/scripts/measure_sizes.py", "--dataset", dataset_stem(input_path), "--prepared", str(prepared), "--out", str(output)]
+    return argv + (["--formats", ",".join(formats)] if formats else [])
 
 
 COMPRESSION_TABLE = "compression.csv"
@@ -364,6 +409,11 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
     no-cache: fetch the hosted normalised CityJSON and CityGML, build the
     rest with the current code and upload it. rebuild-sources: build
     everything from the published sources and upload it all."""
+    # A local-only dataset (the national one) is built here whatever the
+    # mode and never uploaded; everything up to its own block below is about
+    # the hosted datasets.
+    local_only = [key for key in datasets if manifest["datasets"][key]["role"] in LOCAL_ONLY_ROLES]
+    datasets = [key for key in datasets if key not in local_only]
     selected = [manifest["datasets"][key] for key in datasets]
     prepared = locations["prepared"]
     full_formats = any(family in {"sizes", "formats"} for family in families)
@@ -378,7 +428,7 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
 
     prepared.mkdir(parents=True, exist_ok=True)
     hosted = None
-    if mode in {"download", "no-cache"}:
+    if mode in {"download", "no-cache"} and datasets:
         try:
             hosted, url, digest = corpus_bucket.fetch_manifest(cfg, chain)
             for key in datasets:
@@ -406,8 +456,9 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
             just("fetch-data", str(locations["corpus"]))
         if any(entry["role"] == "slice" for entry in selected):
             just("fetch-3dbag", str(locations["3dbag"]))
+    tools_built = mode != "download" and (full_formats or mode != "local")
     if mode != "download":
-        build_tools(full_formats or mode != "local")
+        build_tools(tools_built)
         work = locations["work"] / "no-cache"
         for key in datasets:
             entry = manifest["datasets"][key]
@@ -425,7 +476,7 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
                 raise SystemExit(f"prepared source missing after fetch: {input_path}")
             just("readbench-prepare", str(input_path), str(prepared), "" if full_formats or mode != "local" else "cityparquet,cityjsonseq")
             build_variants(prepared, dataset_stem(input_path), {"variant_artefacts": variants_of(entry)})
-    if mode in {"no-cache", "rebuild-sources"}:
+    if mode in {"no-cache", "rebuild-sources"} and datasets:
         try:
             existing = corpus_bucket.remote_manifest(cfg, chain)
             built, entries = build_identity(), {}
@@ -448,8 +499,20 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
                 print("manifest unchanged: every artefact is identical to the hosted one")
         except corpus_bucket.CorpusError as error:
             raise SystemExit(f"bench-prep: {error}") from error
-    if mode != "download":
+    if mode != "download" and datasets:
         write_origin(prepared, {"origin": "local"})
+    if local_only:
+        if not tools_built:
+            build_tools(True)
+        for key in local_only:
+            entry = manifest["datasets"][key]
+            # The published tiles, merged into one CityJSONSeq; a present
+            # source is kept.
+            just("fetch-3dbag-national", str(locations["3dbag"]))
+            input_path = source(entry, locations)
+            if not input_path.is_file():
+                raise SystemExit(f"prepared source missing after fetch: {input_path}")
+            just("readbench-prepare", str(input_path), str(prepared), ",".join(dataset_formats(entry) or []))
     if mode in {"download", "no-cache"}:
         missing_slice = [str(source(entry, locations)) for entry in selected if entry["role"] == "slice" and not source(entry, locations).is_file()]
         if missing_slice:
@@ -535,11 +598,19 @@ def slice_source_missing(missing: list[str], locations: dict[str, Path]) -> str:
     return f"3DBAG slice source missing; cut it with just fetch-3dbag {locations['3dbag']}: " + ", ".join(missing)
 
 
-def require_prepared(inputs: list[Path], locations: dict[str, Path]) -> None:
+def national_source_missing(missing: list[str]) -> str:
+    """The refusal for a missing national source, which only `bench-prep` builds."""
+    return "national 3DBAG source missing; build it with just bench-prep --datasets 3dbag-national --families sizes,formats: " + ", ".join(missing)
+
+
+def require_prepared(inputs: list[Path], locations: dict[str, Path], national: frozenset[Path] = frozenset()) -> None:
     """Refuse a run whose prepared artefacts or raw sources are missing, naming
     the command that supplies them."""
     if not locations["prepared"].is_dir():
         raise SystemExit(f"prepared artefacts missing: run just bench-prep first ({locations['prepared']})")
+    national_missing = [str(item) for item in inputs if item in national and not item.is_file()]
+    if national_missing:
+        raise SystemExit(national_source_missing(national_missing))
     missing = [item for item in inputs if not item.is_file()]
     slice_missing = [str(item) for item in missing if item.is_relative_to(locations["3dbag"])]
     corpus_missing = [str(item) for item in missing if not item.is_relative_to(locations["3dbag"])]
@@ -547,6 +618,40 @@ def require_prepared(inputs: list[Path], locations: dict[str, Path]) -> None:
         raise SystemExit(f"corpus sources missing; fetch them with just fetch-data {locations['corpus']}: " + ", ".join(corpus_missing))
     if slice_missing:
         raise SystemExit(slice_source_missing(slice_missing, locations))
+
+
+def format_groups(selected: dict, locations: dict[str, Path], read_formats: str) -> list[tuple[str, list[Path]]]:
+    """The formats family's `bench` invocations: (FORMATS argument, inputs).
+
+    `bench` measures one format list over a whole folder, so the inputs are
+    grouped by theirs: `read_formats` (empty: all five) for a dataset produced
+    in every format, and for one that names its own `formats` those, narrowed
+    to `read_formats` when one was asked for."""
+    groups: dict[str, list[Path]] = {}
+    asked = values(read_formats)
+    for key, entry in selected.items():
+        if entry["role"] not in INPUT_ROLES:
+            continue
+        own = dataset_formats(entry)
+        chosen = read_formats if own is None else ",".join(fmt for fmt in own if not asked or fmt in asked)
+        if own is not None and not chosen:
+            print(f"formats: {key} skipped; it is produced in {', '.join(own)} only, none of which --read-formats names", file=sys.stderr, flush=True)
+            continue
+        groups.setdefault(chosen, []).append(source(entry, locations))
+    return list(groups.items())
+
+
+def ceiling_below_artefacts(prepared: Path, input_path: Path, memory_max: int | None) -> int | None:
+    """The size of a dataset's largest prepared file when the memory ceiling
+    is below it, else None. The pages a reader reads are charged to its
+    cgroup, so such a ceiling evicts the warm cache inside every cell
+    (benchmark/README.md, "Running on a shared host")."""
+    if memory_max is None:
+        return None
+    stem = dataset_stem(input_path)
+    sizes = [path.stat().st_size for path in (prepared / f"{stem}.city.jsonl", prepared / f"{stem}.fcb") if path.is_file()]
+    largest = max(sizes, default=0)
+    return largest if largest > memory_max else None
 
 
 def read_repeat(profile: str) -> int:
@@ -581,26 +686,41 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
     isolation_args = (str(isolation["numa_node"]), "off" if isolation["memory_max"] is None else str(isolation["memory_max"]), str(isolation["max_load"]), str(isolation["max_load_wait_s"]))
     selected = {key: manifest["datasets"][key] for key in datasets}
     inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in INPUT_ROLES]
-    require_prepared(inputs, locations)
+    # A local-only dataset (the national one) is a size and format input only.
+    local_only = {source(entry, locations): entry for entry in selected.values() if entry["role"] in LOCAL_ONLY_ROLES}
+    require_prepared(inputs, locations, frozenset(local_only))
+    skipped = sorted(set(families) - LOCAL_ONLY_FAMILIES) if local_only else []
+    if skipped:
+        print(f"{', '.join(skipped)}: the national dataset is not measured by these families (benchmark/README.md, \"The national dataset\")", file=sys.stderr, flush=True)
     if any(family in {"sizes", "formats", "bloom", "network"} for family in families) and not inputs:
         raise SystemExit("formats, sizes, bloom and network need a corpus dataset or the 3DBAG slice")
     if "formats" in families:
+        for input_path in local_only:
+            largest = ceiling_below_artefacts(locations["prepared"], input_path, isolation["memory_max"])
+            if largest is not None:
+                raise SystemExit(f"{dataset_stem(input_path)}: its largest artefact is {largest} bytes, above the memory ceiling of {isolation['memory_max']}; the readers' page cache counts against the ceiling, so pass --memory-max above the artefact plus the readers' memory, or --memory-max off")
         # `bench` is the low-level format runner. It must be passed explicit
         # external output paths.
         output = result_dir(locations, "formats", profile)
         whole_file = whole_file_scenarios(manifest, formats_whole_file_scenarios, "formats")
-        just("bench", str(stage(locations, "formats", inputs)), str(output), read_formats, str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args, f"--whole-file-scenarios {whole_file}")
-        for input_path in inputs:
-            # A read subset is part of the run's identity: a CSV whose
-            # read rows were measured for four formats must say so.
-            configuration = f"CityParquet=Hilbert; whole_file_scenarios={whole_file}"
-            if read_formats:
-                configuration += f"; read-formats={read_formats}"
-            write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=repeat, smoke=smoke, fixed_configuration=configuration, profile=profile, **sampling, corpus=corpus_origin(locations["prepared"]))
+        for chosen, group in format_groups(selected, locations, read_formats):
+            staged = "formats" if chosen == read_formats else "formats-" + chosen.replace(",", "+")
+            just("bench", str(stage(locations, staged, group)), str(output), chosen, str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args, f"--whole-file-scenarios {whole_file}")
+            for input_path in group:
+                # A read subset is part of the run's identity: a CSV whose
+                # read rows were measured for four formats must say so.
+                configuration = f"CityParquet=Hilbert; whole_file_scenarios={whole_file}"
+                if read_formats:
+                    configuration += f"; read-formats={read_formats}"
+                if input_path in local_only:
+                    configuration += f"; dataset-formats={','.join(dataset_formats(local_only[input_path]))}"
+                corpus = {"origin": "local"} if input_path in local_only else corpus_origin(locations["prepared"])
+                write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=repeat, smoke=smoke, fixed_configuration=configuration, profile=profile, **sampling, corpus=corpus)
     if "sizes" in families:
         output = result_dir(locations, "sizes", profile) / "sizes.csv"
-        for input_path in inputs:
-            command(*sizes_command(input_path, locations["prepared"], output))
+        for entry in selected.values():
+            if entry["role"] in INPUT_ROLES:
+                command(*sizes_command(source(entry, locations), locations["prepared"], output, dataset_formats(entry)))
         # Where each package's bytes go, by column group and column; it reads
         # the same prepared packages the size rows above measured.
         command(*compression_command(inputs, locations["prepared"], output.parent))
@@ -616,16 +736,20 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
         just("bloom-bench", str(stage(locations, "bloom", bloom_inputs)), str(output), str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args, attributes)
         for input_path in bloom_inputs:
             write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="bloom", repeat=repeat, smoke=smoke, fixed_configuration="bloom/hilbert/zstd-3/default-row-groups", profile=profile, **sampling, corpus=corpus_origin(locations["prepared"]))
-    if "network" in families:
-        run_network(manifest, locations, selected, inputs, profile, network or {}, budget, min_repeat, isolation_args, sampling, read_formats, bloom_attributes)
+    network_inputs = [item for item in inputs if item not in local_only]
+    if "network" in families and network_inputs:
+        run_network(manifest, locations, selected, network_inputs, profile, network or {}, budget, min_repeat, isolation_args, sampling, read_formats, bloom_attributes)
     if "databases" in families:
         # --database-datasets: `all`, or manifest ids (`3dbag` = the slice);
         # empty keeps the profile's one dataset (the slice under full/quick,
         # Rotterdam under short/smoke), which must then be selected.
         if database_datasets == "all":
-            database_keys = list(manifest["datasets"])
+            database_keys = [key for key, entry in manifest["datasets"].items() if entry["role"] not in LOCAL_ONLY_ROLES]
         elif database_datasets:
-            database_keys = [slice_dataset(manifest) if k == "3dbag" else k for k in values(database_datasets)]
+            database_keys = [dataset_alias(manifest, k) for k in values(database_datasets)]
+            refused = [k for k in database_keys if manifest["datasets"].get(k, {}).get("role") in LOCAL_ONLY_ROLES]
+            if refused:
+                raise SystemExit(f"the database family does not measure the national dataset: {', '.join(refused)}")
         else:
             database_keys = [database_dataset(manifest, profile)]
             if database_keys[0] not in selected:
@@ -691,8 +815,9 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("command", choices=("prep", "run", "summary"))
     result.add_argument("--families", default="all", help=f"comma-separated families from {','.join(FAMILIES)}, or all")
-    result.add_argument("--datasets", default="")
-    result.add_argument("--database-datasets", default="", help="datasets the database family measures: `all`, or comma-separated manifest ids (`3dbag` = the slice); default: the profile's own (the slice under full/quick, Rotterdam under short/smoke)")
+    result.add_argument("--datasets", default="", help="comma-separated manifest ids in place of the profile's selection (`3dbag` = the slice, `3dbag-national` = the national dataset)")
+    result.add_argument("--national", action="store_true", help="add the national dataset (the whole of 3DBAG, about 10.8 million buildings) to the selection; the sizes and formats families measure it in CityJSONSeq, FlatCityBuf and CityParquet only, and bench-prep always builds it here from the published tiles (benchmark/README.md, \"The national dataset\")")
+    result.add_argument("--database-datasets", default="", help="datasets the database family measures: `all` (every dataset but the national one), or comma-separated manifest ids (`3dbag` = the slice); default: the profile's own (the slice under full/quick, Rotterdam under short/smoke)")
     result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 25 read repetitions, the families' own result directories (the paper's evidence); quick: the same datasets at 7 repetitions, under <family>/quick/, a faster complete run that is not the paper's evidence; short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Rotterdam alone, 1 repetition, under <family>/smoke/. Under full and quick the database family measures the 3DBAG slice, under short and smoke Rotterdam")
     result.add_argument("--smoke", action="store_true", help="the same as --profile smoke")
     result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")
@@ -732,7 +857,7 @@ def main() -> None:
     data = load_manifest()
     families = family_selection(args.families)
     profile = "smoke" if args.smoke else args.profile
-    datasets = dataset_selection(data, families, args.datasets, profile)
+    datasets = dataset_selection(data, families, args.datasets, profile, args.national)
     locations = paths(root)
     # Low-level fetch and conversion recipes inherit this explicit root.
     os.environ["CITYPARQUET_BENCH_ROOT"] = str(root)

@@ -45,13 +45,19 @@ what keeps this bit-identical to `merge_sources` instead of 1 mm away from it.
 
 Stages, each resumable -- rerunning skips what is already on disk:
 
+    urls     write the manifest: every tile URL of the STAC collection
     fetch    download every tile .gz named by the manifest
     plan     read each tile's transform + CRS; derive the merged transform
     seq      gunzip | cjseq cat | shift  ->  one .jsonl per tile
     merge    synthetic header + every tile's feature lines -> one .city.jsonl
     convert  cityparquet convert <that one file> -o <dest> --ordering <hilbert|source>
     verify   row count, id uniqueness, extent, against the plan
-    all      every stage in order
+    jsonl    fetch, plan, seq and merge: the one CityJSONSeq file and no package
+    all      every stage from fetch on, in order
+
+`jsonl` is what the benchmark's national dataset is built with (`just
+fetch-3dbag-national`): the merged file is its source, and the benchmark's own
+preparation chain converts it.
 """
 
 from __future__ import annotations
@@ -66,12 +72,20 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 CITYPARQUET = REPO / "lib/cityparquet-rs/target/release/cityparquet"
-CJSEQ = REPO / "lib/cityparquet-rs/vendor/cjseq/target/release/cjseq"
+# `cjseq` is the pinned crates.io release `just fetch-tools` installs; $CJSEQ
+# names another build.
+CJSEQ = Path(os.environ.get("CJSEQ") or shutil.which("cjseq") or "cjseq")
+# The published STAC collection the tile list is read from, and where 3DBAG
+# serves that release's tiles. The collection is of 3DBAG v20250903.
+COLLECTION_URL = "https://storage.googleapis.com/city3d-stac/netherlands-3d-bag/collection.json"
+TILE_BASE_URL = "https://data.3dbag.nl/v20250903/tiles"
+EXPECTED_TILES = 8941
 
 def log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -97,6 +111,45 @@ def read_urls(manifest: Path) -> list[str]:
     urls = [ln.strip() for ln in manifest.read_text().splitlines() if ln.strip()]
     urls.sort(key=lambda u: tile_sort_key(tile_id(u)))
     return urls
+
+
+# ---------------------------------------------------------------- urls
+
+
+def tile_url(tid: str, base: str = TILE_BASE_URL) -> str:
+    """Where 3DBAG serves tile `tid` (`<z>-<x>-<y>`)."""
+    return f"{base}/{tid.replace('-', '/')}/{tid}.city.json.gz"
+
+
+def collection_tiles(collection: dict) -> list[str]:
+    """The tile ids of a STAC collection: one per `item` link, whose title is
+    `<tile>.city.json`."""
+    tiles = [
+        link["title"].removesuffix(".city.json")
+        for link in collection.get("links", [])
+        if link.get("rel") == "item"
+    ]
+    if len(set(tiles)) != len(tiles):
+        raise SystemExit("urls: the collection names a tile twice")
+    return tiles
+
+
+def stage_urls(manifest: Path, collection_url: str, expected: int) -> None:
+    if manifest.exists() and manifest.stat().st_size > 0:
+        log(f"urls: {manifest} already written; skipping")
+        return
+    log(f"urls: reading {collection_url}")
+    with urllib.request.urlopen(collection_url, timeout=120) as response:
+        tiles = collection_tiles(json.load(response))
+    # A collection that grew or shrank is another release of 3DBAG, and the
+    # tile base URL above would no longer be the one it describes.
+    if len(tiles) != expected:
+        raise SystemExit(f"urls: the collection names {len(tiles)} tiles, expected {expected}")
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = manifest.with_suffix(manifest.suffix + ".part")
+    tmp.write_text("".join(f"{tile_url(t)}\n" for t in tiles))
+    tmp.replace(manifest)
+    log(f"urls: {len(tiles)} tile URLs in {manifest}")
 
 
 # ---------------------------------------------------------------- fetch
@@ -169,7 +222,7 @@ def _header_of(path: str) -> tuple[str, dict]:
         # Only the first line is wanted, so cjseq is killed rather than left to
         # serialise the whole tile into a pipe nobody reads.
         proc = subprocess.Popen(
-            [str(CJSEQ), "cat", str(raw)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            [str(CJSEQ), "cat", "-f", str(raw)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
         line = proc.stdout.readline()
         proc.kill()
@@ -281,7 +334,7 @@ def _seq_one(args: tuple[str, str, str, dict]) -> tuple[str, int, str | None]:
             with gzip.open(gz_path, "rb") as src, open(raw, "wb") as dst:
                 shutil.copyfileobj(src, dst, 1 << 20)
             proc = subprocess.Popen(
-                [str(CJSEQ), "cat", str(raw)], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                [str(CJSEQ), "cat", "-f", str(raw)], stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
             with open(tmp, "w") as dst:
                 for i, line in enumerate(proc.stdout):
@@ -342,8 +395,8 @@ def stage_seq(plan: dict, work: Path, jobs: int) -> dict[str, int]:
 # ---------------------------------------------------------------- merge
 
 
-def stage_merge(plan: dict, work: Path) -> Path:
-    out = work / "3dbag.city.jsonl"
+def stage_merge(plan: dict, work: Path, out: Path) -> Path:
+    out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".part")
     seq = work / "seq"
     if out.exists():
@@ -420,10 +473,13 @@ def stage_verify(dest: Path, work: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=["fetch", "plan", "seq", "merge", "convert", "verify", "all"])
-    ap.add_argument("--manifest", type=Path, required=True, help="file of tile .city.json.gz URLs")
+    ap.add_argument("stage", choices=["urls", "fetch", "plan", "seq", "merge", "convert", "verify", "jsonl", "all"])
+    ap.add_argument("--manifest", type=Path, required=True, help="file of tile .city.json.gz URLs (the `urls` stage writes it)")
     ap.add_argument("--work", type=Path, required=True, help="scratch dir (holds ~110 GB)")
-    ap.add_argument("--dest", type=Path, required=True, help="output CityParquet package dir")
+    ap.add_argument("--dest", type=Path, help="output CityParquet package dir (convert, verify, all)")
+    ap.add_argument("--merged", type=Path, help="the one merged CityJSONSeq file (default: WORK/3dbag.city.jsonl)")
+    ap.add_argument("--collection", default=COLLECTION_URL, help="urls: the STAC collection whose items are the tiles (default: %(default)s)")
+    ap.add_argument("--expect-tiles", type=int, default=EXPECTED_TILES, help="urls: the tile count the collection must name (default: %(default)s)")
     ap.add_argument("--jobs", type=int, default=min(32, os.cpu_count() or 8))
     ap.add_argument(
         "--ordering",
@@ -436,10 +492,21 @@ def main() -> None:
     ap.add_argument("--convert-arg", action="append", default=[], help="extra flag for `cityparquet convert`")
     args = ap.parse_args()
 
-    for tool in (CITYPARQUET, CJSEQ):
+    s = args.stage
+    merged = args.merged or args.work / "3dbag.city.jsonl"
+    converts = s in ("convert", "verify", "all")
+    if converts and args.dest is None:
+        raise SystemExit(f"{s} needs --dest")
+    needed = [CITYPARQUET] if converts else []
+    if s in ("plan", "seq", "jsonl", "all"):
+        needed.append(CJSEQ)
+    for tool in needed:
         if not tool.exists():
-            raise SystemExit(f"missing {tool} -- build it first")
+            raise SystemExit(f"missing {tool} -- build it first (cjseq: `just fetch-tools`, or $CJSEQ)")
     args.work.mkdir(parents=True, exist_ok=True)
+    if s == "urls":
+        stage_urls(args.manifest, args.collection, args.expect_tiles)
+        return
     urls = read_urls(args.manifest)
 
     def plan_or_load() -> dict:
@@ -448,17 +515,16 @@ def main() -> None:
             return json.loads(p.read_text())
         return stage_plan(urls, args.work, args.jobs)
 
-    s = args.stage
-    if s in ("fetch", "all"):
+    if s in ("fetch", "jsonl", "all"):
         stage_fetch(urls, args.work, min(args.jobs, 12))
-    if s in ("plan", "all"):
+    if s in ("plan", "jsonl", "all"):
         plan_or_load()
-    if s in ("seq", "all"):
+    if s in ("seq", "jsonl", "all"):
         stage_seq(plan_or_load(), args.work, args.jobs)
-    if s in ("merge", "all"):
-        stage_merge(plan_or_load(), args.work)
+    if s in ("merge", "jsonl", "all"):
+        stage_merge(plan_or_load(), args.work, merged)
     if s in ("convert", "all"):
-        stage_convert(args.work / "3dbag.city.jsonl", args.dest, args.ordering, args.convert_arg)
+        stage_convert(merged, args.dest, args.ordering, args.convert_arg)
     if s in ("verify", "all"):
         stage_verify(args.dest, args.work)
 

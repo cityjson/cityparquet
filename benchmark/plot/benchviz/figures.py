@@ -363,7 +363,8 @@ def sizes(data: dict[str, Any], out: Path) -> list[Path]:
         ax.tick_params(axis="y", labelsize=5.5)
         for x, (bar, fmt, value) in enumerate(zip(bars, formats, values, strict=False)):
             if value is None:
-                ax.text(x, 0, "missing", ha="center", va="bottom", fontsize=5)
+                word = "missing" if prep.applicable(dataset, fmt) else "n/a"
+                ax.text(x, 0, word, ha="center", va="bottom", fontsize=5)
                 continue
             factor = by[fmt].get("factor")
             ax.text(
@@ -409,7 +410,8 @@ def format_cells(
     The text is the absolute value over its factor against CityGML; a cell
     without a CityGML value keeps its own value and says `n/a` where the
     factor would be, and a cell that was not measured, skipped or failed
-    carries that word instead of a number. A factor is never zero and never against another format.
+    carries that word instead of a number. A format the dataset is not
+    produced in says `n/a`. A factor is never zero and never against another format.
     """
     records = [r for r in data.get("read", []) if r.get("dataset") == dataset.get("id")]
     queries = tables.dataset_queries(records)
@@ -422,7 +424,8 @@ def format_cells(
             record = index.get((fmt, query))
             value = (record or {}).get(field)
             if value is None:
-                row.append((None, _unavailable_label(record)))
+                label = _unavailable_label(record) if prep.applicable(dataset, fmt) else "n/a"
+                row.append((None, label))
                 continue
             number = float(value) / (units.MB if field == "rss_b" else 1)
             factor = record.get(factor_field)
@@ -462,7 +465,7 @@ def format_figures(data: dict[str, Any], out: Path) -> list[Path]:
     written: list[Path] = []
     formats = list(prep.FORMATS)
     for dataset in datasets:
-        note = slice_note(dataset)
+        note = " ".join(filter(None, (slice_note(dataset), prep.not_applicable_note(dataset))))
         for name, field, _page, axis_title in FORMAT_METRICS:
             queries, cells = blocks[(dataset["id"], field)]
             fig = plt.figure(figsize=(7.2, 0.42 * max(1, len(queries)) + 2.4), layout="constrained")

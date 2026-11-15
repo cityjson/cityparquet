@@ -8,6 +8,9 @@ families = ["sizes", "formats", "bloom", "databases", "network"]
 # The 3DBAG slice: the largest input of the format and size comparisons, and
 # the dataset the database family measures.
 slice_dataset = "3dbag_n1000000"
+# The national dataset: the whole of 3DBAG. No profile selects it; `--national`
+# adds it and `--datasets 3dbag-national` names it.
+national_dataset = "3dbag_national"
 # The dataset that stands in for the slice in the database family under the
 # `short` and `smoke` profiles: small, and in the slice's CRS (EPSG:7415).
 small_database_dataset = "rotterdam"
@@ -94,3 +97,19 @@ title = "3DBAG (Netherlands)"
 # sidecar; this nominal identifier remains stable for paths and commands.
 target_objects = 1000000
 role = "slice"
+
+# The whole of 3DBAG v20250903: every one of its 8,941 tiles merged into one
+# CityJSONSeq by `just fetch-3dbag-national` (10,771,547 features, about
+# 66 GB). `formats` names the formats it is produced in: citygml-tools cannot
+# write a CityGML document of this size and a single CityJSON document cannot
+# be held in memory, so those two formats are not applicable, and no factor
+# against CityGML exists for this dataset. It keeps every LoD 3DBAG publishes
+# (0, 1.2, 1.3 and 2.2); the slice above drops LoD 1.2 for CityGML's sake.
+# The sizes and formats families measure it; the bloom, network and database
+# families do not. It is always built on the measuring host and never hosted
+# (benchmark/README.md, "The national dataset").
+[datasets.3dbag_national]
+source = "3dbag_national.city.jsonl"
+title = "3DBAG (Netherlands, national)"
+role = "national"
+formats = ["cityjsonseq", "flatcitybuf", "cityparquet"]

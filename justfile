@@ -237,6 +237,43 @@ fetch-3dbag DEST=(BENCH / "runs/data/3dbag") SIZES='1000000':
         --input "$src" --out-dir "{{DEST}}" --stem 3dbag --sizes "{{SIZES}}" \
         --drop-lod 1.2
 
+# Build the benchmark's NATIONAL dataset source: the whole of 3DBAG v20250903,
+# every one of its 8,941 tiles, as ONE CityJSONSeq file,
+# DEST/3dbag_national.city.jsonl (10,771,547 features, about 66 GB). The tile
+# list is read from the published `netherlands-3d-bag` STAC collection, and
+# scripts/3dbag2cityparquet does the rest (its README states the arithmetic
+# and the measured run): download, requantise every tile onto one shared
+# transform, concatenate in tile quadtree order. A present file is kept, and
+# every stage resumes.
+#
+# Unlike the slice it is NOT cut from the FlatCityBuf subset `fetch-3dbag`
+# downloads, which holds a part of the country, and it keeps every LoD 3DBAG
+# publishes (0, 1.2, 1.3, 2.2): no CityGML artefact is built from it, so
+# nothing has to be dropped for one.
+#
+# Scratch, under the data root's work/3dbag-national/: 11 GB of tile `.gz`
+# and 62 GB of per-tile `.jsonl`, which may be deleted once the merged file
+# exists. JOBS is the number of tiles converted at once.
+#
+# Needs curl, uv and cjseq (`just fetch-tools`); network-dependent (11.2 GB);
+# kept OUT of `just check`/CI.
+[doc("Build the national 3DBAG source: all 8,941 tiles as one CityJSONSeq (about 66 GB)")]
+fetch-3dbag-national DEST=(BENCH / "runs/data/3dbag") JOBS='16':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="{{DEST}}/3dbag_national.city.jsonl"
+    if [[ -s "$out" ]]; then
+        echo "fetch-3dbag-national: $out is present; kept"
+        exit 0
+    fi
+    data_root="${CITYPARQUET_BENCH_ROOT:-{{BENCH}}/runs}"
+    work="$data_root/work/3dbag-national"
+    mkdir -p "$work" "{{DEST}}"
+    script=scripts/3dbag2cityparquet/3dbag2cityparquet.py
+    uv run "$script" urls --manifest "$work/3dbag_urls.txt" --work "$work"
+    uv run "$script" jsonl --manifest "$work/3dbag_urls.txt" --work "$work" \
+        --merged "$out" --jobs "{{JOBS}}"
+
 # ---------------------------------------------------------------------------
 # Conversion
 # ---------------------------------------------------------------------------

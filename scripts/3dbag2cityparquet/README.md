@@ -127,11 +127,11 @@ uv run scripts/3dbag2cityparquet/3dbag2cityparquet.py all \
 
 The script declares its one Python dependency inline (PEP 723), so `uv run`
 resolves it in an ephemeral environment and nothing has to be installed first.
-It needs [`uv`](https://docs.astral.sh/uv/) and both binaries built:
-`lib/cityparquet-rs/target/release/cityparquet` and
-`lib/cityparquet-rs/vendor/cjseq/target/release/cjseq`. (Plain `python3` runs it
-too, given `duckdb` on the interpreter's path; only the `verify` stage imports
-it.)
+It needs [`uv`](https://docs.astral.sh/uv/) and two binaries:
+`lib/cityparquet-rs/target/release/cityparquet`, built from this tree, and
+`cjseq` on `PATH` (`just fetch-tools` installs the pinned release; `$CJSEQ`
+names another build). (Plain `python3` runs it too, given `duckdb` on the
+interpreter's path; only the `verify` stage imports it.)
 
 `--ordering hilbert|source` chooses the row order the `convert` stage passes to
 `cityparquet convert`. It defaults to `hilbert`, the writer's own default and
@@ -145,13 +145,15 @@ through.
 
 | Stage     | What it does                                                  |
 | --------- | ------------------------------------------------------------- |
+| `urls`    | write the manifest from the published STAC collection         |
 | `fetch`   | download every tile `.gz` named by the manifest               |
 | `plan`    | read each tile's transform + CRS; derive the merged transform |
 | `seq`     | `gunzip \| cjseq cat \| shift` → one `.jsonl` per tile        |
 | `merge`   | synthetic header + every tile's feature lines → one file      |
 | `convert` | `cityparquet convert <that one file> -o <dest> --ordering …`  |
 | `verify`  | row count, id uniqueness, extent, footer keys                 |
-| `all`     | every stage in order                                          |
+| `jsonl`   | `fetch`, `plan`, `seq`, `merge`: the one file, no package     |
+| `all`     | every stage from `fetch` on, in order                         |
 
 **Every stage is resumable** — rerunning skips what is already on disk, and
 partial output is written to `.part` and renamed, so a crash never leaves a
@@ -207,7 +209,21 @@ single-file CityJSONSeq of all of 3DBAG and is worth keeping; the rest is not.
 
 ## The manifest
 
-The URL list is not generated here. It comes from the City3D STAC registry
-(`manifests/3dbag_urls.txt`), which is also what the published
-`netherlands-3d-bag` collection is built from — so the package and the
-catalogue entry describe the same 8,941 tiles.
+The `urls` stage writes the URL list from the published `netherlands-3d-bag`
+STAC collection (`--collection`, by default the City3D STAC catalogue's): one
+tile per `item` link, served by 3DBAG under
+`https://data.3dbag.nl/v20250903/tiles/`. The package and the catalogue entry
+therefore describe the same 8,941 tiles. The stage refuses a collection that
+names another number of tiles (`--expect-tiles`), because that is another
+release of 3DBAG. A manifest that is already present is kept.
+
+## The benchmark's national dataset
+
+`jsonl` runs `fetch`, `plan`, `seq` and `merge` and stops: it writes the one
+merged CityJSONSeq file to `--merged` and needs neither `--dest` nor the
+`cityparquet` binary. `just fetch-3dbag-national` runs `urls` and `jsonl` to
+build the source of the benchmark's national dataset
+([`benchmark/README.md`](../../benchmark/README.md#the-national-dataset)); the
+benchmark's own preparation chain converts that file, so its package is not
+the one the `convert` stage writes (no `--lod0`, and the corpus
+normalisation applies).

@@ -1469,6 +1469,23 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     formats against one another on a query, and a claim that needs the
     query's own time needs a run with `--formats-whole-file-scenarios all`.
 
+45. **The national dataset is compared in three formats, with other content
+    than the slice, and has no factor against CityGML.** `3dbag_national`
+    is the whole of 3DBAG v20250903 (10,771,547 features). It is produced
+    in CityJSONSeq, FlatCityBuf and CityParquet only: citygml-tools could
+    not write a CityGML document of this size, and a single CityJSON
+    document of it cannot be held in memory. Its figures and tables say
+    `n/a` for those two formats, and every factor against CityGML is
+    empty; no other format takes the baseline's place. It is not the slice
+    scaled up. It is merged from 3DBAG's published tiles and not cut from
+    the FlatCityBuf subset the slice comes from, and it keeps LoD 1.2,
+    which the slice drops for CityGML's sake (Caveat 43 does not hold for
+    it), so each building carries one more solid than in the slice. The
+    normalisation of Caveat 41 applies to it unchanged. A cost per object
+    must therefore not be extrapolated from the slice to this dataset or
+    compared between the two. The bloom, network and database families do
+    not measure it.
+
 - **The network family's times come from a simulated network.** The
   primary over-HTTP measurement reads through `net-sim`, a local server
   with a fixed bandwidth (one budget shared by every connection) and a

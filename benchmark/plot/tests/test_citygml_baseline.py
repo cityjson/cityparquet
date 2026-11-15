@@ -327,3 +327,32 @@ def test_a_reused_cell_without_a_measured_read_all_stays_unavailable(tmp_path: P
     data, _ = prep.build(prep.Inputs(bench))
     by = {(r["scenario_key"], r["format"]): r for r in data["read"] if r["dataset"] == "alpha"}
     assert by[("bbox-1pct", "citygml")]["unavailable"] == "no time recorded"
+
+
+
+def test_a_format_a_dataset_is_not_produced_in_says_not_applicable(tmp_path: Path):
+    data, _ = prep.build(prep.Inputs(_bench(tmp_path)))
+    dataset = next(d for d in data["datasets"] if d["id"] == "beta")
+    assert prep.not_applicable_note(dataset) == ""
+    # The national dataset's manifest entry names its formats.
+    dataset["formats"] = ["cityjsonseq", "flatcitybuf", "cityparquet"]
+    data["read"] = [
+        r for r in data["read"] if r["dataset"] != "beta" or prep.applicable(dataset, r["format"])
+    ]
+    queries, cells = figures.format_cells(data, dataset, "time_s")
+    row = cells[queries.index("full-read")]
+    assert row[0] == (None, "n/a") and row[1] == (None, "n/a")
+    assert row[-1][1].endswith("\u00d7 n/a")
+    note = prep.not_applicable_note(dataset)
+    assert "CityGML and CityJSON are not applicable" in note
+    assert "no factor against CityGML" in note
+    rows = [r for r in tables.query_table(data) if r["dataset"] == "beta" and r["query"] == "full-read"]
+    notes = {r["format_id"]: r["note"] for r in rows}
+    assert notes["citygml"] == "not applicable"
+    assert notes["cityparquet"] == "CityGML not applicable"
+
+
+def test_the_manifest_names_the_national_datasets_formats():
+    label = prep.manifest_labels()["3dbag_national"]
+    assert label["formats"] == ["cityjsonseq", "flatcitybuf", "cityparquet"]
+    assert label["role"] == "national"

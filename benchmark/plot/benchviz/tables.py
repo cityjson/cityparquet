@@ -104,13 +104,20 @@ def query_table(data: dict) -> list[dict]:
         index = {(r["format"], r["scenario_key"]): r for r in records}
         for query in dataset_queries(records):
             base = index.get((prep.BASELINE_FORMAT, query))
-            base_reason = (base or {}).get("unavailable") if base else "not measured"
+            if base:
+                base_reason = base.get("unavailable")
+            elif prep.applicable(dataset, prep.BASELINE_FORMAT):
+                base_reason = "not measured"
+            else:
+                base_reason = "not applicable"
             for fmt in prep.FORMATS:
                 record = index.get((fmt, query))
                 if record is None:
-                    note = "not measured"
+                    note = "not measured" if prep.applicable(dataset, fmt) else "not applicable"
                 elif record.get("unavailable"):
                     note = record["unavailable"]
+                elif base_reason == "not applicable":
+                    note = "CityGML not applicable"
                 elif base_reason:
                     note = f"CityGML unavailable: {base_reason}"
                 elif record.get("reused"):

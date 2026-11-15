@@ -46,10 +46,20 @@ def artefact_bytes(path: Path) -> int:
     return path.stat().st_size
 
 
-def measure(prepared: Path, dataset: str) -> list[tuple[str, int]]:
-    """``(format, bytes)`` for every format of one dataset, in ``FORMATS`` order."""
+def measure(prepared: Path, dataset: str, formats: list[str] | None = None) -> list[tuple[str, int]]:
+    """``(format, bytes)`` for every format of one dataset, in ``FORMATS`` order.
+
+    ``formats`` names the formats the dataset is produced in when that is not
+    all five; the others get no row, and a missing artefact of a named format
+    is still an error.
+    """
+    unknown = sorted(set(formats or ()) - set(FORMATS))
+    if unknown:
+        raise SystemExit(f"unknown format: {', '.join(unknown)}")
     rows = []
     for fmt, suffix in FORMATS.items():
+        if formats and fmt not in formats:
+            continue
         artefact = prepared / f"{dataset}{suffix}"
         if not artefact.exists():
             raise SystemExit(f"missing prepared {fmt} artefact: {artefact}")
@@ -84,8 +94,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dataset", required=True, help="dataset name: the prepared artefacts' stem")
     parser.add_argument("--prepared", type=Path, required=True, help="directory of prepared artefacts")
     parser.add_argument("--out", type=Path, required=True, help="sizes.csv to create or update")
+    parser.add_argument("--formats", default="", help="comma-separated formats the dataset is produced in (default: all five)")
     args = parser.parse_args(argv)
-    write_sizes(args.out, args.dataset, measure(args.prepared, args.dataset))
+    formats = [name.strip() for name in args.formats.split(",") if name.strip()] or None
+    write_sizes(args.out, args.dataset, measure(args.prepared, args.dataset, formats))
 
 
 if __name__ == "__main__":
