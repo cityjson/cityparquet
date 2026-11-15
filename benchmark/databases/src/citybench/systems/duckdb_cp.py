@@ -35,18 +35,21 @@ from citybench.stats import peak_resident_bytes
 PACKAGE_SCHEMA = "pkg"
 
 
-def _arrow(result):
-    """Materialise a DuckDB result as an Arrow table.
+def _arrow(conn, sql: str, args):
+    """Run `sql` and materialise its result as an Arrow table.
 
     Arrow, not `fetchall()`: a Python-object fetch of a row-returning
     scenario measures the client's per-value object construction (about
     72 us/row was measured on `SELECT *`), which is not what this benchmark
-    compares. `to_arrow_table` is the current spelling; `fetch_arrow_table`
-    is its deprecated alias and is the only one on older clients this
-    project's own floor (duckdb >= 1.3.2) allows.
+    compares. Through the relation API (`conn.sql(...).to_arrow_table()`),
+    not a DB-API result (`conn.execute(...).to_arrow_table()`): from DuckDB
+    2.0 the Python client copies the rows once more on the DB-API path and
+    warns that it does. The relation API refuses to run while an earlier
+    `execute()` result is unfinished (a `fetchone()` leaves one), so that
+    result is run to its end first.
     """
-    fetch = getattr(result, "to_arrow_table", None) or result.fetch_arrow_table
-    return fetch()
+    conn.complete()
+    return conn.sql(sql, params=list(args)).to_arrow_table()
 
 
 @register
@@ -100,8 +103,9 @@ class DuckDBCityParquet:
         # `geo`-FOOTER conversion path, so turning it off keeps a GeoParquet
         # footer from silently re-typing a column mid-run. MEASURED, not
         # assumed: it does NOT change `geometry_lod0_0`, which CityParquet
-        # writes with Parquet's own GEOMETRY logical type and DuckDB 1.5
-        # decodes to native `GEOMETRY` either way (README Caveat 18).
+        # writes with Parquet's own GEOMETRY logical type and DuckDB (1.5.5
+        # and 2.0.0 alike) decodes to native `GEOMETRY` either way (README
+        # Caveat 18).
         self._conn.execute("SET enable_geoparquet_conversion = false")
 
     def set_threads(self, threads: int) -> None:
@@ -182,8 +186,8 @@ class DuckDBCityParquet:
 
         def once() -> tuple[int, float, int | None]:
             def execute() -> tuple[int, float]:
+                self._conn.complete()  # outside the timed window (`_arrow`)
                 start = time.perf_counter()
-                result = self._conn.execute(sql, list(args))
                 if mode == "rowcount":
                     # Materialised INSIDE the timed window, as the
                     # PostgreSQL adapters already do, so no engine wins by
@@ -191,9 +195,10 @@ class DuckDBCityParquet:
                     # Python objects, so the number is the engine's rather
                     # than the client's per-value object construction
                     # (measured at about 72 us/row on `SELECT *`).
-                    count = _arrow(result).num_rows
+                    count = _arrow(self._conn, sql, args).num_rows
                 else:
-                    count = pg.extract_count(result.fetchall(), mode)
+                    count = pg.extract_count(
+                        self._conn.execute(sql, list(args)).fetchall(), mode)
                 return count, time.perf_counter() - start
 
             source = memory.self_source()
@@ -222,7 +227,7 @@ class DuckDBCityParquet:
             scenario, params, self._table(), window, probe=probe,
             columns=self._column_types(),
         )
-        table = _arrow(self._conn.execute(sql, list(args)))
+        table = _arrow(self._conn, sql, args)
         columns = table.column_names
         values = [table.column(name).to_pylist() for name in columns]
         return columns, list(zip(*values))

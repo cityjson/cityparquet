@@ -588,8 +588,9 @@ def resolve_windows(table: str, conn: duckdb.DuckDBPyConnection
     if span_y:
         terms += [f"({centre[1]} - bbox.ymax) / {span_y}",
                   f"(bbox.ymin - {centre[1]}) / {span_y}"]
+    conn.complete()  # `conn.sql` refuses to run past the unfinished `row` result
     halves = [
-        float(v) for v in conn.execute(
+        float(v) for v in conn.sql(
             f"SELECT greatest({', '.join(terms)})::DOUBLE AS h FROM {table} "
             f"WHERE bbox IS NOT NULL ORDER BY h"
         ).to_arrow_table().column("h").to_pylist()
