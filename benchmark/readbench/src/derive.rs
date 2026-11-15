@@ -1,18 +1,29 @@
-//! Derived rows for the whole-file formats in the `network` family.
+//! Cells of the whole-file formats that reuse the format's read all.
 //!
-//! Over HTTP the three text formats (`citygml`, `cityjson`, `cityjsonseq`)
-//! answer every query with ONE whole-object GET, so their bytes read and
-//! request count are those of read all whatever the query. The `network`
-//! family therefore measures them only on the scenarios its
+//! The three text formats (`citygml`, `cityjson`, `cityjsonseq`) have no
+//! index: whatever the query, their reader parses the whole file and filters
+//! in memory. A run therefore measures them only on the scenarios its
 //! [`WholeFileScenarios`] setting names (by default read all and the
-//! identifier lookups) and emits every other scenario as a DERIVED row: bytes
-//! and requests copied from the measured read all, every time field empty,
-//! `notes` tagged [`DERIVED_TAG`] and [`DERIVED_STATUS`].
+//! identifier lookups, where a streaming reader stops at the hit) and reuses
+//! read all for every other scenario. Such a row is tagged [`DERIVED_TAG`]
+//! and [`DERIVED_STATUS`], has zero repeats and no time or memory of its own.
 //!
-//! A derived row is written only after the run has proven the premise on the
-//! format's measured cells ([`premise`]): every sample, warm-ups included,
-//! issued exactly one request and received exactly the artefact's size. When
-//! the premise fails nothing is derived for that format, and the run says so.
+//! **Network.** Over HTTP these formats answer every query with ONE
+//! whole-object GET, so their bytes read and request count are those of read
+//! all. The cell is not run at all; its row copies bytes and requests from
+//! the measured read all. It is written only after the run has proven the
+//! premise on the format's measured cells ([`premise`]): every sample,
+//! warm-ups included, issued exactly one request and received exactly the
+//! artefact's size. When the premise fails nothing is derived for that
+//! format, and the run says so.
+//!
+//! **Local.** The cell runs ONCE, without a warm-up, so that its answer
+//! (result count, returned geometry) stays in the cross-format consistency
+//! check. Its row carries that answer; a loader takes its time and memory
+//! from the format's read all. The check sample's own time and peak memory
+//! go to the samples sidecar (`check: true`) and, beside read all's median,
+//! to the params sidecar ([`local_record`]), so every run shows how close
+//! the reused cell was to read all.
 
 use std::str::FromStr;
 
@@ -26,8 +37,49 @@ pub const DERIVED_TAG: &str = "derived-from=full-read";
 /// block it keeps any loader from reading the row as a measurement.
 pub const DERIVED_STATUS: &str = "status=derived";
 
-/// Which scenarios the whole-file formats are measured on in a `network`
-/// run. Read all is always measured: every derived row copies from it.
+/// What a local run's params sidecar says of how its reused cells were taken.
+pub const LOCAL_MODE: &str = "local: one check sample per cell (answer checked across formats), \
+                              time and memory reused from the format's read all";
+
+/// The params sidecar's `whole_file_derivation.formats` record of a LOCAL
+/// run: per format, read all's median time and peak RSS, and for each reused
+/// cell its check sample's time and peak RSS with the time's ratio to read
+/// all. `full_reads` yields `(label, median_s, peak_rss_bytes)` of the
+/// measured read all, `checks` `(label, cell, time_s, peak_rss_bytes)` of
+/// each reused cell.
+pub fn local_record<'a>(
+    full_reads: impl Iterator<Item = (&'a str, f64, u64)>,
+    checks: impl Iterator<Item = (&'a str, String, f64, u64)>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let full: std::collections::HashMap<&str, (f64, u64)> =
+        full_reads.map(|(l, t, m)| (l, (t, m))).collect();
+    let mut out = serde_json::Map::new();
+    for (label, cell, time_s, peak_rss_bytes) in checks {
+        let read_all = full.get(label).copied();
+        let entry = out.entry(label.to_string()).or_insert_with(|| {
+            serde_json::json!({
+                "status": "derived",
+                "full_read_median_s": read_all.map(|(t, _)| t),
+                "full_read_peak_rss_bytes": read_all.map(|(_, m)| m),
+                "cells": [],
+            })
+        });
+        let ratio = read_all.and_then(|(t, _)| (t > 0.0).then_some(time_s / t));
+        entry["cells"]
+            .as_array_mut()
+            .expect("cells is an array")
+            .push(serde_json::json!({
+                "cell": cell,
+                "check_time_s": time_s,
+                "check_peak_rss_bytes": peak_rss_bytes,
+                "time_ratio_to_full_read": ratio,
+            }));
+    }
+    out
+}
+
+/// Which scenarios the whole-file formats are measured on. Read all is
+/// always measured: every reused cell refers to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WholeFileScenarios {
     /// Every scenario measured (no derived rows).
@@ -311,6 +363,29 @@ mod tests {
         assert!(!default.measures(Format::CityGml, Scenario::Count));
         assert!(!WholeFileScenarios::FullRead.measures(Format::CityGml, Scenario::IdLookup));
         assert!(WholeFileScenarios::All.measures(Format::CityGml, Scenario::AttrStats));
+    }
+
+    #[test]
+    fn the_local_record_sets_each_check_sample_beside_read_all() {
+        let record = local_record(
+            [("citygml", 10.0, 17), ("cityjsonseq", 2.0, 141)].into_iter(),
+            [
+                (
+                    "citygml",
+                    "citygml/bbox-query/bbox-1pct".to_string(),
+                    10.5,
+                    18,
+                ),
+                ("citygml", "citygml/attr-stats".to_string(), 9.9, 17),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(record.len(), 1, "a format with no reused cell has no entry");
+        let gml = &record["citygml"];
+        assert_eq!(gml["full_read_median_s"], 10.0);
+        assert_eq!(gml["cells"].as_array().unwrap().len(), 2);
+        assert_eq!(gml["cells"][0]["time_ratio_to_full_read"], 1.05);
+        assert_eq!(gml["cells"][1]["check_peak_rss_bytes"], 17);
     }
 
     #[test]

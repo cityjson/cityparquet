@@ -155,7 +155,22 @@ class ProvenanceTests(unittest.TestCase):
             manifest = {"datasets": {"d": {"role": "corpus"}}}
             bench_suite.run_suite(manifest, {"prepared": Path("p"), "data": Path("d")}, ["formats", "bloom"], ["d"], "full", isolation=isolation)
         for call in calls:
-            self.assertEqual(call[-4:], ("1", "8000000000", "off", "60"), call)
+            # `bench` takes its extra reader arguments after the isolation.
+            tail = call[-5:-1] if call[0] == "bench" else call[-4:]
+            self.assertEqual(tail, ("1", "8000000000", "off", "60"), call)
+        (bench,) = [call for call in calls if call[0] == "bench"]
+        self.assertEqual(bench[-1], "--whole-file-scenarios full-read,id-lookup")
+
+    def test_the_formats_family_reuses_read_all_unless_told_to_measure_all(self):
+        manifest = bench_suite.load_manifest()
+        self.assertEqual(bench_suite.whole_file_scenarios(manifest, None, "formats"), "full-read,id-lookup")
+        self.assertEqual(bench_suite.whole_file_scenarios(manifest, "all", "formats"), "all")
+
+    def test_the_network_family_alone_selects_the_format_inputs(self):
+        manifest = bench_suite.load_manifest()
+        for profile in ("short", "full"):
+            self.assertEqual(bench_suite.dataset_selection(manifest, ["network"], "", profile),
+                             bench_suite.dataset_selection(manifest, ["formats"], "", profile))
 
     def _database_command(self, profile, memory_max):
         from unittest import mock
@@ -193,7 +208,8 @@ class ProvenanceTests(unittest.TestCase):
              mock.patch.object(bench_suite, "write_run_manifest", lambda *a, **k: None):
             bench_suite.run_suite({"datasets": {"d": {"role": "corpus"}}}, {"prepared": Path("p")}, ["formats"], ["d"], "full",
                                   isolation={"numa_node": "auto", "memory_max": None, "max_load": "auto", "max_load_wait_s": 600})
-        self.assertEqual(calls[0][-3], "off")
+        # `bench` ends with its extra reader arguments, after the isolation.
+        self.assertEqual(calls[0][-4], "off")
 
 
 if __name__ == "__main__":

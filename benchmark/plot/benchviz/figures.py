@@ -426,7 +426,8 @@ def format_cells(
                 continue
             number = float(value) / (units.MB if field == "rss_b" else 1)
             factor = record.get(factor_field)
-            row.append((factor, f"{number:.3g}\n{_factor_text(factor)}"))
+            mark = prep.REUSED_MARK if record.get("reused") else ""
+            row.append((factor, f"{mark}{number:.3g}\n{_factor_text(factor)}"))
         cells.append(row)
     return queries, cells
 
@@ -497,6 +498,8 @@ def format_figures(data: dict[str, Any], out: Path) -> list[Path]:
             caption = FACTOR_KEY + (f" {note}" if note else "")
             if field == "time_s":
                 caption += f" {_statistic_note(data)}"
+            if any(r.get("reused") for r in data.get("read", []) if r.get("dataset") == dataset.get("id")):
+                caption += f" {prep.REUSED_FOOTNOTE}"
             bar.set_label(caption, fontsize=6, wrap=True)
             fig.suptitle(_title(dataset), fontsize=11, x=0.01, ha="left")
             written += _save(fig, name, out / FORMATS_DIR / dataset["id"])

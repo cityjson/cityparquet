@@ -134,6 +134,12 @@ pub struct RunOptions {
     /// tagged `cold` in `notes` (see [`run`]'s own doc comment on the
     /// `sudo purge` protocol this does NOT automate).
     pub cold: bool,
+    /// The scenarios the whole-file formats are measured on in a LOCAL
+    /// format comparison; on the rest each cell takes one check sample and
+    /// its time and memory are those of the format's read all (see
+    /// [`crate::derive`]). A `network` run carries its own setting in
+    /// [`NetworkOptions`].
+    pub local_whole_file: WholeFileScenarios,
     /// Transport for every measurement this run drives (see [`Transport`]).
     pub transport: Transport,
     /// HTTP base URL; required when `transport` is [`Transport::Http`].
@@ -365,6 +371,9 @@ struct Sample {
     query_tag: String,
     sample_index: usize,
     warmup: bool,
+    /// The one sample of a cell whose time is reused from read all: it
+    /// checks the answer and is in no aggregate.
+    check: bool,
     time_s: f64,
     peak_rss_bytes: u64,
     peak_heap_bytes: u64,
@@ -767,8 +776,17 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
     // `isolation` records what was requested and applied; it is written now
     // and again after the matrix with the waits and per-cell load filled in.
     let (isolation_record, mut gate) = setup_isolation(&opts.isolation);
+    // A local run reuses read all only when it measures read all; a subset
+    // without it measures every cell it names.
+    let local_reuse = opts.network.is_none()
+        && opts.transport == Transport::Local
+        && scenarios.contains(&Scenario::FullRead);
     let mut deferral = Deferral {
-        setting: opts.network.as_ref().map(|n| n.whole_file),
+        setting: match &opts.network {
+            Some(network) => Some(network.whole_file),
+            None => local_reuse.then_some(opts.local_whole_file),
+        },
+        check_once: local_reuse,
         pending: Vec::new(),
     };
     sidecar_json
@@ -1122,6 +1140,7 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
                 peak_heap_bytes: line.peak_heap_bytes,
                 peak_rss_bytes: line.ru_maxrss_bytes,
                 repeat: 1,
+                derived: false,
                 // Exactly `cold`, and nothing else ever appended:
                 // `the benchmark renderer` drops a cold row with
                 // an EXACT `notes == "cold"` test, so a tag alongside it
@@ -1163,7 +1182,39 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
     // [`crate::derive`]), then reported as skipped by the check above, which
     // only ever sees measured rows.
     let mut derived_lines = Vec::new();
-    if let Some(setting) = deferral.setting {
+    if let Some(setting) = deferral.setting
+        && deferral.check_once
+    {
+        let record = crate::derive::local_record(
+            rows.iter()
+                .filter(|r| r.scenario == Scenario::FullRead && !r.derived)
+                .map(|r| (r.label.as_str(), r.timing.median, r.peak_rss_bytes)),
+            rows.iter().filter(|r| r.derived).map(|r| {
+                let tag = r.notes.first().map(String::as_str).unwrap_or("");
+                let cell = if tag.is_empty() || tag == crate::derive::DERIVED_TAG {
+                    format!("{}/{}", r.label, r.scenario.as_str())
+                } else {
+                    format!("{}/{}/{tag}", r.label, r.scenario.as_str())
+                };
+                (r.label.as_str(), cell, r.timing.median, r.peak_rss_bytes)
+            }),
+        );
+        if !record.is_empty() {
+            eprintln!(
+                "cityparquet-readbench: {} whole-file cell(s) took one check sample and reuse \
+                 their format's read all (`{}`); --whole-file-scenarios all measures them",
+                rows.iter().filter(|r| r.derived).count(),
+                crate::derive::DERIVED_TAG,
+            );
+        }
+        if !record.is_empty() {
+            sidecar_json["whole_file_derivation"] = serde_json::json!({
+                "scenarios_measured": setting.as_str(),
+                "mode": crate::derive::LOCAL_MODE,
+                "formats": record,
+            });
+        }
+    } else if let Some(setting) = deferral.setting {
         let simulated_root = opts
             .network
             .as_ref()
@@ -1255,6 +1306,10 @@ fn run_matrix(opts: &RunOptions) -> Result<()> {
 /// cell is measured) and the cells it set aside.
 struct Deferral {
     setting: Option<WholeFileScenarios>,
+    /// A local run: a cell the setting does not measure still runs ONCE, so
+    /// its answer stays in the cross-format check, and its row is written
+    /// with the answer and no time (see [`crate::derive`]).
+    check_once: bool,
     pending: Vec<Pending>,
 }
 
@@ -2042,9 +2097,68 @@ fn run_measurement(
     total_for_selectivity: Option<u64>,
     notes: &str,
 ) -> Result<u64> {
-    if let Some(setting) = deferral.setting
-        && !setting.measures(format, scenario)
-    {
+    let reuse = deferral
+        .setting
+        .is_some_and(|setting| !setting.measures(format, scenario));
+    if reuse && deferral.check_once {
+        // One sample, no warm-up: it is checked, never reported as a time.
+        let cell = format!("{dataset}/{label}/{scenario}/{notes}");
+        let (load, busy) = gate.before_sample(&cell);
+        let line = spawn_child(format, scenario, source, params)?;
+        samples.push(Sample {
+            dataset: dataset.to_string(),
+            format: label.to_string(),
+            scenario: scenario.to_string(),
+            query_tag: notes.to_string(),
+            sample_index: 0,
+            warmup: false,
+            check: true,
+            time_s: line.time_s,
+            peak_rss_bytes: line.ru_maxrss_bytes,
+            peak_heap_bytes: line.peak_heap_bytes,
+            result_count: line.result_count,
+            cell_budget_s: sampling.cell_budget_s(),
+            min_repeat: sampling.min_repeat,
+            load1: load.map(|l| l.load1),
+            runnable: load.map(|l| l.runnable),
+            mem_available_bytes: load.and_then(|l| l.mem_available_bytes),
+            bytes_read: line.io.map(|io| io.bytes),
+            http_requests: line.io.map(|io| io.requests),
+        });
+        let selectivity = match scenario {
+            Scenario::Count | Scenario::FullRead => None,
+            _ => total_for_selectivity
+                .and_then(|total| (total > 0).then_some(line.result_count as f64 / total as f64)),
+        };
+        let mut tags: Vec<String> = Vec::new();
+        if !notes.is_empty() {
+            tags.push(notes.to_string());
+        }
+        tags.extend(line.notes);
+        tags.push(crate::derive::DERIVED_TAG.to_string());
+        tags.push(crate::derive::DERIVED_STATUS.to_string());
+        if busy {
+            tags.push("busy".to_string());
+        }
+        rows.push(Row {
+            dataset: dataset.to_string(),
+            label: label.to_string(),
+            scenario,
+            selectivity,
+            result_count: line.result_count,
+            timing: TimingStats::of(&[line.time_s]),
+            peak_heap_bytes: line.peak_heap_bytes,
+            peak_rss_bytes: line.ru_maxrss_bytes,
+            repeat: 0,
+            derived: true,
+            notes: tags,
+            io: line.io,
+            lookup: line.lookup,
+            returned: line.returned,
+        });
+        return Ok(line.result_count);
+    }
+    if reuse {
         deferral.pending.push(Pending {
             dataset: dataset.to_string(),
             label: label.to_string(),
@@ -2088,6 +2202,7 @@ fn run_measurement(
             query_tag: notes.to_string(),
             sample_index: i,
             warmup: i == 0,
+            check: false,
             time_s: line.time_s,
             peak_rss_bytes: line.ru_maxrss_bytes,
             peak_heap_bytes: line.peak_heap_bytes,
@@ -2162,6 +2277,7 @@ fn run_measurement(
         peak_heap_bytes: peak_heap_max,
         peak_rss_bytes: peak_rss_max,
         repeat: taken,
+        derived: false,
         notes: tags,
         io,
         lookup,
@@ -2279,6 +2395,10 @@ struct Row {
     peak_heap_bytes: u64,
     peak_rss_bytes: u64,
     repeat: usize,
+    /// A cell whose time and memory are reused from the format's read all:
+    /// `timing` and the peaks hold its one check sample, which the CSV row
+    /// leaves empty and the params sidecar records.
+    derived: bool,
     notes: Vec<String>,
     io: Option<IoStats>,
     lookup: Option<LookupCounters>,
@@ -2326,6 +2446,12 @@ impl Row {
         } = self.timing;
         let (peak_heap_bytes, peak_rss_bytes, repeat) =
             (self.peak_heap_bytes, self.peak_rss_bytes, self.repeat);
+        if self.derived {
+            return format!(
+                "{dataset},{format},{scenario},{selectivity_field},{result_count},,,,,,,,,,{repeat},\
+                 {notes},{bytes_field},{requests_field},{lookup_fields}"
+            );
+        }
         format!(
             "{dataset},{format},{scenario},{selectivity_field},{result_count},{mean:.6},{std:.6},\
              {median:.6},{min:.6},{max:.6},{q1:.6},{q3:.6},{peak_heap_bytes},{peak_rss_bytes},{repeat},{notes},\
@@ -2461,11 +2587,37 @@ mod tests {
             peak_heap_bytes: 1,
             peak_rss_bytes: 2,
             repeat: 1,
+            derived: false,
             notes: notes.iter().map(|n| (*n).to_string()).collect(),
             io: None,
             lookup: None,
             returned: Returned::default(),
         }
+    }
+
+    #[test]
+    fn a_reused_row_keeps_its_answer_and_leaves_time_and_memory_empty() {
+        let mut reused = row(
+            Scenario::BBoxQuery,
+            &[
+                "bbox-1pct",
+                crate::derive::DERIVED_TAG,
+                crate::derive::DERIVED_STATUS,
+            ],
+        );
+        reused.derived = true;
+        reused.repeat = 0;
+        reused.selectivity = Some(0.01);
+        let line = reused.render();
+        let fields: Vec<&str> = line.split(',').collect();
+        assert_eq!(fields.len(), CSV_HEADER.split(',').count(), "{line}");
+        assert_eq!((fields[3], fields[4]), ("0.010000", "1116"));
+        assert!(fields[5..14].iter().all(|f| f.is_empty()), "{line}");
+        assert_eq!(fields[14], "0");
+        assert_eq!(
+            fields[15],
+            "bbox-1pct;derived-from=full-read;status=derived"
+        );
     }
 
     /// A library that prints to stdout behind a runner's back must not be

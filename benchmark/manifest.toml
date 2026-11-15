@@ -14,6 +14,15 @@ small_database_dataset = "rotterdam"
 
 # The network family's simulated profiles: a bandwidth shared by every
 # connection and a latency paid by every request. `typical` is the default.
+# The formats family's whole-file formats (citygml, cityjson, cityjsonseq)
+# have no index: their reader parses the whole file whatever the query. They
+# are measured only on these scenarios; on every other scenario a cell takes
+# one check sample (its answer stays in the cross-format check) and reuses the
+# time and memory of read all. `full-read,id-lookup`, `full-read` or `all`;
+# `--formats-whole-file-scenarios` overrides it.
+[formats]
+whole_file_scenarios = "full-read,id-lookup"
+
 # The network family's whole-file formats (citygml, cityjson, cityjsonseq)
 # answer every query with one whole-object GET, so they are measured only on
 # these scenarios and every other scenario is a derived row (read all's bytes

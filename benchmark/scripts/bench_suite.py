@@ -108,7 +108,7 @@ def dataset_selection(manifest: dict, families: list[str], requested: str, profi
         result = ["rotterdam"]
     else:
         result = []
-        if any(family in {"sizes", "formats"} for family in families):
+        if any(family in {"sizes", "formats", "network"} for family in families):
             result.extend(
                 key for key, entry in datasets.items()
                 if entry["role"] in INPUT_ROLES
@@ -502,9 +502,9 @@ def network_profiles(manifest: dict, requested: str, bandwidth_mbps: float | Non
 WHOLE_FILE_SCENARIOS = ("full-read,id-lookup", "full-read", "all")
 
 
-def whole_file_scenarios(manifest: dict, override: str | None) -> str:
-    """The scenarios the whole-file formats are measured on in the network family (the rest are derived from read all)."""
-    value = override or manifest.get("network", {}).get("whole_file_scenarios", WHOLE_FILE_SCENARIOS[0])
+def whole_file_scenarios(manifest: dict, override: str | None, family: str = "network") -> str:
+    """The scenarios the whole-file formats are measured on in the formats or network family (the rest reuse read all)."""
+    value = override or manifest.get(family, {}).get("whole_file_scenarios", WHOLE_FILE_SCENARIOS[0])
     if value not in WHOLE_FILE_SCENARIOS:
         raise SystemExit(f"unknown whole-file scenarios {value!r}; accepted: {', '.join(WHOLE_FILE_SCENARIOS)}")
     return value
@@ -572,7 +572,7 @@ def memory_ceiling(requested: str | None, profile: str) -> int | None:
     return int(requested)
 
 
-def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None, database_datasets: str = "", bloom_attributes: list[str] | None = None, network: dict | None = None) -> None:
+def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], profile: str, read_formats: str = "", cell_budget_s: float | None = None, min_repeat: int = 7, isolation: dict | None = None, database_datasets: str = "", bloom_attributes: list[str] | None = None, network: dict | None = None, formats_whole_file_scenarios: str | None = None) -> None:
     smoke = profile == "smoke"
     repeat = read_repeat(profile)
     budget = "" if cell_budget_s is None else str(cell_budget_s)
@@ -583,16 +583,17 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
     inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in INPUT_ROLES]
     require_prepared(inputs, locations)
     if any(family in {"sizes", "formats", "bloom", "network"} for family in families) and not inputs:
-        raise SystemExit("formats, sizes and bloom need a corpus dataset or the 3DBAG slice")
+        raise SystemExit("formats, sizes, bloom and network need a corpus dataset or the 3DBAG slice")
     if "formats" in families:
         # `bench` is the low-level format runner. It must be passed explicit
         # external output paths.
         output = result_dir(locations, "formats", profile)
-        just("bench", str(stage(locations, "formats", inputs)), str(output), read_formats, str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args)
+        whole_file = whole_file_scenarios(manifest, formats_whole_file_scenarios, "formats")
+        just("bench", str(stage(locations, "formats", inputs)), str(output), read_formats, str(locations["prepared"]), str(repeat), budget, str(min_repeat), *isolation_args, f"--whole-file-scenarios {whole_file}")
         for input_path in inputs:
             # A read subset is part of the run's identity: a CSV whose
             # read rows were measured for four formats must say so.
-            configuration = "CityParquet=Hilbert"
+            configuration = f"CityParquet=Hilbert; whole_file_scenarios={whole_file}"
             if read_formats:
                 configuration += f"; read-formats={read_formats}"
             write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=repeat, smoke=smoke, fixed_configuration=configuration, profile=profile, **sampling, corpus=corpus_origin(locations["prepared"]))
@@ -707,6 +708,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--network-latency-ms", type=float, default=None, help="run only: a custom simulated profile's latency per request (needs --network-bandwidth-mbps)")
     result.add_argument("--network-target", choices=("simulated", "real"), default="simulated", help="run only: simulated (the local net-sim server; the primary measurement) or real (--base-url; a snapshot of one path at one time)")
     result.add_argument("--network-whole-file-scenarios", choices=WHOLE_FILE_SCENARIOS, help="run only: the scenarios the whole-file formats (citygml, cityjson, cityjsonseq) are measured on in the network family; the rest are derived from their read all (default: the manifest's [network] whole_file_scenarios, else full-read,id-lookup)")
+    result.add_argument("--formats-whole-file-scenarios", choices=WHOLE_FILE_SCENARIOS, help="run only: the scenarios the whole-file formats (citygml, cityjson, cityjsonseq) are measured on in the formats family; on the rest each cell takes one check sample and reuses the time and memory of read all (default: the manifest's [formats] whole_file_scenarios, else full-read,id-lookup; all measures every cell)")
     result.add_argument("--network-repeat", type=int, default=3, help="run only: the network family's timed samples per cell, after one discarded warm-up (default 3; the simulated network is deterministic)")
     result.add_argument("--base-url", default="", help="run only: the object-storage base URL for --network-target real")
     result.add_argument("--key-layout", choices=("flat", "bucket"), default="bucket", help="run only: the key layout under --base-url (default bucket, the hosted corpus)")
@@ -737,7 +739,7 @@ def main() -> None:
     if args.command == "prep":
         prepare(data, locations, families, datasets, profile, prep_mode(local=args.local, no_cache=args.no_cache, rebuild_sources=args.rebuild_sources, profile=profile), args.force_upload)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s}, args.database_datasets, [c for c in args.bloom_attributes.split(",") if c] if args.bloom_attributes else None, network={"profiles": args.network_profile, "bandwidth_mbps": args.network_bandwidth_mbps, "latency_ms": args.network_latency_ms, "target": args.network_target, "repeat": args.network_repeat, "whole_file_scenarios": args.network_whole_file_scenarios, "base_url": args.base_url, "key_layout": args.key_layout})
+        run_suite(data, locations, families, datasets, profile, args.read_formats, args.cell_budget_s, args.min_repeat, {"numa_node": args.numa_node, "memory_max": memory_ceiling(args.memory_max, profile), "max_load": args.max_load, "max_load_wait_s": args.max_load_wait_s}, args.database_datasets, [c for c in args.bloom_attributes.split(",") if c] if args.bloom_attributes else None, network={"profiles": args.network_profile, "bandwidth_mbps": args.network_bandwidth_mbps, "latency_ms": args.network_latency_ms, "target": args.network_target, "repeat": args.network_repeat, "whole_file_scenarios": args.network_whole_file_scenarios, "base_url": args.base_url, "key_layout": args.key_layout}, formats_whole_file_scenarios=args.formats_whole_file_scenarios)
     else:
         output = (args.out or locations["summary"] / profile).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None

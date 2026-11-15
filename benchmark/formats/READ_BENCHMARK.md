@@ -396,6 +396,35 @@ effective floor. The root recipes `bench`, `bloom-bench` and
 `bloom-bench-http` take the two as `CELL_BUDGET_S` (empty: off) and
 `MIN_REPEAT`; `just bench-run` takes `--cell-budget-s` and `--min-repeat`.
 
+### Cells that reuse read all
+
+CityGML, CityJSON and CityJSONSeq have no index: whatever the query, their
+reader parses the whole file and filters in memory. A local format
+comparison therefore times them on read all and on the identifier lookups
+(where a streaming reader stops at the hit), and on every other query (the
+spatial windows, the attribute filter, the attribute statistics, `count`)
+the cell reuses the format's read all:
+
+- the cell runs **once**, without a warm-up, so its result count and
+  returned geometry stay in the cross-format consistency check;
+- its CSV row keeps the result count and selectivity, has `repeat` 0, empty
+  time and memory columns, and `derived-from=full-read;status=derived` in
+  `notes`;
+- the check sample's own time and peak memory go to `<csv>.samples.json`
+  (`check: true`) and, beside read all's median, to the
+  `whole_file_derivation` block of `<csv>.params.json`, so each run shows
+  how close the reused cell was to read all;
+- the renderer shows such a cell with read all's time and memory, marked `=`
+  in the heatmaps and `reused = full-read` in `query_factors.csv`.
+
+`[formats] whole_file_scenarios` in `manifest.toml` selects what is measured
+(`full-read,id-lookup` by default, `full-read`, or `all` to measure every
+cell); `just bench-run --formats-whole-file-scenarios` and the harness's
+`--whole-file-scenarios` override it. A run whose `--scenarios` omit read
+all measures every cell it names. FlatCityBuf and CityParquet are always
+measured. Caveat 44 states what the reuse assumes. The `network` family
+applies the same setting to transfers (see its notes below).
+
 ## Warm vs cold protocol
 
 The **headline numbers are warm-cache statistics**: the CSV records both the
@@ -1424,6 +1453,21 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     dangling reference; as a consequence the corpus has no LoD 3 dataset
     with openings, and its only LoD 3 content is Tokyo's 21 LoD 3 solids
     and 103 LoD 3 installation geometries.
+
+44. **Read all stands in for the other full-scan queries of the three text
+    formats.** A cell tagged `derived-from=full-read` was not timed (see
+    "Cells that reuse read all"): the figure and table show the format's
+    read all in its place. The two are not the same work: the query cell
+    parses the same bytes but returns less. In the run of 27 October 2026,
+    which measured every one of these cells with 25 samples, the cell's
+    median time was 0.934 to 1.095 times that of read all over 123 cells in
+    seven datasets (112 of them within 5 %), and its peak RSS 0.970 to
+    1.021 times; the widest time ratios are CityJSON's on the 3DBAG slice
+    (`count` 0.934, the 25 % window 1.095). A reused cell is therefore
+    citable as "the cost of a full parse", to within about 10 %, and not as
+    a measurement of that query. It must not be used to rank the three text
+    formats against one another on a query, and a claim that needs the
+    query's own time needs a run with `--formats-whole-file-scenarios all`.
 
 - **The network family's times come from a simulated network.** The
   primary over-HTTP measurement reads through `net-sim`, a local server
