@@ -505,7 +505,7 @@ Its FlatCityBuf artefact is written by `fcb-ser-stream`
 ([`fcbser/`](fcbser/)) and not by `fcb ser -A`. `fcb ser` parses every
 feature of its input into memory before it writes one, 7.2 times the
 CityJSONSeq's size on a 248 MB sample, which the 66 GB stream exceeds on a
-503 GB host. `fcb-ser-stream` drives the same `fcb_core` 0.7.8 writer with
+503 GB host. `fcb-ser-stream` drives the same `fcb_core` writer with
 the same settings (all-attribute B+-tree index at branching factor 256,
 R-tree node size 16, the attribute schema from the first 1,000 features) and
 reads the input twice instead of holding it: 1.5 times the input's size at

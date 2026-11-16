@@ -1,9 +1,8 @@
 //! `fcb-ser-stream INPUT.city.jsonl OUTPUT.fcb` — what `fcb ser -A INPUT OUTPUT`
 //! writes, without holding the input in memory.
 //!
-//! `fcb ser` (fcb_cli 0.7.8) parses every feature of its input into a
-//! `Vec<CityJSONFeature>` before it writes one. That is several times the
-//! size of the CityJSONSeq text, and the national 3DBAG stream (66 GB,
+//! `fcb ser` holds every feature of a CityJSONSeq input in memory before it
+//! writes one. That is several times the size of the text, and the national 3DBAG stream (66 GB,
 //! 10.8 million features) does not fit in 503 GB that way. This tool drives the
 //! same `fcb_core::FcbWriter` with the same settings and reads the input
 //! twice instead:
@@ -36,6 +35,11 @@ const SCHEMA_SAMPLE: usize = 1000;
 const BRANCHING_FACTOR: u16 = 256;
 /// `fcb ser`'s default R-tree node size.
 const INDEX_NODE_SIZE: u16 = 16;
+/// `fcb ser`'s branching factor for the B+-tree over CityObject ids.
+const ID_INDEX_BRANCHING_FACTOR: u16 = 256;
+/// The column the id index is queried as. A dataset with an attribute of that
+/// name keeps it and gets no id index, as with `fcb ser`.
+const ID_COLUMN_NAME: &str = "id";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -52,12 +56,16 @@ fn main() -> Result<()> {
             .map(|name| (name.clone(), Some(BRANCHING_FACTOR)))
             .collect::<Vec<_>>()
     });
+    let own_id_attribute = attr_schema
+        .as_ref()
+        .is_some_and(|schema| schema.contains_key(ID_COLUMN_NAME));
     let header_options = HeaderWriterOptions {
         write_index: true,
         feature_count,
         index_node_size: INDEX_NODE_SIZE,
         attribute_indices,
         geographical_extent: None,
+        id_index: (!own_id_attribute).then_some(ID_INDEX_BRANCHING_FACTOR),
     };
 
     let mut fcb = FcbWriter::new(
@@ -66,14 +74,9 @@ fn main() -> Result<()> {
         attr_schema,
         semantic_attr_schema,
     )?;
-    let mut previous: Option<Box<CityJSONFeature>> = None;
     let mut written = 0u64;
     for feature in features(input)?.1 {
-        let feature = Box::new(feature?);
-        add_streamed(&mut fcb, &feature)?;
-        // The writer now points at `feature`; the one before it is no longer
-        // referenced and can go.
-        previous = Some(feature);
+        fcb.add_feature(&feature?)?;
         written += 1;
         if written.is_multiple_of(1_000_000) {
             eprintln!("fcb-ser-stream: {written}/{feature_count} features encoded");
@@ -86,27 +89,6 @@ fn main() -> Result<()> {
     let mut out = BufWriter::new(File::create(output).with_context(|| format!("create {output}"))?);
     fcb.write(&mut out)?;
     out.flush()?;
-    // Only now: `write` consumed the writer, so nothing refers to the last
-    // feature any more.
-    drop(previous);
-    Ok(())
-}
-
-/// Adds one feature to a writer that outlives it.
-///
-/// `FcbWriter::add_feature` takes `&'a CityJSONFeature` for the writer's whole
-/// lifetime, which is what forces `fcb ser` to keep every feature alive. In
-/// `fcb_core` 0.7.8 the writer keeps exactly one such reference — its
-/// `FeatureWriter::city_feature` — and `add_feature` overwrites it before
-/// serialising, then never reads it again until the next call (`write` does
-/// not read it at all). So a feature only has to live until the next
-/// `add_feature`, or until `write` has returned for the last one. The caller
-/// upholds that; the exact `=0.7.8` pin is what keeps the invariant true.
-fn add_streamed<'a>(fcb: &mut FcbWriter<'a>, feature: &CityJSONFeature) -> Result<()> {
-    // SAFETY: see above — the reference is replaced before `feature` is
-    // dropped, and is never dereferenced after that.
-    let feature: &'a CityJSONFeature = unsafe { &*std::ptr::from_ref(feature) };
-    fcb.add_feature(feature)?;
     Ok(())
 }
 
@@ -162,15 +144,8 @@ fn scan(
                 attr_schema.add_attributes(attributes);
             }
             for geometry in object.geometry.iter().flatten() {
-                let Some(semantics) = geometry.common().and_then(|c| c.semantics.as_ref()) else {
-                    continue;
-                };
-                for surface in &semantics.surfaces {
-                    if !surface.other.is_empty() {
-                        let other =
-                            serde_json::Value::Object(surface.other.clone().into_iter().collect());
-                        semantic_attr_schema.add_attributes(&other);
-                    }
+                for surface in geometry.surfaces().unwrap_or_default() {
+                    semantic_attr_schema.add_attributes(&surface.other);
                 }
             }
         }

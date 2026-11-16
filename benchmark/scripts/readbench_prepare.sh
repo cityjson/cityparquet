@@ -157,7 +157,7 @@
 # times the CityJSONSeq's size — so the national 3DBAG stream (66 GB) aborts
 # it on a 503 GB host. `FCB_SER_STREAM=1` builds `benchmark/fcbser` and writes
 # the artefact with its `fcb-ser-stream` instead; any other value names a
-# prebuilt one. It drives the same `fcb_core` 0.7.8 writer with the settings
+# prebuilt one. It drives the same `fcb_core` writer with the settings
 # above and reads the input twice instead of holding it (1.5 times the
 # input's size at peak, measured). The result is the same file up to the
 # order `fcb ser` itself does not fix: two `fcb ser -A` runs over one input
@@ -609,7 +609,10 @@ if want flatcitybuf; then
   warn_unless_pinned fcb FCB_CLI_VERSION
   # The version alone does not identify the writer: the pinned commit and
   # crates.io's release report the same one, and only the former indexes ids.
-  if ! fcb ser --help 2>/dev/null | grep -q -- '--no-id-index'; then
+  # Asked only when `fcb ser` is the writer; `fcb-ser-stream` is built from
+  # the pinned commit itself.
+  if [[ -z "${FCB_SER_STREAM:-}" ]] \
+    && ! fcb ser --help 2>/dev/null | grep -q -- '--no-id-index'; then
     echo "warn: fcb writes no CityObject id index, so it is not the commit pinned in" \
       "benchmark/scripts/fetch_tools.sh; FlatCityBuf id-lookup will answer by a full walk" >&2
   fi
