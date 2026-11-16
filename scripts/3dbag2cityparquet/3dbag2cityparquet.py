@@ -4,7 +4,7 @@
 # dependencies = [
 #   # The verify stage's independent Parquet reader; the same release the
 #   # database benchmark pins (benchmark/databases/pyproject.toml).
-#   "duckdb==1.5.5",
+#   "duckdb==2.0.0",
 # ]
 # ///
 """Encode the whole of 3DBAG as ONE CityParquet package.

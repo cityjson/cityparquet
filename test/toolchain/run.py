@@ -1,6 +1,6 @@
 """The tool-chain test: every CityParquet writer and reader against real data.
 
-    uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 \\
+    uv run --python 3.12 --with duckdb==2.0.0 --with flatcitybuf==0.5.2 \\
         test/toolchain/run.py fetch  [--profile quick]
     uv run ... test/toolchain/run.py run    [--profile quick] [--only ID,...] [--keep]
     uv run ... test/toolchain/run.py report RUN_DIR
