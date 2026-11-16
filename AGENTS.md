@@ -70,9 +70,10 @@ them too and they may move to a repository of their own. `benchmark/readbench`
 is the read benchmark's harness — **its own workspace**, living with the
 corpora, results, scripts and renderers it belongs to. `lib/citylake` is a
 fourth. `benchmark/fcbser` is the fifth: `fcb-ser-stream`, which writes the
-national dataset's FlatCityBuf artefact with `fcb_core` 0.7.8, the pinned
-`fcb` CLI's writer. It cannot be a binary of `benchmark/readbench`, which
-reads with 0.7.6, because Cargo cannot hold both in one graph. Consequences:
+national dataset's FlatCityBuf artefact with the pinned `fcb` CLI's writer:
+`fcb_core` at the FlatCityBuf commit `benchmark/scripts/fetch_tools.sh` names,
+and the two pins move together. It cannot be a binary of
+`benchmark/readbench`, which reads with 0.7.6 and another `cjseq`. Consequences:
 
 - `cd lib/cityparquet-rs && just check` gates the **library alone** and is
   self-contained: no `uv`, no `jq`, no corpus, no local extension build. That
