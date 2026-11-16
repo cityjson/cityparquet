@@ -1,8 +1,9 @@
 name: Python
 
 # The gate for the Python bindings (lib/cityparquet-py): build the extension
-# and run its tests. Nothing is published. The tests read the library's
-# committed test data, so this needs no fixtures and no network.
+# and run its tests. Nothing is published here; publish-python.yml calls this
+# gate before it uploads. The tests read the library's committed test data, so
+# this needs no fixtures and no network.
 
 on:
   push:
@@ -21,9 +22,14 @@ on:
       - "justfile"
       - ".github/workflows/python.yml"
   workflow_dispatch:
+  # publish-python.yml runs this gate before building the wheels it uploads.
+  workflow_call:
 
+# The workflow name is part of the group because a caller's run shares its ref:
+# the gate inside "Publish Python" on main must not cancel, or be cancelled by,
+# a push to main.
 concurrency:
-  group: python-${{ github.ref }}
+  group: python-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
