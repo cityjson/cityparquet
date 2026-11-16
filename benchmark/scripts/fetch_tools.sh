@@ -10,8 +10,9 @@
 # citygml-tools is unpacked into benchmark/formats/tools/ (gitignored); cjseq
 # and the `fcb` CLI are Rust binaries and go wherever `cargo install` puts them.
 #
-# THE PINS: citygml-tools 2.5.0, cjseq 0.3.1, and the `fcb` CLI from crate
-# `fcb_cli` 0.8.0 (it writes the `.fcb` artefact and provides `fcb inspect`).
+# THE PINS: citygml-tools 2.5.0, cjseq 0.3.1, and the `fcb` CLI built from a
+# pinned commit of cityjson/flatcitybuf (it writes the `.fcb` artefact and
+# provides `fcb inspect`).
 # The FlatCityBuf READER is a separate pin, `fcb_core =0.7.6` in
 # benchmark/readbench/Cargo.toml. `readbench_prepare.sh` reads the cjseq and
 # fcb pins from this file and warns, on every run, when the binary on PATH
@@ -57,9 +58,16 @@ CITYGML_TOOLS_SHA256="bb2949fbc6c3ec44ec85c25a0bcdfe9accde9cbdb9e26ec77388977969
 # cjseq 0.3.1 (cityjson/cjseq), installed via cargo.
 CJSEQ_VERSION="0.3.1"
 
-# The `fcb` CLI 0.8.0 (crate fcb_cli), installed via cargo. It is the first
-# release whose `ser` indexes every CityObject's id, which `id-lookup` reads.
-FCB_CLI_VERSION="0.8.0"
+# The `fcb` CLI (crate fcb_cli), built by cargo from a commit of
+# cityjson/flatcitybuf rather than from crates.io: its `ser` indexes every
+# CityObject's id, which `id-lookup` reads, and no crates.io release does.
+# FCB_CLI_VERSION is what that build's `fcb --version` reports. crates.io's
+# 0.7.8 reports the same number and writes no id index, so the commit, not
+# the version, identifies the writer; `--no-id-index` in `fcb ser --help`
+# tells the two apart.
+FCB_CLI_GIT_URL="https://github.com/cityjson/flatcitybuf"
+FCB_CLI_GIT_REV="80c1dcd0042e3934f2f56ba1221172b0592cbcd0"
+FCB_CLI_VERSION="0.7.8"
 
 # citygml-tools 2.x runs on Java 17 or newer.
 JAVA_MIN_MAJOR=17
@@ -204,21 +212,25 @@ install_cjseq() {
 
 # --- fcb -------------------------------------------------------------------
 install_fcb() {
+  local install_cmd="cargo install --git ${FCB_CLI_GIT_URL} --rev ${FCB_CLI_GIT_REV} --locked fcb_cli"
   if command -v fcb >/dev/null 2>&1; then
     local have
     have="$(fcb --version 2>/dev/null | awk '{print $2}')"
-    if [[ "$have" == "$FCB_CLI_VERSION" ]]; then
-      echo "skip fcb ${FCB_CLI_VERSION} (already installed)"
-    else
+    if [[ "$have" != "$FCB_CLI_VERSION" ]]; then
       echo "warn fcb: installed version '$have' is not the pinned ${FCB_CLI_VERSION};" \
-        "leaving it alone (run \`cargo install fcb_cli --version ${FCB_CLI_VERSION} --locked\`" \
-        "to match the pin)." >&2
+        "leaving it alone (run \`${install_cmd} --force\` to match the pin)." >&2
+    elif ! fcb ser --help 2>/dev/null | grep -q -- '--no-id-index'; then
+      echo "warn fcb: the installed fcb ${have} writes no CityObject id index, so it is not" \
+        "the pinned commit ${FCB_CLI_GIT_REV}; leaving it alone" \
+        "(run \`${install_cmd} --force\` to match the pin)." >&2
+    else
+      echo "skip fcb ${FCB_CLI_VERSION} (already installed)"
     fi
     return
   fi
-  require_tool cargo "installing fcb ${FCB_CLI_VERSION}"
-  echo "install fcb ${FCB_CLI_VERSION} (cargo install fcb_cli)"
-  cargo install fcb_cli --version "$FCB_CLI_VERSION" --locked
+  require_tool cargo "installing fcb at ${FCB_CLI_GIT_REV}"
+  echo "install fcb at ${FCB_CLI_GIT_REV} (cargo install --git)"
+  cargo install --git "$FCB_CLI_GIT_URL" --rev "$FCB_CLI_GIT_REV" --locked fcb_cli
   if ! command -v fcb >/dev/null 2>&1; then
     echo "error: fcb is still not on PATH after \`cargo install\`; is ~/.cargo/bin on your PATH?" >&2
     exit 1

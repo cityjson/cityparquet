@@ -252,6 +252,6 @@ fn id_lookup_finds_a_real_object_id_and_none_for_a_bogus_id() {
     assert!(
         !stderr.contains("no-attr-index"),
         "id-lookup fell back to a full walk: the `fcb` on PATH writes no `id` index \
-         (it must be the version pinned in benchmark/scripts/fetch_tools.sh); stderr:\n{stderr}"
+         (it must be built from the commit pinned in benchmark/scripts/fetch_tools.sh); stderr:\n{stderr}"
     );
 }

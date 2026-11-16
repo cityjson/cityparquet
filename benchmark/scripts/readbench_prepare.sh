@@ -594,6 +594,12 @@ fi
 if want flatcitybuf; then
   require_tool fcb "the FlatCityBuf artefact"
   warn_unless_pinned fcb FCB_CLI_VERSION
+  # The version alone does not identify the writer: the pinned commit and
+  # crates.io's release report the same one, and only the former indexes ids.
+  if ! fcb ser --help 2>/dev/null | grep -q -- '--no-id-index'; then
+    echo "warn: fcb writes no CityObject id index, so it is not the commit pinned in" \
+      "benchmark/scripts/fetch_tools.sh; FlatCityBuf id-lookup will answer by a full walk" >&2
+  fi
 fi
 
 mkdir -p "$OUTDIR"

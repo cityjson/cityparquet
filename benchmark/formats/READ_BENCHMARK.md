@@ -1039,7 +1039,7 @@ each cold number stands alone, one per format, one `full-read` only.
     so ids that agree in their first 50 bytes share an entry; the runner
     finds the object by its full id inside the features the index names.
     An `.fcb` written without that index (`--no-id-index`, or an `fcb`
-    older than the pinned one) answers by a full walk and carries the
+    built before the pinned commit) answers by a full walk and carries the
     `no-attr-index` tag. `attr-filter` uses the index whenever its
     predicate column IS a member of the `attributes` map, and falls back to
     the same full walk — carrying the same `no-attr-index` tag — whenever
