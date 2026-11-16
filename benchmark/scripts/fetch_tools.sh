@@ -11,7 +11,7 @@
 # and the `fcb` CLI are Rust binaries and go wherever `cargo install` puts them.
 #
 # THE PINS: citygml-tools 2.5.0, cjseq 0.3.1, and the `fcb` CLI from crate
-# `fcb_cli` 0.7.8 (it writes the `.fcb` artefact and provides `fcb inspect`).
+# `fcb_cli` 0.8.0 (it writes the `.fcb` artefact and provides `fcb inspect`).
 # The FlatCityBuf READER is a separate pin, `fcb_core =0.7.6` in
 # benchmark/readbench/Cargo.toml. `readbench_prepare.sh` reads the cjseq and
 # fcb pins from this file and warns, on every run, when the binary on PATH
@@ -57,8 +57,9 @@ CITYGML_TOOLS_SHA256="bb2949fbc6c3ec44ec85c25a0bcdfe9accde9cbdb9e26ec77388977969
 # cjseq 0.3.1 (cityjson/cjseq), installed via cargo.
 CJSEQ_VERSION="0.3.1"
 
-# The `fcb` CLI 0.7.8 (crate fcb_cli), installed via cargo.
-FCB_CLI_VERSION="0.7.8"
+# The `fcb` CLI 0.8.0 (crate fcb_cli), installed via cargo. It is the first
+# release whose `ser` indexes every CityObject's id, which `id-lookup` reads.
+FCB_CLI_VERSION="0.8.0"
 
 # citygml-tools 2.x runs on Java 17 or newer.
 JAVA_MIN_MAJOR=17

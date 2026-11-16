@@ -131,7 +131,9 @@
 # is REQUIRED, not cosmetic: the attribute-filter benchmark needs FCB's
 # B+-tree attribute index to exist, and the spatial (R-tree) index is on by
 # default, so both of FCB's indexed-query paths are available for
-# comparison. Every other index knob keeps its `fcb ser` default — attribute
+# comparison. `fcb ser` also indexes every CityObject's id by default, which
+# is what `id-lookup` reads; that index shares the attribute indexes'
+# branching factor. Every other index knob keeps its `fcb ser` default — attribute
 # B+-tree branching factor 256, R-tree node size 16 — and that is a measured
 # choice:
 #
