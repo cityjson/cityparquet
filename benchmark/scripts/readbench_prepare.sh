@@ -150,6 +150,19 @@
 #     `--index-node-size 64` panics on every `bbox-query` with a capacity
 #     overflow. Measured, not assumed.
 #
+# `FCB_SER_STREAM` SWAPS THE WRITER, NOT THE CONFIGURATION. `fcb ser` parses
+# its whole input into memory before it writes a feature — measured at 7.2
+# times the CityJSONSeq's size — so the national 3DBAG stream (66 GB) aborts
+# it on a 503 GB host. `FCB_SER_STREAM=1` builds `benchmark/fcbser` and writes
+# the artefact with its `fcb-ser-stream` instead; any other value names a
+# prebuilt one. It drives the same `fcb_core` 0.7.8 writer with the settings
+# above and reads the input twice instead of holding it (1.5 times the
+# input's size at peak, measured). The result is the same file up to the
+# order `fcb ser` itself does not fix: two `fcb ser -A` runs over one input
+# differ byte for byte, so the equivalence is asserted on size and decoded
+# content (`scripts/tests/fcb_ser_stream_test.sh`). Unset — the default, and
+# what every corpus dataset uses — the artefact is `fcb ser -A`'s own.
+#
 # EXTERNAL TOOLS ARE GUARDED PER FORMAT, not up front: `fcb` is only required
 # when `flatcitybuf` was requested, `citygml-tools`/`cjseq`/`jq` only when the
 # request actually needs that hop of the chain, and the release CityParquet
@@ -1149,8 +1162,22 @@ if want flatcitybuf; then
   if file_is_valid "$FCB_OUT"; then
     echo "skip $FCB_OUT (already present)"
   else
-    echo "-- fcb ser $SEQ_INPUT -> $FCB_OUT"
-    fcb ser -A "$SEQ_INPUT" "$FCB_OUT"
+    if [[ -n "${FCB_SER_STREAM:-}" ]]; then
+      if [[ "$FCB_SER_STREAM" == 1 ]]; then
+        echo "-- building fcb-ser-stream (cargo build --release)"
+        ( cd "$BENCHMARK_DIR/fcbser" && cargo build --release )
+        FCB_SER_STREAM="$BENCHMARK_DIR/fcbser/target/release/fcb-ser-stream"
+      fi
+      echo "-- fcb-ser-stream $SEQ_INPUT -> $FCB_OUT"
+      # Written beside the output and renamed: the tool opens OUTPUT only
+      # after its two passes, but a kill during the final write would
+      # otherwise leave a truncated file the next run takes for an artefact.
+      "$FCB_SER_STREAM" "$SEQ_INPUT" "$FCB_OUT.partial"
+      mv "$FCB_OUT.partial" "$FCB_OUT"
+    else
+      echo "-- fcb ser $SEQ_INPUT -> $FCB_OUT"
+      fcb ser -A "$SEQ_INPUT" "$FCB_OUT"
+    fi
   fi
   BUILT+=("$FCB_OUT")
 fi

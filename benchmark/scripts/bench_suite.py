@@ -512,6 +512,9 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
             input_path = source(entry, locations)
             if not input_path.is_file():
                 raise SystemExit(f"prepared source missing after fetch: {input_path}")
+            # `fcb ser` holds its whole input in memory and cannot write a
+            # national stream; the streaming writer produces the same file.
+            os.environ["FCB_SER_STREAM"] = os.environ.get("FCB_SER_STREAM") or "1"
             just("readbench-prepare", str(input_path), str(prepared), ",".join(dataset_formats(entry) or []))
     if mode in {"download", "no-cache"}:
         missing_slice = [str(source(entry, locations)) for entry in selected if entry["role"] == "slice" and not source(entry, locations).is_file()]
