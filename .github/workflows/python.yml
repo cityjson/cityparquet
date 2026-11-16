@@ -1,0 +1,57 @@
+name: Python
+
+# The gate for the Python bindings (lib/cityparquet-py): build the extension
+# and run its tests. Nothing is published. The tests read the library's
+# committed test data, so this needs no fixtures and no network.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "lib/cityparquet-py/**"
+      - "lib/cityparquet-rs/**"
+      - "lib/citygml-rs/**"
+      - "justfile"
+      - ".github/workflows/python.yml"
+  pull_request:
+    paths:
+      - "lib/cityparquet-py/**"
+      - "lib/cityparquet-rs/**"
+      - "lib/citygml-rs/**"
+      - "justfile"
+      - ".github/workflows/python.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: python-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: bindings tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # lib/cityparquet-py/rust-toolchain.toml pins the version; rustup
+      # honours it on first use.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/cityparquet-py/target
+          key: python-${{ runner.os }}-${{ hashFiles('lib/cityparquet-py/Cargo.lock') }}
+          restore-keys: python-${{ runner.os }}-
+
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      - name: just py-test
+        run: just py-test

@@ -1,0 +1,4 @@
+# The library's pin (../cityparquet-rs/rust-toolchain.toml), which a crate
+# outside its directory does not see.
+[toolchain]
+channel = "1.93.1"

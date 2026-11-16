@@ -1,0 +1,4 @@
+# Cargo's output, and the uv-managed venv and the extension maturin builds into
+# it. The source (Cargo.toml, Cargo.lock, pyproject.toml, uv.lock) IS committed.
+/target/
+/.venv/

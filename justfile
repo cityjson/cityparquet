@@ -694,6 +694,12 @@ catalog-histogram OUT='out/cityparquet-catalog':
 catalog-test:
     uv run --directory scripts/catalog2cityparquet --extra dev pytest -v
 
+# The Python bindings' test suite (lib/cityparquet-py). uv builds the extension
+# with maturin before pytest runs, so this needs Rust as well as uv. No network:
+# the tests read the library's committed test data.
+py-test:
+    uv run --directory lib/cityparquet-py --extra dev pytest -v
+
 # Regenerate the MCP server's documentation corpus from documents/docs and the
 # two extension function references. Needs the submodules — `just setup` first.
 mcp-corpus:

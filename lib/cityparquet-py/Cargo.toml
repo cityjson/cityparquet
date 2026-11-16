@@ -1,0 +1,20 @@
+[package]
+name = "cityparquet-py"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cityjson/cityparquet"
+description = "Python bindings for the CityParquet reference implementation"
+# Published as a Python package by maturin, never to crates.io.
+publish = false
+
+[lib]
+# `cityparquet_py`, not `cityparquet`: the library it binds is `cityparquet`.
+# The Python module is still `cityparquet` (`[tool.maturin] module-name`).
+name = "cityparquet_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+cityparquet = { path = "../cityparquet-rs/crates/core" }
+# `abi3-py311`: one build serves CPython 3.11 and every later version.
+pyo3 = { version = "0.30", features = ["abi3-py311"] }
