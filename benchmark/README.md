@@ -489,17 +489,33 @@ datasets must not be divided by one another to state a cost per object
 What is known about its cost comes from one earlier conversion of the same
 tiles, in source order and with LoD 0 synthesis, on a 128-core host with
 503 GB of memory: the merged stream was 65.9 GB, the conversion took 53.5
-minutes at a peak of 56 GB resident, and the package was 16.4 GB. The
-benchmark's chain has not been run on it. Three things are therefore not
-measured: the Hilbert-ordered conversion the chain uses, whether `fcb ser -A`
-can serialise 10.8 million features within the host's memory (it reads every
-feature before it writes), and whether each reader's read all stays below the
-memory ceiling of the measured processes. The default ceiling of 64 GB is
+minutes at a peak of 56 GB resident, and the package was 16.4 GB. On the
+same host the chain's Hilbert-ordered conversion completed (21,555,522 rows,
+58 sorted runs spilled to disk); its time and peak memory were not recorded.
+`fcb ser -A` did not: it aborted on a failed allocation while reading the
+input (next paragraph). Not yet measured is whether each reader's read all
+stays below the memory ceiling of the measured processes. The default ceiling of 64 GB is
 below the 66 GB stream, and the pages a reader reads count against it, so
 `bench-run` refuses the national dataset under a ceiling below its largest
 artefact: pass `--memory-max` above that artefact plus the readers' memory, or
 `--memory-max off`. A reader that fails or is killed at the ceiling stops the
 dataset's run with its error; nothing is retried with more memory.
+
+Its FlatCityBuf artefact is written by `fcb-ser-stream`
+([`fcbser/`](fcbser/)) and not by `fcb ser -A`. `fcb ser` parses every
+feature of its input into memory before it writes one, 7.2 times the
+CityJSONSeq's size on a 248 MB sample, which the 66 GB stream exceeds on a
+503 GB host. `fcb-ser-stream` drives the same `fcb_core` 0.7.8 writer with
+the same settings (all-attribute B+-tree index at branching factor 256,
+R-tree node size 16, the attribute schema from the first 1,000 features) and
+reads the input twice instead of holding it: 1.5 times the input's size at
+peak on the same sample, because the writer still assembles the feature
+section and the indices in memory. `just fcbser-test` compares the two
+writers on inputs both can read: the files have the same size and decode to
+the same features in the same order. They are not byte-identical, and two
+`fcb ser -A` runs over one input are not either. It has not yet been run on
+the national stream itself. Every other dataset's artefact remains
+`fcb ser -A`'s own.
 
 Budget about 350 GB under the data root: the merged source (66 GB), its
 normalised copy and the CityJSONSeq artefact (about 66 GB each), the
@@ -625,7 +641,8 @@ from the query comparison.
 
 ## Layout and checks
 
-`readbench/` is a separate Rust workspace for the format harness. `scripts/`
+`readbench/` is a separate Rust workspace for the format harness, and
+`fcbser/` another for the national dataset's FlatCityBuf writer. `scripts/`
 holds preparation and orchestration. `formats/` and `databases/` own their
 measurement artefacts. `plot/` renders them; `summary/` holds generated output.
 Large source files and prepared packages are fetched or generated, not committed.

@@ -470,6 +470,7 @@ run_prepare() {
   PATH="$dir/bin:${RUN_PREPARE_PATH:-$BASE_PATH}" CITYGML_TOOLS="" \
     LOD_NORMALISE="${RUN_PREPARE_LOD_NORMALISE-$dir/bin/lod-normalise}" \
     SEQ_ORDER="$dir/bin/seq-order" \
+    FCB_SER_STREAM="${RUN_PREPARE_FCB_SER_STREAM-}" \
     "$dir/repo/benchmark/scripts/readbench_prepare.sh" "$@" \
     >"$LAST_LOG" 2>&1
   LAST_RC=$?
@@ -582,6 +583,42 @@ case_flatcitybuf_skips_the_cli_build() {
   fi
   if [[ ! -s "$dir/out/tiny.fcb" ]]; then
     fail "$name" "missing $dir/out/tiny.fcb"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 3b: `FCB_SER_STREAM` naming a writer makes IT write the FlatCityBuf
+# artefact, from the same CityJSONSeq, and `fcb ser` is not run at all — the
+# national dataset's path, where `fcb ser` cannot hold the input.
+# --------------------------------------------------------------------------
+case_fcb_ser_stream_replaces_fcb_ser() {
+  local name="FCB_SER_STREAM writes the FlatCityBuf artefact instead of fcb ser"
+  local dir
+  dir="$(new_sandbox cargo fcb)"
+  cat >"$dir/bin/fcb-ser-stream" <<'STREAM_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'streamed from %s\n' "$1" >"$2"
+STREAM_STUB
+  chmod +x "$dir/bin/fcb-ser-stream"
+  RUN_PREPARE_FCB_SER_STREAM="$dir/bin/fcb-ser-stream" \
+    run_prepare "$dir" --formats flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ -f "$dir/fcb-ser-argv.txt" ]]; then
+    fail "$name" "fcb ser was run as well"
+    return
+  fi
+  if ! grep -q '^streamed from .*tiny\.city\.jsonl$' "$dir/out/tiny.fcb"; then
+    fail "$name" "tiny.fcb was not written by the streaming writer from the CityJSONSeq: $(cat "$dir/out/tiny.fcb" 2>&1)"
+    return
+  fi
+  if [[ -e "$dir/out/tiny.fcb.partial" ]]; then
+    fail "$name" "the partial output was left behind"
     return
   fi
   pass "$name"
@@ -1887,6 +1924,7 @@ case_cityparquet_only
 case_an_unpinned_tool_version_is_warned_about
 case_flatcitybuf_without_fcb
 case_flatcitybuf_skips_the_cli_build
+case_fcb_ser_stream_replaces_fcb_ser
 case_unknown_format_rejected
 case_default_on_cityjsonseq_builds_every_format
 case_cityjsonseq_is_materialised_from_a_seq_input

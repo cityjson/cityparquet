@@ -62,19 +62,22 @@ Generated benchmark inputs, evidence and summaries belong in the ignored `benchm
 - Recurring design principle: **separation of geometry from appearance**
   (material/texture), following OBJ/COLLADA/glTF precedent.
 
-## Four Cargo workspaces, and why
+## Five Cargo workspaces, and why
 
 `lib/cityparquet-rs` is the library. `lib/citygml-rs` holds the CityGML
 readers and writers it path-depends on, a workspace of their own because FlatCityBuf uses
 them too and they may move to a repository of their own. `benchmark/readbench`
 is the read benchmark's harness — **its own workspace**, living with the
 corpora, results, scripts and renderers it belongs to. `lib/citylake` is a
-fourth. Consequences:
+fourth. `benchmark/fcbser` is the fifth: `fcb-ser-stream`, which writes the
+national dataset's FlatCityBuf artefact with `fcb_core` 0.7.8, the pinned
+`fcb` CLI's writer. It cannot be a binary of `benchmark/readbench`, which
+reads with 0.7.6, because Cargo cannot hold both in one graph. Consequences:
 
 - `cd lib/cityparquet-rs && just check` gates the **library alone** and is
   self-contained: no `uv`, no `jq`, no corpus, no local extension build. That
-  is the point of the split. The root `just check` runs all four workspaces
-  — the library's own gate, `lib/citygml-rs`'s, `benchmark/readbench`'s, the two harness
+  is the point of the split. The root `just check` runs all five workspaces
+  — the library's own gate, `lib/citygml-rs`'s, `benchmark/readbench`'s, `benchmark/fcbser`'s, the two harness
   suites (`plot-test` for `benchmark/plot`, `scripts-test` for
   `benchmark/scripts`) and `citylake-check` — plus the MCP server's gate.
 - `benchmark/readbench` path-depends on `../../lib/cityparquet-rs/crates/core`,
