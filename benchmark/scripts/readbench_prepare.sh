@@ -753,7 +753,9 @@ fi
 #      `seq-order`), and the package's STAC `datetime` is CORPUS_DATETIME.
 #   9  the normalisation also removes the semantic surfaces of every geometry
 #      below LoD 2, which CityGML 2.0 cannot express.
-CHAIN_VERSION=9
+#  10  the FlatCityBuf artefact carries a B+-tree over every CityObject id,
+#      written by the `fcb` built from the commit `fetch_tools.sh` pins.
+CHAIN_VERSION=10
 # The STAC `datetime` of every benchmark package: the day the benchmark
 # corpus was fixed. A fixed value, because the library otherwise falls back
 # to the conversion time for a source without `referenceDate` and no two
@@ -764,6 +766,8 @@ CORPUS_DATETIME="2026-10-05T00:00:00Z"
 # artefact is stale when its stage changed after the version that built it,
 # so a bump that touches one stage does not force the hours-long stages it
 # left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#  10  the FlatCityBuf stage alone: a file written before has no index over
+#      CityObject ids, so `id-lookup` on it measures a full walk.
 #   9  every stage but the CityGML one, for a dataset the semantics rule
 #      changed (the 3DBAG slice in the corpus); no stage for one it left
 #      alone. The CityGML artefact is unchanged: `citygml-tools from-cityjson
@@ -795,6 +799,10 @@ CORPUS_DATETIME="2026-10-05T00:00:00Z"
 #   2  the CityJSONSeq stage became a real artefact for every input kind
 #      (the gzip case above); FlatCityBuf and CityGML derive from it.
 stage_version() {
+  if [[ "$1" == "$FCB_OUT" ]]; then
+    echo 10
+    return
+  fi
   if [[ "$SEMANTICS_REMOVED" -eq 1 && "$1" != "$GML_OUT" ]]; then
     echo 9
     return

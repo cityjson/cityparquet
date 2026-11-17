@@ -37,7 +37,7 @@ it without converting anything, the network benchmark reads the very same
 files over HTTP, and a run's evidence names the exact bytes it measured. It
 is public at `https://other-data.open3d.city`, under
 `cityparquet-paper/benchmark/v<chain>/`, one folder per preparation-chain
-version (`CHAIN_VERSION` in `scripts/readbench_prepare.sh`, currently 9):
+version (`CHAIN_VERSION` in `scripts/readbench_prepare.sh`, currently 10):
 
 ```
 v<chain>/manifest.json
@@ -166,7 +166,7 @@ with `--network-profile fast,slow` or `all`, or give a custom one with
 formats that download whole files; latency penalises formats that make many
 range requests. The secondary target (`--network-target real --base-url <url>
 --key-layout bucket`) reads real object storage, such as the hosted corpus at
-`https://other-data.open3d.city/cityparquet-paper/benchmark/v9`; its result is a
+`https://other-data.open3d.city/cityparquet-paper/benchmark/v10`; its result is a
 snapshot of one network path at one time, not a repeatable measurement, and
 its params sidecar's `network` block (copied into the run manifest) says so
 (`snapshot`). That block records the base URL, the host and the addresses it
@@ -275,7 +275,7 @@ just bench-run --families network --profile short                     # typical
 just bench-run --families network --profile short --network-profile all
 just bench-run --families network --profile short --network-whole-file-scenarios all
 just bench-run --families network --datasets rotterdam --network-target real \
-  --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v9
+  --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v10
 ```
 
 ## Selecting work
