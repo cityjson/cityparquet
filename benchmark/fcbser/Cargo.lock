@@ -352,7 +352,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fcb_core"
 version = "0.7.8"
-source = "git+https://github.com/cityjson/flatcitybuf?rev=80c1dcd0042e3934f2f56ba1221172b0592cbcd0#80c1dcd0042e3934f2f56ba1221172b0592cbcd0"
+source = "git+https://github.com/cityjson/flatcitybuf?rev=7e6f8cf4ea9b99a5647bfb496b328fc74e131d1c#7e6f8cf4ea9b99a5647bfb496b328fc74e131d1c"
 dependencies = [
  "anyhow",
  "async-trait",

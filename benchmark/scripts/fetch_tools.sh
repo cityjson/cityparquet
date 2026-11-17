@@ -66,7 +66,7 @@ CJSEQ_VERSION="0.3.1"
 # the version, identifies the writer; `--no-id-index` in `fcb ser --help`
 # tells the two apart.
 FCB_CLI_GIT_URL="https://github.com/cityjson/flatcitybuf"
-FCB_CLI_GIT_REV="80c1dcd0042e3934f2f56ba1221172b0592cbcd0"
+FCB_CLI_GIT_REV="7e6f8cf4ea9b99a5647bfb496b328fc74e131d1c"
 FCB_CLI_VERSION="0.7.8"
 
 # citygml-tools 2.x runs on Java 17 or newer.
