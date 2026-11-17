@@ -232,4 +232,26 @@ fn id_lookup_finds_a_real_object_id_and_none_for_a_bogus_id() {
         &["--target-id", "no-such-id"],
     );
     assert_eq!(missing, 0, "id-lookup must return 0 for a bogus id");
+
+    // The lookup is answered by the `id` B+-tree `fcb ser` writes, not by the
+    // full walk the runner falls back to (and discloses) without one.
+    let output = Command::new(env!("CARGO_BIN_EXE_cityparquet-readbench"))
+        .args([
+            "--child",
+            "--format",
+            "flatcitybuf",
+            "--scenario",
+            "id-lookup",
+        ])
+        .arg("--input")
+        .arg(&input)
+        .args(["--target-id", real_id])
+        .output()
+        .expect("failed to run the built cityparquet-readbench binary");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("no-attr-index"),
+        "id-lookup fell back to a full walk: the `fcb` on PATH writes no `id` index \
+         (it must be built from the commit pinned in benchmark/scripts/fetch_tools.sh); stderr:\n{stderr}"
+    );
 }

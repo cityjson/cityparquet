@@ -1,10 +1,21 @@
 [package]
-name = "citygml"
+# `citygml` is taken on crates.io, so the package is `citygml-rs`; the library
+# keeps the name `citygml`, which is what `use` names.
+name = "citygml-rs"
 description = "CityGML 2.0 and 3.0 to and from CityJSON, whichever version a document is"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# The tests read CityGML files of tens of megabytes; a published crate carries
+# the library alone.
+exclude = ["tests/"]
+
+[lib]
+name = "citygml"
 
 [dependencies]
 citygml-core = { workspace = true, features = ["cjseq"] }

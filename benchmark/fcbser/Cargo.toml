@@ -1,0 +1,32 @@
+# `fcb-ser-stream` — `fcb ser -A` for an input too large to hold in memory.
+#
+# Its own Cargo workspace, and it has to be: the artefact must be written by
+# the SAME `fcb_core` the pinned `fcb` CLI writes with (the commit in
+# benchmark/scripts/fetch_tools.sh), while benchmark/readbench reads with
+# `fcb_core` 0.7.6. Cargo cannot hold both in one graph — they are one semver
+# range — so the writer cannot be a `[[bin]]` of the read harness.
+[workspace]
+resolver = "3"
+members = ["."]
+
+[package]
+name = "cityparquet-fcbser"
+description = "Streaming FlatCityBuf serialiser for the national benchmark dataset"
+publish = false
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cityjson/cityparquet"
+
+[[bin]]
+name = "fcb-ser-stream"
+path = "src/main.rs"
+
+[dependencies]
+# EXACT pins: the writer the pinned `fcb` CLI is built from — the same commit
+# as `FCB_CLI_GIT_REV` in benchmark/scripts/fetch_tools.sh, and they move
+# together — and the `cjseq` that writer's public types come from.
+fcb_core = { git = "https://github.com/cityjson/flatcitybuf", rev = "7e6f8cf4ea9b99a5647bfb496b328fc74e131d1c", default-features = false }
+cjseq = { version = "=0.5.0-alpha.1", default-features = false }
+serde_json = "1"
+anyhow = "1"

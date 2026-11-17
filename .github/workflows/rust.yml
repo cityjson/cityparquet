@@ -242,9 +242,12 @@ jobs:
         run: just fixtures
 
       # tests/returned_agreement.rs builds the FlatCityBuf input exactly as the
-      # benchmark does, with `fcb ser -A`; the version is fetch_tools.sh's.
+      # benchmark does, with `fcb ser -A`; the commit is fetch_tools.sh's.
       - name: Install the fcb CLI
-        run: cargo install fcb_cli --version 0.7.8 --locked
+        run: |
+          # shellcheck disable=SC1090
+          source <(grep -E '^FCB_CLI_GIT_(URL|REV)=' benchmark/scripts/fetch_tools.sh)
+          cargo install --git "$FCB_CLI_GIT_URL" --rev "$FCB_CLI_GIT_REV" --locked fcb_cli
 
       - name: clippy, tests, fmt
         working-directory: benchmark/readbench

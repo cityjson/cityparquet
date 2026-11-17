@@ -78,6 +78,8 @@ check:
     cargo clippy {{READBENCH_CARGO}} --all-targets -- -D warnings
     cargo test {{READBENCH_CARGO}}
     cargo fmt {{READBENCH_CARGO}} --check
+    cargo clippy --manifest-path benchmark/fcbser/Cargo.toml --all-targets -- -D warnings
+    cargo fmt --manifest-path benchmark/fcbser/Cargo.toml --check
     just plot-test
     just scripts-test
     just mcp-check
@@ -614,6 +616,14 @@ scripts-test:
     ./{{BENCH_SCRIPTS}}/tests/bench_recipe_test.sh
     ./{{BENCH_SCRIPTS}}/tests/machine_record_test.sh
     uv run --project {{PLOT}} python -m unittest discover -s {{BENCH_SCRIPTS}}/tests -p 'test_*.py'
+
+# `fcb-ser-stream` (benchmark/fcbser) against `fcb ser -A`: the same size and
+# the same decoded features on inputs both can read. Not in `scripts-test`,
+# whose suites stub every external binary: this one needs the real pinned
+# `fcb` (`just fetch-tools`) and compiles `fcb_core`. Extra inputs may follow.
+[doc("fcb-ser-stream writes what fcb ser -A writes (needs the pinned fcb, cargo and jq)")]
+fcbser-test *INPUTS:
+    ./{{BENCH_SCRIPTS}}/tests/fcb_ser_stream_test.sh {{INPUTS}}
 
 # ---------------------------------------------------------------------------
 # Database benchmark (benchmark/databases) — its own uv project and justfile

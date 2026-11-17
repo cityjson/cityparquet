@@ -5,6 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# The tests read CityGML files of tens of megabytes; a published crate carries
+# the library alone.
+exclude = ["tests/"]
 
 [dependencies]
 citygml-core = { workspace = true }
@@ -17,8 +23,8 @@ webpki-roots = "1"
 
 [dev-dependencies]
 serde = "1"
-citygml2 = { path = "../citygml2" }
-citygml3 = { path = "../citygml3" }
+citygml2 = { workspace = true }
+citygml3 = { workspace = true }
 cjseq = { workspace = true }
 serde_json = { workspace = true }
 

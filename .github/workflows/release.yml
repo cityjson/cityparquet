@@ -4,6 +4,7 @@ name: Release
 # the files that run built attached and a SHA256SUMS over them.
 #
 #   Publish crates  →  vX.Y.Z      the crates; the `cityparquet` CLI for five targets
+#   Publish CityGML crates  →  citygml-vX.Y.Z  the CityGML crates; their `.crate` files
 #   Publish MCP     →  mcp-vX.Y.Z  the MCP server; its npm tarball
 #   Publish Python  →  py-vX.Y.Z   the Python bindings; their wheels and sdist
 #
@@ -23,12 +24,18 @@ name: Release
 
 on:
   workflow_run:
-    workflows: ["Publish crates", "Publish MCP", "Publish Python"]
+    workflows:
+      [
+        "Publish crates",
+        "Publish CityGML crates",
+        "Publish MCP",
+        "Publish Python",
+      ]
     types: [completed]
   workflow_dispatch:
     inputs:
       run_id:
-        description: "The Publish crates, Publish MCP or Publish Python run to release"
+        description: "The Publish crates, Publish CityGML crates, Publish MCP or Publish Python run to release"
         required: true
         type: string
 
@@ -63,7 +70,7 @@ jobs:
           IFS=$'\t' read -r path name conclusion < <(
             gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}" --jq '[.path, .name, .conclusion] | @tsv')
           case "${path}" in
-            .github/workflows/publish-crates.yml | .github/workflows/publish-mcp.yml | .github/workflows/publish-python.yml) ;;
+            .github/workflows/publish-crates.yml | .github/workflows/publish-citygml.yml | .github/workflows/publish-mcp.yml | .github/workflows/publish-python.yml) ;;
             *) echo "::error::run ${RUN_ID} is \"${name}\" (${path}), not a publish run"; exit 1 ;;
           esac
           if [ "${conclusion}" != "success" ]; then

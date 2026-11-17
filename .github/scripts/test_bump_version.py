@@ -77,6 +77,52 @@ class RustManifest(unittest.TestCase):
         self.assertRegex(version, bv.VERSION)
 
 
+CITYGML_MANIFEST = """\
+[workspace]
+members = ["crates/core", "crates/citygml2", "crates/citygml3", "crates/citygml"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+citygml-core = { path = "crates/core", version = "0.1.0", default-features = false }
+citygml2 = { path = "crates/citygml2", version = "0.1.0" }
+citygml3 = { path = "crates/citygml3", version = "0.1.0" }
+quick-xml = "0.39"
+"""
+
+
+class CityGmlManifest(unittest.TestCase):
+    def test_sets_every_slot_and_nothing_else(self):
+        text, version = bv.bump_citygml_manifest(CITYGML_MANIFEST, "patch")
+        self.assertEqual(version, "0.1.1")
+        self.assertEqual(text, CITYGML_MANIFEST.replace('"0.1.0"', '"0.1.1"'))
+
+    def test_the_library_follows(self):
+        manifest = MANIFEST + (
+            'citygml = { package = "citygml-rs", path = "../citygml-rs/crates/citygml", version = "0.1.0" }\n'
+            'citygml-citydb = { path = "../citygml-rs/crates/citydb", version = "0.1.0" }\n'
+        )
+        text = bv.set_dependency_versions(manifest, bv.CITYGML_DEPENDANT_CRATES, "0.2.0")
+        self.assertEqual(text, MANIFEST + manifest[len(MANIFEST) :].replace("0.1.0", "0.2.0"))
+
+    def test_refuses_a_dependant_without_the_crate(self):
+        with self.assertRaisesRegex(ValueError, "citygml"):
+            bv.set_dependency_versions(MANIFEST, bv.CITYGML_DEPENDANT_CRATES, "0.2.0")
+
+    def test_the_real_manifests_parse(self):
+        root = Path(__file__).resolve().parents[2]
+        text = (root / bv.CITYGML_MANIFEST).read_text(encoding="utf-8")
+        _, version = bv.bump_citygml_manifest(text, "none")
+        self.assertRegex(version, bv.VERSION)
+        library = (root / bv.RUST_MANIFEST).read_text(encoding="utf-8")
+        self.assertEqual(
+            bv.set_dependency_versions(library, bv.CITYGML_DEPENDANT_CRATES, version),
+            library,
+        )
+
+
 class PackageJson(unittest.TestCase):
     def test_bumps_the_version_only(self):
         source = json.dumps({"name": "x", "version": "0.1.0", "bin": {"x": "a.js"}}, indent=2) + "\n"
