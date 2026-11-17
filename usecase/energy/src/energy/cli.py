@@ -23,7 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--flat-tilt-deg", type=float, default=5.0,
                    help="roof tilt at or below this counts as flat (default: 5)")
     f.add_argument("--ext-dir", default=None,
-                   help="directory holding the .duckdb_extension binaries")
+                   help="directory of local .duckdb_extension builds "
+                        "(default: the community builds)")
 
     s = sub.add_parser("screen", help="degree-day heat-loss screen and ranking")
     s.add_argument("--features", required=True, help="features.parquet from `features`")
