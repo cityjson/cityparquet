@@ -42,7 +42,7 @@ jobs:
       run:
         working-directory: ai/mcp
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           # One level, not recursive: the corpus reads each extension's
           # docs/FUNCTIONS.md, and recursing would pull their vendored duckdb/
@@ -51,12 +51,12 @@ jobs:
           # The corpus stamps itself with `git describe`, which needs history.
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
-          node-version: "24"
+          node-version: "26"
           cache: pnpm
           cache-dependency-path: ai/mcp/pnpm-lock.yaml
 

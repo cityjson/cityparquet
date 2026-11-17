@@ -59,19 +59,19 @@ jobs:
           echo "::error::a real publish runs from main; this run is on ${GITHUB_REF_NAME}. Dry runs may use any branch."
           exit 1
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0 # the tags, and the release commit is merged into develop
           # One level, not recursive: the corpus check reads each extension's
           # docs/FUNCTIONS.md, as in mcp.yml.
           submodules: true
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
-          node-version: "24"
+          node-version: "26"
           cache: pnpm
           cache-dependency-path: ai/mcp/pnpm-lock.yaml
           registry-url: https://registry.npmjs.org
@@ -183,14 +183,14 @@ jobs:
           \`\`\`
           EOF
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         if: ${{ !inputs.dry_run }}
         with:
           name: release-meta
           path: release-meta/
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         if: ${{ !inputs.dry_run }}
         with:
           name: release-asset-npm

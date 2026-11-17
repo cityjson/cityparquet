@@ -66,7 +66,7 @@ jobs:
           echo "::error::a real publish runs from main; this run is on ${GITHUB_REF_NAME}. Dry runs may use any branch."
           exit 1
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0 # the tags, to refuse one that exists
           submodules: false
@@ -140,7 +140,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: false
 
@@ -162,7 +162,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -205,7 +205,7 @@ jobs:
           fi
           rm -rf "dist/${stage}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: release-asset-${{ matrix.target }}
           path: dist/*
@@ -222,13 +222,13 @@ jobs:
     permissions:
       contents: write # push the release commit and tag
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0 # the release commit is rebased onto main and merged into develop
           submodules: false
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -300,7 +300,7 @@ jobs:
           Install the CLI with \`cargo install cityparquet-cli@${VERSION}\`, or download a prebuilt binary below and check it against \`SHA256SUMS\`.
           EOF
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         if: ${{ !inputs.dry_run }}
         with:
           name: release-meta
