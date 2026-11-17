@@ -1,0 +1,263 @@
+---
+title: Convert and read CityParquet with Python
+description: Convert a city model into a CityParquet package with the Python bindings, validate it, read it with pyarrow, pandas, DuckDB and GeoPandas, and export it again.
+sidebar:
+  label: Convert and read files
+  icon: code
+---
+
+The `cityparquet` Python package converts a city model into a CityParquet
+package, validates a package, and exports it again. Reading a package needs no
+special library: it is Parquet, so pyarrow, pandas, DuckDB and GeoPandas open it
+directly. This walkthrough does both on a Delft extract of
+[3DBAG](https://3dbag.nl), then reads a Tokyo ward straight from object storage.
+
+## Install
+
+Create a virtual environment and install the bindings, with the readers this
+walkthrough uses:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install cityparquet pyarrow pandas duckdb geopandas
+```
+
+On Windows, activate it with `.venv\Scripts\activate` instead. The bindings
+need Python 3.11 or later. PyPI carries wheels for Linux (x86_64, aarch64),
+macOS (arm64, x86_64) and Windows (x86_64); on another platform pip compiles
+the source distribution, which needs [Rust](https://rustup.rs/).
+
+Download the Delft example, a CityJSONSeq file of 1,115 buildings:
+
+```bash
+curl -fLO https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl
+```
+
+## Convert a file into a package
+
+```python
+import cityparquet
+
+cityparquet.convert(["delft.city.jsonl"], "delft")
+```
+
+`convert` takes a **list** of inputs and the directory to write. It detects
+CityJSON, CityJSONSeq and CityGML 2.0 or 3.0 from the content, so the same call
+converts a `.city.json` or a `.gml` file. The result is a directory:
+
+```text
+delft/
+  building.parquet
+  metadata.json
+```
+
+One Parquet object table per CityGML module, and a `metadata.json` that is a
+STAC Item. See the [package layout](/specification/dataset-package).
+
+An input can also be a directory or a glob, and several inputs are merged into
+one package:
+
+```python
+cityparquet.convert(["tiles/*.city.jsonl"], "city", overwrite=True)
+```
+
+`overwrite=True` replaces an existing package; without it a non-empty output
+directory is refused. `row_group_size=` sets the rows per Parquet row group
+(65,536 by default), and `datetime=` the STAC `datetime` written to
+`metadata.json`.
+
+## Validate it
+
+```python
+violations = cityparquet.validate("delft")
+print(violations)
+```
+
+```text
+[]
+```
+
+`validate` returns the package's violations of the
+[specification](/specification), one string each. An empty list means it
+conforms. Use it on a package from any writer, not only this one.
+
+## Read it with pyarrow and pandas
+
+Name the columns you want and only those are read:
+
+```python
+import pyarrow.parquet as pq
+
+table = pq.read_table(
+    "delft/building.parquet",
+    columns=["id", "object_type", "b3_h_dak_max", "b3_h_maaiveld"],
+)
+frame = table.to_pandas()
+
+buildings = frame[frame.object_type == "Building"]
+height = buildings.b3_h_dak_max - buildings.b3_h_maaiveld
+print(f"{len(buildings)} buildings, tallest {height.max():.1f} m")
+```
+
+```text
+1115 buildings, tallest 96.2 m
+```
+
+Each row is one city object. In 3DBAG a `Building` carries the attributes and
+its `BuildingPart` child the 3D geometry, which is why the table has 2,231 rows
+for 1,115 buildings. The [object table schema](/specification/object-table-schema)
+describes every column.
+
+The file's footer says what the table holds, without reading a row:
+
+```python
+import json
+
+footer = pq.read_metadata("delft/building.parquet").metadata
+city = json.loads(footer[b"city"])
+print(city["version"], city["primary_column"])
+```
+
+```text
+0.1.0-draft geometry_lod2_2
+```
+
+## Read the footprints with GeoPandas
+
+At LoD0 a CityParquet table is conformant GeoParquet, so GeoPandas reads the
+footprints and their coordinate reference system with no further arguments:
+
+```python
+import geopandas as gpd
+
+footprints = gpd.read_parquet(
+    "delft/building.parquet",
+    columns=["id", "geometry_lod0_0"],
+).dropna(subset="geometry_lod0_0")
+
+print(footprints.crs.to_string(), len(footprints))
+print(f"{footprints.area.sum():.0f} m² of footprint")
+```
+
+```text
+EPSG:7415 1115
+323154 m² of footprint
+```
+
+The solids at LoD1 and above are WKB `PolyhedralSurface Z`, which Shapely and
+GeoPandas do not decode. Use DuckDB for those.
+
+## Query it with DuckDB
+
+DuckDB reads the same file with SQL and hands the result back as a pandas
+DataFrame (`.df()`) or an Arrow table (`.to_arrow_table()`). With the
+[`three_d` extension](https://cityjson.github.io/duckdb-3d/#/) it measures the
+solids:
+
+```python
+import duckdb
+
+con = duckdb.connect()
+con.sql("INSTALL three_d FROM community")
+con.sql("LOAD three_d")
+
+largest = con.sql("""
+    SELECT id, round(ST_3DVolume(solid), 1) AS volume_m3
+    FROM (
+      SELECT id, ST_3DTryFromWKB(
+        geometry_lod2_2, to_json(geometry_properties_lod2_2)) AS solid
+      FROM read_parquet('delft/building.parquet')
+      WHERE geometry_lod2_2 IS NOT NULL
+    )
+    WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid
+    ORDER BY volume_m3 DESC
+    LIMIT 3
+""").df()
+print(largest)
+```
+
+```text
+                                 id  volume_m3
+0  NL.IMBAG.Pand.0503100000025027-0   186143.5
+1  NL.IMBAG.Pand.0503100000025028-0   151764.1
+2  NL.IMBAG.Pand.0503100000025102-0   138739.8
+```
+
+## Read a package from object storage
+
+A package does not have to be local. Give DuckDB its URL and it fetches only
+the columns and row groups the query needs. This counts the city objects of
+Chūō, Tokyo, from a [published PLATEAU package](/dataset):
+
+```python
+import duckdb
+
+URL = "https://cityparquet.open3d.city/data/plateau/chuo-ku/building.parquet"
+
+print(duckdb.sql(f"""
+    SELECT object_type, count(*) AS objects
+    FROM read_parquet('{URL}')
+    GROUP BY object_type
+    ORDER BY objects DESC
+""").df())
+```
+
+```text
+            object_type  objects
+0              Building    37025
+1  BuildingInstallation    14579
+```
+
+The bindings themselves work on local paths: `convert`, `validate` and `export`
+do not take a URL.
+
+## Export it again
+
+The output's extension selects the format:
+
+```python
+cityparquet.export("delft", "delft_export.city.jsonl")  # CityJSONSeq
+cityparquet.export("delft", "delft_export.city.json")   # CityJSON
+cityparquet.export("delft", "delft_export.gml")         # CityGML 2.0
+```
+
+## Handle errors
+
+Every failure raises `cityparquet.CityParquetError` carrying the library's
+message:
+
+```python
+try:
+    cityparquet.convert(["delft.city.jsonl"], "delft")
+except cityparquet.CityParquetError as error:
+    print(error)
+```
+
+```text
+schema error: output directory delft already exists and is not empty (pass overwrite to replace it)
+```
+
+## What needs the command-line tool
+
+The bindings are these three functions. The
+[`cityparquet` CLI](/tutorials/cli-conversion) is built on the same library and
+has more of it:
+
+| Task                                                              | Python bindings | CLI                      |
+| ----------------------------------------------------------------- | --------------- | ------------------------ |
+| Convert CityJSON, CityJSONSeq, CityGML 2.0 / 3.0                  | `convert`       | `convert`                |
+| Convert FlatCityBuf or a 3DCityDB database                        | no              | `convert`                |
+| Declare a CRS, synthesise LoD0, partition, choose compression     | no              | `convert` options        |
+| Validate a package                                                | `validate`      | `validate`               |
+| Export CityJSONSeq, CityJSON, CityGML 2.0                         | `export`        | `export`                 |
+| Export CityGML 3.0                                                | no              | `--citygml-version 3.0`  |
+| See what a conversion or export left out                          | no              | printed report           |
+| Compare two models semantically (the round-trip check)            | no              | `compare`                |
+
+From Python, the CLI is one `subprocess.run(["cityparquet", ...])` away when
+you need one of these.
+
+Continue with [Prepare building-energy inputs with Python](/tutorials/python-energy)
+for an analysis script over the national 3DBAG file, or
+[Working with 3DBAG at cloud scale](/tutorials/cloud-scale-3dbag) for more SQL.
