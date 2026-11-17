@@ -62,23 +62,19 @@ Generated benchmark inputs, evidence and summaries belong in the ignored `benchm
 - Recurring design principle: **separation of geometry from appearance**
   (material/texture), following OBJ/COLLADA/glTF precedent.
 
-## Five Cargo workspaces, and why
+## Four Cargo workspaces, and why
 
 `lib/cityparquet-rs` is the library. `lib/citygml-rs` holds the CityGML
 readers and writers it path-depends on, a workspace of their own because FlatCityBuf uses
 them too and they may move to a repository of their own. `benchmark/readbench`
 is the read benchmark's harness — **its own workspace**, living with the
 corpora, results, scripts and renderers it belongs to. `lib/citylake` is a
-fourth. `benchmark/fcbser` is the fifth: `fcb-ser-stream`, which writes the
-national dataset's FlatCityBuf artefact with the pinned `fcb` CLI's writer:
-`fcb_core` at the FlatCityBuf commit `benchmark/scripts/fetch_tools.sh` names,
-and the two pins move together. It cannot be a binary of
-`benchmark/readbench`, which reads with 0.7.6 and another `cjseq`. Consequences:
+fourth. Consequences:
 
 - `cd lib/cityparquet-rs && just check` gates the **library alone** and is
   self-contained: no `uv`, no `jq`, no corpus, no local extension build. That
-  is the point of the split. The root `just check` runs all five workspaces
-  — the library's own gate, `lib/citygml-rs`'s, `benchmark/readbench`'s, `benchmark/fcbser`'s, the two harness
+  is the point of the split. The root `just check` runs all four workspaces
+  — the library's own gate, `lib/citygml-rs`'s, `benchmark/readbench`'s, the two harness
   suites (`plot-test` for `benchmark/plot`, `scripts-test` for
   `benchmark/scripts`) and `citylake-check` — plus the MCP server's gate.
 - `benchmark/readbench` path-depends on `../../lib/cityparquet-rs/crates/core`,
@@ -116,7 +112,7 @@ just plot-test                       # benchmark plotting suite   (needs uv)
 just scripts-test                    # benchmark shell suites     (needs jq)
 just mcp-check                       # the MCP server's gate      (needs pnpm)
 just citylake-check                  # CityLake's gate            (needs a local duckdb-cityjson build)
-just check                           # all five, from the root
+just check                           # all of the above, from the root
 just docs-build                      # the specification site     (needs pnpm)
 ```
 

@@ -250,8 +250,6 @@ class NationalDatasetTest(unittest.TestCase):
         def refuse(*a, **k): raise AssertionError("the national dataset reached the bucket")
         def fake_just(*a):
             calls.append(a)
-            if a[0] == "readbench-prepare":
-                self.stream_writer = os.environ.get("FCB_SER_STREAM")
             if a[0] == "fetch-3dbag-national":
                 Path(a[1]).mkdir(parents=True, exist_ok=True)
                 (Path(a[1]) / "3dbag_national.city.jsonl").write_text("{}")
@@ -262,7 +260,6 @@ class NationalDatasetTest(unittest.TestCase):
              mock.patch.object(bucket, "fetch_manifest", refuse), \
              mock.patch.object(bucket, "remote_manifest", refuse), \
              mock.patch.object(bucket, "upload_dataset", refuse):
-            os.environ.pop("FCB_SER_STREAM", None)
             bench_suite.prepare(self.manifest, self.locations, ["sizes", "formats"], datasets, "full", mode=mode)
         return calls
 
@@ -273,9 +270,6 @@ class NationalDatasetTest(unittest.TestCase):
             prepare = [c for c in calls if c[0] == "readbench-prepare"]
             self.assertEqual(prepare, [("readbench-prepare", str(self.locations["3dbag"] / "3dbag_national.city.jsonl"), str(self.locations["prepared"]), "cityjsonseq,flatcitybuf,cityparquet")], mode)
             self.assertIn(("fetch-tools",), calls, mode)
-            # `fcb ser` cannot hold a national stream; the chain is told to
-            # write the FlatCityBuf artefact with the streaming writer.
-            self.assertEqual(self.stream_writer, "1", mode)
         self.assertFalse((self.locations["prepared"] / bench_suite.CORPUS_ORIGIN).exists())
 
     def _run(self, families, datasets, **kwargs):

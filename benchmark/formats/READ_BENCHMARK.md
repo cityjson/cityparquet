@@ -1039,7 +1039,7 @@ each cold number stands alone, one per format, one `full-read` only.
     so ids that agree in their first 50 bytes share an entry; the runner
     finds the object by its full id inside the features the index names.
     An `.fcb` written without that index (`--no-id-index`, or an `fcb`
-    built before the pinned commit) answers by a full walk and carries the
+    older than 0.8.0) answers by a full walk and carries the
     `no-attr-index` tag. `attr-filter` uses the index whenever its
     predicate column IS a member of the `attributes` map, and falls back to
     the same full walk — carrying the same `no-attr-index` tag — whenever
@@ -1491,14 +1491,8 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     normalisation of Caveat 41 applies to it unchanged. A cost per object
     must therefore not be extrapolated from the slice to this dataset or
     compared between the two. The bloom, network and database families do
-    not measure it. Its FlatCityBuf file is also the one artefact not
-    written by the pinned `fcb` CLI: `fcb ser -A` runs out of memory on the
-    66 GB stream (503 GB host), so `fcb-ser-stream` (`benchmark/fcbser`)
-    writes it with the same `fcb_core` 0.7.8 writer and the same settings,
-    reading the input twice. On inputs both tools can read the two files
-    have the same size and decode to the same features in the same order
-    (`just fcbser-test`); they are not byte-identical, as two `fcb ser -A`
-    runs are not either.
+    not measure it. Its FlatCityBuf file is written by the pinned `fcb`
+    CLI with `fcb ser -A`, like every other dataset's.
 
 - **The network family's times come from a simulated network.** The
   primary over-HTTP measurement reads through `net-sim`, a local server
