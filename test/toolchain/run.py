@@ -12,14 +12,17 @@ back with the source, and writes `results.jsonl` and `report.md` into a new
 run directory. `report` rewrites the report from a run's results. `citydb`
 loads sources into 3DCityDB v5 and reads them back (citydb.py).
 
-The tools come from the environment, each with a default in this tree:
+The tools come from the environment, each with a default:
 
     CITYPARQUET          lib/cityparquet-rs/target/release/cityparquet
-    CITYJSON_EXTENSION   lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension
-    THREE_D_EXTENSION    lib/duckdb-3d/build/release/extension/three_d/three_d.duckdb_extension
+    CITYJSON_EXTENSION   unset: INSTALL cityjson FROM community; a path: that local build
+    THREE_D_EXTENSION    unset: INSTALL three_d FROM community; a path: that local build
     CITYGML_TOOLS        benchmark/formats/tools/citygml-tools/citygml-tools
     TOOLCHAIN_WORK       test/runs/toolchain
 
+The community builds are the released code of the commits the submodules
+pin; set an extension's variable to test a local build of other code, such
+as lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension.
 A tool that is missing skips the steps that need it, and the report says so.
 """
 
@@ -54,26 +57,39 @@ def env_path(name: str, default: str) -> Path:
     return Path(os.environ.get(name) or ROOT / default)
 
 
+def env_extension(name: str) -> Path | None:
+    """A local extension build, or None for the community build."""
+    value = os.environ.get(name)
+    return Path(value) if value else None
+
+
 @dataclass
 class Tools:
     cityparquet: Path
-    cityjson_ext: Path
-    three_d_ext: Path
+    cityjson_ext: Path | None  # None: the community build
+    three_d_ext: Path | None  # None: the community build
     citygml_tools: Path
 
     @classmethod
     def from_env(cls) -> "Tools":
         return cls(
             env_path("CITYPARQUET", "lib/cityparquet-rs/target/release/cityparquet"),
-            env_path("CITYJSON_EXTENSION", "lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension"),
-            env_path("THREE_D_EXTENSION", "lib/duckdb-3d/build/release/extension/three_d/three_d.duckdb_extension"),
+            env_extension("CITYJSON_EXTENSION"),
+            env_extension("THREE_D_EXTENSION"),
             env_path("CITYGML_TOOLS", "benchmark/formats/tools/citygml-tools/citygml-tools"),
         )
+
+    def extension_env(self) -> dict[str, str]:
+        """The variables duck.py reads; empty means the community build."""
+        return {
+            "CITYJSON_EXTENSION": str(self.cityjson_ext or ""),
+            "THREE_D_EXTENSION": str(self.three_d_ext or ""),
+        }
 
     def missing(self) -> dict[str, str]:
         out = {}
         for k, p in vars(self).items():
-            if not p.exists():
+            if p is not None and not p.exists():
                 out[k] = str(p)
         return out
 
@@ -222,7 +238,7 @@ class Run:
         self.missing = tools.missing()
         self.known = load_known()
         self.results = open(out / "results.jsonl", "a", encoding="utf-8")
-        self.env = dict(os.environ, CITYJSON_EXTENSION=str(tools.cityjson_ext), THREE_D_EXTENSION=str(tools.three_d_ext))
+        self.env = dict(os.environ, **tools.extension_env())
 
     def record(self, ds: dict, step: str, status: str, detail: str = "", failures: list[str] | None = None, **extra) -> dict:
         if status == "fail":
@@ -645,7 +661,7 @@ def environment(tools: Tools, python: str) -> dict:
         "cityparquet_branch": git("rev-parse", "--abbrev-ref", "HEAD"),
         "cityparquet_dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
         "machine": f"{platform.system()} {platform.machine()}, {os.cpu_count()} cores",
-        "tools": {k: str(v) for k, v in vars(tools).items()},
+        "tools": {k: str(v) if v is not None else "community" for k, v in vars(tools).items()},
         "missing": tools.missing(),
     }
     if tools.cityparquet.exists():
@@ -655,15 +671,17 @@ def environment(tools: Tools, python: str) -> dict:
         built = dt.datetime.fromtimestamp(tools.cityparquet.stat().st_mtime, dt.timezone.utc)
         env["cityparquet_version"] = f"sha256 {sha256(tools.cityparquet)[:12]}, built {built:%Y-%m-%d %H:%M} UTC"
     probe = (
-        "import duckdb,os,json;c=duckdb.connect(config={'allow_unsigned_extensions':'true'});"
-        "[c.execute(f\"LOAD '{p}'\") for p in (os.environ['CITYJSON_EXTENSION'],os.environ['THREE_D_EXTENSION']) if os.path.exists(p)];"
-        "print(json.dumps({'duckdb':duckdb.__version__,'extensions':c.execute(\"select extension_name, extension_version from duckdb_extensions() where loaded and extension_name in ('cityjson','three_d')\").fetchall()}))"
+        "import duckdb,os,json;"
+        "w={'cityjson':os.environ['CITYJSON_EXTENSION'],'three_d':os.environ['THREE_D_EXTENSION']};"
+        "c=duckdb.connect(config={'allow_unsigned_extensions':'true'} if any(w.values()) else {});"
+        "[c.execute(f\"LOAD '{p}'\") if p else c.execute(f'INSTALL {n} FROM community; LOAD {n}') for n,p in w.items() if not p or os.path.exists(p)];"
+        "print(json.dumps({'duckdb':duckdb.__version__,'extensions':c.execute(\"select extension_name, extension_version, installed_from from duckdb_extensions() where loaded and extension_name in ('cityjson','three_d')\").fetchall()}))"
     )
     r = subprocess.run(
         [python, "-c", probe],
         capture_output=True,
         text=True,
-        env=dict(os.environ, CITYJSON_EXTENSION=str(tools.cityjson_ext), THREE_D_EXTENSION=str(tools.three_d_ext)),
+        env=dict(os.environ, **tools.extension_env()),
     )
     try:
         env.update(json.loads(r.stdout))
