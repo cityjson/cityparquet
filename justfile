@@ -728,17 +728,11 @@ mcp-check:
 
 # Lint and test the CityLake crate.
 #
-# The integration tests need the CityParquet package pragmas, which the
-# published community extension does not yet carry — so they run against the
-# local build, and `just -f lib/duckdb-cityjson/justfile build` must have run
-# first. Override the path by exporting CITYLAKE_CITYJSON_EXTENSION yourself.
+# The integration tests install the community cityjson build (network). To
+# test a local build instead, export CITYLAKE_CITYJSON_EXTENSION with its path.
 citylake-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    ext="{{justfile_directory()}}/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension"
-    if [ -z "${CITYLAKE_CITYJSON_EXTENSION:-}" ] && [ -f "$ext" ]; then
-        export CITYLAKE_CITYJSON_EXTENSION="$ext"
-    fi
     cd lib/citylake
     cargo clippy --all-targets -- -D warnings
     cargo test

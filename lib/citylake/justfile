@@ -43,10 +43,9 @@ test:
     cargo test --lib
 
 # Run the integration suite under tests/: every one of these opens a real
-# DuckLakeService, so there is no offline mode. Needs
-# CITYLAKE_CITYJSON_EXTENSION pointing at a locally built cityjson.duckdb_extension
-# — the published community build lacks the cityparquet_* pragmas. See
-# CLAUDE.md's "Testing" section.
+# DuckLakeService, so there is no offline mode. Installs the community
+# cityjson build; export CITYLAKE_CITYJSON_EXTENSION to load a local
+# cityjson.duckdb_extension instead. See CLAUDE.md's "Testing" section.
 test-integration:
     cargo test --test '*'
 

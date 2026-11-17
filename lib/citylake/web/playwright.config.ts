@@ -32,13 +32,11 @@ export const outputRoot = path.join(runDir, "out");
 if (!process.env.TEST_WORKER_INDEX) mkdirSync(outputRoot, { recursive: true });
 
 // `--manifest-path` needs an absolute path once `cwd` points outside the
-// crate, so resolve both it and the extension relative to this file rather
-// than hardcoding a machine-specific path.
+// crate, so resolve it relative to this file rather than hardcoding a
+// machine-specific path. The API installs the community cityjson build unless
+// CITYLAKE_CITYJSON_EXTENSION, passed through from the environment, names a
+// local one.
 const citylakeManifest = path.resolve(__dirname, "../Cargo.toml");
-const cityjsonExtension = path.resolve(
-  __dirname,
-  "../../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension",
-);
 
 const apiPort = 3100;
 const apiTarget = `http://127.0.0.1:${apiPort}`;
@@ -95,7 +93,6 @@ export default defineConfig({
         CITYLAKE_CATALOG_PATH: path.join(runDir, "metadata.ducklake"),
         CITYLAKE_STORAGE_PATH: path.join(runDir, "data"),
         CITYLAKE_OUTPUT_ROOT: outputRoot,
-        CITYLAKE_CITYJSON_EXTENSION: cityjsonExtension,
       },
       url: `${apiTarget}/health`,
       timeout: 180_000,

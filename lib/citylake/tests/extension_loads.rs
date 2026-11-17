@@ -43,8 +43,8 @@ fn duckdb_is_the_pinned_version() {
         .query_row("SELECT version()", [], |row| row.get(0))
         .expect("query duckdb version");
     assert!(
-        version.starts_with("v1.5.4"),
-        "expected DuckDB v1.5.4, got {version} — the cityjson extension is \
+        version.starts_with("v2.0.0"),
+        "expected DuckDB v2.0.0, got {version} — the cityjson extension is \
          published only for the version its pipeline builds for"
     );
 }

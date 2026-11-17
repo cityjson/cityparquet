@@ -131,13 +131,17 @@ mcp-check` and `just mcp-corpus` on their own) fail with an ENOENT deep inside
 the corpus build on a fresh clone that has not run `just setup` or `just
 setup-shallow` first.
 
-**`citylake-check` needs a local `duckdb-cityjson` build.** CityLake's
-integration tests exercise the `cityparquet_*` package pragmas, which the
-published community extension does not carry — so `just citylake-check` looks
-for `lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension`
-and points `CITYLAKE_CITYJSON_EXTENSION` at it when found. Run `just -f
-lib/duckdb-cityjson/justfile build` first, or export
-`CITYLAKE_CITYJSON_EXTENSION` yourself to point at a build elsewhere.
+**The DuckDB extensions come from the community repository.** The signed
+community builds (`INSTALL cityjson FROM community`, `INSTALL three_d FROM
+community`) are the default everywhere: cityjson v0.5.0 and three_d v0.3.0
+for DuckDB 2.0.0, built from the commits `lib/duckdb-cityjson` and
+`lib/duckdb-3d` pin. `citylake-check` and the tool-chain test therefore need
+the network. Each consumer takes an explicit path to a local, unsigned build
+instead (`CITYLAKE_CITYJSON_EXTENSION`, `CITYJSON_EXTENSION` /
+`THREE_D_EXTENSION`, `citybench --duckdb-cityjson-extension`, `energy
+--ext-dir`), for testing extension code that is not released yet; a local
+build is never picked up implicitly. The database benchmark accepts the
+community build only at the pinned release (`benchmark/databases/README.md`).
 
 ## Submodules
 

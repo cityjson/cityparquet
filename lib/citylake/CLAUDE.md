@@ -212,15 +212,15 @@ catalog in a temp directory.
 
 There is no offline mode. Every operation this crate performs is a pragma, so
 a service running without the extension loaded would exercise nothing —
-there is no code path that does real work without it. The published
-community `cityjson` extension predates v0.4.0 and does not carry the
-`cityparquet_*` pragmas the package model runs on, so the integration tests
-need `CITYLAKE_CITYJSON_EXTENSION` pointing at a locally built
+there is no code path that does real work without it. `DuckLakeService::new`
+installs the signed community build (`INSTALL cityjson FROM community`),
+v0.5.0 for DuckDB 2.0.0, which carries the `cityparquet_*` pragmas the
+package model runs on; the integration tests therefore need the network. To
+test a local build instead, point `CITYLAKE_CITYJSON_EXTENSION` at its
 `cityjson.duckdb_extension` (`just -f lib/duckdb-cityjson/justfile build`
-produces one). Without that variable set, `DuckLakeService::new` falls back
-to installing the community build, and every pragma call fails outright.
+produces one), which is loaded by path as an unsigned extension.
 `tests/extension_loads.rs` asserts the environment contract directly: the
-connected DuckDB is v1.5.4, and every `cityparquet_*` pragma, every
+connected DuckDB is v2.0.0, and every `cityparquet_*` pragma, every
 `insert_*` pragma, every metadata table function (`cityjson_metadata` /
 `cityjsonseq_metadata` / `flatcitybuf_metadata`), and `ducklake_merge_adjacent_files`
 — DuckLake's own maintenance function, not the `cityjson` extension's, but
@@ -343,18 +343,17 @@ cargo build                       # library + binary (default features include `
 cargo build --no-default-features # library only, no axum/tower deps
 cargo run                         # start the HTTP server
 cargo test --lib                  # the pure tier, offline
-cargo test                        # everything, needs CITYLAKE_CITYJSON_EXTENSION
+cargo test                        # everything, needs the network (community build)
 cargo clippy --all-targets -- -D warnings
 ```
 
 A `justfile` wraps the common workflows: `just` (no args) lists them. `just
 test` is the pure tier; `just test-integration` is the integration tier and
-needs `CITYLAKE_CITYJSON_EXTENSION` set, as above. `just check` is the clippy
+installs the community build, as above. `just check` is the clippy
 gate.
 `just api` starts the server with a dotenvx-loaded `.env`; `just web`/`just
 dev` are `web/`'s toolchain, described above.
 
 The root `justfile`'s `citylake-check` runs this crate's clippy gate and full
-test suite as part of `just check` from the repository root, resolving
-`CITYLAKE_CITYJSON_EXTENSION` from a local `lib/duckdb-cityjson` build if the
-caller has not already exported it.
+test suite as part of `just check` from the repository root, against the
+community build unless the caller exports `CITYLAKE_CITYJSON_EXTENSION`.
