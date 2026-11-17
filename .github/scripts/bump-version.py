@@ -76,7 +76,7 @@ def bump(version: str, kind: str) -> str:
 # each sibling crate in [workspace.dependencies]. Anchored on the table and the
 # crate name, so no third-party `version = ` line can match.
 _PACKAGE_VERSION = re.compile(
-    r'(^\[workspace\.package\]\n(?:(?!^\[).*\n)*?^version = ")([^"]+)(")',
+    r'(^\[workspace\.package\]\r?\n(?:(?!^\[).*\n)*?^version = ")([^"]+)(")',
     re.MULTILINE,
 )
 
@@ -131,7 +131,7 @@ def set_dependency_versions(text: str, crates: tuple[str, ...], version: str) ->
 # `version = "x"` inside [package], anchored on the table like the workspace
 # pattern, so a dependency's `version = ` cannot match.
 _CRATE_VERSION = re.compile(
-    r'(^\[package\]\n(?:(?!^\[).*\n)*?^version = ")([^"]+)(")',
+    r'(^\[package\]\r?\n(?:(?!^\[).*\n)*?^version = ")([^"]+)(")',
     re.MULTILINE,
 )
 

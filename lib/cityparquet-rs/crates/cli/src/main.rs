@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "cityparquet")]
+#[command(name = "cityparquet", version)]
 #[command(about = "CityParquet command-line tool")]
 struct Cli {
     #[command(subcommand)]

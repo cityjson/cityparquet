@@ -182,11 +182,24 @@ jobs:
         run: bash .github/scripts/push-release.sh "citygml-v${{ needs.prepare.outputs.version }}"
 
       # The files the Release workflow attaches: the five crates as uploaded.
+      # Publishing several packages at once leaves each `.crate` in a
+      # directory under target/package, and a second copy in the registry
+      # cargo verifies them against.
+      - name: Collect the crates
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find lib/citygml-rs/target/package -name '*.crate' \
+            -not -path '*/tmp-registry/*' -exec cp {} dist/ \;
+          ls -l dist
+          [ "$(find dist -name '*.crate' | wc -l)" -eq 5 ]
+
       - uses: actions/upload-artifact@v7.0.2
         if: ${{ !inputs.dry_run }}
         with:
           name: release-asset-crates
-          path: lib/citygml-rs/target/package/*.crate
+          path: dist/*.crate
           if-no-files-found: error
 
       # What the Release workflow reads. Uploaded only by a real publish, so a

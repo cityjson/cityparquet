@@ -59,6 +59,13 @@ class RustManifest(unittest.TestCase):
         text, version = bv.bump_rust_manifest(MANIFEST, "none")
         self.assertEqual((text, version), (MANIFEST, "0.1.0"))
 
+    def test_keeps_crlf_line_endings(self):
+        # A Windows runner checks the manifest out with CRLF.
+        crlf = MANIFEST.replace("\n", "\r\n")
+        text, version = bv.bump_rust_manifest(crlf, "minor")
+        self.assertEqual(version, "0.2.0")
+        self.assertEqual(text, bv.bump_rust_manifest(MANIFEST, "minor")[0].replace("\n", "\r\n"))
+
     def test_refuses_versions_that_disagree(self):
         drifted = MANIFEST.replace(
             '"crates/schema", version = "0.1.0"', '"crates/schema", version = "0.0.9"'
@@ -159,6 +166,12 @@ class PythonManifest(unittest.TestCase):
     def test_none_changes_nothing(self):
         text, version = bv.bump_python_manifest(PY_MANIFEST, "none")
         self.assertEqual((text, version), (PY_MANIFEST, "0.1.0"))
+
+    def test_keeps_crlf_line_endings(self):
+        crlf = PY_MANIFEST.replace("\n", "\r\n")
+        text, version = bv.bump_python_manifest(crlf, "minor")
+        self.assertEqual(version, "0.2.0")
+        self.assertEqual(text, crlf.replace('version = "0.1.0"', 'version = "0.2.0"'))
 
     def test_refuses_a_missing_version(self):
         with self.assertRaisesRegex(ValueError, "exactly one"):
