@@ -24,4 +24,4 @@ packages = ["src/energy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["requires_extensions: needs built duckdb-cityjson/duckdb-3d binaries"]
+markers = ["requires_extensions: needs the cityjson / three_d community builds (network) or local builds"]

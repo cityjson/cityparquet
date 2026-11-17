@@ -95,13 +95,15 @@ def fake_engine(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _placeholder_extension_build(request, tmp_path_factory, monkeypatch):
-    """Unit tests never depend on a local DuckDB CityJSON extension build.
+    """Unit tests never load a DuckDB CityJSON extension build.
 
-    `cmd_bench` refuses to start without one (`citybench.extension`); a
-    placeholder file satisfies the path check. `cmd_bench` also loads the
+    Without a named build the harness installs the community build over the
+    network (`citybench.extension`); a placeholder file names a local build
+    instead and satisfies the path check. `cmd_bench` also loads the
     build before starting, which the placeholder fails, so a unit test that
-    drives `cmd_bench` past that point stubs `cli._extension_reported_version`
-    or `extension.load`. Integration tests resolve the real build.
+    drives `cmd_bench` past that point stubs `cli._extension_probe`
+    or `extension.load`. Integration tests resolve the real build: the
+    community one unless the environment names a local build.
     """
     if request.node.get_closest_marker("integration") is None:
         from citybench import extension

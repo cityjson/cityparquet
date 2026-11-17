@@ -41,7 +41,7 @@ cd cityparquet          # wherever you cloned github.com/cityjson/cityparquet
 for c in duckdb fcb uv just cargo cmake ninja python3 jq; do
   printf "%-8s " "$c"; command -v $c || echo MISSING
 done
-lib/duckdb-cityjson/build/release/duckdb --version   # v1.5.5, once built (0.4)
+lib/duckdb-cityjson/build/release/duckdb --version   # v2.0.0, once built (0.4)
 ```
 
 All must resolve. `fcb` (the FlatCityBuf CLI, 0.7.8 here) is needed by the read
@@ -146,8 +146,13 @@ Artefacts referenced later:
 
 Each submodule's `build/release/duckdb` has _its own_ extension statically
 loaded. To use both together, load the other one's `.duckdb_extension` file
-explicitly (Part 4). `INSTALL cityjson FROM community` is not needed and not
-supported: the published community build predates the per-LoD column shape.
+explicitly (Part 4). This walkthrough tests the checked-out sources, so it
+uses these local builds. The signed community builds (`INSTALL cityjson FROM
+community`, `INSTALL three_d FROM community`) are the released code of the
+commits the submodules pin (cityjson v0.5.0, three_d v0.3.0, for DuckDB
+2.0.0): with a stock DuckDB 2.0.0 shell they run Part 4 without `-unsigned`,
+and register the `ST_AsWKB*` fixtures under `THREE_D_TEST_FIXTURES=1` as the
+local build does.
 
 ---
 

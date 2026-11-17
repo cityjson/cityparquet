@@ -14,5 +14,5 @@ def fixture_path() -> Path:
 
 requires_extensions = pytest.mark.skipif(
     not extensions_available(),
-    reason="duckdb-cityjson / duckdb-3d not built in this checkout",
+    reason="cannot install the cityjson / three_d community builds (offline?)",
 )

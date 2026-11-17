@@ -9,19 +9,31 @@ would break.
 
 ## The exact pins, and why
 
-`package.json` pins `@duckdb/node-api` at `1.5.5-r.5` (DuckDB v1.5.5) and
+`package.json` pins `@duckdb/node-api` at `1.5.6-r.2` (DuckDB v1.5.6) and
 `@modelcontextprotocol/server` at `2.0.0`, both **exact**, no caret. A
 community extension is built against one DuckDB version, and the community
-repository only carries builds for the versions it was built for: `cityjson`
-and `three_d` both exist at v1.5.5, and at v1.5.4 they exist only as older
-builds that lack most of what `FUNCTIONS.md` documents — every
-`cityparquet_*` pragma, `ST_3DFootprintArea`, `ST_3DTransform`, the
+repository only carries builds for the versions it was built for, each frozen
+at whatever was current when that version was last built. At v1.5.6 it
+serves the current releases' DuckDB 1.5 builds (cityjson v0.5.0-duckdb1.5,
+reporting `8ff7746`; three_d v0.3.0-duckdb1.5, reporting `4090293`); at
+v1.5.5 builds from before those releases (`a1455e1`, `679ee09`); and at
+v1.5.4 still older builds that lack most of what `FUNCTIONS.md` documents —
+every `cityparquet_*` pragma, `ST_3DFootprintArea`, `ST_3DTransform`, the
 `(BLOB, STRUCT)` overload of `ST_3DFromWKB`. A caret range would let
 `pnpm install` bring up a DuckDB for which one of them has no build, and the
 server would fail at `LOAD` time with no code change to explain why. Before
 moving this pin, check that **both** extensions answer at the target version
 (`https://community-extensions.duckdb.org/<version>/linux_amd64/<name>.duckdb_extension.gz`)
 and that `test/duckdb.test.ts`'s blocked table still passes.
+
+The server is not on DuckDB 2.0.0, where the rest of the repository is,
+because 2.0.0's httpfs reads the CA certificate bundle from the local
+filesystem on the first `https://` request: once step 7 below has disabled
+`LocalFileSystem`, every remote read on a sandboxed engine fails with
+`Permission Error: Cannot read a CA certificate bundle` (on 2.0.0,
+`test/http.test.ts`'s "describes a remote package" fails this way). Moving to 2.0.0
+needs the bundle read before the filesystem closes, without network at
+startup, and the blocked table and egress tests green after it.
 
 ## `spatial` is loaded, and so is GDAL
 
@@ -119,10 +131,11 @@ runs it before every publish.
 
 ## Check what the loaded build provides
 
-The corpus is built from the submodules' `FUNCTIONS.md`, and the submodules
-move ahead of what the community repository publishes: `lib/duckdb-cityjson`
-is well past the published `a1455e1`. So the corpus can describe functions
-the loaded build does not have. When writing or changing a tool that calls
+The corpus is built from the submodules' `FUNCTIONS.md`, which can move
+ahead of what the community repository publishes for DuckDB 1.5.6: the
+submodules pin the DuckDB 2.0.0 releases' commits, and the 1.5 builds are
+made from a separate `v1.5-variegata` branch. So the corpus can describe
+functions the loaded build does not have. When writing or changing a tool that calls
 into `cityjson` or `three_d`, confirm the function exists in the loaded
 build: `SELECT function_name FROM duckdb_functions() WHERE function_name
 ILIKE '…'`. Use `ILIKE`, not `=` or `IN`: `spatial` registers mixed-case

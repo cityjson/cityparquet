@@ -90,8 +90,9 @@ class DuckDBCityParquet:
                 "writeback": self._writeback, "package": str(self._package)}
 
     def prepare(self) -> None:
-        # Allowed to load the unsigned local extension build the write tier
-        # needs (`citybench.extension`).
+        # Opened for the extension build the write tier loads: the
+        # community build, or a named unsigned local one
+        # (`citybench.extension`).
         self._conn = extension.connect()
         # Matched to the PostgreSQL containers' limits so no engine is
         # given more of the machine than another.
@@ -252,8 +253,9 @@ class DuckDBCityParquet:
         """
         assert self._conn is not None and self._package is not None
         if not self._schema_loaded:
-            # An explicitly chosen build, never whatever a bare
-            # `LOAD cityjson` finds installed (`citybench.extension`).
+            # The version-checked community build or a named local build,
+            # never whatever a bare `LOAD cityjson` finds installed
+            # (`citybench.extension`).
             extension.load(self._conn, extension.resolve())
             package = str(self._package).replace("'", "''")
             self._conn.execute(

@@ -146,7 +146,7 @@ energy screen   --features features.parquet [--hdd 2900] [--params u_values.toml
 | `--faces`         | *(none)*             | also write the per-face table (the `ST_3DFaces` prototype output) |
 | `--validate`      | *(none)*             | write a JSON comparison against 3DBAG's `b3_*` reference columns |
 | `--flat-tilt-deg` | `5.0`                 | roof tilt at or below this counts as flat                        |
-| `--ext-dir`       | *(auto-detected)*    | directory holding the `.duckdb_extension` binaries                |
+| `--ext-dir`       | *(community builds)* | directory of local `.duckdb_extension` builds to load instead     |
 
 Output is one row per `Building`: `building_id`, `year`, `n_parts`,
 `volume_m3`, `envelope_m2`, `sv_ratio`, `footprint_m2`, `height_m`,

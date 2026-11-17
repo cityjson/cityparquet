@@ -13,7 +13,7 @@ both a Claude Code plugin and an APM package, and both read the same
 
 The skills are plain Markdown. They name the tools of the MCP server in
 [`../mcp`](../mcp), and each one says what to do without it: the same SQL in
-`duckdb` v1.5.5 with the community extensions.
+`duckdb` v2.0.0 or v1.5.6 with the community extensions.
 
 ## Install
 
@@ -38,7 +38,7 @@ APM installs the skills only: register the server yourself with
 
 ## Keeping them honest
 
-Every SQL block in these skills was run against DuckDB v1.5.5 with the
+Every SQL block in these skills was run against DuckDB v1.5.6 with the
 published `cityjson` and `three_d` builds, on the Delft package at
 `https://cityparquet.open3d.city/data/delft`. When the pin in
 `../mcp/package.json` moves, run them again.

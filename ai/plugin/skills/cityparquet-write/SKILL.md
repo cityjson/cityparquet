@@ -6,7 +6,7 @@ description: Use when creating, editing or exporting CityParquet data — buildi
 # Writing and converting CityParquet
 
 Writing needs a writable filesystem. Use a local server (the stdio MCP server,
-not sandboxed) or the `duckdb` CLI v1.5.5. A sandboxed or hosted server refuses
+not sandboxed) or the `duckdb` CLI v2.0.0 or v1.5.6. A sandboxed or hosted server refuses
 every `COPY … TO` and every `cityparquet_write`.
 
 ## Two rules that fail silently when broken
