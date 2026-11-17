@@ -98,5 +98,5 @@ ORDER BY b3_h_dak_max DESC LIMIT 3;
 | Assuming a function exists | `SELECT function_name FROM duckdb_functions() WHERE function_name ILIKE '…'` |
 
 Measurements (volume, area, height) are covered in `cityparquet-3d-analysis`.
-Without the server, use the same SQL in `duckdb` v1.5.5 after
+Without the server, use the same SQL in `duckdb` v2.0.0 or v1.5.6 after
 `INSTALL cityjson FROM community; LOAD cityjson;`.

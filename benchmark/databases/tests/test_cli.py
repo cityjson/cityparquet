@@ -266,7 +266,7 @@ def test_versions_includes_duckdb_unconditionally():
 def test_versions_omits_cjdb_when_cjdb_is_not_in_the_run(monkeypatch):
     from citybench import cli
 
-    monkeypatch.setattr(cli, "_extension_reported_version", lambda path: "test")
+    monkeypatch.setattr(cli, "_extension_probe", lambda build: (build, "test", build))
     versions = _versions([_TaggedFake("duckdb-cityparquet")])
     assert "cjdb" not in versions
 
@@ -551,7 +551,7 @@ def test_cmd_bench_plans_isolation_once_and_hands_the_cpuset_to_the_containers(m
 
     monkeypatch.setattr(cli, "isolated_databases", fake_databases)
     monkeypatch.setattr(cli, "_dataset_crs", lambda args: {"id": {"authority": "EPSG", "code": 7415}})
-    monkeypatch.setattr(cli, "_extension_reported_version", lambda path: "test")
+    monkeypatch.setattr(cli, "_extension_probe", lambda build: (build, "test", build))
     args = Namespace(dataset="x", data_root=str(tmp_path), ports=None, srid=7415,
                      numa_node="auto", max_load="auto", max_load_wait_s=600.0,
                      memory_max=None)
@@ -594,7 +594,7 @@ def test_cmd_bench_records_the_engine_and_drops_cpuset_an_engine_lacks(monkeypat
 
     monkeypatch.setattr(cli, "isolated_databases", fake_databases)
     monkeypatch.setattr(cli, "_dataset_crs", lambda args: {"id": {"authority": "EPSG", "code": 7415}})
-    monkeypatch.setattr(cli, "_extension_reported_version", lambda path: "test")
+    monkeypatch.setattr(cli, "_extension_probe", lambda build: (build, "test", build))
     args = Namespace(dataset="x", data_root=str(tmp_path), ports=None, srid=7415,
                      numa_node="auto", max_load="auto", max_load_wait_s=600.0, memory_max=None)
     try:
@@ -633,7 +633,7 @@ def test_versions_record_the_extension_build_the_duckdb_systems_load(tmp_path, m
     build = tmp_path / "cityjson.duckdb_extension"
     build.write_bytes(b"abc")
     monkeypatch.setenv(extension.ENV_VAR, str(build))
-    monkeypatch.setattr(cli, "_extension_reported_version", lambda path: "6937c06")
+    monkeypatch.setattr(cli, "_extension_probe", lambda build: (build, "6937c06", build))
     versions = _versions([DuckDBCityParquet()])
     assert versions["duckdb-cityjson-path"] == str(build)
     assert versions["duckdb-cityjson"] == "6937c06"
@@ -736,7 +736,7 @@ def test_a_run_without_a_duckdb_system_never_loads_the_extension(monkeypatch):
 
     reached, Reached = _record_preparation(monkeypatch, cli)
     monkeypatch.setattr(extension, "connect",
-                        lambda **kw: pytest.fail("the extension was loaded"))
+                        lambda *a, **kw: pytest.fail("the extension was loaded"))
     with pytest.raises(Reached):
         cli.cmd_bench(_bench_args(systems="cjdb,3dcitydb"))
     assert reached == ["_dataset_crs"]
@@ -755,7 +755,7 @@ def test_a_loadable_extension_lets_the_run_proceed_and_is_probed_once(monkeypatc
     assert reached == ["_dataset_crs"]
     build = Path(os.environ[extension.ENV_VAR])
     assert loads == [build]
-    assert args.extension_probe == (build, "6937c06")
+    assert args.extension_probe == (build, "6937c06", build)
 
     # A recursive entry (one per dataset, or after the containers start)
     # carries the probe and does not load the extension again.
@@ -768,10 +768,10 @@ def test_versions_reuse_the_preflight_probe_instead_of_loading_again(monkeypatch
     from citybench import cli, extension
 
     build = Path(os.environ[extension.ENV_VAR])
-    monkeypatch.setattr(cli, "_extension_reported_version",
-                        lambda path: pytest.fail("loaded a second time"))
-    probed = _versions([DuckDBCityParquet()], extension_probe=(build, "6937c06"))
-    monkeypatch.setattr(cli, "_extension_reported_version", lambda path: "6937c06")
+    monkeypatch.setattr(cli, "_extension_probe",
+                        lambda build: pytest.fail("loaded a second time"))
+    probed = _versions([DuckDBCityParquet()], extension_probe=(build, "6937c06", build))
+    monkeypatch.setattr(cli, "_extension_probe", lambda build: (build, "6937c06", build))
     assert probed == _versions([DuckDBCityParquet()])
 
 

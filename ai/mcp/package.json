@@ -44,7 +44,7 @@
     "serve": "node dist/http.js"
   },
   "dependencies": {
-    "@duckdb/node-api": "1.5.5-r.5",
+    "@duckdb/node-api": "1.5.6-r.2",
     "@modelcontextprotocol/server": "2.0.0",
     "zod": "^4.0.0"
   },

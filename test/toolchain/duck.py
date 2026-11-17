@@ -8,8 +8,10 @@
 
 run.py starts each one as its own process, so an extension that crashes
 takes one step with it, not the whole run. Every operation prints one JSON
-object on stdout. The extensions are loaded from CITYJSON_EXTENSION and
-THREE_D_EXTENSION; DuckDB is the version run.py pins.
+object on stdout. Each extension is a local build at the path in
+CITYJSON_EXTENSION / THREE_D_EXTENSION when that is set and non-empty, and
+the signed community build (INSTALL ... FROM community) otherwise; DuckDB is
+the version run.py pins.
 """
 
 from __future__ import annotations
@@ -22,10 +24,18 @@ import duckdb
 
 
 def connect(three_d: bool = False) -> duckdb.DuckDBPyConnection:
-    c = duckdb.connect(config={"allow_unsigned_extensions": "true"})
-    c.execute(f"LOAD '{os.environ['CITYJSON_EXTENSION']}'")
+    wanted = {"cityjson": os.environ.get("CITYJSON_EXTENSION")}
     if three_d:
-        c.execute(f"LOAD '{os.environ['THREE_D_EXTENSION']}'")
+        wanted["three_d"] = os.environ.get("THREE_D_EXTENSION")
+    # Only a local build is unsigned.
+    unsigned = any(wanted.values())
+    c = duckdb.connect(config={"allow_unsigned_extensions": "true"} if unsigned else {})
+    for name, path in wanted.items():
+        if path:
+            c.execute(f"LOAD {lit(path)}")
+        else:
+            c.execute(f"INSTALL {name} FROM community")
+            c.execute(f"LOAD {name}")
     return c
 
 

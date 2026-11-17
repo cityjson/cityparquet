@@ -70,7 +70,7 @@ jobs:
                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
           df -h /
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           # The library's gate needs no submodule: the city3d-stac crates and
           # cjseq come from crates.io. The two DuckDB
@@ -80,7 +80,7 @@ jobs:
 
       # rust-toolchain.toml pins the version; rustup honours it on first use.
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -89,13 +89,13 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('lib/cityparquet-rs/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      - uses: extractions/setup-just@v4
+      - uses: extractions/setup-just@v4.0.0
 
       # `just check`'s last step runs Prettier through npx. Installing Node
       # explicitly rather than relying on whatever the runner image preinstalls.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Install rustfmt and clippy
         working-directory: lib/cityparquet-rs
@@ -104,7 +104,7 @@ jobs:
       # `just test` runs cargo-nextest, so the gate needs it. Nextest gives
       # every test its own process, which is what makes the gate's wall-clock
       # independent of test-binary ordering.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.90.3
         with:
           tool: nextest
 
@@ -134,12 +134,12 @@ jobs:
     name: citygml-rs workspace
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: false
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -148,7 +148,7 @@ jobs:
           key: citygml-${{ runner.os }}-${{ hashFiles('lib/citygml-rs/Cargo.lock') }}
           restore-keys: citygml-${{ runner.os }}-
 
-      - uses: extractions/setup-just@v4
+      - uses: extractions/setup-just@v4.0.0
 
       - name: Install rustfmt and clippy
         working-directory: lib/citygml-rs
@@ -175,12 +175,12 @@ jobs:
     name: benchmark harness suites
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: false
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -189,8 +189,8 @@ jobs:
           key: harness-${{ runner.os }}-${{ hashFiles('lib/cityparquet-rs/Cargo.lock') }}
           restore-keys: harness-${{ runner.os }}-
 
-      - uses: extractions/setup-just@v4
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: extractions/setup-just@v4.0.0
+      - uses: astral-sh/setup-uv@v10.3.3
 
       # Neither suite needs a corpus: the shell tests stub every external
       # binary and serve file:// URLs to the real fetcher, and the pytest suite
@@ -215,12 +215,12 @@ jobs:
     name: readbench workspace
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: false
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -229,7 +229,7 @@ jobs:
           key: readbench-${{ runner.os }}-${{ hashFiles('benchmark/readbench/Cargo.lock') }}
           restore-keys: readbench-${{ runner.os }}-
 
-      - uses: extractions/setup-just@v4
+      - uses: extractions/setup-just@v4.0.0
 
       - name: Install rustfmt and clippy
         working-directory: benchmark/readbench
@@ -260,12 +260,12 @@ jobs:
     name: citylake build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: false
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry

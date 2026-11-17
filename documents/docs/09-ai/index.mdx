@@ -27,7 +27,7 @@ under `ai/`.
 </CardGroup>
 
 The two work separately. The server alone gives an agent the documentation
-and an engine. The skills alone give it correct SQL to run in DuckDB v1.5.5
+and an engine. The skills alone give it correct SQL to run in DuckDB v2.0.0 or v1.5.6
 with the `cityjson` and `three_d` extensions installed and loaded. Together,
 the skills tell the agent which server tool to call and when.
 
@@ -55,7 +55,8 @@ sandboxed and limited to the project's own data hosts;
 but they do not start the server; you register it yourself.
 :::
 
-Everything here targets **DuckDB v1.5.5** and the `cityjson` and `three_d`
-builds published for it in the DuckDB community repository. Older DuckDB
-versions install older builds of both extensions, which lack most of what the
-function references describe.
+The MCP server runs **DuckDB v1.5.6** with the `cityjson` and `three_d`
+builds published for it in the DuckDB community repository; the skills' SQL
+also runs on DuckDB v2.0.0 with its community builds. Older DuckDB versions
+install older builds of both extensions, which lack parts of what the function
+references describe.

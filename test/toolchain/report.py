@@ -60,7 +60,9 @@ def render(out: Path) -> str:
     L.append("| --- | --- |")
     dirty = " (with uncommitted changes)" if env.get("cityparquet_dirty") else ""
     L.append(f"| cityparquet-rs | {env.get('cityparquet_version', '?')}; monorepo `{env.get('cityparquet_branch')}` at `{env.get('cityparquet_commit')}`{dirty} |")
-    exts = dict(env.get("extensions", []))
+    # [name, version] from older runs, [name, version, installed_from] since
+    # the community builds became the default.
+    exts = {e[0]: " from ".join(str(x) for x in e[1:] if x) for e in env.get("extensions", [])}
     L.append(f"| DuckDB | {env.get('duckdb', '?')} |")
     L.append(f"| duckdb-cityjson (`cityjson`) | `{exts.get('cityjson', 'not loaded')}` |")
     L.append(f"| duckdb-3d (`three_d`) | `{exts.get('three_d', 'not loaded')}` |")

@@ -13,17 +13,21 @@ failure is, and report. Never make a run greener by changing what is checked.
 
 ## 1. Get the tools
 
-| Variable             | Default (in this tree)                                                           | How to get it                                                       |
-| -------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `CITYPARQUET`        | `lib/cityparquet-rs/target/release/cityparquet`                                  | `cd lib/cityparquet-rs && cargo build --release -p cityparquet-cli` |
-| `CITYJSON_EXTENSION` | `lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension` | `just -f lib/duckdb-cityjson/justfile build`                        |
-| `THREE_D_EXTENSION`  | `lib/duckdb-3d/build/release/extension/three_d/three_d.duckdb_extension`         | `make -C lib/duckdb-3d`                                             |
-| `CITYGML_TOOLS`      | `benchmark/formats/tools/citygml-tools/citygml-tools`                            | `just fetch-tools` (needs Java 17+)                                 |
-| `TOOLCHAIN_WORK`     | `test/runs/toolchain` (ignored)                                                  | any directory with a few GB free                                    |
+| Variable             | Default                                                         | How to get it                                                       |
+| -------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `CITYPARQUET`        | `lib/cityparquet-rs/target/release/cityparquet`                 | `cd lib/cityparquet-rs && cargo build --release -p cityparquet-cli` |
+| `CITYJSON_EXTENSION` | unset: `INSTALL cityjson FROM community` (v0.5.0, DuckDB 2.0.0) | a path: `just -f lib/duckdb-cityjson/justfile build`                |
+| `THREE_D_EXTENSION`  | unset: `INSTALL three_d FROM community` (v0.3.0, DuckDB 2.0.0)  | a path: `make -C lib/duckdb-3d`                                     |
+| `CITYGML_TOOLS`      | `benchmark/formats/tools/citygml-tools/citygml-tools`           | `just fetch-tools` (needs Java 17+)                                 |
+| `TOOLCHAIN_WORK`     | `test/runs/toolchain` (ignored)                                 | any directory with a few GB free                                    |
 
-Test what the user asked about. The submodules pin a commit that may be
-older than their `develop`; build the commit you mean to test and say which
-in the report. A missing tool skips its steps, and the report lists them.
+Test what the user asked about. The community extension builds are the
+released code of the commits the submodules pin. To test other extension
+code, such as a submodule's `develop`, build that commit, set the variable to
+its `build/release/extension/<name>/<name>.duckdb_extension`, and say which
+commit in the report. The report's environment records which build answered
+(`installed_from`). A missing tool skips its steps, and the report lists
+them.
 
 ## 2. Run
 

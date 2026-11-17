@@ -40,14 +40,14 @@ jobs:
     name: bindings tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: false
 
       # lib/cityparquet-py/rust-toolchain.toml pins the version; rustup
       # honours it on first use.
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -56,8 +56,8 @@ jobs:
           key: python-${{ runner.os }}-${{ hashFiles('lib/cityparquet-py/Cargo.lock') }}
           restore-keys: python-${{ runner.os }}-
 
-      - uses: extractions/setup-just@v4
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: extractions/setup-just@v4.0.0
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: just py-test
         run: just py-test

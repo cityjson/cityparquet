@@ -31,10 +31,9 @@ FORCE INSTALL cityjson FROM community;
 
 Restart DuckDB and run `LOAD cityjson;` to use the updated extension.
 
-:::note[DuckDB 1.5 only]
-The community registry carries `cityjson` builds for DuckDB 1.5 only. DuckDB 2.0
-has none yet: `INSTALL cityjson FROM community` fails there with `HTTP 404`. The
-DuckDB 1.5 build provides every package operation used below —
+:::note[DuckDB 2.0.0 or 1.5.6]
+The community registry carries the current `cityjson` release, v0.5.0, for DuckDB
+2.0.0 and DuckDB 1.5.6. It provides every package operation used below —
 `cityparquet_init`, `cityparquet_write`, `cityparquet_read`, `cityparquet_validate`
 and the `insert_*` pragmas.
 :::
