@@ -172,3 +172,9 @@ its API is moving; it is not vendored and not a submodule.
   documentation; history belongs in git.
 - Benchmark caveats are part of the artefact. A change that makes a number look
   better by dropping one is a defect.
+- **Workflow actions are locked.** `.github/workflows/actions.lock` records the
+  commit behind every action the workflows use, and the runner executes that
+  commit. After adding a workflow or changing a `uses:` line, run `gh
+  actions-lock` (the `github/gh-actions-lock` extension) and commit the lockfile
+  with the workflow: a workflow whose entry is missing or stale does not start.
+  Never edit the lockfile by hand.

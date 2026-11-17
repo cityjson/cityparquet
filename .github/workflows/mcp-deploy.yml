@@ -44,7 +44,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           submodules: true
           ref: ${{ inputs.ref || github.ref }}
@@ -53,21 +53,21 @@ jobs:
 
       # The same gate as mcp.yml, so nothing reaches the public endpoint that
       # would not pass it — the sandbox and egress tests above all.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
         with:
           version: 10
-      - uses: actions/setup-node@v4
-        with: { node-version: "24", cache: "pnpm", cache-dependency-path: ai/mcp/pnpm-lock.yaml }
+      - uses: actions/setup-node@v7.1.0
+        with: { node-version: "26", cache: "pnpm", cache-dependency-path: ai/mcp/pnpm-lock.yaml }
       - run: pnpm install --frozen-lockfile && pnpm typecheck && pnpm test
         working-directory: ai/mcp
 
       - name: Google Auth
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        uses: google-github-actions/auth@v3.0.0
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           project_id: ${{ secrets.GCP_PROJECT_ID }}
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        uses: google-github-actions/setup-gcloud@v3.0.1
 
       - name: Build and push the image
         id: image
@@ -94,7 +94,7 @@ jobs:
 
       - name: Deploy to Cloud Run
         id: deploy
-        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
+        uses: google-github-actions/deploy-cloudrun@v3.0.1
         with:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.REGION }}
