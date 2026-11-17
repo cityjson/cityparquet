@@ -132,3 +132,36 @@ objects. None of these steps requires downloading the entire CityParquet file.
 Continue with [Working with 3DBAG at cloud scale](/tutorials/cloud-scale-3dbag)
 for spatial queries, geometry analysis, and format conversion in more detail.
 :::
+
+## Convert a model of your own
+
+To turn your own CityJSON, CityJSONSeq or CityGML file into a CityParquet
+package, use Python or the command-line tool. Both are the reference
+implementation and write the same package.
+
+<Tabs>
+  <Tab title="Python">
+    ```bash
+    pip install cityparquet
+    ```
+
+    ```python
+    import cityparquet
+
+    cityparquet.convert(["model.city.jsonl"], "model_package")
+    ```
+
+    See [Convert and read CityParquet with Python](/tutorials/python-bindings).
+
+  </Tab>
+  <Tab title="Command line">
+    ```bash
+    cargo install cityparquet-cli --locked
+    cityparquet convert model.city.jsonl --output model_package
+    ```
+
+    See [Convert formats with the CityParquet CLI](/tutorials/cli-conversion),
+    which also covers the prebuilt binaries.
+
+  </Tab>
+</Tabs>

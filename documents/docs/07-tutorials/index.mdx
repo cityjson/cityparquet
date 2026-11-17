@@ -8,8 +8,9 @@ sidebar:
 Explained, task-oriented walkthroughs. For the bare copy-paste path, see
 [Getting started](/getting-started).
 
-Choose a tool: **DuckDB** for SQL conversion, **Python** for a small analysis
-script, or **Rust** for library reads and writes and CLI conversion. The DuckDB
+Choose a tool: **DuckDB** for SQL conversion, **Python** for conversion with
+the `cityparquet` package and for analysis scripts, or **Rust** for library
+reads and writes and CLI conversion. The DuckDB
 3D link opens the extension’s own documentation.
 
 **With actual cities** brings the tools together on
@@ -34,6 +35,9 @@ object storage.
 ## Python
 
 <CardGroup cols={2}>
+  <Card title="Convert and read CityParquet with Python" href="/tutorials/python-bindings" icon="code">
+    Install the `cityparquet` package, convert and validate a model, and read it with pyarrow, pandas, DuckDB and GeoPandas.
+  </Card>
   <Card title="Prepare building-energy inputs with Python" href="/tutorials/python-energy" icon="code">
     Select a neighbourhood, calculate surface-to-volume ratios from 3DBAG attributes, and save a CSV.
   </Card>
