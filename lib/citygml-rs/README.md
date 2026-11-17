@@ -2,9 +2,10 @@
 
 Streaming CityGML readers and writers for Rust.
 
-- [`citygml`](crates/citygml): CityGML 2.0 or 3.0 to and from CityJSON,
-  whichever version a document is: its CityJSON header, its features, and a
-  writer by version.
+- [`citygml-rs`](crates/citygml), the library `citygml`: CityGML 2.0 or 3.0
+  to and from CityJSON, whichever version a document is: its CityJSON header,
+  its features, and a writer by version. Depend on it as
+  `citygml = { package = "citygml-rs", version = "0.1" }`.
 - [`citygml-core`](crates/core): the version-neutral model (`GmlObject`), GML
   geometry, the CRS an `srsName` names, and the conversions to and from
   [cjseq](https://crates.io/crates/cjseq)'s CityJSON types.

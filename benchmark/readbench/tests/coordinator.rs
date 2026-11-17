@@ -1479,3 +1479,145 @@ fn a_real_target_run_records_the_host_the_cache_headers_and_the_snapshot_tag() {
         }
     }
 }
+
+/// A local format comparison times the whole-file formats on read all and
+/// reuses it for the queries their reader answers by the same full parse:
+/// the cell runs once (its answer stays in the cross-format check), its row
+/// keeps that answer and carries no time, and the sidecar sets the check
+/// sample beside read all. `--whole-file-scenarios all` measures every cell.
+#[test]
+fn a_local_run_reuses_read_all_for_the_whole_file_formats_other_queries() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let run = |extra: &[&str], out: &str| -> (Vec<Row>, serde_json::Value, serde_json::Value) {
+        let out_csv = prepared.path().join(out);
+        let mut args = vec![
+            "--input",
+            input.to_str().unwrap(),
+            "--prepared-dir",
+            prepared.path().to_str().unwrap(),
+            "--out",
+            out_csv.to_str().unwrap(),
+            "--repeat",
+            "2",
+            "--scenarios",
+            "full-read,bbox-query,attr-filter",
+            "--formats",
+            "cityjsonseq,cityparquet",
+        ];
+        args.extend_from_slice(extra);
+        run_coordinator(&args);
+        let rows = std::fs::read_to_string(&out_csv)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(Row::parse)
+            .collect();
+        let read = |suffix: &str| -> serde_json::Value {
+            let path = prepared.path().join(format!("{out}{suffix}"));
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        };
+        (rows, read(".params.json"), read(".samples.json"))
+    };
+
+    let (rows, params, samples) = run(&[], "reuse.csv");
+    let reused = |r: &Row| r.field("notes").contains("derived-from=full-read");
+    let seq: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.field("format") == "cityjsonseq")
+        .collect();
+    let parquet: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.field("format") == "cityparquet")
+        .collect();
+    assert_eq!(seq.len(), parquet.len(), "a reused cell still has its row");
+    assert!(
+        parquet.iter().all(|r| !reused(r)),
+        "an indexed format is always measured"
+    );
+    for row in &seq {
+        if row.field("scenario") == "full-read" {
+            assert!(!reused(row));
+            assert_eq!(row.field("repeat"), "2");
+            continue;
+        }
+        assert!(
+            row.field("notes")
+                .ends_with("derived-from=full-read;status=derived")
+        );
+        assert_eq!(row.field("repeat"), "0");
+        for column in [
+            "time_mean_s",
+            "time_median_s",
+            "peak_heap_bytes",
+            "peak_rss_bytes",
+        ] {
+            assert_eq!(
+                row.field(column),
+                "",
+                "{column} is read all's, not the cell's"
+            );
+        }
+        // The answer is the cell's own, and agrees with the measured format.
+        let twin = parquet
+            .iter()
+            .find(|p| {
+                p.field("scenario") == row.field("scenario")
+                    && p.field("notes").split(';').next() == row.field("notes").split(';').next()
+            })
+            .expect("the same cell on cityparquet");
+        assert_ne!(row.field("result_count"), "");
+        assert_eq!(
+            row.field("selectivity").is_empty(),
+            twin.field("selectivity").is_empty()
+        );
+    }
+    let record = &params["whole_file_derivation"];
+    assert_eq!(record["scenarios_measured"], "full-read,id-lookup");
+    let cells = record["formats"]["cityjsonseq"]["cells"]
+        .as_array()
+        .unwrap();
+    assert_eq!(cells.len(), seq.len() - 1);
+    assert!(
+        cells
+            .iter()
+            .all(|c| c["check_time_s"].as_f64().unwrap() > 0.0)
+    );
+    assert!(
+        record["formats"]["cityjsonseq"]["full_read_median_s"]
+            .as_f64()
+            .unwrap()
+            > 0.0
+    );
+    let checks: Vec<&serde_json::Value> = samples
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["check"] == true)
+        .collect();
+    assert_eq!(
+        checks.len(),
+        seq.len() - 1,
+        "one check sample per reused cell"
+    );
+    assert!(
+        checks
+            .iter()
+            .all(|s| s["format"] == "cityjsonseq" && s["warmup"] == false)
+    );
+
+    let (rows, params, samples) = run(&["--whole-file-scenarios", "all"], "all.csv");
+    assert!(rows.iter().all(|r| !reused(r) && r.field("repeat") == "2"));
+    assert!(params.get("whole_file_derivation").is_none());
+    assert!(
+        samples
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["check"] == false)
+    );
+}

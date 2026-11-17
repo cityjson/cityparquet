@@ -17,7 +17,7 @@ On this machine the data and output root is
 
 | Path                                              | Contents                                                          |
 | ------------------------------------------------- | ----------------------------------------------------------------- |
-| `data/benchmark/`, `data/3dbag/`                  | Source corpus and the 3DBAG slice                                 |
+| `data/benchmark/`, `data/3dbag/`                  | Source corpus, the 3DBAG slice and the national 3DBAG source      |
 | `data/readbench/`                                 | Prepared format artefacts                                         |
 | `formats/results/`, `formats/bloom_results/`      | Full format, size and bloom measurements                          |
 | `formats/{quick,short,smoke}/`                    | The same families under the `quick`, `short` and `smoke` profiles |
@@ -37,7 +37,7 @@ it without converting anything, the network benchmark reads the very same
 files over HTTP, and a run's evidence names the exact bytes it measured. It
 is public at `https://other-data.open3d.city`, under
 `cityparquet-paper/benchmark/v<chain>/`, one folder per preparation-chain
-version (`CHAIN_VERSION` in `scripts/readbench_prepare.sh`, currently 9):
+version (`CHAIN_VERSION` in `scripts/readbench_prepare.sh`, currently 10):
 
 ```
 v<chain>/manifest.json
@@ -166,7 +166,7 @@ with `--network-profile fast,slow` or `all`, or give a custom one with
 formats that download whole files; latency penalises formats that make many
 range requests. The secondary target (`--network-target real --base-url <url>
 --key-layout bucket`) reads real object storage, such as the hosted corpus at
-`https://other-data.open3d.city/cityparquet-paper/benchmark/v9`; its result is a
+`https://other-data.open3d.city/cityparquet-paper/benchmark/v10`; its result is a
 snapshot of one network path at one time, not a repeatable measurement, and
 its params sidecar's `network` block (copied into the run manifest) says so
 (`snapshot`). That block records the base URL, the host and the addresses it
@@ -275,7 +275,7 @@ just bench-run --families network --profile short                     # typical
 just bench-run --families network --profile short --network-profile all
 just bench-run --families network --profile short --network-whole-file-scenarios all
 just bench-run --families network --datasets rotterdam --network-target real \
-  --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v9
+  --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v10
 ```
 
 ## Selecting work
@@ -339,6 +339,16 @@ and carries the `budget` tag in `notes`. The database family always takes
 `--repeat` samples. `benchmark/formats/READ_BENCHMARK.md` ("Sampling") has
 the rule.
 
+In the formats family the three text formats (`citygml`, `cityjson`,
+`cityjsonseq`) are timed on read all and the identifier lookups. Their
+reader parses the whole file for every other query, so those cells take one
+check sample, which keeps their answer in the cross-format check, and reuse
+the time and memory of read all (`derived-from=full-read` in `notes`, `=` in
+the heatmaps). On the 3DBAG slice this removes about 6.8 h of CityGML
+sampling at 25 repetitions. `just bench-run --formats-whole-file-scenarios
+all` measures every cell instead; `benchmark/formats/READ_BENCHMARK.md`
+("Cells that reuse read all", Caveat 44) has the rule and what it assumes.
+
 ## Full run
 
 Run the full matrix only after the smoke run succeeds:
@@ -362,8 +372,9 @@ container storage and available local ports. `bench-summary` only reads those
 results.
 
 Use `--families` to run one family after preparing it. `--datasets` accepts
-manifest IDs, and `3dbag` for the slice (`[suite] slice_dataset` in
-`manifest.toml`). The database family's dataset is the slice under `full` and
+manifest IDs, `3dbag` for the slice (`[suite] slice_dataset` in
+`manifest.toml`) and `3dbag-national` for the national dataset, which no
+profile selects ([The national dataset](#the-national-dataset)). The database family's dataset is the slice under `full` and
 `quick` and Rotterdam under `short` and `smoke`; `--database-datasets
 all|<ids>` selects its datasets explicitly. The selector rejects data roots outside
 `benchmark/runs/`.
@@ -433,6 +444,86 @@ governor, disabling SMT or turbo, dropping page caches, `isolcpus`, and a
 cgroup `cpuset` for the database family's podman containers without user
 delegation (`MACHINE.md` records whether the user cgroup delegates `cpuset`
 and `memory`).
+
+## The national dataset
+
+`3dbag_national` is the whole of 3DBAG v20250903: its 8,941 tiles, 10,771,547
+features (Buildings, each with its BuildingParts), as one dataset. It exists
+so that the size and read comparisons include one input at national scale.
+No profile selects it. `--national` adds it to a profile's selection, and
+`--datasets 3dbag-national` names it alone:
+
+```sh
+just bench-prep --datasets 3dbag-national --families sizes,formats
+just bench-run --datasets 3dbag-national --families sizes,formats --memory-max 128000000000
+just bench-summary
+```
+
+It is measured in three formats: CityJSONSeq, FlatCityBuf and CityParquet
+(`formats` in its manifest entry). citygml-tools could not write a CityGML
+document of this size and a single CityJSON document of it cannot be held in
+memory, so those two formats are not applicable. The figures and tables say
+`n/a` for them, and the dataset has no factor against CityGML, because a
+factor is never taken against another format.
+
+Only the `sizes` and `formats` families measure it. The network family would
+transfer the 66 GB stream once per sample, the bloom family measures the
+slice, and the database family would load it into three systems; a run that
+names those families with it says so and skips it.
+
+Preparation always builds it on the measuring host, whatever the preparation
+mode, and never uploads it: `just fetch-3dbag-national` reads the tile list
+from the published `netherlands-3d-bag` STAC collection, downloads the tiles
+(11.2 GB) and merges them into `data/3dbag/3dbag_national.city.jsonl` with
+[`scripts/3dbag2cityparquet`](../scripts/3dbag2cityparquet/README.md), and
+the same chain as every other dataset then normalises it and builds the three
+artefacts. Its run manifest records the artefacts as local.
+
+It is not the slice scaled up. It is merged from the published tiles, and the
+slice is cut from a FlatCityBuf export of a part of the country. It keeps
+LoD 1.2, which the slice drops because CityGML 2.0 cannot carry it beside
+LoD 1.3, so each building has four geometry columns and not three. The two
+datasets must not be divided by one another to state a cost per object
+([`formats/READ_BENCHMARK.md`](formats/READ_BENCHMARK.md), Caveat 45).
+
+What is known about its cost comes from one earlier conversion of the same
+tiles, in source order and with LoD 0 synthesis, on a 128-core host with
+503 GB of memory: the merged stream was 65.9 GB, the conversion took 53.5
+minutes at a peak of 56 GB resident, and the package was 16.4 GB. On the
+same host the chain's Hilbert-ordered conversion completed (21,555,522 rows,
+58 sorted runs spilled to disk); its time and peak memory were not recorded.
+`fcb ser -A` did not: it aborted on a failed allocation while reading the
+input (next paragraph). Not yet measured is whether each reader's read all
+stays below the memory ceiling of the measured processes. The default ceiling of 64 GB is
+below the 66 GB stream, and the pages a reader reads count against it, so
+`bench-run` refuses the national dataset under a ceiling below its largest
+artefact: pass `--memory-max` above that artefact plus the readers' memory, or
+`--memory-max off`. A reader that fails or is killed at the ceiling stops the
+dataset's run with its error; nothing is retried with more memory.
+
+Its FlatCityBuf artefact is written by `fcb-ser-stream`
+([`fcbser/`](fcbser/)) and not by `fcb ser -A`. `fcb ser` parses every
+feature of its input into memory before it writes one, 7.2 times the
+CityJSONSeq's size on a 248 MB sample, which the 66 GB stream exceeds on a
+503 GB host. `fcb-ser-stream` drives the same `fcb_core` writer with
+the same settings (all-attribute B+-tree index at branching factor 256,
+R-tree node size 16, the attribute schema from the first 1,000 features) and
+reads the input twice instead of holding it: 1.5 times the input's size at
+peak on the same sample, because the writer still assembles the feature
+section and the indices in memory. `just fcbser-test` compares the two
+writers on inputs both can read: the files have the same size and decode to
+the same features in the same order. They are not byte-identical, and two
+`fcb ser -A` runs over one input are not either. It has not yet been run on
+the national stream itself. Every other dataset's artefact remains
+`fcb ser -A`'s own.
+
+Budget about 350 GB under the data root: the merged source (66 GB), its
+normalised copy and the CityJSONSeq artefact (about 66 GB each), the
+FlatCityBuf file, the package (about 16 GB), and 73 GB of tile downloads and
+per-tile streams under `work/3dbag-national/`, which may be deleted once the
+merged source exists. Budget the run as well: CityJSONSeq is timed on read
+all and the four identifier lookups, 26 full parses of the 66 GB stream each
+at the default 25 repetitions. `--cell-budget-s` bounds a cell's sampling.
 
 ## Experimental matrix
 
@@ -550,7 +641,8 @@ from the query comparison.
 
 ## Layout and checks
 
-`readbench/` is a separate Rust workspace for the format harness. `scripts/`
+`readbench/` is a separate Rust workspace for the format harness, and
+`fcbser/` another for the national dataset's FlatCityBuf writer. `scripts/`
 holds preparation and orchestration. `formats/` and `databases/` own their
 measurement artefacts. `plot/` renders them; `summary/` holds generated output.
 Large source files and prepared packages are fetched or generated, not committed.

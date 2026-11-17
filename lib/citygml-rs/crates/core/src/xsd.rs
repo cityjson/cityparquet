@@ -171,10 +171,7 @@ impl SchemaSet {
             if let Some(builtin) = builtin(ty) {
                 return Some(builtin);
             }
-            match self.types.get(ty) {
-                Some(def) => ty = def.base.as_ref()?,
-                None => return None,
-            }
+            ty = self.types.get(ty)?.base.as_ref()?;
         }
         None
     }

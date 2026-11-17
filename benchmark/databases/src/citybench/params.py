@@ -588,8 +588,9 @@ def resolve_windows(table: str, conn: duckdb.DuckDBPyConnection
     if span_y:
         terms += [f"({centre[1]} - bbox.ymax) / {span_y}",
                   f"(bbox.ymin - {centre[1]}) / {span_y}"]
+    conn.complete()  # `conn.sql` refuses to run past the unfinished `row` result
     halves = [
-        float(v) for v in conn.execute(
+        float(v) for v in conn.sql(
             f"SELECT greatest({', '.join(terms)})::DOUBLE AS h FROM {table} "
             f"WHERE bbox IS NOT NULL ORDER BY h"
         ).to_arrow_table().column("h").to_pylist()
@@ -719,10 +720,10 @@ def epsg_of(crs: dict[str, Any] | None) -> int | None:
 def package_crs(package: Path) -> dict[str, Any] | None:
     """The `city.crs` PROJJSON from the package's object-table footer."""
     files = object_table_files(package)
-    row = duckdb.sql(
+    rows = duckdb.sql(
         f"SELECT decode(value) FROM parquet_kv_metadata('{files[0]}') "
-        "WHERE decode(key) = 'city'").fetchone()
-    return json.loads(row[0]).get("crs") if row else None
+        "WHERE decode(key) = 'city' LIMIT 1").fetchall()
+    return json.loads(rows[0][0]).get("crs") if rows else None
 
 
 def lods_from_columns(columns) -> tuple[str, ...]:

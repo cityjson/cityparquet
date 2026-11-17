@@ -202,7 +202,7 @@ what it RETURNS.
 | `bbox-query` (1%/5%/25% of rows) | count and identifiers of the matching CityObjects, plus each match's highest-LoD geometry with its coordinates visited in place | converts every member; then as `cityjsonseq`                                                                                                             | parses the whole document; tests each CityObject's box over its `children` subtree (coordinates resolved through `transform`); visits each match's highest-LoD geometry                 | parses every line; tests each CityObject of the feature against its subtree box with feature-local vertices; visits each match's highest-LoD geometry            | hits from its 2D per-FEATURE R-tree (z dropped; Caveat 4); each hit feature read once, every CityObject in it tested against its subtree box, and each match's highest-LoD geometry walked                                                                                                                                                                                         | row groups pruned by `bbox` statistics; only `id`, `bbox` and the geometry columns read; a row filter on `bbox` runs first, so a rejected row decodes no geometry; the highest non-null LoD column of each kept row walked in place — **exact** |
 | `attr-filter`                    | count and identifiers of the matching CityObjects                                                                               | converts every member; tests each CityObject's `attributes`                                                                                              | parses the whole document; tests each CityObject's `attributes`                                                                                                                         | parses every line; tests each CityObject's `attributes`                                                                                                          | the features its B+-tree attribute index hits are read once each, without decoding geometry, and every CityObject in them is re-tested; a column outside the index, a hit list longer than the file's feature count, or an empty hit list over HTTP (both tagged `attr-index-failed`, Caveat 11), falls back to a `select_all` walk that decodes only that column (Caveats 19, 32) | row groups pruned by the Bloom filter (an `==` predicate), then by min/max statistics; only the predicate column and `id` read; matching ids returned                                                                                           |
 | `attr-stats`                     | `(min, max, sum, count)` of a numeric attribute                                                                                 | converts every member; folds over every numeric value (Caveat 35)                                                                                        | parses the whole document; folds over every numeric value (Caveat 35)                                                                                                                   | parses every line; folds over every numeric value (Caveat 35)                                                                                                    | a walk that decodes only that attribute, no geometry, folding the four values (no numeric-range index; Caveat 35)                                                                                                                                                                                                                                                                  | min/max from column-chunk statistics; sum/count from a one-column scan                                                                                                                                                                          |
-| `id-lookup` (x4)                 | the whole object, every field                                                                                                   | converts members until the hit (early exit), then visits every field of the object; a miss reads to the end of the document                              | parses the whole document; one map lookup, then every field of the object visited                                                                                                       | parses lines until the feature holding the hit, then visits every field of the object                                                                            | a `select_all` walk that stops at the hit (`fcb ser -A` builds no `id` index; Caveat 19); every field of the object read                                                                                                                                                                                                                                                           | row groups pruned by the Bloom filter, then by min/max statistics on `id`; a row filter on `id`; every field of the hit visited natively                                                                                                        |
+| `id-lookup` (x4)                 | the whole object, every field                                                                                                   | converts members until the hit (early exit), then visits every field of the object; a miss reads to the end of the document                              | parses the whole document; one map lookup, then every field of the object visited                                                                                                       | parses lines until the feature holding the hit, then visits every field of the object                                                                            | the B+-tree over CityObject ids (`fcb ser` writes it by default; Caveat 19) selects the feature holding the object; every field of the object read                                                                                                                                                                                                                                 | row groups pruned by the Bloom filter, then by min/max statistics on `id`; a row filter on `id`; every field of the hit visited natively                                                                                                        |
 
 What "returned" means here, for every format:
 
@@ -395,6 +395,35 @@ early carries the `budget` tag in `notes`, and both the `<csv>.params.json`
 effective floor. The root recipes `bench`, `bloom-bench` and
 `bloom-bench-http` take the two as `CELL_BUDGET_S` (empty: off) and
 `MIN_REPEAT`; `just bench-run` takes `--cell-budget-s` and `--min-repeat`.
+
+### Cells that reuse read all
+
+CityGML, CityJSON and CityJSONSeq have no index: whatever the query, their
+reader parses the whole file and filters in memory. A local format
+comparison therefore times them on read all and on the identifier lookups
+(where a streaming reader stops at the hit), and on every other query (the
+spatial windows, the attribute filter, the attribute statistics, `count`)
+the cell reuses the format's read all:
+
+- the cell runs **once**, without a warm-up, so its result count and
+  returned geometry stay in the cross-format consistency check;
+- its CSV row keeps the result count and selectivity, has `repeat` 0, empty
+  time and memory columns, and `derived-from=full-read;status=derived` in
+  `notes`;
+- the check sample's own time and peak memory go to `<csv>.samples.json`
+  (`check: true`) and, beside read all's median, to the
+  `whole_file_derivation` block of `<csv>.params.json`, so each run shows
+  how close the reused cell was to read all;
+- the renderer shows such a cell with read all's time and memory, marked `=`
+  in the heatmaps and `reused = full-read` in `query_factors.csv`.
+
+`[formats] whole_file_scenarios` in `manifest.toml` selects what is measured
+(`full-read,id-lookup` by default, `full-read`, or `all` to measure every
+cell); `just bench-run --formats-whole-file-scenarios` and the harness's
+`--whole-file-scenarios` override it. A run whose `--scenarios` omit read
+all measures every cell it names. FlatCityBuf and CityParquet are always
+measured. Caveat 44 states what the reuse assumes. The `network` family
+applies the same setting to transfers (see its notes below).
 
 ## Warm vs cold protocol
 
@@ -636,8 +665,8 @@ each cold number stands alone, one per format, one `full-read` only.
    - `cityjson` cannot exit early in principle: a whole-document CityJSON
      must be parsed in one piece before any object is addressable, so its
      four rows are near-identical and position-independent.
-   - `flatcitybuf` tries its B+-tree first and falls back to a full walk;
-     see the new Caveat 19 for why the fallback is structural.
+   - `flatcitybuf` answers from its B+-tree over CityObject ids, so its
+     rows are position-independent; see Caveat 19.
    - `cityparquet` applies `id` as a `RowFilter`, which evaluates the whole
      id column regardless of position.
 
@@ -660,8 +689,8 @@ each cold number stands alone, one per format, one `full-read` only.
     FlatCityBuf runner uses FCB's native indexes (`select_query` for bbox,
     `select_attr_query` for the attribute filter), which requires the `.fcb`
     to carry a spatial index (default) and an attribute index (`fcb ser -A`,
-    which `readbench-prepare` always passes; `id` is never indexed, Caveat
-    19). If the attribute index cannot answer, the runner falls back to a
+    which `readbench-prepare` always passes; the index over CityObject ids
+    is written by default, Caveat 19). If the attribute index cannot answer, the runner falls back to a
     full walk and **says so in the CSV `notes`**: `no-attr-index` when the
     column carries no B+-tree at all, `attr-index-failed` when the index
     query errored, returned a hit list longer than the file's feature
@@ -998,18 +1027,25 @@ each cold number stands alone, one per format, one `full-read` only.
     bytes in `sizes.csv`, never the corpus table's wire figure — that one
     answers download cost for the source only.
 
-19. **FlatCityBuf's `id` is structurally unindexable, so its `id-lookup` is a
-    full walk.** The `.fcb` artefacts are built `fcb ser -A`, which indexes
-    **every attribute**, and the runner does try the B+-tree first. It always
-    falls back: `id` is a CityObject's map KEY, never a member of the
-    CityJSON `attributes` map FCB's schema covers, so there is no entry to
-    find. The `no-attr-index` tag on those rows records a property of the
-    format as it stands, not a gap in this harness. `attr-filter` uses the
-    index whenever its predicate column IS a member of that `attributes`
-    map, and falls back to the same full walk — carrying the same
-    `no-attr-index` tag — whenever it is not, which is the case for the
-    reserved `object_type`. The tag in the CSV, not the scenario name, says
-    which of the two a given row measured.
+19. **FlatCityBuf's `id-lookup` reads an index over CityObject ids that
+    carries no copy of the id.** `id` is a CityObject's map KEY, never a
+    member of the CityJSON `attributes` map, so `-A` alone does not index
+    it. `fcb ser` therefore writes, by default, a header column `id`
+    (`primary_key` set) with a B+-tree holding the id of every CityObject,
+    children included, each entry pointing at the feature that holds the
+    object. No attribute blob carries a value for that column, so the
+    index is the only bytes the lookup costs the file: 58 per CityObject (a
+    50-byte key and an 8-byte offset). The key is the id cut at 50 bytes,
+    so ids that agree in their first 50 bytes share an entry; the runner
+    finds the object by its full id inside the features the index names.
+    An `.fcb` written without that index (`--no-id-index`, or an `fcb`
+    built before the pinned commit) answers by a full walk and carries the
+    `no-attr-index` tag. `attr-filter` uses the index whenever its
+    predicate column IS a member of the `attributes` map, and falls back to
+    the same full walk — carrying the same `no-attr-index` tag — whenever
+    it is not, which is the case for the reserved `object_type`. The tag in
+    the CSV, not the scenario name, says which of the two a given row
+    measured.
 
 20. **A probe's POSITION is only nominal outside the CityJSONSeq stream.**
     The deciles are cut from the seq order, which is the source CityJSON
@@ -1424,6 +1460,45 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     dangling reference; as a consequence the corpus has no LoD 3 dataset
     with openings, and its only LoD 3 content is Tokyo's 21 LoD 3 solids
     and 103 LoD 3 installation geometries.
+
+44. **Read all stands in for the other full-scan queries of the three text
+    formats.** A cell tagged `derived-from=full-read` was not timed (see
+    "Cells that reuse read all"): the figure and table show the format's
+    read all in its place. The two are not the same work: the query cell
+    parses the same bytes but returns less. In the run of 27 October 2026,
+    which measured every one of these cells with 25 samples, the cell's
+    median time was 0.934 to 1.095 times that of read all over 123 cells in
+    seven datasets (112 of them within 5 %), and its peak RSS 0.970 to
+    1.021 times; the widest time ratios are CityJSON's on the 3DBAG slice
+    (`count` 0.934, the 25 % window 1.095). A reused cell is therefore
+    citable as "the cost of a full parse", to within about 10 %, and not as
+    a measurement of that query. It must not be used to rank the three text
+    formats against one another on a query, and a claim that needs the
+    query's own time needs a run with `--formats-whole-file-scenarios all`.
+
+45. **The national dataset is compared in three formats, with other content
+    than the slice, and has no factor against CityGML.** `3dbag_national`
+    is the whole of 3DBAG v20250903 (10,771,547 features). It is produced
+    in CityJSONSeq, FlatCityBuf and CityParquet only: citygml-tools could
+    not write a CityGML document of this size, and a single CityJSON
+    document of it cannot be held in memory. Its figures and tables say
+    `n/a` for those two formats, and every factor against CityGML is
+    empty; no other format takes the baseline's place. It is not the slice
+    scaled up. It is merged from 3DBAG's published tiles and not cut from
+    the FlatCityBuf subset the slice comes from, and it keeps LoD 1.2,
+    which the slice drops for CityGML's sake (Caveat 43 does not hold for
+    it), so each building carries one more solid than in the slice. The
+    normalisation of Caveat 41 applies to it unchanged. A cost per object
+    must therefore not be extrapolated from the slice to this dataset or
+    compared between the two. The bloom, network and database families do
+    not measure it. Its FlatCityBuf file is also the one artefact not
+    written by the pinned `fcb` CLI: `fcb ser -A` runs out of memory on the
+    66 GB stream (503 GB host), so `fcb-ser-stream` (`benchmark/fcbser`)
+    writes it with the same `fcb_core` 0.7.8 writer and the same settings,
+    reading the input twice. On inputs both tools can read the two files
+    have the same size and decode to the same features in the same order
+    (`just fcbser-test`); they are not byte-identical, as two `fcb ser -A`
+    runs are not either.
 
 - **The network family's times come from a simulated network.** The
   primary over-HTTP measurement reads through `net-sim`, a local server

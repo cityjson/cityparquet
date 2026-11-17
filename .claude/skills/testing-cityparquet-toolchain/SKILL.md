@@ -28,9 +28,9 @@ in the report. A missing tool skips its steps, and the report lists them.
 ## 2. Run
 
 ```sh
-uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 --with pytest \
+uv run --python 3.12 --with duckdb==2.0.0 --with flatcitybuf==0.5.2 --with pytest \
   pytest -q test/toolchain/test_cjcompare.py          # the comparator itself first
-alias tc='uv run --python 3.12 --with duckdb==1.5.5 --with flatcitybuf==0.5.2 test/toolchain/run.py'
+alias tc='uv run --python 3.12 --with duckdb==2.0.0 --with flatcitybuf==0.5.2 test/toolchain/run.py'
 tc fetch --profile quick        # pinned by sha256; a mismatch stops, it never refetches
 tc run --profile quick          # writes run-<time>/results.jsonl and report.md
 tc run --only rotterdam,delft-fcb --keep   # rerun a few, keep their outputs

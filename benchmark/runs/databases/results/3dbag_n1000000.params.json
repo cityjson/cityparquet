@@ -1,0 +1,104 @@
+{
+  "append": {
+    "object_count": 2,
+    "path": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/databases/results/3dbag_n1000000.append.city.jsonl",
+    "source_feature_id": "NL.IMBAG.Pand.0171100000002606",
+    "suffix": "-appended",
+    "unmapped_references": 0
+  },
+  "attr_filter": {
+    "column": "b3_dak_type",
+    "eq_value": "slanted",
+    "ge_bound": null,
+    "hand_picked": true,
+    "matched": 338875,
+    "op": "eq",
+    "share": 0.33887466112533887
+  },
+  "attr_range": {
+    "column": "b3_h_dak_max",
+    "matched": 99631,
+    "quantile": 0.8,
+    "threshold": 29.74180030822759
+  },
+  "bbox_full": {
+    "maxx": 196791.0849934082,
+    "maxy": 526311.8819335938,
+    "maxz": 148.1942901611328,
+    "minx": 174638.897,
+    "miny": 426189.7559953613,
+    "minz": -8.165994644165039
+  },
+  "id_probes": [
+    {
+      "id": "NL.IMBAG.Pand.0268100000030371",
+      "position": 0.5,
+      "present": true,
+      "tag": "id-lookup"
+    },
+    {
+      "id": "NL.IMBAG.Pand.0228100000075740-readbench-absent",
+      "position": null,
+      "present": false,
+      "tag": "id-miss"
+    }
+  ],
+  "lod_query_target": "2.2",
+  "lods": [
+    "0",
+    "1.3",
+    "2.2"
+  ],
+  "numeric_column": "b3_bag_bag_overlap",
+  "point_xy": [
+    189934.65152392577,
+    444206.76598950196
+  ],
+  "swap_xy": false,
+  "total_city_objects": 1000001,
+  "window_rows": 1000001,
+  "windows": [
+    {
+      "achieved": 0.010000989999010002,
+      "approx": false,
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "window": {
+        "maxx": 190469.858,
+        "maxy": 446625.59899279784,
+        "maxz": 150.75789300918578,
+        "minx": 189399.48101342772,
+        "miny": 441787.853,
+        "minz": -10.729597492218018
+      }
+    },
+    {
+      "achieved": 0.05000094999905,
+      "approx": false,
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "window": {
+        "maxx": 191039.2135,
+        "maxy": 449199.17994531256,
+        "maxz": 150.75789300918578,
+        "minx": 188830.10449865722,
+        "miny": 439214.333,
+        "minz": -10.729597492218018
+      }
+    },
+    {
+      "achieved": 0.24999975000025,
+      "approx": false,
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "window": {
+        "maxx": 193319.501,
+        "maxy": 459504.87798828125,
+        "maxz": 150.75789300918578,
+        "minx": 186549.79799462893,
+        "miny": 428907.9135,
+        "minz": -10.729597492218018
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "CityParquet use-case tool: UBEM feature extraction and retrofit screening"
 requires-python = ">=3.11"
 dependencies = [
-    "duckdb==1.5.4",
+    "duckdb==2.0.0",
     "pyarrow>=17",
     "numpy>=1.26",
 ]

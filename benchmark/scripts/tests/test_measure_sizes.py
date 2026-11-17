@@ -73,6 +73,24 @@ class MeasureTest(unittest.TestCase):
             self.assertIn("flatcitybuf", str(raised.exception))
 
 
+class FormatSubsetTest(unittest.TestCase):
+    def test_a_dataset_produced_in_three_formats_gets_three_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = Path(tmp)
+            write_bytes(prepared / "national.city.jsonl", 3000)
+            write_bytes(prepared / "national.fcb", 4000)
+            write_bytes(prepared / "national.parquet" / "building.parquet", 700)
+            rows = measure_sizes.measure(prepared, "national", ["cityjsonseq", "flatcitybuf", "cityparquet"])
+            self.assertEqual(rows, [("cityjsonseq", 3000), ("flatcitybuf", 4000), ("cityparquet", 700)])
+            # Without the list the absent CityGML artefact is an error, as before.
+            with self.assertRaises(SystemExit):
+                measure_sizes.measure(prepared, "national")
+            with self.assertRaises(SystemExit):
+                measure_sizes.measure(prepared, "national", ["cityjsonseq", "citygml"])
+            with self.assertRaises(SystemExit):
+                measure_sizes.measure(prepared, "national", ["gltf"])
+
+
 class CsvContractTest(unittest.TestCase):
     def test_header_is_bytes_and_decimal_megabytes_only(self) -> None:
         self.assertEqual(measure_sizes.HEADER, ["dataset", "format", "bytes", "mb_decimal"])

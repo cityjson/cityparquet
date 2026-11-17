@@ -470,6 +470,7 @@ run_prepare() {
   PATH="$dir/bin:${RUN_PREPARE_PATH:-$BASE_PATH}" CITYGML_TOOLS="" \
     LOD_NORMALISE="${RUN_PREPARE_LOD_NORMALISE-$dir/bin/lod-normalise}" \
     SEQ_ORDER="$dir/bin/seq-order" \
+    FCB_SER_STREAM="${RUN_PREPARE_FCB_SER_STREAM-}" \
     "$dir/repo/benchmark/scripts/readbench_prepare.sh" "$@" \
     >"$LAST_LOG" 2>&1
   LAST_RC=$?
@@ -582,6 +583,42 @@ case_flatcitybuf_skips_the_cli_build() {
   fi
   if [[ ! -s "$dir/out/tiny.fcb" ]]; then
     fail "$name" "missing $dir/out/tiny.fcb"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 3b: `FCB_SER_STREAM` naming a writer makes IT write the FlatCityBuf
+# artefact, from the same CityJSONSeq, and `fcb ser` is not run at all — the
+# national dataset's path, where `fcb ser` cannot hold the input.
+# --------------------------------------------------------------------------
+case_fcb_ser_stream_replaces_fcb_ser() {
+  local name="FCB_SER_STREAM writes the FlatCityBuf artefact instead of fcb ser"
+  local dir
+  dir="$(new_sandbox cargo fcb)"
+  cat >"$dir/bin/fcb-ser-stream" <<'STREAM_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'streamed from %s\n' "$1" >"$2"
+STREAM_STUB
+  chmod +x "$dir/bin/fcb-ser-stream"
+  RUN_PREPARE_FCB_SER_STREAM="$dir/bin/fcb-ser-stream" \
+    run_prepare "$dir" --formats flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ -f "$dir/fcb-ser-argv.txt" ]]; then
+    fail "$name" "fcb ser was run as well"
+    return
+  fi
+  if ! grep -q '^streamed from .*tiny\.city\.jsonl$' "$dir/out/tiny.fcb"; then
+    fail "$name" "tiny.fcb was not written by the streaming writer from the CityJSONSeq: $(cat "$dir/out/tiny.fcb" 2>&1)"
+    return
+  fi
+  if [[ -e "$dir/out/tiny.fcb.partial" ]]; then
+    fail "$name" "the partial output was left behind"
     return
   fi
   pass "$name"
@@ -1478,11 +1515,10 @@ case_stale_chain_artefacts_are_refused() {
 # --------------------------------------------------------------------------
 # Case 8e': a bump that changed ONE stage refuses only that stage's artefact.
 #
-# Chain version 6 changed the CityJSON and CityParquet stages alone (compact
-# CityJSON, no LoD 0 synthesis), so a directory stamped 5 holds a stale
-# package but a FlatCityBuf file this
-# chain would write again byte for byte — and the hours-long stages must not
-# be rebuilt for nothing.
+# Chain version 10 changed the FlatCityBuf stage alone (the index over
+# CityObject ids), so a directory stamped 9 holds a stale FlatCityBuf file
+# but a package this chain would write again byte for byte — and the
+# hours-long stages must not be rebuilt for nothing.
 # --------------------------------------------------------------------------
 case_a_one_stage_bump_refuses_only_that_stage() {
   local name="a chain bump refuses only the artefacts of the stage it changed"
@@ -1493,17 +1529,17 @@ case_a_one_stage_bump_refuses_only_that_stage() {
     fail "$name" "first run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
     return
   fi
-  printf '5\n' >"$dir/out/.readbench-chain/tiny"
+  printf '9\n' >"$dir/out/.readbench-chain/tiny"
   run_prepare "$dir" --formats cityparquet,flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
   if ! expect_guard "$name" "built by an older derivation chain"; then
     return
   fi
-  if ! grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.parquet"; then
-    fail "$name" "the refusal does not name the stale package; log: $(cat "$LAST_LOG")"
+  if ! grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.fcb"; then
+    fail "$name" "the refusal does not name the stale FlatCityBuf file; log: $(cat "$LAST_LOG")"
     return
   fi
-  if grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.fcb"; then
-    fail "$name" "the refusal names the FlatCityBuf file, whose stage did not change; log: $(cat "$LAST_LOG")"
+  if grep -F "rm -rf" "$LAST_LOG" | grep -qF "$dir/out/tiny.parquet"; then
+    fail "$name" "the refusal names the package, whose stage did not change; log: $(cat "$LAST_LOG")"
     return
   fi
   pass "$name"
@@ -1794,8 +1830,8 @@ case_a_semantics_only_change_keeps_the_citygml() {
     fail "$name" "the CityGML artefact was not kept; log: $(cat "$LAST_LOG")"
     return
   fi
-  if [[ "$(cat "$dir/out/.readbench-chain/tiny")" != "9" ]]; then
-    fail "$name" "the stamp is '$(cat "$dir/out/.readbench-chain/tiny")', not 9"
+  if [[ "$(cat "$dir/out/.readbench-chain/tiny")" != "10" ]]; then
+    fail "$name" "the stamp is '$(cat "$dir/out/.readbench-chain/tiny")', not 10"
     return
   fi
   pass "$name"
@@ -1804,8 +1840,9 @@ case_a_semantics_only_change_keeps_the_citygml() {
 # The geometry rule (chain version 7) is older than a stamp of 8, so a
 # dataset only it changes — Vienna in the corpus — is current at 8, every
 # stage, the CityGML one included; and so is a dataset neither rule changes.
+# The FlatCityBuf file is the exception for both: its stage changed at 10.
 case_a_geometry_only_change_is_current_at_8() {
-  local name="a dataset only the geometry rule changed, or none, is current at chain 8"
+  local name="a dataset only the geometry rule changed, or none, is current at chain 8, bar its FlatCityBuf file"
   local dir dropped
   for dropped in 1 0; do
     dir="$(new_sandbox cargo fcb cjseq citygml-tools)"
@@ -1815,6 +1852,7 @@ case_a_geometry_only_change_is_current_at_8() {
       return
     fi
     printf '8\n' >"$dir/out/.readbench-chain/tiny"
+    rm -f "$dir/out/tiny.fcb"
     STUB_NORMALISE_DROPPED=$dropped run_prepare "$dir" "$dir/data/tiny.city.jsonl" "$dir/out"
     if [[ $LAST_RC -ne 0 ]]; then
       fail "$name" "second run (dropped=$dropped): exit $LAST_RC; log: $(cat "$LAST_LOG")"
@@ -1887,6 +1925,7 @@ case_cityparquet_only
 case_an_unpinned_tool_version_is_warned_about
 case_flatcitybuf_without_fcb
 case_flatcitybuf_skips_the_cli_build
+case_fcb_ser_stream_replaces_fcb_ser
 case_unknown_format_rejected
 case_default_on_cityjsonseq_builds_every_format
 case_cityjsonseq_is_materialised_from_a_seq_input

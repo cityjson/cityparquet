@@ -22,7 +22,7 @@ def test_every_part_links_to_a_building(fixture_path):
               (SELECT id FROM read_parquet($p) WHERE object_type = 'Building')
         """,
         params={"p": str(fixture_path)},
-    ).fetchone()[0]
+    ).fetchall()[0][0]
     assert orphans == 0
 
 
@@ -36,5 +36,5 @@ def test_parts_have_geometry_and_buildings_have_references(fixture_path):
         FROM read_parquet(?)
         """,
         params=[str(fixture_path)],
-    ).fetchone()
+    ).fetchall()[0]
     assert row == (0, 0)

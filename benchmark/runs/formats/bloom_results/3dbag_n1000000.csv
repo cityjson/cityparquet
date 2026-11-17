@@ -1,0 +1,13 @@
+dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,stats_pruned,filter_bytes
+3dbag_n1000000.city.jsonl,cityparquet,id-lookup,0.000001,1,0.115385,0.002276,0.115872,0.110886,0.119343,0.114515,0.116401,22847871,44335104,25,id-50pct,,,16,15,0,1998848
+3dbag_n1000000.city.jsonl,cityparquet,id-lookup,0.000000,0,0.006983,0.000486,0.006842,0.005996,0.008395,0.006741,0.007257,1221044,12898304,25,id-miss,,,16,16,0,1998848
+3dbag_n1000000.city.jsonl,cityparquet,feature-lookup,0.000002,2,0.114799,0.001306,0.114920,0.111502,0.116616,0.114336,0.115784,22864868,44343296,25,feature-50pct,,,16,15,0,999424
+3dbag_n1000000.city.jsonl,cityparquet,feature-lookup,0.000000,0,0.006290,0.000489,0.006314,0.005107,0.007064,0.006045,0.006660,1174823,12783616,25,feature-miss,,,16,16,0,999424
+3dbag_n1000000.city.jsonl,cityparquet,attr-lookup,0.000001,1,0.015243,0.000828,0.015472,0.013022,0.016420,0.015043,0.015724,3213596,14712832,25,attr-identificatie-50pct;value-substituted,,,16,15,0,999424
+3dbag_n1000000.city.jsonl,cityparquet,attr-lookup,0.000000,0,0.005982,0.000304,0.005960,0.005124,0.006492,0.005857,0.006227,1174927,12709888,25,attr-identificatie-miss,,,16,16,0,999424
+3dbag_n1000000.city.jsonl,cityparquet+nobloom,id-lookup,0.000001,1,0.218452,0.006164,0.218039,0.210969,0.247085,0.216167,0.218541,22860543,44249088,25,id-50pct,,,16,0,1,0
+3dbag_n1000000.city.jsonl,cityparquet+nobloom,id-lookup,0.000000,0,0.063607,0.001394,0.063999,0.059724,0.065858,0.063364,0.064401,1713650,13828096,25,id-miss,,,16,0,1,0
+3dbag_n1000000.city.jsonl,cityparquet+nobloom,feature-lookup,0.000002,2,0.217465,0.004962,0.216594,0.212878,0.239744,0.215317,0.218037,22877540,44257280,25,feature-50pct,,,16,0,1,0
+3dbag_n1000000.city.jsonl,cityparquet+nobloom,feature-lookup,0.000000,0,0.058283,0.001600,0.058610,0.055424,0.060719,0.056894,0.059651,1674148,13668352,25,feature-miss,,,16,0,1,0
+3dbag_n1000000.city.jsonl,cityparquet+nobloom,attr-lookup,0.000001,1,0.048000,0.001233,0.048332,0.044626,0.049448,0.047050,0.048861,3328892,15769600,25,attr-identificatie-50pct;value-substituted,,,16,0,9,0
+3dbag_n1000000.city.jsonl,cityparquet+nobloom,attr-lookup,0.000000,0,0.087677,0.000958,0.087632,0.085774,0.090012,0.087284,0.088169,3457143,15769600,25,attr-identificatie-miss,,,16,0,1,0

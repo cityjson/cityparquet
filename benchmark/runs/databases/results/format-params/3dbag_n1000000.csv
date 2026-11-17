@@ -1,0 +1,2 @@
+dataset,format,scenario,selectivity,result_count,time_mean_s,time_std_s,time_median_s,time_min_s,time_max_s,time_q1_s,time_q3_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,stats_pruned,filter_bytes
+3dbag_n1000000.city.json,cityparquet,count,,1000001,0.005433,0.000000,0.005433,0.005433,0.005433,0.005433,0.005433,1174743,11051008,1,,,,,,,

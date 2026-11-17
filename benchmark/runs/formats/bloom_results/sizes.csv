@@ -1,0 +1,3 @@
+dataset,format,bytes,mb_decimal
+3dbag_n1000000,cityparquet,601333937,601.333937
+3dbag_n1000000,cityparquet+nobloom,597334945,597.334945

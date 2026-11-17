@@ -15,11 +15,12 @@ required-features = ["server"]
 
 [dependencies]
 # Database
-# Pinned to DuckDB v1.5.4: duckdb-rs versions as 1.105XX.0 for DuckDB 1.5.XX,
-# and the cityjson extension's distribution pipeline builds for exactly that
-# version. A mismatch does not degrade — it fails `LOAD cityjson`. Bump in
-# lockstep with the extension's release matrix.
-duckdb = { version = "=1.10504.0", features = ["bundled", "json"] }
+# Pinned to DuckDB v2.0.0: duckdb-rs versions as 1.MMmmpp.r for DuckDB
+# MM.mm.pp (1.20000.r is DuckDB 2.0.0, r a duckdb-rs revision), and the
+# cityjson extension's distribution pipeline builds for exactly that version.
+# A mismatch does not degrade — it fails `LOAD cityjson`. Bump in lockstep
+# with the extension's release matrix.
+duckdb = { version = "=1.20000.2", features = ["bundled", "json"] }
 
 # Web framework (only needed for binary/server)
 axum = { version = "0.8", features = ["multipart"], optional = true }

@@ -1,0 +1,717 @@
+{
+  "dataset": "tokyo.city.json",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.009996994891315236,
+      "window": [
+        139.76597638575,
+        35.6923156485,
+        -8.61323972,
+        139.76913879945,
+        35.69443572815,
+        275.54321172
+      ],
+      "approx": false,
+      "objects": 499,
+      "features": 262
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.050005008514474605,
+      "window": [
+        139.7638774365,
+        35.6909094177,
+        -8.61323972,
+        139.77123720495,
+        35.69584229625001,
+        275.54321172
+      ],
+      "approx": false,
+      "objects": 2496,
+      "features": 1236
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.2500050085144746,
+      "window": [
+        139.755467974,
+        35.685273632000005,
+        -8.61323972,
+        139.7796471615,
+        35.701478979200004,
+        275.54321172
+      ],
+      "approx": false,
+      "objects": 12479,
+      "features": 7840
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "bldg_4782c6ac-bddd-4758-a82c-60df61f2c422",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "bldg_80f84b59-fde7-44ea-bc35-b85faa504c52",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "bldg_077d6ab0-b8a3-455e-b49b-b7ab2d445ba9",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "bldg_7fe77c61-b7f6-451d-88d1-53a6535af158-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "attr_filter": {
+    "column": "usage",
+    "pred": {
+      "eq": "401"
+    },
+    "matched": 12348,
+    "share": 0.24738054692978062,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "bldg_80f84b59-fde7-44ea-bc35-b85faa504c52",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "bldg_7fe77c61-b7f6-451d-88d1-53a6535af158-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "numeric_attr": "measuredHeight",
+  "cp_object_total": 49915,
+  "cp_feature_total": 38743,
+  "swap_xy": true,
+  "quantum": [
+    1e-10,
+    1e-10,
+    1e-6
+  ],
+  "sampling": {
+    "repeat": 25,
+    "cell_budget_s": null,
+    "min_repeat": 7
+  },
+  "isolation": {
+    "command_prefix": [
+      "systemd-run",
+      "--user",
+      "--scope",
+      "--quiet",
+      "-p",
+      "MemoryMax=64000000000",
+      "--",
+      "numactl",
+      "--all",
+      "--physcpubind=1-31,64-95",
+      "--membind=0"
+    ],
+    "pinning": {
+      "requested": "auto",
+      "node": 0,
+      "tool": "numactl",
+      "child_cores": "1-31,64-95",
+      "coordinator_core": 0,
+      "status": "applied",
+      "memory_binding": "applied",
+      "coordinator_note": null,
+      "allowed_cpus": "0-127",
+      "cores_note": null
+    },
+    "coordinator_pinning": "applied",
+    "memory_max": {
+      "requested_bytes": 64000000000,
+      "status": "applied"
+    },
+    "memory": {
+      "mem_total_bytes": 540725084160,
+      "mem_available_bytes_at_start": 520989974528,
+      "status": "recorded"
+    },
+    "max_load": {
+      "requested": "auto",
+      "threshold": 32.0,
+      "node_cores": 64,
+      "total_cores": 128,
+      "wait_s": 600,
+      "status": "applied"
+    },
+    "load": {
+      "status": "recorded per sample",
+      "waits": [],
+      "cells": [
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.58,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 520676904960,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.83,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520716816384,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 9.55,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520607289344,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 9.05,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520734535680,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 9.53,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520661823488,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "attr-filter",
+          "query_tag": "attr=usage=401",
+          "load1_max": 9.15,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520714358784,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 8.43,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520696299520,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 9.89,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 520777994240,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.83,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520723869696,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 9.31,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520783507456,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.87,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520658558976,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 14.04,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 518697361408,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.65,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 518641205248,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 7.82,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 518762770432,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.13,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 518509920256,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 9.02,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 518875639808,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "attr-filter",
+          "query_tag": "attr=usage=401",
+          "load1_max": 8.99,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 518714773504,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 9.11,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 518541000704,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.77,
+          "runnable_max": 32,
+          "mem_available_min_bytes": 518495846400,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.11,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 518380261376,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.54,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 518482255872,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.61,
+          "runnable_max": 24,
+          "mem_available_min_bytes": 518531358720,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.52,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 518337921024,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 9.46,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 518315462656,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 10.42,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 518245384192,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 15.77,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 518379864064,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 8.68,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 518183809024,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "attr-filter",
+          "query_tag": "attr=usage=401",
+          "load1_max": 8.08,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 517939523584,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 9.21,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 518238724096,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 9.41,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 515868921856,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.34,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 516378456064,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.9,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 517857898496,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.0,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 518477910016,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.18,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 518600482816,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.25,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 519600676864,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.25,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 519746035712,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.25,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 519795847168,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 8.47,
+          "runnable_max": 28,
+          "mem_available_min_bytes": 519840632832,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "attr-filter",
+          "query_tag": "attr=usage=401",
+          "load1_max": 8.47,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520189550592,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 8.27,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520310771712,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.65,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520615710720,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.65,
+          "runnable_max": 23,
+          "mem_available_min_bytes": 520608063488,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.59,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520725606400,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.59,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520749232128,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.44,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520111820800,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 7.69,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520259870720,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 7.69,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 519975768064,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 7.64,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520124547072,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 7.31,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 519697117184,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "attr-filter",
+          "query_tag": "attr=usage=401",
+          "load1_max": 7.24,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 519842254848,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 7.24,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520119865344,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 7.24,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520076623872,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 7.06,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520128208896,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 7.06,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 520276684800,
+          "busy": false
+        },
+        {
+          "dataset": "tokyo.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 7.21,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520243826688,
+          "busy": false
+        }
+      ]
+    }
+  }
+}

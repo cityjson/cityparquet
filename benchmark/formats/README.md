@@ -50,6 +50,14 @@ Tokyo and Montréal.
 | `montreal`             | Montréal            | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json>    | `measuredHeight >=` its 0.75 quantile (15.543) | `measuredHeight`                               |
 | `3dbag_n1000000`       | 3DBAG (Netherlands) | cut by `just fetch-3dbag` from <https://flatcitybuf.open3d.city/data/3dbag_subset2_all_index.fcb>, without LoD 1.2 | `b3_dak_type == "slanted"`                     | `b3_bag_bag_overlap`                           |
 
+The national dataset, `3dbag_national` (3DBAG (Netherlands, national)), is
+not part of this corpus and no profile selects it: it is the whole of 3DBAG
+v20250903, merged from the published tiles by `just fetch-3dbag-national`,
+with LoD 1.2, in CityJSONSeq, FlatCityBuf and CityParquet only. Its attribute
+predicate and statistic are the slice's
+([`../README.md`](../README.md#the-national-dataset); READ_BENCHMARK.md,
+Caveat 45).
+
 Every CityJSON/CityJSONSeq source is normalised before any artefact is built,
 so that each CityObject holds at most one geometry per LoD (the first in source
 order) and no geometry below LoD 2 carries semantic surfaces, which CityGML 2.0

@@ -1,0 +1,717 @@
+{
+  "dataset": "vienna_102081.city.json",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.009833585476550681,
+      "window": [
+        1235.3400000000001,
+        340740.58,
+        26.289740000000002,
+        1276.215,
+        340788.07700000005,
+        86.55825999999999
+      ],
+      "approx": false,
+      "objects": 13,
+      "features": 8
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.05068078668683813,
+      "window": [
+        1206.3899999999999,
+        340706.7235,
+        26.289740000000002,
+        1304.93,
+        340821.44,
+        86.55825999999999
+      ],
+      "approx": false,
+      "objects": 67,
+      "features": 25
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.2503782148260212,
+      "window": [
+        1142.983,
+        340633.731,
+        26.289740000000002,
+        1367.7325,
+        340894.53500000003,
+        86.55825999999999
+      ],
+      "approx": false,
+      "objects": 331,
+      "features": 101
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "UUID_LOD2_011984-19096613-52ca-44ae-87c6",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "UUID_LOD2_011600-257a1f8d-eca0-4b9d-808f",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "UUID_LOD2_011614-a7088011-9105-4b34-94c4",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "UUID_LOD2_011635-aa7e1999-fd23-4e74-8771-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "attr_filter": {
+    "column": "roofType",
+    "pred": {
+      "eq": "FLACHDACH"
+    },
+    "matched": 600,
+    "share": 0.45385779122541603,
+    "hand_picked": true
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "UUID_LOD2_011600-257a1f8d-eca0-4b9d-808f",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "UUID_LOD2_011635-aa7e1999-fd23-4e74-8771-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "numeric_attr": "measuredHeight",
+  "cp_object_total": 1322,
+  "cp_feature_total": 307,
+  "swap_xy": false,
+  "quantum": [
+    0.001,
+    0.001,
+    0.001
+  ],
+  "sampling": {
+    "repeat": 25,
+    "cell_budget_s": null,
+    "min_repeat": 7
+  },
+  "isolation": {
+    "command_prefix": [
+      "systemd-run",
+      "--user",
+      "--scope",
+      "--quiet",
+      "-p",
+      "MemoryMax=64000000000",
+      "--",
+      "numactl",
+      "--all",
+      "--physcpubind=1-31,64-95",
+      "--membind=0"
+    ],
+    "pinning": {
+      "requested": "auto",
+      "node": 0,
+      "tool": "numactl",
+      "child_cores": "1-31,64-95",
+      "coordinator_core": 0,
+      "status": "applied",
+      "memory_binding": "applied",
+      "coordinator_note": null,
+      "allowed_cpus": "0-127",
+      "cores_note": null
+    },
+    "coordinator_pinning": "applied",
+    "memory_max": {
+      "requested_bytes": 64000000000,
+      "status": "applied"
+    },
+    "memory": {
+      "mem_total_bytes": 540725084160,
+      "mem_available_bytes_at_start": 520548073472,
+      "status": "recorded"
+    },
+    "max_load": {
+      "requested": "auto",
+      "threshold": 32.0,
+      "node_cores": 64,
+      "total_cores": 128,
+      "wait_s": 600,
+      "status": "applied"
+    },
+    "load": {
+      "status": "recorded per sample",
+      "waits": [],
+      "cells": [
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 7.38,
+          "runnable_max": 27,
+          "mem_available_min_bytes": 520548073472,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 7.19,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520692514816,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 7.46,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520749203456,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 7.31,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 520655011840,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 7.32,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520542957568,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "attr-filter",
+          "query_tag": "attr=roofType=FLACHDACH",
+          "load1_max": 6.98,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520693329920,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 7.48,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520665464832,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 7.11,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520492294144,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 7.55,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520652582912,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 7.55,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520632541184,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 7.52,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520729718784,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 7.59,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520360333312,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 7.59,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520343957504,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 7.38,
+          "runnable_max": 31,
+          "mem_available_min_bytes": 520212520960,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 7.81,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520165642240,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 7.81,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 520256577536,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "attr-filter",
+          "query_tag": "attr=roofType=FLACHDACH",
+          "load1_max": 7.5,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 520259448832,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 7.46,
+          "runnable_max": 27,
+          "mem_available_min_bytes": 520029868032,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 7.34,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520040329216,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 7.16,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520174948352,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 7.46,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520088616960,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 7.75,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 520292773888,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 7.75,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520317497344,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 7.89,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520469938176,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 7.89,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 520540819456,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 7.68,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520506114048,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 7.71,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520427151360,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "attr-filter",
+          "query_tag": "attr=roofType=FLACHDACH",
+          "load1_max": 8.05,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520418086912,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 8.05,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520466153472,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.05,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 520317468672,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.05,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520374390784,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 7.88,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520336236544,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 7.83,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520468168704,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 7.83,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520609357824,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 7.83,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520569995264,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 7.83,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520606085120,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.01,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520747880448,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 8.01,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520821243904,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "attr-filter",
+          "query_tag": "attr=roofType=FLACHDACH",
+          "load1_max": 8.01,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 520754655232,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 8.01,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520630046720,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.01,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520829284352,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.25,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520984903680,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.25,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520969191424,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.25,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520943124480,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.25,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520693821440,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.23,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 520681439232,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.23,
+          "runnable_max": 27,
+          "mem_available_min_bytes": 520774877184,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.23,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520575279104,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 9.01,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 520654528512,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "attr-filter",
+          "query_tag": "attr=roofType=FLACHDACH",
+          "load1_max": 9.01,
+          "runnable_max": 29,
+          "mem_available_min_bytes": 520559337472,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 9.01,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 520574222336,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 9.01,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 520621445120,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 9.09,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 520563232768,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 9.09,
+          "runnable_max": 27,
+          "mem_available_min_bytes": 520628318208,
+          "busy": false
+        },
+        {
+          "dataset": "vienna_102081.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 9.09,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520727576576,
+          "busy": false
+        }
+      ]
+    }
+  }
+}

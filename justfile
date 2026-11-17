@@ -78,6 +78,8 @@ check:
     cargo clippy {{READBENCH_CARGO}} --all-targets -- -D warnings
     cargo test {{READBENCH_CARGO}}
     cargo fmt {{READBENCH_CARGO}} --check
+    cargo clippy --manifest-path benchmark/fcbser/Cargo.toml --all-targets -- -D warnings
+    cargo fmt --manifest-path benchmark/fcbser/Cargo.toml --check
     just plot-test
     just scripts-test
     just mcp-check
@@ -236,6 +238,43 @@ fetch-3dbag DEST=(BENCH / "runs/data/3dbag") SIZES='1000000':
     cargo run --release {{READBENCH_CARGO}} --bin fcb-slice -- \
         --input "$src" --out-dir "{{DEST}}" --stem 3dbag --sizes "{{SIZES}}" \
         --drop-lod 1.2
+
+# Build the benchmark's NATIONAL dataset source: the whole of 3DBAG v20250903,
+# every one of its 8,941 tiles, as ONE CityJSONSeq file,
+# DEST/3dbag_national.city.jsonl (10,771,547 features, about 66 GB). The tile
+# list is read from the published `netherlands-3d-bag` STAC collection, and
+# scripts/3dbag2cityparquet does the rest (its README states the arithmetic
+# and the measured run): download, requantise every tile onto one shared
+# transform, concatenate in tile quadtree order. A present file is kept, and
+# every stage resumes.
+#
+# Unlike the slice it is NOT cut from the FlatCityBuf subset `fetch-3dbag`
+# downloads, which holds a part of the country, and it keeps every LoD 3DBAG
+# publishes (0, 1.2, 1.3, 2.2): no CityGML artefact is built from it, so
+# nothing has to be dropped for one.
+#
+# Scratch, under the data root's work/3dbag-national/: 11 GB of tile `.gz`
+# and 62 GB of per-tile `.jsonl`, which may be deleted once the merged file
+# exists. JOBS is the number of tiles converted at once.
+#
+# Needs curl, uv and cjseq (`just fetch-tools`); network-dependent (11.2 GB);
+# kept OUT of `just check`/CI.
+[doc("Build the national 3DBAG source: all 8,941 tiles as one CityJSONSeq (about 66 GB)")]
+fetch-3dbag-national DEST=(BENCH / "runs/data/3dbag") JOBS='16':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="{{DEST}}/3dbag_national.city.jsonl"
+    if [[ -s "$out" ]]; then
+        echo "fetch-3dbag-national: $out is present; kept"
+        exit 0
+    fi
+    data_root="${CITYPARQUET_BENCH_ROOT:-{{BENCH}}/runs}"
+    work="$data_root/work/3dbag-national"
+    mkdir -p "$work" "{{DEST}}"
+    script=scripts/3dbag2cityparquet/3dbag2cityparquet.py
+    uv run "$script" urls --manifest "$work/3dbag_urls.txt" --work "$work"
+    uv run "$script" jsonl --manifest "$work/3dbag_urls.txt" --work "$work" \
+        --merged "$out" --jobs "{{JOBS}}"
 
 # ---------------------------------------------------------------------------
 # Conversion
@@ -578,6 +617,14 @@ scripts-test:
     ./{{BENCH_SCRIPTS}}/tests/machine_record_test.sh
     uv run --project {{PLOT}} python -m unittest discover -s {{BENCH_SCRIPTS}}/tests -p 'test_*.py'
 
+# `fcb-ser-stream` (benchmark/fcbser) against `fcb ser -A`: the same size and
+# the same decoded features on inputs both can read. Not in `scripts-test`,
+# whose suites stub every external binary: this one needs the real pinned
+# `fcb` (`just fetch-tools`) and compiles `fcb_core`. Extra inputs may follow.
+[doc("fcb-ser-stream writes what fcb ser -A writes (needs the pinned fcb, cargo and jq)")]
+fcbser-test *INPUTS:
+    ./{{BENCH_SCRIPTS}}/tests/fcb_ser_stream_test.sh {{INPUTS}}
+
 # ---------------------------------------------------------------------------
 # Database benchmark (benchmark/databases) — its own uv project and justfile
 # ---------------------------------------------------------------------------
@@ -656,6 +703,12 @@ catalog-histogram OUT='out/cityparquet-catalog':
 # That made this recipe exit 2 on a healthy tree.
 catalog-test:
     uv run --directory scripts/catalog2cityparquet --extra dev pytest -v
+
+# The Python bindings' test suite (lib/cityparquet-py). uv builds the extension
+# with maturin before pytest runs, so this needs Rust as well as uv. No network:
+# the tests read the library's committed test data.
+py-test:
+    uv run --directory lib/cityparquet-py --extra dev pytest -v
 
 # Regenerate the MCP server's documentation corpus from documents/docs and the
 # two extension function references. Needs the submodules — `just setup` first.

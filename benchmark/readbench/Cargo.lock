@@ -466,16 +466,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "citygml"
-version = "0.1.0"
-dependencies = [
- "citygml-core",
- "citygml2",
- "citygml3",
- "cjseq",
-]
-
-[[package]]
 name = "citygml-core"
 version = "0.1.0"
 dependencies = [
@@ -485,6 +475,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "citygml-rs"
+version = "0.1.0"
+dependencies = [
+ "citygml-core",
+ "citygml2",
+ "citygml3",
+ "cjseq",
 ]
 
 [[package]]
@@ -518,7 +518,7 @@ dependencies = [
  "cardinality-estimator",
  "chrono",
  "city3d-stac-types",
- "citygml",
+ "citygml-rs",
  "cityparquet-schema",
  "cjseq",
  "futures",
