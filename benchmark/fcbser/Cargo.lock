@@ -199,20 +199,18 @@ name = "cityparquet-fcbser"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "cjseq2",
+ "cjseq",
  "fcb_core",
  "serde_json",
 ]
 
 [[package]]
-name = "cjseq2"
-version = "0.2.0-alpha.1"
+name = "cjseq"
+version = "0.5.0-alpha.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25c795050a6241d8b351fcd61c00782affeb59c5ad6c9d783465e3b290a395fd"
+checksum = "8acbe01683c5f1931e19597a0c31f5330e2218e0ab57b239ef020696bc436f7e"
 dependencies = [
- "clap",
- "getrandom 0.2.17",
- "rand 0.8.8",
+ "indexmap",
  "serde",
  "serde_json",
 ]
@@ -354,18 +352,18 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fcb_core"
 version = "0.7.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd3396d1c2448133244a0eb03816f3ea8b108301f827f53b88920871b362e0fc"
+source = "git+https://github.com/cityjson/flatcitybuf?rev=7e6f8cf4ea9b99a5647bfb496b328fc74e131d1c#7e6f8cf4ea9b99a5647bfb496b328fc74e131d1c"
 dependencies = [
  "anyhow",
  "async-trait",
  "bson",
  "byteorder",
  "chrono",
- "cjseq2",
+ "cjseq",
  "clap",
  "fallible-streaming-iterator",
  "flatbuffers",
+ "indexmap",
  "log",
  "ordered-float",
  "prettytable",
@@ -531,6 +529,8 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

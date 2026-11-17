@@ -14,10 +14,12 @@
 //! - the B+-tree holds one entry per matching CityObject's own attribute
 //!   value, each carrying its enclosing FEATURE's offset, sorted but never
 //!   deduplicated (`select_attr_query`), so a feature with two matching
-//!   objects is named twice. It indexes only the CityJSON `attributes` map:
-//!   the reserved `object_type` and a CityObject's id are never in its
-//!   schema, so a query on either takes a full walk (checked per call from
-//!   the header's schema, and disclosed with a [`FALLBACK_MARKERS`] tag).
+//!   objects is named twice. It indexes the CityJSON `attributes` map, and
+//!   every CityObject's id under the header column `id`, which `fcb ser`
+//!   writes without copying the id into the attributes. The reserved
+//!   `object_type` is never in its schema, so a query on it takes a full
+//!   walk (checked per call from the header's schema, and disclosed with a
+//!   [`FALLBACK_MARKERS`] tag).
 //!
 //! **What each scenario reads, visits and returns.** Every walk reads the
 //! raw FlatBuffers `CityFeature`, never `cur_cj_feature` (whose
@@ -49,9 +51,9 @@
 //! - [`Scenario::AttrStats`]: always a full walk decoding that one column
 //!   (FCB's B+-tree filters, it does not aggregate), folded per CityObject
 //!   into `(min, max, sum, count)`.
-//! - [`Scenario::IdLookup`]: the `id` B+-tree when present (with `-A` it
-//!   is not, so a full walk), stopping at the feature holding the object;
-//!   every field of that object is read as in read all.
+//! - [`Scenario::IdLookup`]: the `id` B+-tree selects the feature holding
+//!   the object (a full walk that stops at the hit when the file carries no
+//!   such index); every field of that object is read as in read all.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;

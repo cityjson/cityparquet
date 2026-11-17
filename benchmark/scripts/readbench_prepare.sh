@@ -131,7 +131,9 @@
 # is REQUIRED, not cosmetic: the attribute-filter benchmark needs FCB's
 # B+-tree attribute index to exist, and the spatial (R-tree) index is on by
 # default, so both of FCB's indexed-query paths are available for
-# comparison. Every other index knob keeps its `fcb ser` default — attribute
+# comparison. `fcb ser` also indexes every CityObject's id by default, which
+# is what `id-lookup` reads; that index shares the attribute indexes'
+# branching factor. Every other index knob keeps its `fcb ser` default — attribute
 # B+-tree branching factor 256, R-tree node size 16 — and that is a measured
 # choice:
 #
@@ -155,7 +157,7 @@
 # times the CityJSONSeq's size — so the national 3DBAG stream (66 GB) aborts
 # it on a 503 GB host. `FCB_SER_STREAM=1` builds `benchmark/fcbser` and writes
 # the artefact with its `fcb-ser-stream` instead; any other value names a
-# prebuilt one. It drives the same `fcb_core` 0.7.8 writer with the settings
+# prebuilt one. It drives the same `fcb_core` writer with the settings
 # above and reads the input twice instead of holding it (1.5 times the
 # input's size at peak, measured). The result is the same file up to the
 # order `fcb ser` itself does not fix: two `fcb ser -A` runs over one input
@@ -605,6 +607,15 @@ fi
 if want flatcitybuf; then
   require_tool fcb "the FlatCityBuf artefact"
   warn_unless_pinned fcb FCB_CLI_VERSION
+  # The version alone does not identify the writer: the pinned commit and
+  # crates.io's release report the same one, and only the former indexes ids.
+  # Asked only when `fcb ser` is the writer; `fcb-ser-stream` is built from
+  # the pinned commit itself.
+  if [[ -z "${FCB_SER_STREAM:-}" ]] \
+    && ! fcb ser --help 2>/dev/null | grep -q -- '--no-id-index'; then
+    echo "warn: fcb writes no CityObject id index, so it is not the commit pinned in" \
+      "benchmark/scripts/fetch_tools.sh; FlatCityBuf id-lookup will answer by a full walk" >&2
+  fi
 fi
 
 mkdir -p "$OUTDIR"
@@ -742,7 +753,9 @@ fi
 #      `seq-order`), and the package's STAC `datetime` is CORPUS_DATETIME.
 #   9  the normalisation also removes the semantic surfaces of every geometry
 #      below LoD 2, which CityGML 2.0 cannot express.
-CHAIN_VERSION=9
+#  10  the FlatCityBuf artefact carries a B+-tree over every CityObject id,
+#      written by the `fcb` built from the commit `fetch_tools.sh` pins.
+CHAIN_VERSION=10
 # The STAC `datetime` of every benchmark package: the day the benchmark
 # corpus was fixed. A fixed value, because the library otherwise falls back
 # to the conversion time for a source without `referenceDate` and no two
@@ -753,6 +766,8 @@ CORPUS_DATETIME="2026-10-05T00:00:00Z"
 # artefact is stale when its stage changed after the version that built it,
 # so a bump that touches one stage does not force the hours-long stages it
 # left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#  10  the FlatCityBuf stage alone: a file written before has no index over
+#      CityObject ids, so `id-lookup` on it measures a full walk.
 #   9  every stage but the CityGML one, for a dataset the semantics rule
 #      changed (the 3DBAG slice in the corpus); no stage for one it left
 #      alone. The CityGML artefact is unchanged: `citygml-tools from-cityjson
@@ -784,6 +799,10 @@ CORPUS_DATETIME="2026-10-05T00:00:00Z"
 #   2  the CityJSONSeq stage became a real artefact for every input kind
 #      (the gzip case above); FlatCityBuf and CityGML derive from it.
 stage_version() {
+  if [[ "$1" == "$FCB_OUT" ]]; then
+    echo 10
+    return
+  fi
   if [[ "$SEMANTICS_REMOVED" -eq 1 && "$1" != "$GML_OUT" ]]; then
     echo 9
     return
