@@ -127,33 +127,62 @@ WHERE object_type = 'Building';
 -- 10771547
 ```
 
-To convert a model of your own, the Rust reference writer produces the full package
-with round-trip guarantees:
+### Convert a model of your own
+
+The reference writer produces the full package with round-trip guarantees. Use
+it from Python or from the command line; both are the same library.
+
+**Python** — `pip install cityparquet`:
+
+```python
+import cityparquet
+
+cityparquet.convert(["delft.city.jsonl"], "delft")
+cityparquet.validate("delft")                      # [] when the package conforms
+cityparquet.export("delft", "roundtrip.city.jsonl")
+```
+
+A package is plain Parquet, so reading it back needs nothing of ours — pyarrow,
+pandas, DuckDB and GeoPandas open it as it is:
+
+```python
+import geopandas as gpd
+
+footprints = gpd.read_parquet("delft/building.parquet")   # LoD0, as GeoParquet
+```
+
+The bindings cover `convert`, `validate` and `export`; see the
+[Python tutorial](https://cityjson.github.io/cityparquet/tutorials/python-bindings)
+and [`lib/cityparquet-py`](lib/cityparquet-py/README.md) for what they take and
+what still needs the CLI.
+
+**Command line** — `cargo install cityparquet-cli --locked`, or a prebuilt binary
+from the [releases](https://github.com/cityjson/cityparquet/releases):
 
 ```sh
-git clone --recurse-submodules https://github.com/cityjson/cityparquet.git
-cd cityparquet/lib/cityparquet-rs
-
-cargo run --release -p cityparquet-cli -- convert delft.city.jsonl --output delft/
-cargo run --release -p cityparquet-cli -- export  delft/ roundtrip.city.jsonl
-cargo run --release -p cityparquet-cli -- compare delft.city.jsonl roundtrip.city.jsonl
+cityparquet convert delft.city.jsonl --output delft/
+cityparquet export  delft/ roundtrip.city.jsonl
+cityparquet compare delft.city.jsonl roundtrip.city.jsonl
 ```
 
 `compare` is the round-trip proof: it checks **semantic** equality, not byte
 equality, and it is what every claim of losslessness in this repository rests on.
+The CLI also converts FlatCityBuf and 3DCityDB sources and writes CityGML 3.0; the
+[CLI tutorial](https://cityjson.github.io/cityparquet/tutorials/cli-conversion)
+walks through it.
 
-Or in SQL, with no Rust at all, via the [`cityjson` DuckDB
+**Rust** — `cargo add cityparquet`; see the
+[Rust tutorial](https://cityjson.github.io/cityparquet/tutorials/rust-read-write).
+
+**SQL**, with nothing but DuckDB, via the [`cityjson` DuckDB
 extension](https://github.com/cityjson/duckdb-cityjson):
 
 ```sql
+INSTALL cityjson FROM community; LOAD cityjson;
+
 COPY (SELECT * FROM read_cityjsonseq('delft.city.jsonl'))
   TO 'delft.parquet' (FORMAT PARQUET);
 ```
-
-> [!NOTE]
-> Build `cityjson` from source for now. The community registry still serves an
-> older build whose columns are named differently — a flat `geometry` blob rather
-> than the LoD-suffixed pairs the specification defines.
 
 ## What is in this repository
 
@@ -161,6 +190,8 @@ COPY (SELECT * FROM read_cityjsonseq('delft.city.jsonl'))
 documents/     the normative specification — and the reasoning behind it
 lib/           the implementations
   cityparquet-rs/    Rust reference reader/writer; owns the encoding
+  cityparquet-py/    Python bindings to it: convert, export, validate
+  citygml-rs/        CityGML 2.0 / 3.0 readers and writers
   citylake/          DuckLake-based lakehouse runtime (work in progress)
   duckdb-cityjson/   DuckDB extension: CityJSON/Seq/FlatCityBuf in SQL  (submodule)
   duckdb-3d/         DuckDB extension: 3D solid processing              (submodule)
@@ -202,7 +233,8 @@ Rust library, `just setup-shallow` — or simply cloning without
 cd lib/cityparquet-rs && just check   # clippy, tests, schema isolation, fmt, prettier
 just plot-test                        # the benchmark plotting suite      (needs uv)
 just scripts-test                     # the benchmark shell suites        (needs jq)
-just check                            # all three, from the repository root
+just py-test                          # the Python bindings' tests        (needs uv)
+just check                            # every gate, from the repository root
 just docs-build                       # build the specification site      (needs pnpm)
 ```
 

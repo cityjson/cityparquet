@@ -45,8 +45,9 @@ suite. Every LoD,
 the writer can **synthesise** an LoD0 footprint from higher-LoD geometry when
 the source lacks it (opt-in, `--lod0`; by default a package holds only what the
 source carries) — see `src/lod0.rs`.
-Async / object-store I/O, native (non-WKB) geometry, and Python bindings are
-post-1.0 future work.
+Async / object-store I/O and native (non-WKB) geometry are post-1.0 future
+work. Python bindings for `convert`, `export` and `validate` are in
+[`../cityparquet-py`](../cityparquet-py).
 
 ## Specification support
 
