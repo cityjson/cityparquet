@@ -19,9 +19,9 @@ describe("createEngine", () => {
     expect(engine.extensions.map((e) => e.name)).toEqual(expect.arrayContaining(["spatial", "three_d"]));
   });
 
-  it("runs DuckDB v1.5.5", async () => {
+  it("runs DuckDB v1.5.6", async () => {
     const reader = await engine.connection.runAndReadAll("SELECT version() AS v");
-    expect(reader.getRowsJson()[0]![0]).toBe("v1.5.5");
+    expect(reader.getRowsJson()[0]![0]).toBe("v1.5.6");
   });
 
   // The security contract. A change that makes one of these pass is a

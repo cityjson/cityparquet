@@ -87,6 +87,6 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;
 | Cavity volumes counted as solid | The properties argument was left out |
 | A function from the docs is missing | Check `duckdb_functions()` with `ILIKE`. The loaded build may be older |
 
-Without the server, use `duckdb` v1.5.5 after
+Without the server, use `duckdb` v2.0.0 or v1.5.6 after
 `INSTALL three_d FROM community; LOAD three_d; LOAD spatial;`.
 `ST_Area(geometry_lod0_0)` and `ST_3DFootprintArea` give the same footprint.

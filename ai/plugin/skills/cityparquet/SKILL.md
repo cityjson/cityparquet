@@ -79,10 +79,10 @@ created in one call is gone by the next: put a whole workflow in one
 
 ## Without the MCP server
 
-Run the same SQL in the `duckdb` CLI, **version 1.5.5**, after
+Run the same SQL in the `duckdb` CLI, **version 2.0.0 or 1.5.6**, after
 `INSTALL cityjson FROM community; INSTALL three_d FROM community; LOAD cityjson; LOAD three_d; LOAD spatial;`.
-Older DuckDB versions install older builds of both extensions, which lack most
-of what the documentation describes.
+Older DuckDB versions install older builds of both extensions, which lack
+parts of what the documentation describes.
 
 Read the specification from the published site, not from guessed URLs.
 <https://cityjson.github.io/cityparquet/llms.txt> lists every page. A
