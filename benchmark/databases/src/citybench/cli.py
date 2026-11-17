@@ -608,60 +608,74 @@ def _execution(resolved: dict[str, dict], repeat: int) -> dict:
 DUCKDB_TAGS = ("duckdb-cityparquet", "duckdb-cityparquet-writeback")
 
 
-def _require_extension(tags: list[str]) -> tuple[Path, str | None] | None:
+def _require_extension(tags: list[str]) -> tuple[extension.Build, str | None, Path | None] | None:
     """Refuse to start a run with a DuckDB system and no loadable extension.
 
     Resolves the build and loads it once into a fresh connection, before
-    any database is started, so a missing build, or one made for another
-    DuckDB version, costs nothing rather than failing every DuckDB row
-    while the PostgreSQL imports run. Returns ``(path, reported version)``
-    for `_versions`, or None when no selected system uses DuckDB.
+    any database is started, so a missing build, one made for another
+    DuckDB version, or a community build other than the pinned release
+    costs nothing rather than failing every DuckDB row while the PostgreSQL
+    imports run. Returns ``(build, reported version, loaded file)`` for
+    `_versions`, or None when no selected system uses DuckDB.
     """
     if not any(tag in DUCKDB_TAGS for tag in tags):
         return None
     import duckdb
 
-    path = extension.resolve()
+    build = extension.resolve()
     try:
-        return path, _extension_reported_version(path)
+        return _extension_probe(build)
     except duckdb.Error as exc:
+        if build is extension.COMMUNITY:
+            remedy = (
+                "The community build is installed from "
+                "community-extensions.duckdb.org; check the network, or pass "
+                "--duckdb-cityjson-extension a local build "
+                "(`just -f lib/duckdb-cityjson/justfile build`)."
+            )
+        else:
+            remedy = (
+                "Rebuild it against this DuckDB version (from the repository "
+                "root, `just -f lib/duckdb-cityjson/justfile build`) or point "
+                f"{extension.ENV_VAR} at a build for duckdb {duckdb.__version__}."
+            )
         raise SystemExit(
-            f"cannot load the DuckDB CityJSON extension {path} into this "
-            f"client (duckdb {duckdb.__version__}):\n  {exc}\n"
-            "Rebuild it against this DuckDB version (from the repository "
-            "root, `just -f lib/duckdb-cityjson/justfile build`) or point "
-            f"{extension.ENV_VAR} at a build for duckdb {duckdb.__version__}. "
+            f"cannot load the DuckDB CityJSON extension ({build}) into this "
+            f"client (duckdb {duckdb.__version__}):\n  {exc}\n{remedy} "
             "Nothing was started."
         ) from exc
+    except extension.WrongVersion as exc:
+        raise SystemExit(f"{exc}. Nothing was started.") from exc
 
 
-def _extension_reported_version(path: Path) -> str | None:
-    conn = extension.connect()
+def _extension_probe(build: extension.Build) -> tuple[extension.Build, str | None, Path | None]:
+    conn = extension.connect(build)
     try:
-        extension.load(conn, path)
-        return extension.reported_version(conn)
+        extension.load(conn, build)
+        file = extension.installed_path(conn) if build is extension.COMMUNITY else build
+        return build, extension.reported_version(conn), file
     finally:
         conn.close()
 
 
 def _versions(systems: list, *,
-              extension_probe: tuple[Path, str | None] | None = None) -> dict[str, str]:
+              extension_probe: tuple[extension.Build, str | None, Path | None] | None = None,
+              ) -> dict[str, str]:
     import duckdb
 
     versions = {"duckdb": duckdb.__version__}
     # The write tier runs through the DuckDB CityJSON extension's package
     # model, so which build of that extension answered is part of the
-    # result, not an environment detail: its path, the submodule commit,
-    # the file's SHA-256 and the version it reports (`citybench.extension`).
-    # The version comes from the run's preflight load when it loaded this
-    # same build (`_require_extension`).
+    # result, not an environment detail: where it came from, its file, the
+    # commit, the file's SHA-256 and the version it reports
+    # (`citybench.extension`). These come from the run's preflight load when
+    # it loaded this same build (`_require_extension`).
     if any(s.tag in DUCKDB_TAGS for s in systems):
-        path = extension.resolve()
-        if extension_probe is not None and extension_probe[0] == path:
-            reported = extension_probe[1]
-        else:
-            reported = _extension_reported_version(path)
-        versions.update(extension.provenance(path, reported=reported))
+        build = extension.resolve()
+        if extension_probe is None or extension_probe[0] != build:
+            extension_probe = _extension_probe(build)
+        _, reported, file = extension_probe
+        versions.update(extension.provenance(build, reported=reported, file=file))
     if any(s.tag == "cjdb" for s in systems):
         from citybench.systems.cjdb import CJDB_UPSTREAM_VERSION
 
@@ -785,8 +799,9 @@ def main(argv: list[str] | None = None) -> int:
              + f"); also ${container_engine.ENV_VAR}")
     parser.add_argument(
         "--duckdb-cityjson-extension", default=None,
-        help="the DuckDB CityJSON extension build the DuckDB systems load "
-             "(default: lib/duckdb-cityjson's local release build); also "
+        help="a local DuckDB CityJSON extension build for the DuckDB systems "
+             "to load instead of the community build (default: INSTALL "
+             f"cityjson FROM community, {extension.COMMUNITY_VERSION} only); also "
              f"${extension.ENV_VAR}")
     sub = parser.add_subparsers(dest="command", required=True)
 

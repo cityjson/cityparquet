@@ -312,14 +312,15 @@ stamped into `notes` (`city-object-rows-added` on cjdb,
 
 > **`append-object` on `duckdb-cityparquet` depends on which build of the
 > DuckDB CityJSON extension answers.** A bare `LOAD cityjson` answers with
-> the installed community build, which refuses `PRAGMA insert_cityjsonseq`
-> into a package loaded with `cityparquet_read`: the insert fails with a
-> `BinderException` saying a column of the loaded package "cannot be
-> widened" to the incoming type (the community build tested rejected
-> `material_lod2_0`). An insert that keeps the package's column types,
-> including the LoD 0 `GEOMETRY` column, is in the submodule
-> `lib/duckdb-cityjson` (commit `062279e`), so the harness loads that
-> explicitly chosen build by path rather than by name (see
+> whatever build is installed, and an older community build refused
+> `PRAGMA insert_cityjsonseq` into a package loaded with `cityparquet_read`:
+> the insert failed with a `BinderException` saying a column of the loaded
+> package "cannot be widened" to the incoming type (the build tested
+> rejected `material_lod2_0`). An insert that keeps the package's column
+> types, including the LoD 0 `GEOMETRY` column, is in `duckdb-cityjson`
+> since commit `062279e`, and so in its v0.5.0 release, so the harness
+> loads the community build only after checking that it reports v0.5.0
+> (see
 > [Which build of the DuckDB CityJSON extension](#which-build-of-the-duckdb-cityjson-extension)).
 > The append under that build is measured in the full run on the benchmark
 > host.
@@ -435,30 +436,42 @@ The write tier runs through the extension's package model
 (`PRAGMA cityparquet_read`, `PRAGMA insert_cityjsonseq`,
 `cityparquet_write`), so which build answered is part of the result
 (`src/citybench/extension.py`). The DuckDB systems load one explicitly
-chosen file, by path, never `LOAD cityjson` by name:
+chosen build:
 
-1. the path given to `citybench --duckdb-cityjson-extension`;
-2. else the path in `CITYBENCH_DUCKDB_CITYJSON_EXTENSION`;
-3. else the submodule's local release build,
-   `lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension`
-   (`just -f lib/duckdb-cityjson/justfile build`).
+1. the local build at the path given to `citybench --duckdb-cityjson-extension`;
+2. else the local build at the path in `CITYBENCH_DUCKDB_CITYJSON_EXTENSION`;
+3. else the signed community build (`INSTALL cityjson FROM community`).
 
-When none of them names an existing file, a run that includes a DuckDB
-system refuses to start, before any database is started. The chosen build
-is loaded once at the start of `citybench run` or `citybench smoke`, before
-any dataset is resolved or any system is prepared, and a run refuses to
-begin if DuckDB cannot load it. A local build is unsigned, so every DuckDB
-connection is opened with
+The community build is accepted only when it reports **v0.5.0**, the
+release DuckDB's community repository builds for DuckDB 2.0.0 from
+`duckdb-cityjson` commit `df6f0e1` — the commit `lib/duckdb-cityjson`
+pins, which `tests/test_extension.py` holds together. The repository
+serves one build per DuckDB version, and `INSTALL` keeps a build that is
+already installed, so either an older installed build or a later
+community release would answer a bare `LOAD cityjson`; both refuse the
+run instead. `FORCE INSTALL cityjson FROM community` replaces an older
+installed build; once the community repository has moved past v0.5.0,
+reproduce with a local build of `df6f0e1`
+(`just -f lib/duckdb-cityjson/justfile build`) passed by path. A named
+file that does not exist refuses the run too.
+
+The chosen build is loaded once at the start of `citybench run` or
+`citybench smoke`, before any dataset is resolved or any system is
+prepared, and a run refuses to begin if DuckDB cannot load it. Only a
+local build is unsigned, so only a connection that loads one is opened with
 `allow_unsigned_extensions`. A C++ DuckDB extension loads only into the
 exact DuckDB version it was built for, so `pyproject.toml` pins the Python
 `duckdb` package to 2.0.0, the version the submodule builds against.
 
 The manifest's `versions` block names the build that answered:
 `duckdb-cityjson` (the extension's self-reported version),
-`duckdb-cityjson-path`, `duckdb-cityjson-commit` (the submodule's checked-out
-commit, with `+dirty` when its working tree differs; stated only for a build
-inside `lib/duckdb-cityjson`) and `duckdb-cityjson-sha256` (the file's
-digest, which identifies the build exactly).
+`duckdb-cityjson-source` (`community` or `local`), `duckdb-cityjson-path`
+(the loaded file; for the community build, its installed file),
+`duckdb-cityjson-commit` (for the community build, the commit the community
+repository builds that release from; for a local build, the submodule's
+checked-out commit, with `+dirty` when its working tree differs, stated
+only for a build inside `lib/duckdb-cityjson`) and `duckdb-cityjson-sha256`
+(the file's digest, which identifies the build exactly).
 
 ## Mapping to the CJDB paper
 
@@ -1511,11 +1524,14 @@ count mismatch, identifier mismatch or error. Its default dataset,
 (`data/` is git-ignored), so pass `--dataset` or place the file there first.
 
 A run that stops at once with `cannot load the DuckDB CityJSON extension`
-quotes DuckDB's own error and the client's `duckdb` version. When the
-error says the file was built for another DuckDB version, rebuild the
-extension against the pinned client from the repository root
-(`just -f lib/duckdb-cityjson/justfile build`) or point
-`CITYBENCH_DUCKDB_CITYJSON_EXTENSION` at a build for that version.
+quotes DuckDB's own error and the client's `duckdb` version. For the
+community build, the install needs `community-extensions.duckdb.org`. For a
+local build, when the error says the file was built for another DuckDB
+version, rebuild the extension against the pinned client from the
+repository root (`just -f lib/duckdb-cityjson/justfile build`) or point
+`CITYBENCH_DUCKDB_CITYJSON_EXTENSION` at a build for that version. A run
+that stops because the community build reports another version says how to
+replace it.
 
 ### Fixed-port databases (`benchmark/databases/justfile`)
 
