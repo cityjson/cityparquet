@@ -1557,3 +1557,18 @@ fn export_refuses_a_key_given_twice() {
         assert!(stderr.contains("given twice"), "{flag}: {stderr}");
     }
 }
+
+/// The release workflow checks each built binary by its `--version`.
+#[test]
+fn version_flag_prints_the_package_version() {
+    let output = Command::new(env!("CARGO_BIN_EXE_cityparquet"))
+        .arg("--version")
+        .output()
+        .expect("failed to run --version");
+
+    assert!(output.status.success(), "--version failed");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        concat!("cityparquet ", env!("CARGO_PKG_VERSION"))
+    );
+}
