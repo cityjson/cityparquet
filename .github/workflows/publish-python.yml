@@ -1,0 +1,348 @@
+name: Publish Python
+
+# Publishes the Python bindings under lib/cityparquet-py to PyPI as
+# `cityparquet`. Their version is their own, independent of the Rust crates,
+# and so is their tag: `py-vX.Y.Z`, beside the crates' bare `vX.Y.Z`.
+#
+# Run it from main (Actions → Publish Python → Run workflow) and choose the
+# bump. It:
+#
+#   1. bumps `[package] version` in lib/cityparquet-py/Cargo.toml (maturin gives
+#      it to the wheel) and refuses a version already tagged or on PyPI;
+#   2. runs the Python gate, builds an abi3 wheel (CPython 3.11 and later) for
+#      five targets and an sdist, and installs each one and runs the test suite
+#      against it, on its own runner;
+#   3. only once all of that passes, uploads exactly those files to PyPI, then
+#      pushes a `release: py-vX.Y.Z` commit and `py-vX.Y.Z` tag to main and
+#      merges the commit back into develop.
+#
+# On success the Release workflow creates the GitHub release for `py-vX.Y.Z`,
+# with the same wheels and sdist attached. A PyPI version is permanent — a
+# deleted file's name can never be uploaded again — which is why every build
+# and test happens before the upload and none after it.
+#
+# A dry run does all of this except the upload and the push: it bumps, gates,
+# builds and tests every file and runs `twine check` over them. It runs from any
+# branch; a real publish runs only from main.
+#
+# Uploads through PyPI trusted publishing (OpenID Connect), so it needs no
+# token: the `cityparquet` project on PyPI must list this repository, this
+# workflow file (publish-python.yml) and the `pypi` environment as a trusted
+# publisher. It pushes with the workflow's own token, so main and develop must
+# accept pushes from github-actions[bot].
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (none publishes the version already in Cargo.toml, e.g. the first 0.1.0)"
+        type: choice
+        options: [patch, minor, major, none]
+        default: patch
+      dry_run:
+        description: "Dry run: bump, gate, build and test; upload and push nothing"
+        type: boolean
+        default: true
+
+run-name: Publish Python (${{ inputs.bump }}${{ inputs.dry_run && ', dry run' || '' }})
+
+# One publish at a time across the crates, the MCP server and the bindings:
+# all three push to main.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Choose the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      toolchain: ${{ steps.toolchain.outputs.channel }}
+    steps:
+      - name: Refuse a real publish off main
+        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::a real publish runs from main; this run is on ${GITHUB_REF_NAME}. Dry runs may use any branch."
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the tags, to refuse one that exists
+          submodules: false
+
+      - name: Test the bump script
+        run: python3 -m unittest discover -s .github/scripts
+
+      - name: Bump the version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: echo "version=$(python3 .github/scripts/bump-version.py py "$BUMP")" >> "$GITHUB_OUTPUT"
+
+      # The Linux wheels build in a manylinux container, where the crate's
+      # rust-toolchain.toml is not consulted; the build jobs pass this channel
+      # to maturin-action explicitly so every wheel uses the same compiler.
+      - name: Read the toolchain pin
+        id: toolchain
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' lib/cityparquet-py/rust-toolchain.toml)"
+          test -n "${channel}"
+          echo "channel=${channel}" >> "$GITHUB_OUTPUT"
+
+      # PyPI would refuse a taken version too, but only after the builds, and
+      # a half-uploaded set of wheels is a worse place to find out.
+      - name: Check py-v${{ steps.version.outputs.version }} is free
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/py-v${VERSION}" > /dev/null; then
+            echo "::error::tag py-v${VERSION} already exists"
+            exit 1
+          fi
+          status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
+                      "https://pypi.org/pypi/cityparquet/${VERSION}/json")"
+          case "${status}" in
+            404) echo "cityparquet ${VERSION} is free" ;;
+            200) echo "::error::cityparquet ${VERSION} is already on PyPI"; exit 1 ;;
+            *) echo "::error::PyPI answered ${status} for cityparquet ${VERSION}"; exit 1 ;;
+          esac
+          echo "Version: **py-v${VERSION}** (${{ inputs.bump }})" >> "$GITHUB_STEP_SUMMARY"
+
+  # The bindings' own gate on the commit being released. The bump changes no
+  # code, so the gate runs on the commit as it stands.
+  gate:
+    name: Python gate
+    needs: prepare
+    uses: ./.github/workflows/python.yml
+
+  # One abi3 wheel per target, each built and tested on a runner native to it,
+  # so the wheel that is tested is the wheel that is uploaded.
+  wheels:
+    name: wheel ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            manylinux: "2_28"
+          # Native ARM runner rather than a cross toolchain: parquet's zstd
+          # pulls in a C build, as in publish-crates.yml.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            manylinux: "2_28"
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+
+      # The wheel carries the version it is released as.
+      - name: Bump the version
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPECTED: ${{ needs.prepare.outputs.version }}
+          PYTHON: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
+        run: |
+          set -euo pipefail
+          version="$("$PYTHON" .github/scripts/bump-version.py py "$BUMP")"
+          test "${version}" = "${EXPECTED}"
+
+      # The oldest CPython the abi3 wheel claims, so the test proves the floor.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      # The licences live at the repository root; the wheel and sdist carry
+      # copies. They are untracked and stay on this runner.
+      - name: Copy the licences
+        run: cp LICENSE-MIT LICENSE-APACHE lib/cityparquet-py/
+
+      - name: Build the wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: lib/cityparquet-py
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'off' }}
+          rust-toolchain: ${{ needs.prepare.outputs.toolchain }}
+          args: --release --locked --out dist
+
+      - name: Test the wheel
+        run: |
+          set -euo pipefail
+          python -m venv "${RUNNER_TEMP}/venv"
+          if [ "${RUNNER_OS}" = "Windows" ]; then bin="${RUNNER_TEMP}/venv/Scripts"; else bin="${RUNNER_TEMP}/venv/bin"; fi
+          "${bin}/python" -m pip install --quiet pytest lib/cityparquet-py/dist/*.whl
+          "${bin}/python" -m pytest lib/cityparquet-py/tests -v
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-py-${{ matrix.target }}
+          path: lib/cityparquet-py/dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+
+      - name: Bump the version
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPECTED: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="$(python3 .github/scripts/bump-version.py py "$BUMP")"
+          test "${version}" = "${EXPECTED}"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Copy the licences
+        run: cp LICENSE-MIT LICENSE-APACHE lib/cityparquet-py/
+
+      # maturin folds the path dependencies (the library and the CityGML
+      # crates) into the sdist, so it builds outside this repository.
+      - name: Build the sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: lib/cityparquet-py
+          command: sdist
+          args: --out dist
+
+      # What `pip install` does on a platform with no wheel: build from the
+      # sdist alone, then run the suite against the result.
+      - name: Build from the sdist and test it
+        run: |
+          set -euo pipefail
+          python -m venv "${RUNNER_TEMP}/venv"
+          "${RUNNER_TEMP}/venv/bin/python" -m pip install --quiet pytest lib/cityparquet-py/dist/*.tar.gz
+          "${RUNNER_TEMP}/venv/bin/python" -m pytest lib/cityparquet-py/tests -v
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-py-sdist
+          path: lib/cityparquet-py/dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: ${{ inputs.dry_run && 'twine check' || 'upload to PyPI' }}
+    needs: [prepare, gate, wheels, sdist]
+    runs-on: ubuntu-latest
+    # The environment PyPI's trusted publisher names, so the upload can sit
+    # behind whatever protection rule the repository wants (required
+    # reviewers, a branch filter). GitHub creates it on first run; add rules in
+    # Settings → Environments.
+    environment: pypi
+    permissions:
+      contents: write # push the release commit and tag
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the release commit is rebased onto main and merged into develop
+          submodules: false
+
+      # The files the build jobs tested, so PyPI serves exactly what the GitHub
+      # release attaches.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-asset-py-*
+          path: dist
+          merge-multiple: true
+
+      - name: Check the files
+        run: |
+          set -euo pipefail
+          ls -l dist
+          test "$(ls dist/*.whl | wc -l)" -eq 5
+          test "$(ls dist/*.tar.gz | wc -l)" -eq 1
+          pipx run twine check --strict dist/*
+
+      - name: Bump, commit and tag py-v${{ needs.prepare.outputs.version }}
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPECTED: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="$(python3 .github/scripts/bump-version.py py "$BUMP")"
+          test "${version}" = "${EXPECTED}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -am "release: py-v${version}"
+          git tag -a "py-v${version}" -m "py-v${version}"
+
+      - name: Upload to PyPI
+        if: ${{ !inputs.dry_run }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+      - name: Push the release commit and tag
+        if: ${{ !inputs.dry_run }}
+        run: bash .github/scripts/push-release.sh "py-v${{ needs.prepare.outputs.version }}"
+
+      # What the Release workflow reads. Uploaded only by a real publish, so a
+      # dry run leaves it nothing to release. `latest` is false so the crates'
+      # release stays the repository's Latest.
+      - name: Describe the release
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-meta
+          echo "py-v${VERSION}" > release-meta/tag
+          echo "Python bindings v${VERSION}" > release-meta/title
+          echo "false" > release-meta/latest
+          cat > release-meta/notes.md <<EOF
+          Published to PyPI: [\`cityparquet ${VERSION}\`](https://pypi.org/project/cityparquet/${VERSION}/)
+
+          \`\`\`sh
+          pip install cityparquet==${VERSION}
+          \`\`\`
+
+          Wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows (x86_64), for CPython 3.11 and later, and the sdist are attached below.
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.dry_run }}
+        with:
+          name: release-meta
+          path: release-meta/
+          if-no-files-found: error
+
+      - name: Summary
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "Dry run: cityparquet ${VERSION} was gated, built for five targets and as an sdist, and tested. Nothing was uploaded or pushed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Published cityparquet ${VERSION} to PyPI; tagged py-v${VERSION}." >> "$GITHUB_STEP_SUMMARY"
+          fi

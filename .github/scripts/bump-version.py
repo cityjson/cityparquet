@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sets the next version of one release family, in every file that carries it.
 
-    bump-version.py rust|citygml|mcp patch|minor|major|none [--root DIR]
+    bump-version.py rust|citygml|mcp|py patch|minor|major|none [--root DIR]
 
 Prints the version the family now has. `none` leaves the number alone and only
 checks the files agree on it — the first release of a family publishes the
@@ -18,6 +18,8 @@ citygml  The five crates in lib/citygml-rs share one version:
       `citygml` (the package `citygml-rs`) and `citygml-citydb` follow it, and
       every lockfile that records the crates is brought in step.
 mcp   ai/mcp/package.json.
+py    The Python bindings in lib/cityparquet-py: `[package] version`, which
+      maturin gives the wheel, and that crate's own lockfile.
 
 Standard library only: the publish workflows run it on every runner OS before
 anything else is installed.
@@ -48,6 +50,8 @@ CITYGML_LOCK_DIRS = (
     Path("benchmark/readbench"),
 )
 MCP_MANIFEST = Path("ai/mcp/package.json")
+PY_MANIFEST = Path("lib/cityparquet-py/Cargo.toml")
+PY_LOCK_DIR = Path("lib/cityparquet-py")
 
 VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
@@ -124,6 +128,25 @@ def set_dependency_versions(text: str, crates: tuple[str, ...], version: str) ->
     return text
 
 
+# `version = "x"` inside [package], anchored on the table like the workspace
+# pattern, so a dependency's `version = ` cannot match.
+_CRATE_VERSION = re.compile(
+    r'(^\[package\]\n(?:(?!^\[).*\n)*?^version = ")([^"]+)(")',
+    re.MULTILINE,
+)
+
+
+def bump_python_manifest(text: str, kind: str) -> tuple[str, str]:
+    """Returns the bindings' manifest with its version set, and the version."""
+    matches = _CRATE_VERSION.findall(text)
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one [package] version, found {len(matches)}"
+        )
+    new = bump(matches[0][1], kind)
+    return _CRATE_VERSION.sub(lambda m: f"{m.group(1)}{new}{m.group(3)}", text), new
+
+
 def bump_package_json(text: str, kind: str) -> tuple[str, str]:
     manifest = json.loads(text)
     new = bump(manifest["version"], kind)
@@ -175,12 +198,17 @@ def run(family: str, kind: str, root: Path) -> str:
         return version
     if family == "mcp":
         return _rewrite(root / MCP_MANIFEST, bump_package_json, kind)
-    raise ValueError(f"family must be rust, citygml or mcp, not {family}")
+    if family == "py":
+        version = _rewrite(root / PY_MANIFEST, bump_python_manifest, kind)
+        if kind != "none":
+            _relock(root, (PY_LOCK_DIR,))
+        return version
+    raise ValueError(f"family must be rust, citygml, mcp or py, not {family}")
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("family", choices=("rust", "citygml", "mcp"))
+    parser.add_argument("family", choices=("rust", "citygml", "mcp", "py"))
     parser.add_argument("kind", choices=KINDS)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args(argv)

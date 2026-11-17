@@ -9,6 +9,18 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT OR Apache-2.0"
 dynamic = ["version"]
+keywords = ["cityjson", "citygml", "parquet", "3d-city-models", "gis"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+
+[project.urls]
+Homepage = "https://cityjson.github.io/cityparquet/"
+Specification = "https://cityjson.github.io/cityparquet/specification"
+Repository = "https://github.com/cityjson/cityparquet"
+Issues = "https://github.com/cityjson/cityparquet/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

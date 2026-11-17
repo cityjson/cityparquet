@@ -138,5 +138,38 @@ class PackageJson(unittest.TestCase):
         self.assertEqual(text, source)
 
 
+PY_MANIFEST = """\
+[package]
+name = "cityparquet-py"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cityparquet = { path = "../cityparquet-rs/crates/core" }
+pyo3 = { version = "0.30", features = ["abi3-py311"] }
+"""
+
+
+class PythonManifest(unittest.TestCase):
+    def test_sets_the_package_version_and_nothing_else(self):
+        text, version = bv.bump_python_manifest(PY_MANIFEST, "minor")
+        self.assertEqual(version, "0.2.0")
+        self.assertEqual(text, PY_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+
+    def test_none_changes_nothing(self):
+        text, version = bv.bump_python_manifest(PY_MANIFEST, "none")
+        self.assertEqual((text, version), (PY_MANIFEST, "0.1.0"))
+
+    def test_refuses_a_missing_version(self):
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            bv.bump_python_manifest(PY_MANIFEST.replace('version = "0.1.0"\n', ""), "patch")
+
+    def test_the_real_manifest_parses(self):
+        root = Path(__file__).resolve().parents[2]
+        text = (root / bv.PY_MANIFEST).read_text(encoding="utf-8")
+        _, version = bv.bump_python_manifest(text, "none")
+        self.assertRegex(version, bv.VERSION)
+
+
 if __name__ == "__main__":
     unittest.main()

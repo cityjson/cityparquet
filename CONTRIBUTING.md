@@ -86,7 +86,7 @@ corpus-dependent, and they are not in CI.
 
 ## Releasing
 
-Three things are published, each by a workflow run by hand from `main`
+Four things are published, each by a workflow run by hand from `main`
 (Actions → the workflow → Run workflow), and each with its own tags:
 
 | Workflow                                           | Publishes                                                                           | Version lives in                                                 | Tag              |
@@ -94,6 +94,7 @@ Three things are published, each by a workflow run by hand from `main`
 | **Publish crates** (`publish-crates.yml`)          | `cityparquet-schema`, `cityparquet`, `cityparquet-cli` to crates.io                 | `[workspace.package] version` in `lib/cityparquet-rs/Cargo.toml` | `vX.Y.Z`         |
 | **Publish CityGML crates** (`publish-citygml.yml`) | `citygml-core`, `citygml2`, `citygml3`, `citygml-rs`, `citygml-citydb` to crates.io | `[workspace.package] version` in `lib/citygml-rs/Cargo.toml`     | `citygml-vX.Y.Z` |
 | **Publish MCP** (`publish-mcp.yml`)                | `@cityjson/cityparquet-mcp` to npm                                                  | `ai/mcp/package.json`                                            | `mcp-vX.Y.Z`     |
+| **Publish Python** (`publish-python.yml`)          | `cityparquet` (the Python bindings) to PyPI                                         | `[package] version` in `lib/cityparquet-py/Cargo.toml`           | `py-vX.Y.Z`      |
 
 Bare `vX.Y.Z` belongs to the Rust reference implementation. Anything else
 published from this repository takes a `<name>-vX.Y.Z` prefix, never a
@@ -112,15 +113,20 @@ everything but the upload and the push, and runs from any branch.
 
 When a publish succeeds, **Release** (`release.yml`) creates the GitHub
 release for its tag, with what the run built attached and a `SHA256SUMS`: the
-`cityparquet` CLI for five targets, or the npm tarball. Rerun it by hand with
-the publish run's id if it fails.
+`cityparquet` CLI for five targets, the npm tarball, or the Python wheels for
+five targets and the sdist. Rerun it by hand with the publish run's id if it
+fails.
 
-A crates.io or npm version is permanent: yanking or deprecating hides it, it
-never frees the number. That is why every build happens before the upload.
+A crates.io, npm or PyPI version is permanent: yanking, deprecating or
+deleting hides it, it never frees the number. That is why every build happens
+before the upload.
 
-The crate publish needs the organisation secret `CARGO_REGISTRY_TOKEN`; the
-MCP publish needs `NPM_TOKEN`, a token that may publish under `@cityjson`.
-Both push with the workflow's own token, so `main` and `develop` must accept
+The two crate publishes need the organisation secret `CARGO_REGISTRY_TOKEN`; the
+MCP publish needs `NPM_TOKEN`, a token that may publish under `@cityjson`. The
+Python publish needs no secret: it uploads through PyPI trusted publishing, so
+the `cityparquet` project on PyPI must name this repository,
+`publish-python.yml` and the `pypi` environment as a trusted publisher. All
+four push with the workflow's own token, so `main` and `develop` must accept
 pushes from `github-actions[bot]`.
 
 `cityparquet-readbench` is `publish = false` and lives outside the library

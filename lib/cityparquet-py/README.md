@@ -7,7 +7,13 @@ bindings; pyarrow, DuckDB and GeoPandas read it as it is.
 
 ## Install
 
-There is no published package yet. Building from source needs Rust and uv:
+```bash
+pip install cityparquet
+```
+
+PyPI carries wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and
+Windows (x86_64), each serving CPython 3.11 and later. Elsewhere pip builds the
+sdist, which needs Rust. To build from this repository, with Rust and uv:
 
 ```bash
 cd lib/cityparquet-py
@@ -35,3 +41,11 @@ CityJSON or CityGML 2.0, by the output's extension. A failure raises
 ```bash
 just py-test   # from the repository root
 ```
+
+## Release
+
+The **Publish Python** workflow (`.github/workflows/publish-python.yml`), run
+by hand from `main` with a `patch` / `minor` / `major` bump (or `none` for the
+version already in `Cargo.toml`), sets the version, builds and tests every
+wheel and the sdist, uploads them to PyPI and tags `py-vX.Y.Z`. Its dry run, the
+default, uploads nothing.
