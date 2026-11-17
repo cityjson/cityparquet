@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 # Short directory names; the package names (`citygml-core`, `citygml2`,
-# `citygml3`) are what crates.io sees.
+# `citygml3`, `citygml-rs`, `citygml-citydb`) are what crates.io sees.
 members = ["crates/core", "crates/citygml2", "crates/citygml3", "crates/citygml", "crates/citydb"]
 
 [workspace.package]
@@ -9,6 +9,9 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/cityjson/cityparquet"
+readme = "README.md"
+keywords = ["citygml", "cityjson", "gml", "3d-city-model", "geospatial"]
+categories = ["science::geo", "parser-implementations", "encoding"]
 
 [workspace.dependencies]
 citygml-core = { path = "crates/core", version = "0.1.0", default-features = false }

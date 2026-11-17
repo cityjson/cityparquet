@@ -4,6 +4,7 @@ name: Release
 # the files that run built attached and a SHA256SUMS over them.
 #
 #   Publish crates  →  vX.Y.Z      the crates; the `cityparquet` CLI for five targets
+#   Publish CityGML crates  →  citygml-vX.Y.Z  the CityGML crates; their `.crate` files
 #   Publish MCP     →  mcp-vX.Y.Z  the MCP server; its npm tarball
 #
 # Bare `vX.Y.Z` belongs to the Rust reference implementation, and its release
@@ -17,17 +18,17 @@ name: Release
 # `release-asset-*` artifacts. A dry run uploads no `release-meta`, so this
 # skips it. Idempotent: a tag that already has a release is skipped.
 #
-# Runs after either publish workflow succeeds. To retry by hand, dispatch it
+# Runs after any publish workflow succeeds. To retry by hand, dispatch it
 # with the publish run's id (the number at the end of the run's URL).
 
 on:
   workflow_run:
-    workflows: ["Publish crates", "Publish MCP"]
+    workflows: ["Publish crates", "Publish CityGML crates", "Publish MCP"]
     types: [completed]
   workflow_dispatch:
     inputs:
       run_id:
-        description: "The Publish crates or Publish MCP run to release"
+        description: "The Publish crates, Publish CityGML crates or Publish MCP run to release"
         required: true
         type: string
 
@@ -62,7 +63,7 @@ jobs:
           IFS=$'\t' read -r path name conclusion < <(
             gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}" --jq '[.path, .name, .conclusion] | @tsv')
           case "${path}" in
-            .github/workflows/publish-crates.yml | .github/workflows/publish-mcp.yml) ;;
+            .github/workflows/publish-crates.yml | .github/workflows/publish-citygml.yml | .github/workflows/publish-mcp.yml) ;;
             *) echo "::error::run ${RUN_ID} is \"${name}\" (${path}), not a publish run"; exit 1 ;;
           esac
           if [ "${conclusion}" != "success" ]; then
