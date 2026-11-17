@@ -48,7 +48,7 @@ quick-xml = "0.39"
 # The CityGML readers and writers and the 3DCityDB reader, from this monorepo's
 # `lib/citygml-rs` workspace. They
 # pin the same cjseq as above, so both resolve to one copy.
-citygml = { path = "../citygml-rs/crates/citygml", version = "0.1.0" }
+citygml = { package = "citygml-rs", path = "../citygml-rs/crates/citygml", version = "0.1.0" }
 citygml-citydb = { path = "../citygml-rs/crates/citydb", version = "0.1.0" }
 chrono = "0.4"
 flate2 = "1"

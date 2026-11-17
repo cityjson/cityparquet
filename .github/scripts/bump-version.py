@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sets the next version of one release family, in every file that carries it.
 
-    bump-version.py rust|mcp patch|minor|major|none [--root DIR]
+    bump-version.py rust|citygml|mcp patch|minor|major|none [--root DIR]
 
 Prints the version the family now has. `none` leaves the number alone and only
 checks the files agree on it — the first release of a family publishes the
@@ -12,6 +12,11 @@ rust  The three crates in lib/cityparquet-rs share one version:
       `cityparquet` and `cityparquet-schema`. Both lockfiles that record the
       crates — the library's and benchmark/readbench's, which path-depends on
       it — are brought in step with cargo, so a `--locked` build still passes.
+citygml  The five crates in lib/citygml-rs share one version:
+      `[workspace.package] version` and the workspace's requirements on
+      `citygml-core`, `citygml2` and `citygml3`. The library's requirements on
+      `citygml` (the package `citygml-rs`) and `citygml-citydb` follow it, and
+      every lockfile that records the crates is brought in step.
 mcp   ai/mcp/package.json.
 
 Standard library only: the publish workflows run it on every runner OS before
@@ -32,6 +37,16 @@ KINDS = ("patch", "minor", "major", "none")
 RUST_MANIFEST = Path("lib/cityparquet-rs/Cargo.toml")
 RUST_LOCK_DIRS = (Path("lib/cityparquet-rs"), Path("benchmark/readbench"))
 RUST_CRATES = ("cityparquet", "cityparquet-schema")
+CITYGML_MANIFEST = Path("lib/citygml-rs/Cargo.toml")
+CITYGML_CRATES = ("citygml-core", "citygml2", "citygml3")
+# The workspace that depends on the CityGML crates, and the keys it does so by.
+CITYGML_DEPENDANT_CRATES = ("citygml", "citygml-citydb")
+CITYGML_LOCK_DIRS = (
+    Path("lib/citygml-rs"),
+    Path("lib/cityparquet-rs"),
+    Path("lib/cityparquet-py"),
+    Path("benchmark/readbench"),
+)
 MCP_MANIFEST = Path("ai/mcp/package.json")
 
 VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
@@ -69,9 +84,11 @@ def _dependency_version(crate: str) -> re.Pattern[str]:
     )
 
 
-def bump_rust_manifest(text: str, kind: str) -> tuple[str, str]:
+def _bump_workspace_manifest(
+    text: str, kind: str, crates: tuple[str, ...]
+) -> tuple[str, str]:
     """Returns the manifest with every version slot set, and the new version."""
-    patterns = [_PACKAGE_VERSION, *(_dependency_version(c) for c in RUST_CRATES)]
+    patterns = [_PACKAGE_VERSION, *(_dependency_version(c) for c in crates)]
     found = []
     for pattern in patterns:
         matches = pattern.findall(text)
@@ -87,6 +104,24 @@ def bump_rust_manifest(text: str, kind: str) -> tuple[str, str]:
     for pattern in patterns:
         text = pattern.sub(lambda m: f"{m.group(1)}{new}{m.group(3)}", text)
     return text, new
+
+
+def bump_rust_manifest(text: str, kind: str) -> tuple[str, str]:
+    return _bump_workspace_manifest(text, kind, RUST_CRATES)
+
+
+def bump_citygml_manifest(text: str, kind: str) -> tuple[str, str]:
+    return _bump_workspace_manifest(text, kind, CITYGML_CRATES)
+
+
+def set_dependency_versions(text: str, crates: tuple[str, ...], version: str) -> str:
+    """Returns the manifest with each named dependency requiring `version`."""
+    for crate in crates:
+        pattern = _dependency_version(crate)
+        if len(pattern.findall(text)) != 1:
+            raise ValueError(f"expected exactly one versioned dependency on {crate}")
+        text = pattern.sub(lambda m: f"{m.group(1)}{version}{m.group(3)}", text)
+    return text
 
 
 def bump_package_json(text: str, kind: str) -> tuple[str, str]:
@@ -106,30 +141,46 @@ def _rewrite(path: Path, edit, kind: str) -> str:
     return version
 
 
+def _relock(root: Path, directories: tuple[Path, ...]) -> None:
+    for directory in directories:
+        # Any resolution rewrites the lockfile's entries for the path crates
+        # and leaves every other locked version where it is. `cargo update -p`
+        # would not: it unlocks the crate's transitive dependencies too.
+        subprocess.run(
+            ["cargo", "metadata", "--format-version", "1"],
+            cwd=root / directory,
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+
+
 def run(family: str, kind: str, root: Path) -> str:
     if family == "rust":
         version = _rewrite(root / RUST_MANIFEST, bump_rust_manifest, kind)
         if kind != "none":
-            for directory in RUST_LOCK_DIRS:
-                # Any resolution rewrites the lockfile's entries for the path
-                # crates and leaves every other locked version where it is.
-                # `cargo update -p cityparquet` would not: it unlocks the
-                # crate's transitive dependencies too.
-                subprocess.run(
-                    ["cargo", "metadata", "--format-version", "1"],
-                    cwd=root / directory,
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                )
+            _relock(root, RUST_LOCK_DIRS)
+        return version
+    if family == "citygml":
+        version = _rewrite(root / CITYGML_MANIFEST, bump_citygml_manifest, kind)
+        if kind != "none":
+            _rewrite(
+                root / RUST_MANIFEST,
+                lambda text, _: (
+                    set_dependency_versions(text, CITYGML_DEPENDANT_CRATES, version),
+                    version,
+                ),
+                kind,
+            )
+            _relock(root, CITYGML_LOCK_DIRS)
         return version
     if family == "mcp":
         return _rewrite(root / MCP_MANIFEST, bump_package_json, kind)
-    raise ValueError(f"family must be rust or mcp, not {family}")
+    raise ValueError(f"family must be rust, citygml or mcp, not {family}")
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("family", choices=("rust", "mcp"))
+    parser.add_argument("family", choices=("rust", "citygml", "mcp"))
     parser.add_argument("kind", choices=KINDS)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
