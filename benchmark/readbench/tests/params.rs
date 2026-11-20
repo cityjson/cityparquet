@@ -57,11 +57,13 @@ fn scan_row_bboxes_returns_one_box_per_row_and_their_union() {
     }
 }
 
-use cityparquet_readbench::params::{citygml_ids, seq_feature_ids};
+use cityparquet_readbench::params::{citygml_ids, scan_seq};
 
 #[test]
-fn seq_feature_ids_reads_the_stream_in_order_and_skips_the_metadata_line() {
-    let ids = seq_feature_ids(&fixture("delft.city.jsonl")).expect("reading seq ids");
+fn scan_seq_reads_the_stream_in_order_and_skips_the_metadata_line() {
+    let ids = scan_seq(&fixture("delft.city.jsonl"), false)
+        .expect("reading seq ids")
+        .ids;
     assert!(!ids.is_empty(), "delft has features");
     assert!(
         !ids.iter().any(|id| id.is_empty()),
@@ -79,6 +81,116 @@ fn seq_feature_ids_reads_the_stream_in_order_and_skips_the_metadata_line() {
         lines - 1,
         "one id per feature line, the metadata line excluded"
     );
+}
+
+/// Delft is a 3DBAG extract: every `Building` declares a
+/// `geographicalExtent`, and the CityParquet `bbox` unions it in, reaching
+/// up to 3 cm beyond the vertex box the other formats test. On the real
+/// package, a window untied against the `bbox` edges alone lands inside such
+/// a band for some target fraction (the formats would then disagree); untied
+/// with the bands, no window edge lands inside one, for any target.
+#[test]
+fn delft_windows_keep_out_of_the_declared_extent_bands() {
+    use cityparquet_readbench::params::{EdgeBands, untie_window, window_for_target};
+
+    let (_dir, table) = delft_table();
+    let rows = scan_row_bboxes(&table).expect("scanning row bboxes");
+    let bands = scan_seq(&fixture("delft.city.jsonl"), false)
+        .expect("scanning delft")
+        .bands;
+    assert!(
+        (0..2).any(|a| !bands.lower[a].is_empty() || !bands.upper[a].is_empty()),
+        "delft's declared extents reach beyond its vertices"
+    );
+    let inside = |w: &[f64; 6]| {
+        (0..2).any(|a| {
+            bands.lower[a]
+                .iter()
+                .any(|&(lo, hi)| lo <= w[a] && w[a] <= hi)
+                || bands.upper[a]
+                    .iter()
+                    .any(|&(lo, hi)| lo <= w[a + 3] && w[a + 3] <= hi)
+        })
+    };
+    let q = [0.001, 0.001];
+    let mut hazards = 0;
+    for percent in 1..=60 {
+        let target = f64::from(percent) / 100.0;
+        let raw = window_for_target(&rows.boxes, rows.dataset, target, "probe");
+        let points_only = untie_window(&rows, raw.clone(), q, &EdgeBands::default());
+        hazards += usize::from(inside(&points_only.window));
+        let untied = untie_window(&rows, raw, q, &bands);
+        assert!(
+            !inside(&untied.window),
+            "{percent}%: {:?} lies inside a band",
+            untied.window
+        );
+    }
+    assert!(hazards > 0, "no target exercised a band on delft");
+}
+
+/// The first Delft feature, its root object given a declared
+/// `geographicalExtent` 2 mm wider than its subtree on every side (as 3DBAG
+/// declares them, up to 1.5 mm wider): each x/y edge gets a band from the
+/// vertex box to the declared extent, and the bands follow a swapped axis
+/// order.
+#[test]
+fn scan_seq_bands_span_from_the_vertex_box_to_a_wider_declared_extent() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).expect("reading delft");
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let header = lines.next().expect("header");
+    let mut feature: serde_json::Value =
+        serde_json::from_str(lines.next().expect("a feature")).expect("parsing the feature");
+    let h: serde_json::Value = serde_json::from_str(header).expect("parsing the header");
+    let (scale, translate) = (&h["transform"]["scale"], &h["transform"]["translate"]);
+    let real = |v: &serde_json::Value, axis: usize| {
+        v[axis].as_i64().unwrap() as f64 * scale[axis].as_f64().unwrap()
+            + translate[axis].as_f64().unwrap()
+    };
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for v in feature["vertices"].as_array().unwrap() {
+        for axis in 0..3 {
+            lo[axis] = lo[axis].min(real(v, axis));
+            hi[axis] = hi[axis].max(real(v, axis));
+        }
+    }
+    let root = feature["id"].as_str().unwrap().to_string();
+    let reach = 0.002;
+    feature["CityObjects"][&root]["geographicalExtent"] = serde_json::json!([
+        lo[0] - reach,
+        lo[1] - reach,
+        lo[2],
+        hi[0] + reach,
+        hi[1] + reach,
+        hi[2]
+    ]);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let seq = dir.path().join("declared.city.jsonl");
+    std::fs::write(&seq, format!("{header}\n{feature}\n")).expect("writing the stream");
+
+    let bands = scan_seq(&seq, false).expect("scanning").bands;
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    for axis in 0..2 {
+        let [lower] = bands.lower[axis][..] else {
+            panic!("one lower band on axis {axis}: {:?}", bands.lower[axis]);
+        };
+        assert!(
+            close(lower.0, hi[axis]) && close(lower.1, hi[axis] + reach),
+            "{lower:?}"
+        );
+        let [upper] = bands.upper[axis][..] else {
+            panic!("one upper band on axis {axis}: {:?}", bands.upper[axis]);
+        };
+        assert!(
+            close(upper.0, lo[axis] - reach) && close(upper.1, lo[axis]),
+            "{upper:?}"
+        );
+    }
+
+    let swapped = scan_seq(&seq, true).expect("scanning swapped").bands;
+    assert_eq!(swapped.lower[0], bands.lower[1]);
+    assert_eq!(swapped.upper[1], bands.upper[0]);
 }
 
 /// `b1_lod2_cs_w_sem.gml` is one of the two CityGML 2.0 files `just

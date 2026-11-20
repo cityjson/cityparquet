@@ -501,18 +501,20 @@ each cold number stands alone, one per format, one `full-read` only.
 
    The CityParquet `bbox` column also covers an object's declared
    `geographicalExtent`, which no runner reads (FlatCityBuf's R-tree holds
-   the boxes `fcb ser` computed), so on a dataset that declares one the
-   column can reach beyond the vertex box. On this corpus Zurich and
-   Montréal declare one on every object. Montréal's reaches beyond the
-   vertex box in `x`/`y` on 1,544 objects, by at most 1.5 µm. Zurich's
-   reaches beyond it on 108,396 objects, by at most its 1 mm quantisation.
-   The untied windows guarantee only that every edge lies more than one
-   quantisation step from every `bbox` edge (Caveat 21), which for Zurich is
-   the same 1 mm, so the guarantee alone does not keep a window edge out of
-   the band between an object's vertex box and its `bbox`. The coordinator's
-   check does: a window edge inside that band would make `cityjson`
-   disagree with `cityparquet`, and the run would fail. On the current
-   Zurich artefacts no window edge is closer than 3 mm to a `bbox` edge.
+   the boxes `fcb ser` computed from each feature's vertices), so on a
+   dataset that declares one the column can reach beyond the vertex box.
+   3DBAG declares one on every `Building`: on the Delft fixture it reaches
+   beyond the vertex box on more than 1,000 objects, by up to 3 cm, and on
+   a tile of the national 3DBAG by up to 1.5 mm. On this corpus Zurich and Montréal
+   declare one on every object. Montréal's reaches beyond the vertex box in
+   `x`/`y` on 1,544 objects, by at most 1.5 µm. Zurich's reaches beyond it on
+   108,396 objects, by at most its 1 mm quantisation. A window edge between
+   an object's vertex box and its `bbox` would select the object in
+   `cityparquet` and miss it everywhere else, so the windows are placed
+   where it cannot (Caveat 21): no edge lies inside the band between an
+   object's two boxes, and the vertex boxes and the `bbox` column then
+   select the same CityObjects. The coordinator's check confirms it on every
+   run.
 
 2. **Selectivity's denominator is the CityObject total, for every format.**
    The four CityObject-granular scenarios (`bbox-query`/`attr-filter`/
@@ -1073,11 +1075,17 @@ each cold number stands alone, one per format, one `full-read` only.
     whether an object counts depends on the last digit of how a format
     decodes the coordinate — a CityJSON integer times its scale against the
     Parquet double. Each `x`/`y` edge is therefore moved to the midpoint of
-    the gap between two consecutive distinct object-edge values (a lower
-    edge competes with the boxes' maxima, an upper edge with their minima);
-    the gap must exceed twice the dataset's coordinate quantisation (the
-    CityJSONSeq `transform.scale`) on that axis, and when the edge's own gap
-    is narrower the nearest wide one is used. `z` spans the dataset's range
+    a gap between the competing object edges (a lower edge competes with the
+    boxes' maxima, an upper edge with their minima). Where an object's
+    `bbox` and its vertex box differ on that edge (a declared
+    `geographicalExtent`, Caveat 1, or a degenerate ring the writer drops
+    from its stored geometry), the whole interval between the two competes,
+    read from the CityJSONSeq in the same pass that collects the feature
+    ids. The gap must exceed twice the dataset's coordinate quantisation
+    (the CityJSONSeq `transform.scale`) on that axis, and when the edge's own
+    gap is narrower the nearest wide one is used. An edge that falls inside
+    an interval leaves it on the side that includes the object, as the
+    `bbox` already did. `z` spans the dataset's range
     with a margin either side. `achieved` and `approx` describe the moved
     window.
 
