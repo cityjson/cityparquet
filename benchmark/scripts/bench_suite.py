@@ -45,12 +45,13 @@ FAMILIES = ("sizes", "formats", "bloom", "databases", "network")
 #   short  the corpus without the slice, the same repetitions, results under
 #          `<family>/short/`; for iterating on the harness in an hour instead
 #          of a day;
-#   smoke  Rotterdam alone, 1 repetition, `<family>/smoke/`; a pipeline check,
+#   smoke  Vienna alone (the manifest's `small_database_dataset`), 1
+#          repetition, `<family>/smoke/`; a pipeline check,
 #          never a measurement.
 # No profile selects the national dataset (the whole of 3DBAG): `--national`
 # adds it to a profile's selection and `--datasets 3dbag-national` names it.
 # Under `short` and `smoke` the database family measures the manifest's
-# `small_database_dataset` (Rotterdam) in the slice's place. The bloom family
+# `small_database_dataset` (Vienna) in the slice's place. The bloom family
 # measures the slice alone, so it runs under `full` and `quick` only.
 PROFILES = ("full", "quick", "short", "smoke")
 # The dataset roles that are format and size inputs.
@@ -141,7 +142,7 @@ def dataset_selection(manifest: dict, families: list[str], requested: str, profi
     if requested:
         result = [dataset_alias(manifest, item) for item in values(requested)]
     elif profile == "smoke":
-        result = ["rotterdam"]
+        result = [manifest["suite"]["small_database_dataset"]]
     else:
         result = []
         if any(family in {"sizes", "formats", "network"} for family in families):
@@ -742,7 +743,7 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
     if "databases" in families:
         # --database-datasets: `all`, or manifest ids (`3dbag` = the slice);
         # empty keeps the profile's one dataset (the slice under full/quick,
-        # Rotterdam under short/smoke), which must then be selected.
+        # Vienna under short/smoke), which must then be selected.
         if database_datasets == "all":
             database_keys = [key for key, entry in manifest["datasets"].items() if entry["role"] not in LOCAL_ONLY_ROLES]
         elif database_datasets:
@@ -817,8 +818,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--families", default="all", help=f"comma-separated families from {','.join(FAMILIES)}, or all")
     result.add_argument("--datasets", default="", help="comma-separated manifest ids in place of the profile's selection (`3dbag` = the slice, `3dbag-national` = the national dataset)")
     result.add_argument("--national", action="store_true", help="add the national dataset (the whole of 3DBAG, about 10.8 million buildings) to the selection; the sizes and formats families measure it in CityJSONSeq, FlatCityBuf and CityParquet only, and bench-prep always builds it here from the published tiles (benchmark/README.md, \"The national dataset\")")
-    result.add_argument("--database-datasets", default="", help="datasets the database family measures: `all` (every dataset but the national one), or comma-separated manifest ids (`3dbag` = the slice); default: the profile's own (the slice under full/quick, Rotterdam under short/smoke)")
-    result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 25 read repetitions, the families' own result directories (the paper's evidence); quick: the same datasets at 7 repetitions, under <family>/quick/, a faster complete run that is not the paper's evidence; short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Rotterdam alone, 1 repetition, under <family>/smoke/. Under full and quick the database family measures the 3DBAG slice, under short and smoke Rotterdam")
+    result.add_argument("--database-datasets", default="", help="datasets the database family measures: `all` (every dataset but the national one), or comma-separated manifest ids (`3dbag` = the slice); default: the profile's own (the slice under full/quick, Vienna under short/smoke)")
+    result.add_argument("--profile", choices=PROFILES, default="full", help="full: the corpus and the 3DBAG slice, 25 read repetitions, the families' own result directories (the paper's evidence); quick: the same datasets at 7 repetitions, under <family>/quick/, a faster complete run that is not the paper's evidence; short: the corpus without the slice, the same repetitions, under <family>/short/, for iterating on the harness; smoke: Vienna alone, 1 repetition, under <family>/smoke/. Under full and quick the database family measures the 3DBAG slice, under short and smoke Vienna")
     result.add_argument("--smoke", action="store_true", help="the same as --profile smoke")
     result.add_argument("--read-formats", default="", help="comma-separated subset of the format tags whose read rows are measured (forwarded to the bench recipe's FORMATS; default: all). The coordinator truncates the CSV per run, so a subset run replaces every read row; use it to re-measure one format into a separate results copy and merge deliberately")
     result.add_argument("--bloom-attributes", default="", help="run only: comma-separated text attribute columns for the bloom family's attr-lookup probes (default: the slice's bloom_attributes in manifest.toml); each must carry a Bloom filter or the run fails naming it")

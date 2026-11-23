@@ -108,7 +108,7 @@
 #   produces four artefacts and skips the fifth does not weaken that
 #   comparison, it removes the baseline from it — and under the previous
 #   corpus the skipped ones were exactly the datasets a reader recognises
-#   (3DBAG, Rotterdam, Vienna, NYC, Zurich all ship as CityJSON). Worse, the
+#   (3DBAG, Vienna, NYC, Zurich all ship as CityJSON). Worse, the
 #   published `.gml` beside a `.city.json` is usually NOT a usable substitute:
 #   of the nine on cityjson.org, six are CityGML 1.0 and two are 3.0, and this
 #   repository's reader accepts only 2.0.

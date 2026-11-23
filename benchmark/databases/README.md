@@ -207,8 +207,7 @@ own. `append-object` is then recorded as `skipped:`.
 `attr-filter` filters a real **CityJSON attribute**, picked per dataset by
 the same rule the format family uses (`citybench.params.HAND_PICKED`, a
 port of `params.rs`): 3DBAG `b3_dak_type = 'slanted'`, Zurich
-`class = 'BB01'`, Vienna `roofType = 'FLACHDACH'`, NYC `BIN = '1000000'`, Rotterdam
-`TerrainHeight >= q0.75`. A dataset with no hand-picked entry falls back to
+`class = 'BB01'`, Vienna `roofType = 'FLACHDACH'`, NYC `BIN = '1000000'`. A dataset with no hand-picked entry falls back to
 the string attribute whose most frequent value's share lands closest to
 25 %, then to the alphabetically first numeric attribute at its 0.75
 quantile, then to `skipped:`.
@@ -416,7 +415,7 @@ import` pays a container start and a JVM start, which for a one-feature
   area, where cjdb's Q6 sets the whole `attributes` document NULL for a
   NULL `ground_geometry` (bullet below) and 3DCityDB uses the importer's
   `envelope`. A dataset with no LoD 0 at all, such as
-  Rotterdam under `short` and `smoke`, has no `geometry_lod0_0` and takes
+  Vienna under `short` and `smoke`, has no `geometry_lod0_0` and takes
   the `bbox`-rectangle branch. All three systems still touch every
   Building row.
 - **cjdb's Q6 is strict.** `jsonb_set` returns NULL for a NULL argument, so
@@ -1443,8 +1442,8 @@ slice under `full` and `quick`). `--profile quick` measures the same
 datasets with `--repeat 7` into `benchmark/runs/databases/quick/`; the
 CSV's `repeat` column and the manifest carry the 7. Under `--profile short` and
 `--profile smoke` (or `--smoke`), the database family measures the
-manifest's `small_database_dataset`, Rotterdam, through its prepared
-`rotterdam_delfshaven.city.jsonl`, and writes to
+manifest's `small_database_dataset`, Vienna, through its prepared
+`vienna_102081.city.jsonl`, and writes to
 `benchmark/runs/databases/short/` or `benchmark/runs/databases/smoke/`.
 Only the `full` and `quick` profiles measure the slice. Figures come from
 `just bench-summary`, which only reads results.
