@@ -1,10 +1,13 @@
 # CityParquet benchmark corpus — download URLs
 # ============================================
 #
-# Six city datasets. Four are pinned from the CityJSON project's own dataset
+# Six city datasets. Three are pinned from the CityJSON project's own dataset
 # page, https://www.cityjson.org/datasets/ ("Major City Datasets", converted and
 # hosted by the TU Delft 3D geoinformation group), verified live on 2026-08-23
-# and unchanged since. Two — Tokyo (Chiyoda) and Montréal — are derived by this
+# and unchanged since. One — Helsinki — is pinned from the published data of
+# the CityJSONSeq paper (https://github.com/cityjson/paper_cjseq, `data/`, a
+# public SURFdrive share), verified on 2026-11-23. Two — Tokyo (Chiyoda) and
+# Montréal — are derived by this
 # project from published sources and hosted on its own mirror; their derivation
 # is recorded below so either can be rebuilt byte for byte. The format
 # comparison's seventh dataset, the 1,000,001-object 3DBAG slice, is cut by
@@ -34,7 +37,8 @@
 # source order) and removes the semantic surfaces of every geometry below
 # LoD 2 (see READ_BENCHMARK.md, Caveat 41), and every artefact derives from
 # that normalised source. Five datasets need no change and are used byte for
-# byte; none carries semantics below LoD 2. vienna_102081 loses 1,102 of
+# byte; none carries semantics below LoD 2 (Helsinki's LoD 1 solids carry
+# none). vienna_102081 loses 1,102 of
 # 2,204 geometries (each LoD 2 object carries a MultiSurface and a Solid; the
 # MultiSurface comes first and is kept).
 #
@@ -68,24 +72,22 @@
 #
 # Ordering: smallest first, so a truncated fetch still leaves a size ladder.
 
-https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json
 https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json
 https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json
 https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json
 https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/tokyo.city.json
 https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json
+https://surfdrive.surf.nl/index.php/s/mmRRDvMwg7UadBY/download?path=%2F&files=Helsinki.city.json
 
 # --------------------------------------------------------------------------
 # PER-ENTRY PROVENANCE
 # --------------------------------------------------------------------------
 #
-# rotterdam_delfshaven.city.json  <- 3-20-DELFSHAVEN.city.json
-#   cityjson.org row "Rotterdam". 2,731,804 B. 853 CityObjects, all `Building`,
-#   all LoD2. Numeric attribute `TerrainHeight` on all 853. Published as 76%
-#   valid. The corpus's small anchor.
-#
 # vienna_102081.city.json         <- Vienna_102081.city.json
-#   cityjson.org row "Vienna". 5,635,634 B. 1,322 CityObjects — 307 `Building`
+#   cityjson.org row "Vienna". The CityJSONSeq paper's `Vienna.city.json` is
+#   the same file (same sha256). The corpus's small anchor, and the dataset
+#   the `smoke` profile and the database family's `short` profile measure.
+#   5,635,634 B. 1,322 CityObjects — 307 `Building`
 #   and 1,015 `BuildingPart`, i.e. real parent/child nesting rather than a flat
 #   list; 220 of the `Building`s carry no geometry of their own. 2,204 LoD2
 #   geometries. Numeric attribute `measuredHeight` on 1,102. Published as
@@ -159,6 +161,23 @@ https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/
 #        vertices shift by up to 0.000849 mm in `y` on merging.
 #   The one exception to the preparation chain's rule that nothing derives
 #   from CityParquet; READ_BENCHMARK.md, Caveat 14, states what it means.
+#
+# helsinki.city.json              <- Helsinki.city.json (CityJSONSeq paper data)
+#   599,944,942 B, sha256 ace9f08cf7df5d2bef134338847085975640b894c9bb6de33fca975b9b9053b0.
+#   Helsinki 3D city model, City of Helsinki, LoD 2 buildings without
+#   textures (https://www.opendata.fi/data/en_GB/dataset/helsingin-3d-kaupunkimalli,
+#   licence as stated there), converted from CityGML with citygml-tools and merged with
+#   cjio by the CityJSONSeq paper's authors; the share's `Helsinki_tex` is the
+#   textured variant and is not pinned. CityJSON 2.0. 77,267 CityObjects —
+#   77,231 `Building` (18 with no geometry of their own) and 36
+#   `BuildingPart` — each with one LoD 1 and one LoD 2 Solid; semantic
+#   surfaces on LoD 2 only. Numeric attribute `measuredHeight` on every
+#   object with geometry, and the use class `Kayttotarkoitus` on 49,569.
+#   The corpus's largest city.
+#   Known warts: `metadata` declares no `referenceSystem` (the coordinates are
+#   ETRS89 / GK25FIN, EPSG:3879), and `appearance` keeps 5,167,674
+#   `vertices-texture` that no geometry references, left over from the
+#   textures the conversion removed.
 
 # --------------------------------------------------------------------------
 # EXCLUDED — offered by cityjson.org, but not measurable here or outside the
@@ -202,6 +221,16 @@ https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/
 #   the dataset's faces and the five formats would not hold the same content.
 #   No pinned dataset carries Window/Door semantics, and none has a dangling
 #   reference.
+#
+# The cityjson.org Rotterdam entry (3-20-DELFSHAVEN.city.json, 2,731,804 B,
+# 853 `Building`, LoD2, numeric `TerrainHeight`) passes every gate and is not
+# pinned, by the author's decision: Vienna is the small anchor and Helsinki
+# takes its place in the corpus.
+#
+# The CityJSONSeq paper's share also offers `Ingolstadt.city.json` (379
+# CityObjects, LoD 3, 1,120 Window and Door surfaces with no parent surface;
+# excluded for the reason given above) and `Montréal.city.json`, which is the
+# VM05 file below.
 #
 # The cityjson.org Montréal entry (VM05_2009.city.json, 5,644,656 B, 294
 # `Building`, LoD2) passes every gate and is not pinned: it sits in Vienna's

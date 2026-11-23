@@ -12,8 +12,10 @@ slice_dataset = "3dbag_n1000000"
 # adds it and `--datasets 3dbag-national` names it.
 national_dataset = "3dbag_national"
 # The dataset that stands in for the slice in the database family under the
-# `short` and `smoke` profiles: small, and in the slice's CRS (EPSG:7415).
-small_database_dataset = "rotterdam"
+# `short` and `smoke` profiles, and the one dataset the `smoke` profile
+# measures: the corpus's smallest. It declares no CRS, so 3DCityDB is
+# initialised with the EPSG:7415 placeholder (databases/README.md).
+small_database_dataset = "vienna"
 
 # The network family's simulated profiles: a bandwidth shared by every
 # connection and a latency paid by every request. `typical` is the default.
@@ -46,11 +48,6 @@ latency_ms = 20.0
 bandwidth_mbps = 20.0
 latency_ms = 50.0
 
-[datasets.rotterdam]
-source = "rotterdam_delfshaven.city.json"
-title = "Rotterdam"
-role = "corpus"
-
 [datasets.vienna]
 source = "vienna_102081.city.json"
 title = "Vienna"
@@ -74,6 +71,11 @@ role = "corpus"
 [datasets.montreal]
 source = "montreal.city.json"
 title = "Montréal"
+role = "corpus"
+
+[datasets.helsinki]
+source = "helsinki.city.json"
+title = "Helsinki"
 role = "corpus"
 
 # The one 3DBAG input: the first 1,000,000 CityObjects of one published

@@ -1241,7 +1241,7 @@ enum Key {
 /// member of the CityJSON `attributes` map (so FlatCityBuf's `fcb ser -A`
 /// B+-tree indexes it) and that every format carries, and every predicate
 /// was verified to return the same `result_count` on every runner.
-const HAND_PICKED: [(Key, &str, Pick); 7] = [
+const HAND_PICKED: [(Key, &str, Pick); 6] = [
     // The natural roof-type query; 3DBAG carries it on the Building, one
     // per feature.
     (Key::Family("3dbag_"), "b3_dak_type", Pick::Eq("slanted")),
@@ -1261,13 +1261,6 @@ const HAND_PICKED: [(Key, &str, Pick); 7] = [
         Key::Dataset("nyc_da13_buildings"),
         "BIN",
         Pick::Eq("1000000"),
-    ),
-    // Rotterdam's string attributes are constant, so a numeric range is
-    // the only selective predicate it has.
-    (
-        Key::Dataset("rotterdam_delfshaven"),
-        "TerrainHeight",
-        Pick::Quantile(FALLBACK_QUANTILE),
     ),
     // PLATEAU's building-use code; `401` is the commonest use in Chiyoda.
     (Key::Dataset("tokyo"), "usage", Pick::Eq("401")),
@@ -1289,9 +1282,12 @@ const HAND_PICKED: [(Key, &str, Pick); 7] = [
 /// unmeasured height on part of the buildings, and it is aggregated with the
 /// placeholder included: no runner has an exclusion predicate, and adding
 /// one would change the timed work (READ_BENCHMARK.md, Caveat 17).
-const HAND_PICKED_STATS: [(Key, &str); 2] = [
+const HAND_PICKED_STATS: [(Key, &str); 3] = [
     (Key::Dataset("tokyo"), "measuredHeight"),
     (Key::Dataset("montreal"), "measuredHeight"),
+    // The derived rule would take `BREC_BuildingHeightNN`, a roof height
+    // above sea level; `measuredHeight` is the building's own height.
+    (Key::Dataset("helsinki"), "measuredHeight"),
 ];
 
 /// The `attr-stats` column for `base`: its [`HAND_PICKED_STATS`] entry when
@@ -1313,7 +1309,7 @@ fn pick_stats_attribute(base: &str, meta: &CityMetadata, schema: &Schema) -> Opt
 /// that the result is not a rounding error.
 const FALLBACK_TARGET_SHARE: f64 = 0.25;
 
-/// The quantile the numeric branch (and Rotterdam's hand-picked entry)
+/// The quantile the numeric branch (and Montréal's hand-picked entry)
 /// thresholds at, so that `>=` selects about [`FALLBACK_TARGET_SHARE`] of
 /// the non-null rows.
 const FALLBACK_QUANTILE: f64 = 0.75;
@@ -2140,10 +2136,10 @@ mod tests {
     #[test]
     fn a_hand_picked_dataset_is_matched_by_its_exact_name() {
         assert_eq!(
-            hand_picked_for("rotterdam_delfshaven"),
-            Some(("TerrainHeight", Pick::Quantile(FALLBACK_QUANTILE)))
+            hand_picked_for("vienna_102081"),
+            Some(("roofType", Pick::Eq("FLACHDACH")))
         );
-        assert_eq!(hand_picked_for("rotterdam_delfshaven_extra"), None);
+        assert_eq!(hand_picked_for("vienna_102081_extra"), None);
         assert_eq!(
             hand_picked_for("zurich_building_lod2"),
             Some(("class", Pick::Eq("BB01")))
@@ -2161,14 +2157,17 @@ mod tests {
             .iter()
             .map(|(_, column)| *column)
             .collect();
-        assert_eq!(stats, ["measuredHeight", "measuredHeight"]);
+        assert_eq!(
+            stats,
+            ["measuredHeight", "measuredHeight", "measuredHeight"]
+        );
     }
 
     #[test]
     fn a_dataset_outside_the_table_gets_no_hand_picked_entry() {
         assert_eq!(hand_picked_for("delft"), None);
         assert_eq!(
-            hand_picked_for("rotterdam"),
+            hand_picked_for("vienna"),
             None,
             "a PREFIX of a table key is a different dataset, not a variant of it"
         );

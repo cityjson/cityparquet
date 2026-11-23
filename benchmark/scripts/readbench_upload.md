@@ -140,8 +140,8 @@ prepare log's `normalise` line says what the normalisation changed):
   rebuilt and nothing passes through the machine:
 
   ```sh
-  just corpus-carry-forward --from 8 --to 9 rotterdam_delfshaven vienna_102081 \
-      nyc_da13_buildings zurich_building_lod2 tokyo montreal
+  just corpus-carry-forward --from 8 --to 9 vienna_102081 \
+      nyc_da13_buildings zurich_building_lod2 tokyo montreal helsinki
   ```
 
 - **Some stages changed, the CityGML one did not**: carry the unchanged

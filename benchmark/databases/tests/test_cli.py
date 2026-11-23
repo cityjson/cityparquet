@@ -777,8 +777,9 @@ def test_versions_reuse_the_preflight_probe_instead_of_loading_again(monkeypatch
 
 def test_datasets_selects_every_corpus_dataset_or_a_named_subset(tmp_path):
     from citybench import cli
-    stems = ["rotterdam_delfshaven", "vienna_102081", "nyc_da13_buildings",
-             "zurich_building_lod2", "tokyo", "montreal", "3dbag_n1000000"]
+    stems = ["vienna_102081", "nyc_da13_buildings", "zurich_building_lod2",
+             "tokyo", "montreal", "helsinki", "3dbag_n1000000",
+             "3dbag_national"]
     for stem in stems:
         (tmp_path / f"{stem}.city.jsonl").write_text("{}\n")
     assert [p.name.split(".")[0] for p in cli.resolve_datasets("all", tmp_path)] == stems

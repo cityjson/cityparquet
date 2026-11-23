@@ -357,7 +357,7 @@ fn the_hand_picked_table_wins_over_the_derived_rule_and_is_disclosed() {
 fn a_hand_picked_column_the_package_lacks_falls_back_to_the_derived_rule() {
     let (_dir, table) = delft_table();
     let picked = pick_attr_filter(
-        "rotterdam_delfshaven.city.jsonl",
+        "vienna_102081.city.jsonl",
         &meta_of(&table),
         &schema_of(&table),
         &table,
@@ -367,7 +367,7 @@ fn a_hand_picked_column_the_package_lacks_falls_back_to_the_derived_rule() {
 
     assert_eq!(
         picked.column, "b3_dak_type",
-        "delft carries no TerrainHeight, so the derived rule must answer instead"
+        "delft carries no roofType, so the derived rule must answer instead"
     );
     assert!(!picked.hand_picked);
 }

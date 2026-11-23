@@ -164,8 +164,8 @@ coordinator.rs`'s own module doc). This means an http-transport run still
 
 ## The corpus
 
-The format, size and bloom families use six city datasets — Rotterdam,
-Vienna, New York, Zurich, Tokyo (Chiyoda) and Montréal — and one
+The format, size and bloom families use six city datasets — Vienna, New
+York, Zurich, Tokyo (Chiyoda), Montréal and Helsinki — and one
 3DBAG slice, `3dbag_n1000000`, which every family treats as one more dataset.
 Every CityJSON input is listed with its provenance, byte size and sha256 in
 `corpus_urls.txt`; Tokyo and Montréal are derived by this project, and that
@@ -255,14 +255,15 @@ of the prepared packages; the share is of all CityObject rows:
 | `zurich_building_lod2`                                         | `class == "BB01"`          | 19.4% |
 | `vienna_102081`                                                | `roofType == "FLACHDACH"`  | 45.4% |
 | `nyc_da13_buildings`                                           | `BIN == "1000000"`         | 0.7%  |
-| `rotterdam_delfshaven`                                         | `TerrainHeight >= 2.45`    | 25.4% |
 
 NYC's only categorical attributes are identifiers, so its entry is the
-placeholder `BIN` — a legitimate low-selectivity equality. Rotterdam's string
-attributes are constant, so a numeric range is the only selective predicate it
-has; the bound is the column's own 0.75 quantile (linear interpolation, i.e.
-DuckDB's `quantile_cont`), computed from the data at derivation time rather
-than written down here.
+placeholder `BIN` — a legitimate low-selectivity equality. Montréal's
+attributes are measurements, so its entry is a numeric range; the bound is the
+column's own 0.75 quantile (linear interpolation, i.e. DuckDB's
+`quantile_cont`), computed from the data at derivation time rather than
+written down here. Helsinki has no hand-picked `attr-filter` entry: the
+derived rule below selects `Rakennusaine == "Puu"` (building material:
+wood), 28.6% of its source's CityObjects.
 
 **Derived, for any other dataset.** The string attribute column with between 2
 and 1000 distinct values whose most frequent value's share of rows lies
@@ -985,11 +986,11 @@ each cold number stands alone, one per format, one `full-read` only.
 
     | dataset                | column               | CityObjects carrying it |
     | ---------------------- | -------------------- | ----------------------- |
-    | `rotterdam_delfshaven` | `TerrainHeight`      | 853 of 853              |
     | `vienna_102081`        | `measuredHeight`     | 1,102 of 1,322          |
     | `zurich_building_lod2` | `GebaeudeStatus`     | 52,834 of 198,699       |
     | `tokyo`                | `measuredHeight`     | 38,743 of 49,915        |
     | `montreal`             | `measuredHeight`     | 31,415 of 31,415        |
+    | `helsinki`             | `measuredHeight`     | 77,249 of 77,267        |
     | `3dbag_n1000000`       | `b3_bag_bag_overlap` | 331,363 of 1,000,001    |
 
     Tokyo's column is on its `Building`s, not its 11,172
@@ -1367,8 +1368,8 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     is unchanged. A JSON parser and serialiser would not do: `jq -c` (1.7.1)
     respells numbers (Tokyo's `1e-10` scale becomes `1E-10`, which shrinks
     Tokyo by 986 B), though every value survives. All six corpus sources
-    are compact as published (montreal 498,371,022 B, nyc_da13_buildings 110,083,137 B,
-    rotterdam_delfshaven 2,731,804 B, tokyo 315,968,009 B, vienna_102081
+    are compact as published (helsinki 599,944,942 B, montreal 498,371,022 B,
+    nyc_da13_buildings 110,083,137 B, tokyo 315,968,009 B, vienna_102081
     5,635,634 B, zurich_building_lod2 292,500,409 B), and so is the
     normalised source Caveat 41 derives from one of them, so on the current
     corpus the step is a no-op: each `cityjson` artefact is byte identical

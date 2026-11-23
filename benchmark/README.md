@@ -49,7 +49,7 @@ v<chain>/cityparquet/<id>.parquet/...     every file of the package
 v<chain>/cityparquet-nobloom/<id>.parquet/...  the bloom axis's package without Bloom filters (see below)
 ```
 
-`<id>` is the dataset's file stem (`rotterdam_delfshaven`). The folders exist
+`<id>` is the dataset's file stem (`vienna_102081`). The folders exist
 only in the keys: locally every artefact keeps its flat name in
 `data/readbench/`, which is what `bench-run` and the database family read.
 `scripts/corpus_bucket.py` owns the layout, the manifest, the download and
@@ -130,8 +130,8 @@ uses and keeps it locally as `<id>.cityparquet+nobloom.parquet/`; the bloom
 run reuses that prepared variant while its chain stamp is current, rather
 than converting it again.
 
-The bucket holds the six city datasets (Rotterdam, Vienna, New York, Zurich,
-Tokyo and Montréal) and the 3DBAG slice. The slice is built by
+The bucket holds the six city datasets (Vienna, New York, Zurich, Tokyo,
+Montréal and Helsinki) and the 3DBAG slice. The slice is built by
 `just bench-prep --rebuild-sources --datasets 3dbag_n1000000` on a machine
 with the R2 token and enough memory for its CityGML synthesis; every other
 machine downloads it with the default mode. When the chain version changes,
@@ -274,7 +274,7 @@ the usual per-cell time budget.
 just bench-run --families network --profile short                     # typical
 just bench-run --families network --profile short --network-profile all
 just bench-run --families network --profile short --network-whole-file-scenarios all
-just bench-run --families network --datasets rotterdam --network-target real \
+just bench-run --families network --datasets vienna --network-target real \
   --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v10
 ```
 
@@ -313,10 +313,10 @@ results under `<family>/quick/` and `databases/quick/`; a complete run in
 about a third of the time, not the paper's evidence), `--profile short` (the corpus
 without the slice, the same repetitions, results under `<family>/short/`; for
 iterating on the harness in about an hour rather than a day) and `--profile
-smoke` (`--smoke`: Rotterdam alone, one repetition, `<family>/smoke/`; a
+smoke` (`--smoke`: Vienna alone, one repetition, `<family>/smoke/`; a
 pipeline check, not a measurement). Under `short` and `smoke` the database
-family measures Rotterdam (the manifest's `small_database_dataset`) through
-its prepared `rotterdam_delfshaven.city.jsonl`. Every run manifest records its
+family measures Vienna (the manifest's `small_database_dataset`) through
+its prepared `vienna_102081.city.jsonl`. Every run manifest records its
 profile and its repetitions (`measurement.read_repeat` for the read families,
 `execution.repeat` for the database family), every CSV row its samples in
 `repeat`, and every timing figure's caption prints the warm runs it plots
@@ -375,7 +375,7 @@ Use `--families` to run one family after preparing it. `--datasets` accepts
 manifest IDs, `3dbag` for the slice (`[suite] slice_dataset` in
 `manifest.toml`) and `3dbag-national` for the national dataset, which no
 profile selects ([The national dataset](#the-national-dataset)). The database family's dataset is the slice under `full` and
-`quick` and Rotterdam under `short` and `smoke`; `--database-datasets
+`quick` and Vienna under `short` and `smoke`; `--database-datasets
 all|<ids>` selects its datasets explicitly. The selector rejects data roots outside
 `benchmark/runs/`.
 
@@ -537,8 +537,8 @@ at the default 25 repetitions. `--cell-budget-s` bounds a cell's sampling.
 | `bloom`     | The 3DBAG slice alone       | Size; lookup time, memory and row-group counters                     | `id-lookup` at `id-50pct`/`id-miss`; `feature-lookup` at `feature-50pct`/`feature-miss`; `attr-lookup` at `attr-<column>-50pct`/`attr-<column>-miss` per `bloom_attributes` column |
 | `databases` | The 3DBAG slice             | Storage with and without indexes; query time and peak working memory | Database query suite                                                                                                                                                               |
 
-The corpus is Rotterdam, Vienna, New York, Zurich, Tokyo (Chiyoda) and
-Montréal, with the 3DBAG slice
+The corpus is Vienna, New York, Zurich, Tokyo (Chiyoda), Montréal and
+Helsinki, with the 3DBAG slice
 ([`formats/README.md`](formats/README.md) lists each with its source and query
 predicates; Tokyo and Montréal are derived by this project, and Montréal is
 exported from CityParquet). Dataset IDs identify artefacts;

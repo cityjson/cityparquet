@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Fetch the CityParquet benchmark corpus (`just fetch-data`) — SEVEN real
-# city models, about 1.2 GB on the wire, from 2.7 MB (Rotterdam Delfshaven)
-# to 498 MB (Montréal), every one of them a single-object-table building
-# dataset that yields ALL FIVE compared formats.
+# Fetch the CityParquet benchmark corpus (`just fetch-data`) — SIX real
+# city models, about 1.8 GB on the wire, from 5.6 MB (Vienna) to 600 MB
+# (Helsinki), every one of them a single-object-table building dataset that
+# yields ALL FIVE compared formats.
 #
 # That last property is the whole point of this corpus. The read benchmark's
 # claim is a comparison BETWEEN formats, so a dataset that cannot produce
@@ -10,9 +10,11 @@
 # handful of datasets that are fully comparable beat many that are partly
 # comparable.
 #
-# Provenance: five entries are from the CityJSON project's own dataset page,
+# Provenance: three entries are from the CityJSON project's own dataset page,
 #   https://www.cityjson.org/datasets/
-# and two (Tokyo, Montréal) are derived and hosted by this project, recorded
+# one (Helsinki) is from the data of the CityJSONSeq paper
+# (https://github.com/cityjson/paper_cjseq, `data/`), and two (Tokyo,
+# Montréal) are derived and hosted by this project, recorded
 # with their derivation in `benchmark/formats/corpus_urls.txt` — read that
 # file for WHY an entry is here and how the two derived ones were built. This
 # script is the other half: WHAT gets fetched, under which local name, and at
@@ -58,15 +60,15 @@ BENCH_ROOT="${BENCH_ROOT:-$BENCHMARK_DIR/runs}"
 #
 # local_name  What lands in DEST, and therefore the dataset name in every
 #             benchmark CSV and chart. Pinned rather than derived because the
-#             published filenames are not self-describing: Rotterdam's ships
-#             as `3-20-DELFSHAVEN.city.json` and New York's as
-#             `DA13_3D_Buildings_Merged.city.json`, neither of which reads
+#             published filenames are not self-describing: New York's ships
+#             as `DA13_3D_Buildings_Merged.city.json` and Zurich's as
+#             `Zurich_Building_LoD2_V10.city.json`, neither of which reads
 #             well in a chart legend.
 #
-# wire_bytes  The bytes of the download, as measured on 2026-08-23 by counting
-#             a streamed GET. Every entry here is served uncompressed, so this
-#             is also the on-disk size — unlike the archived corpus, where the
-#             two differed by up to 30x.
+# wire_bytes  The bytes of the download, as measured on 2026-08-23 (Helsinki:
+#             2026-11-23) by counting a streamed GET. Every entry here is
+#             served uncompressed, so this is also the on-disk size — unlike
+#             the archived corpus, where the two differed by up to 30x.
 #
 # form        `plain` for every entry (see the header). `gz` and `zip:MEMBER`
 #             remain implemented for $CORPUS_MANIFEST inputs.
@@ -101,22 +103,22 @@ BENCH_ROOT="${BENCH_ROOT:-$BENCHMARK_DIR/runs}"
 #      format's hit; `readbench_prepare.sh` re-checks this per run.
 #
 #   dataset               objects   LoD
-#   rotterdam_delfshaven      853   2
 #   vienna_102081           1,322   2
 #   nyc_da13_buildings     23,777   2
 #   montreal               31,415   2
 #   tokyo                  49,915   0 / 1 / 2 / 3
+#   helsinki               77,267   1 / 2
 #   zurich_building_lod2  198,699   2
 #
 # The 1,000,001-object 3DBAG slice that completes the format comparison is not
 # fetched here: `just fetch-3dbag` cuts it from its own pinned source.
 CORPUS=(
-  "rotterdam_delfshaven.city.json|2731804|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json|958460c670b4cb85a9159d1e5e566905fba8812864f64b554ecad38333badcf6"
   "vienna_102081.city.json|5635634|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json|849a148b5fb91ebfa6e3efe7bd78be47cc5cdd2fb6699e0cb042f44dd702cc62"
   "nyc_da13_buildings.city.json|110083137|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json|c885bb6af297531c95b097aff5d38e694935ac22fe1b973cbad15948021f6cb8"
   "zurich_building_lod2.city.json|292500409|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json|a7dde7f306e69a4134b2bf30b8ead58fe11d3499f8b30d7596ba346aeae6f0f8"
   "tokyo.city.json|315968009|plain|default,no-citygml|https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/tokyo.city.json|4a3e2e01bf5136e14f4d43bc993861d6d19234488f2867cc4e83e4d7dd8822ac"
   "montreal.city.json|498371022|plain|default,no-citygml|https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json|e54940e3aec2d2e4157b4dc0b5575c903066a2502e7d4a2e99c95e6180fc74cb"
+  "helsinki.city.json|599944942|plain|default,no-citygml|https://surfdrive.surf.nl/index.php/s/mmRRDvMwg7UadBY/download?path=%2F&files=Helsinki.city.json|ace9f08cf7df5d2bef134338847085975640b894c9bb6de33fca975b9b9053b0"
 )
 
 VALID_SETS=(default no-citygml all)

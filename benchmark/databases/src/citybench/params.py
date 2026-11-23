@@ -51,17 +51,13 @@ HAND_PICKED: tuple[tuple[str, str, str, tuple[str, Any]], ...] = (
     # NYC's only categorical attributes are identifiers; `1000000` is the
     # placeholder BIN, a legitimate low-selectivity equality.
     ("dataset", "nyc_da13_buildings", "BIN", ("eq", "1000000")),
-    # Rotterdam's string attributes are constant, so a numeric range is the
-    # only selective predicate it has.
-    ("dataset", "rotterdam_delfshaven", "TerrainHeight", ("quantile", 0.75)),
 )
 
 #: The share of rows the fallback rule's string branch aims a predicate at —
 #: selective enough that an index can help, common enough that the result is
 #: not a rounding error. `params.rs::FALLBACK_TARGET_SHARE`.
 FALLBACK_TARGET_SHARE = 0.25
-#: The quantile the fallback's numeric branch (and Rotterdam's hand-picked
-#: entry) thresholds at. `params.rs::FALLBACK_QUANTILE`.
+#: The quantile the fallback's numeric branch thresholds at. `params.rs::FALLBACK_QUANTILE`.
 FALLBACK_QUANTILE = 0.75
 #: A string attribute needs at least this many distinct values to be a
 #: candidate, and at most this many before it is an identifier rather than a
