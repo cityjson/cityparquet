@@ -104,7 +104,7 @@ jobs:
       # `just test` runs cargo-nextest, so the gate needs it. Nextest gives
       # every test its own process, which is what makes the gate's wall-clock
       # independent of test-binary ordering.
-      - uses: taiki-e/install-action@v2.90.3
+      - uses: taiki-e/install-action@v2.90.5
         with:
           tool: nextest
 
