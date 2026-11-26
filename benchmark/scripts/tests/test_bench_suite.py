@@ -24,8 +24,8 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(bench_suite.read_repeat("short"), 25)
         self.assertEqual(bench_suite.read_repeat("smoke"), 1)
 
-    def test_smoke_selects_rotterdam_alone(self):
-        self.assertEqual(bench_suite.dataset_selection(self.manifest, ["formats", "bloom", "databases"], "", "smoke"), ["rotterdam"])
+    def test_smoke_selects_vienna_alone(self):
+        self.assertEqual(bench_suite.dataset_selection(self.manifest, ["formats", "bloom", "databases"], "", "smoke"), ["vienna"])
     def test_unknown_family_is_rejected(self):
         with self.assertRaises(SystemExit): bench_suite.family_selection("wrong")
     def test_unknown_dataset_is_rejected(self):
@@ -62,11 +62,11 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("bloom", bench_suite.family_selection("all"))
     def test_the_database_family_measures_the_slice_in_full(self):
         self.assertEqual(bench_suite.dataset_selection(self.manifest, ["databases"], "", "full"), ["3dbag_n1000000"])
-    def test_short_profile_drops_the_slice_and_measures_rotterdam_in_the_databases(self):
+    def test_short_profile_drops_the_slice_and_measures_vienna_in_the_databases(self):
         formats = bench_suite.dataset_selection(self.manifest, ["formats"], "", "short")
         self.assertNotIn("3dbag_n1000000", formats)
         self.assertEqual(len(formats), 6)
-        self.assertEqual(bench_suite.dataset_selection(self.manifest, ["databases"], "", "short"), ["rotterdam"])
+        self.assertEqual(bench_suite.dataset_selection(self.manifest, ["databases"], "", "short"), ["vienna"])
     def test_short_profile_results_never_land_in_the_full_directories(self):
         locations = bench_suite.paths(bench_suite.DEFAULT_DATA_ROOT)
         self.assertEqual(bench_suite.result_dir(locations, "formats", "short"), locations["formats"] / "short" / "results")
@@ -86,7 +86,7 @@ class VariantArtefactTests(unittest.TestCase):
         manifest = tomllib_load()
         entry = manifest["datasets"][manifest["suite"]["slice_dataset"]]
         self.assertEqual(bench_suite.variant_artefacts(entry), ["cityparquet-nobloom"])
-        self.assertEqual(bench_suite.variant_artefacts(manifest["datasets"]["rotterdam"]), [])
+        self.assertEqual(bench_suite.variant_artefacts(manifest["datasets"]["vienna"]), [])
 
     def test_variant_id_is_the_local_infix(self):
         self.assertEqual(bench_suite.variant_id("cityparquet-nobloom"), "cityparquet+nobloom")
@@ -250,8 +250,6 @@ class NationalDatasetTest(unittest.TestCase):
         def refuse(*a, **k): raise AssertionError("the national dataset reached the bucket")
         def fake_just(*a):
             calls.append(a)
-            if a[0] == "readbench-prepare":
-                self.stream_writer = os.environ.get("FCB_SER_STREAM")
             if a[0] == "fetch-3dbag-national":
                 Path(a[1]).mkdir(parents=True, exist_ok=True)
                 (Path(a[1]) / "3dbag_national.city.jsonl").write_text("{}")
@@ -262,7 +260,6 @@ class NationalDatasetTest(unittest.TestCase):
              mock.patch.object(bucket, "fetch_manifest", refuse), \
              mock.patch.object(bucket, "remote_manifest", refuse), \
              mock.patch.object(bucket, "upload_dataset", refuse):
-            os.environ.pop("FCB_SER_STREAM", None)
             bench_suite.prepare(self.manifest, self.locations, ["sizes", "formats"], datasets, "full", mode=mode)
         return calls
 
@@ -273,9 +270,6 @@ class NationalDatasetTest(unittest.TestCase):
             prepare = [c for c in calls if c[0] == "readbench-prepare"]
             self.assertEqual(prepare, [("readbench-prepare", str(self.locations["3dbag"] / "3dbag_national.city.jsonl"), str(self.locations["prepared"]), "cityjsonseq,flatcitybuf,cityparquet")], mode)
             self.assertIn(("fetch-tools",), calls, mode)
-            # `fcb ser` cannot hold a national stream; the chain is told to
-            # write the FlatCityBuf artefact with the streaming writer.
-            self.assertEqual(self.stream_writer, "1", mode)
         self.assertFalse((self.locations["prepared"] / bench_suite.CORPUS_ORIGIN).exists())
 
     def _run(self, families, datasets, **kwargs):
@@ -559,7 +553,7 @@ class RequirePreparedTest(unittest.TestCase):
 
 class PublishedSourceTest(unittest.TestCase):
     def test_the_published_url_comes_from_the_fetch_table(self):
-        self.assertTrue(bench_suite.published_source_url("rotterdam_delfshaven.city.json").endswith("/3-20-DELFSHAVEN.city.json"))
+        self.assertTrue(bench_suite.published_source_url("vienna_102081.city.json").endswith("/Vienna_102081.city.json"))
         self.assertIsNone(bench_suite.published_source_url("nothing.city.json"))
 
 

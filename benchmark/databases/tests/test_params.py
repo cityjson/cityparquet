@@ -347,8 +347,8 @@ def test_attr_filter_uses_the_hand_picked_column_for_a_known_dataset(tmp_path):
 def test_hand_picked_dataset_entries_match_the_exact_name_only():
     # The same rule as `params.rs::hand_picked_for`: a `dataset` entry is
     # the exact name, a `family` entry a prefix.
-    assert _hand_picked_for("rotterdam_delfshaven") is not None
-    assert _hand_picked_for("rotterdam_delfshaven-hilbert") is None
+    assert _hand_picked_for("vienna_102081") is not None
+    assert _hand_picked_for("vienna_102081-hilbert") is None
     assert _hand_picked_for("3dbag_n1000000") is not None
 
 

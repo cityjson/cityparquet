@@ -19,7 +19,9 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Schema};
 use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet::wkb_write::{VertexPool, geometry_bbox};
 use cityparquet_schema::CityMetadata;
+use cityparquet_schema::crs::AxisOrder;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -356,20 +358,39 @@ pub fn window_for_target(
 /// exactly ON some object's edge, and whether that object is counted then
 /// depends on the last digit of how a format decodes the coordinate — a
 /// CityJSON integer times its scale, against the Parquet double. Each edge is
-/// placed instead at the midpoint of the gap between two consecutive distinct
-/// object-edge values (a lower edge competes with the boxes' maxima, an upper
-/// edge with their minima). The gap must exceed twice `quantum` — the
-/// dataset's coordinate quantisation on that axis — so the midpoint is more
-/// than one quantum from both; the gap containing the edge is used when it is
-/// wide enough, otherwise the nearest one that is. The achieved fraction, the
-/// `approx` flag and both reference counts are recomputed for the moved
-/// window.
-pub fn untie_window(rows: &RowBoxes, mut window: BboxWindow, quantum: [f64; 2]) -> BboxWindow {
+/// placed instead at the midpoint of a gap between the competing object
+/// edges (a lower edge competes with the boxes' maxima, an upper edge with
+/// their minima), and `bands` adds, for every object whose vertex box and
+/// `bbox` differ on that edge, the whole interval between the two: an edge
+/// inside it is met by one box and missed by the other, so the formats would
+/// answer different predicates (see [`EdgeBands`]). The gap must exceed
+/// twice `quantum` — the dataset's coordinate quantisation on that axis — so
+/// the midpoint is more than one quantum from both sides; the gap containing
+/// the edge is used when it is wide enough, otherwise the nearest one that
+/// is. The achieved fraction, the `approx` flag and both reference counts
+/// are recomputed for the moved window.
+pub fn untie_window(
+    rows: &RowBoxes,
+    mut window: BboxWindow,
+    quantum: [f64; 2],
+    bands: &EdgeBands,
+) -> BboxWindow {
     let mut w = window.window;
     for axis in 0..2 {
-        let mut maxima: Vec<f64> = rows.boxes.iter().map(|b| b[axis + 3]).collect();
-        let mut minima: Vec<f64> = rows.boxes.iter().map(|b| b[axis]).collect();
+        let mut maxima: Vec<(f64, f64)> = rows
+            .boxes
+            .iter()
+            .map(|b| (b[axis + 3], b[axis + 3]))
+            .chain(bands.lower[axis].iter().copied())
+            .collect();
         w[axis] = edge_in_gap(&mut maxima, w[axis], quantum[axis], Edge::Lower);
+        drop(maxima);
+        let mut minima: Vec<(f64, f64)> = rows
+            .boxes
+            .iter()
+            .map(|b| (b[axis], b[axis]))
+            .chain(bands.upper[axis].iter().copied())
+            .collect();
         w[axis + 3] = edge_in_gap(&mut minima, w[axis + 3], quantum[axis], Edge::Upper);
     }
     // z never excludes a row (see `window_at`); a flat object at the dataset's
@@ -402,39 +423,49 @@ enum Edge {
     Upper,
 }
 
-/// The midpoint of the gap in `values` (the competing object edges) nearest
-/// to `edge` that is wider than `2 * quantum`.
-fn edge_in_gap(values: &mut Vec<f64>, edge: f64, quantum: f64, side: Edge) -> f64 {
-    values.sort_by(|a, b| a.partial_cmp(b).expect("bbox coordinates are finite"));
-    values.dedup();
-    if values.is_empty() {
+/// The midpoint of the gap between `spans` (the competing object edges,
+/// each a `(lo, hi)` interval — a single edge is `lo == hi`) nearest to
+/// `edge` that is wider than `2 * quantum`. Overlapping spans merge first,
+/// so a gap never lies inside any of them.
+fn edge_in_gap(spans: &mut [(f64, f64)], edge: f64, quantum: f64, side: Edge) -> f64 {
+    spans.sort_by(|a, b| a.partial_cmp(b).expect("bbox coordinates are finite"));
+    let mut merged: Vec<(f64, f64)> = Vec::with_capacity(spans.len());
+    for &(lo, hi) in spans.iter() {
+        match merged.last_mut() {
+            Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
+            _ => merged.push((lo, hi)),
+        }
+    }
+    if merged.is_empty() {
         return edge;
     }
-    // Gap `i` lies between values[i - 1] and values[i]; gap 0 and gap
-    // `values.len()` are open-ended. The edge's own gap keeps the included
-    // set unchanged: for a lower edge, every value `>= edge` stays above it;
-    // for an upper edge, every value `<= edge` stays below it.
+    // Gap `i` lies between merged[i - 1] and merged[i]; gap 0 and gap
+    // `merged.len()` are open-ended. The edge's own gap keeps the included
+    // set unchanged: for a lower edge, every span ending `>= edge` stays
+    // above it; for an upper edge, every span starting `<= edge` stays below
+    // it. An edge inside a span leaves it on the side that includes the
+    // object under both of its boxes, as the `bbox` already does.
     let own = match side {
-        Edge::Lower => values.partition_point(|v| *v < edge),
-        Edge::Upper => values.partition_point(|v| *v <= edge),
+        Edge::Lower => merged.partition_point(|s| s.1 < edge),
+        Edge::Upper => merged.partition_point(|s| s.0 <= edge),
     };
+    let margin = |v: f64| (2.0 * quantum).max(v.abs() * 1e-12);
     let wide = |gap: usize| -> Option<f64> {
-        let margin = |v: f64| (2.0 * quantum).max(v.abs() * 1e-12);
         match gap {
-            0 => Some(values[0] - 2.0 * margin(values[0])),
-            g if g == values.len() => {
-                let last = values[g - 1];
+            0 => Some(merged[0].0 - 2.0 * margin(merged[0].0)),
+            g if g == merged.len() => {
+                let last = merged[g - 1].1;
                 Some(last + 2.0 * margin(last))
             }
             g => {
-                let (lo, hi) = (values[g - 1], values[g]);
+                let (lo, hi) = (merged[g - 1].1, merged[g].0);
                 (hi - lo > margin(lo).max(margin(hi))).then_some((lo + hi) / 2.0)
             }
         }
     };
-    for step in 0..=values.len() {
+    for step in 0..=merged.len() {
         let below = own.checked_sub(step);
-        let above = (own + step <= values.len()).then_some(own + step);
+        let above = (own + step <= merged.len()).then_some(own + step);
         for gap in [below, above].into_iter().flatten() {
             if let Some(point) = wide(gap) {
                 return point;
@@ -465,34 +496,78 @@ pub fn seq_scale(seq_path: &Path) -> Result<[f64; 3]> {
     Ok([scale(0), scale(1), scale(2)])
 }
 
-/// Every feature's own top-level `id`, in the CityJSONSeq stream's order —
-/// the canonical order the id deciles are cut from, because
-/// `readbench_prepare.sh` builds the FlatCityBuf and CityParquet artefacts
-/// from this one file.
+/// For every object whose two boxes differ on an x/y edge, the interval
+/// between them, in the package's (longitude-first) order.
+///
+/// The two boxes are the ones the formats test. The format runners
+/// (`cityjson`, `cityjsonseq`, `citygml`, `flatcitybuf`) box an object over
+/// every vertex of its `children` subtree, and FlatCityBuf's R-tree holds
+/// the extent of each feature's vertices. The CityParquet `bbox` column is
+/// the subtree's stored geometry unioned with the object's declared
+/// `geographicalExtent` (specification, "Spatial metadata"), which can reach
+/// beyond the vertices: on 3DBAG by up to 1.5 mm. A window edge between the
+/// two is met by one box and missed by the other, so
+/// [`untie_window`] keeps every edge out of these intervals and the two
+/// predicates select the same objects.
+#[derive(Debug, Default, Clone)]
+pub struct EdgeBands {
+    /// `lower[axis]`: `(lo, hi)` between an object's two maxima on `axis` —
+    /// what a window's lower edge competes with.
+    pub lower: [Vec<(f64, f64)>; 2],
+    /// `upper[axis]`: `(lo, hi)` between an object's two minima on `axis` —
+    /// what a window's upper edge competes with.
+    pub upper: [Vec<(f64, f64)>; 2],
+}
+
+/// What one pass over a CityJSONSeq stream yields: every feature's own
+/// top-level `id`, in the stream's order — the canonical order the id
+/// deciles are cut from, because `readbench_prepare.sh` builds the
+/// FlatCityBuf and CityParquet artefacts from this one file — and the
+/// [`EdgeBands`] of its objects.
+pub struct SeqScan {
+    pub ids: Vec<String>,
+    pub bands: EdgeBands,
+}
+
+/// Reads `seq_path` once into a [`SeqScan`]. `swap_xy` is
+/// [`ResolvedParams::swap_xy`]: the stream keeps the source's axis order,
+/// the bands are returned in the package's.
 ///
 /// The first line of a `.city.jsonl` is the CityJSON metadata object, not a
 /// feature; it is skipped.
-pub fn seq_feature_ids(seq_path: &Path) -> Result<Vec<String>> {
+pub fn scan_seq(seq_path: &Path, swap_xy: bool) -> Result<SeqScan> {
     use std::io::BufRead as _;
 
     let file =
         std::fs::File::open(seq_path).with_context(|| format!("opening {}", seq_path.display()))?;
     let reader = std::io::BufReader::new(file);
 
+    let mut transform = cityparquet::cjseq::Transform {
+        scale: [1.0; 3],
+        translate: [0.0; 3],
+    };
     let mut ids = Vec::new();
+    let mut bands = EdgeBands::default();
     for (index, line) in reader.lines().enumerate() {
         let line = line.with_context(|| format!("reading {}", seq_path.display()))?;
-        if line.trim().is_empty() || index == 0 {
+        if line.trim().is_empty() {
             continue;
         }
-        let feature: cityparquet::cjseq::CityJSONFeature = serde_json::from_str(&line)
-            .with_context(|| {
-                format!(
-                    "parsing feature on line {} of {}",
-                    index + 1,
-                    seq_path.display()
-                )
-            })?;
+        if index == 0 {
+            let header: serde_json::Value = serde_json::from_str(&line)
+                .with_context(|| format!("parsing the header of {}", seq_path.display()))?;
+            if let Some(t) = header.get("transform") {
+                transform = serde_json::from_value(t.clone()).with_context(|| {
+                    format!("parsing the header transform of {}", seq_path.display())
+                })?;
+            }
+            continue;
+        }
+        let context = || format!("feature on line {} of {}", index + 1, seq_path.display());
+        let feature: cityparquet::cjseq::CityJSONFeature =
+            serde_json::from_str(&line).with_context(|| format!("parsing {}", context()))?;
+        feature_bands(&feature, &transform, swap_xy, &mut bands)
+            .with_context(|| format!("boxing the objects of {}", context()))?;
         ids.push(feature.id);
     }
 
@@ -502,7 +577,148 @@ pub fn seq_feature_ids(seq_path: &Path) -> Result<Vec<String>> {
             seq_path.display()
         );
     }
-    Ok(ids)
+    Ok(SeqScan { ids, bands })
+}
+
+/// An object's box over one or more coordinates, `[minx, miny, minz, maxx,
+/// maxy, maxz]`, or `None` when there are none.
+type MaybeBox = Option<[f64; 6]>;
+
+fn union_box(a: MaybeBox, b: MaybeBox) -> MaybeBox {
+    match (a, b) {
+        (None, x) | (x, None) => x,
+        (Some(a), Some(b)) => Some(std::array::from_fn(|i| {
+            if i < 3 {
+                a[i].min(b[i])
+            } else {
+                a[i].max(b[i])
+            }
+        })),
+    }
+}
+
+/// The box over every vertex `geometry` references, as the format runners
+/// walk it (`formats::cjvisit`): every ring of every surface and shell, and a
+/// `GeometryInstance` by its anchor.
+fn vertex_box(geometry: &cityparquet::cjseq::Geometry, pool: &VertexPool<'_>) -> Result<MaybeBox> {
+    use cityparquet::cjseq::{Geometry, VertexIndex};
+    let mut acc: MaybeBox = None;
+    let mut add = |indices: &mut dyn Iterator<Item = &VertexIndex>| -> Result<()> {
+        for index in indices {
+            let c = pool.coord(index.0)?;
+            acc = union_box(acc, Some([c[0], c[1], c[2], c[0], c[1], c[2]]));
+        }
+        Ok(())
+    };
+    match geometry {
+        Geometry::MultiPoint { boundaries, .. } => add(&mut boundaries.iter())?,
+        Geometry::GeometryInstance { boundaries, .. } => add(&mut boundaries.iter())?,
+        Geometry::MultiLineString { boundaries, .. } => add(&mut boundaries.iter().flatten())?,
+        Geometry::MultiSurface { boundaries, .. }
+        | Geometry::CompositeSurface { boundaries, .. } => {
+            add(&mut boundaries.iter().flatten().flatten())?
+        }
+        Geometry::Solid { boundaries, .. } => {
+            add(&mut boundaries.iter().flatten().flatten().flatten())?
+        }
+        Geometry::MultiSolid { boundaries, .. } | Geometry::CompositeSolid { boundaries, .. } => {
+            add(&mut boundaries.iter().flatten().flatten().flatten().flatten())?
+        }
+        other => bail!("geometry type {:?} is not supported", other.geometry_type()),
+    }
+    Ok(acc)
+}
+
+/// Folds the [`EdgeBands`] of one feature's objects into `bands`.
+///
+/// Per object, the vertex box is the union of [`vertex_box`] over its
+/// subtree, and the `bbox` is what the CityParquet writer stores: the union
+/// of its subtree's stored geometry ([`cityparquet::wkb_write::geometry_bbox`],
+/// the writer's own walk) and its own declared `geographicalExtent`. An
+/// object without both has no band.
+fn feature_bands(
+    feature: &cityparquet::cjseq::CityJSONFeature,
+    transform: &cityparquet::cjseq::Transform,
+    swap_xy: bool,
+    bands: &mut EdgeBands,
+) -> Result<()> {
+    let pool = VertexPool::new(&feature.vertices, transform, AxisOrder::LonLat);
+    let objects = &feature.city_objects;
+    let mut own_vertex = Vec::with_capacity(objects.len());
+    let mut own_stored = Vec::with_capacity(objects.len());
+    for co in objects.values() {
+        let (mut vertex, mut stored) = (None, None);
+        for geometry in co.geometry.iter().flatten() {
+            vertex = union_box(vertex, vertex_box(geometry, &pool)?);
+            stored = union_box(stored, geometry_bbox(geometry, &pool)?);
+        }
+        own_vertex.push(vertex);
+        own_stored.push(stored);
+    }
+    let children: Vec<Vec<usize>> = objects
+        .values()
+        .map(|co| {
+            co.children
+                .iter()
+                .flatten()
+                .filter_map(|id| objects.get_index_of(id.as_str()))
+                .collect()
+        })
+        .collect();
+    let vertex = subtree_boxes(&own_vertex, &children);
+    let stored = subtree_boxes(&own_stored, &children);
+
+    for (i, co) in objects.values().enumerate() {
+        let declared = co
+            .geographical_extent
+            .filter(|e| e.iter().all(|v| v.is_finite()));
+        let (Some(v), Some(b)) = (vertex[i], union_box(stored[i], declared)) else {
+            continue;
+        };
+        for axis in 0..2 {
+            let source = if swap_xy { 1 - axis } else { axis };
+            let (vmax, bmax) = (v[source + 3], b[source + 3]);
+            if vmax != bmax {
+                bands.lower[axis].push((vmax.min(bmax), vmax.max(bmax)));
+            }
+            let (vmin, bmin) = (v[source], b[source]);
+            if vmin != bmin {
+                bands.upper[axis].push((vmin.min(bmin), vmin.max(bmin)));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every object's box over its whole `children` subtree, from its own box;
+/// a cycle is cut where it closes.
+fn subtree_boxes(own: &[MaybeBox], children: &[Vec<usize>]) -> Vec<MaybeBox> {
+    fn rec(
+        i: usize,
+        own: &[MaybeBox],
+        children: &[Vec<usize>],
+        memo: &mut [Option<MaybeBox>],
+        on_path: &mut [bool],
+    ) -> MaybeBox {
+        if let Some(done) = memo[i] {
+            return done;
+        }
+        on_path[i] = true;
+        let mut acc = own[i];
+        for &child in &children[i] {
+            if !on_path[child] {
+                acc = union_box(acc, rec(child, own, children, memo, on_path));
+            }
+        }
+        on_path[i] = false;
+        memo[i] = Some(acc);
+        acc
+    }
+    let mut memo = vec![None; own.len()];
+    let mut on_path = vec![false; own.len()];
+    (0..own.len())
+        .map(|i| rec(i, own, children, &mut memo, &mut on_path))
+        .collect()
 }
 
 /// Every CityObject key in a CityGML artefact.
@@ -1025,7 +1241,7 @@ enum Key {
 /// member of the CityJSON `attributes` map (so FlatCityBuf's `fcb ser -A`
 /// B+-tree indexes it) and that every format carries, and every predicate
 /// was verified to return the same `result_count` on every runner.
-const HAND_PICKED: [(Key, &str, Pick); 7] = [
+const HAND_PICKED: [(Key, &str, Pick); 6] = [
     // The natural roof-type query; 3DBAG carries it on the Building, one
     // per feature.
     (Key::Family("3dbag_"), "b3_dak_type", Pick::Eq("slanted")),
@@ -1045,13 +1261,6 @@ const HAND_PICKED: [(Key, &str, Pick); 7] = [
         Key::Dataset("nyc_da13_buildings"),
         "BIN",
         Pick::Eq("1000000"),
-    ),
-    // Rotterdam's string attributes are constant, so a numeric range is
-    // the only selective predicate it has.
-    (
-        Key::Dataset("rotterdam_delfshaven"),
-        "TerrainHeight",
-        Pick::Quantile(FALLBACK_QUANTILE),
     ),
     // PLATEAU's building-use code; `401` is the commonest use in Chiyoda.
     (Key::Dataset("tokyo"), "usage", Pick::Eq("401")),
@@ -1073,9 +1282,12 @@ const HAND_PICKED: [(Key, &str, Pick); 7] = [
 /// unmeasured height on part of the buildings, and it is aggregated with the
 /// placeholder included: no runner has an exclusion predicate, and adding
 /// one would change the timed work (READ_BENCHMARK.md, Caveat 17).
-const HAND_PICKED_STATS: [(Key, &str); 2] = [
+const HAND_PICKED_STATS: [(Key, &str); 3] = [
     (Key::Dataset("tokyo"), "measuredHeight"),
     (Key::Dataset("montreal"), "measuredHeight"),
+    // The derived rule would take `BREC_BuildingHeightNN`, a roof height
+    // above sea level; `measuredHeight` is the building's own height.
+    (Key::Dataset("helsinki"), "measuredHeight"),
 ];
 
 /// The `attr-stats` column for `base`: its [`HAND_PICKED_STATS`] entry when
@@ -1097,7 +1309,7 @@ fn pick_stats_attribute(base: &str, meta: &CityMetadata, schema: &Schema) -> Opt
 /// that the result is not a rounding error.
 const FALLBACK_TARGET_SHARE: f64 = 0.25;
 
-/// The quantile the numeric branch (and Rotterdam's hand-picked entry)
+/// The quantile the numeric branch (and Montréal's hand-picked entry)
 /// thresholds at, so that `>=` selects about [`FALLBACK_TARGET_SHARE`] of
 /// the non-null rows.
 const FALLBACK_QUANTILE: f64 = 0.75;
@@ -1463,6 +1675,11 @@ pub fn resolve(
         None => [0.0; 3],
     };
     let quantum = [quantum3[0], quantum3[1]];
+    let seq = seq_path
+        .map(|path| scan_seq(path, swap_xy).map(|scan| (path, scan)))
+        .transpose()?;
+    let no_bands = EdgeBands::default();
+    let bands = seq.as_ref().map_or(&no_bands, |(_, scan)| &scan.bands);
     let windows = BBOX_TARGETS
         .iter()
         .map(|(target, tag)| {
@@ -1470,14 +1687,14 @@ pub fn resolve(
                 &rows,
                 window_for_target(&rows.boxes, rows.dataset, *target, tag),
                 quantum,
+                bands,
             )
         })
         .collect();
 
-    let (id_probes, feature_miss) = match seq_path {
+    let (id_probes, feature_miss) = match seq {
         None => (Vec::new(), None),
-        Some(seq_path) => {
-            let seq_ids = seq_feature_ids(seq_path)?;
+        Some((seq_path, SeqScan { ids: seq_ids, .. })) => {
             let mut verifiable: std::collections::HashSet<String> =
                 seq_ids.iter().cloned().collect();
             if let Some(gml) = gml_path {
@@ -1629,6 +1846,11 @@ mod tests {
         );
     }
 
+    /// Single object edges as degenerate spans.
+    fn points(values: &[f64]) -> Vec<(f64, f64)> {
+        values.iter().map(|v| (*v, *v)).collect()
+    }
+
     /// A `rows x cols` grid of unit boxes on a 100 x 100 field.
     fn grid(rows: usize, cols: usize) -> Vec<[f64; 6]> {
         let mut out = Vec::with_capacity(rows * cols);
@@ -1662,7 +1884,7 @@ mod tests {
         let rows = rows_of(grid(10, 10));
         for (target, tag) in BBOX_TARGETS {
             let raw = window_for_target(&rows.boxes, rows.dataset, target, tag);
-            let untied = untie_window(&rows, raw.clone(), [0.001, 0.001]);
+            let untied = untie_window(&rows, raw.clone(), [0.001, 0.001], &EdgeBands::default());
             assert_eq!(untied.objects, raw.objects, "{tag}");
             let w = untied.window;
             for b in &rows.boxes {
@@ -1684,20 +1906,109 @@ mod tests {
         }
     }
 
+    /// A `bbox` that reaches beyond its object's vertex box (a declared
+    /// `geographicalExtent`) puts a band between the two edges. An edge in
+    /// that band is included by the `bbox` and excluded by the vertices, so
+    /// it must leave the band entirely, on the side that keeps the object.
+    #[test]
+    fn an_edge_inside_a_band_leaves_it_on_the_including_side() {
+        // `bbox` maxima at 10.004 and 20; the first object's vertices stop at
+        // 10.0, so the band is [10.0, 10.004]. The raw edge 10.002 sits
+        // inside it: more than a quantum from every `bbox` edge, yet
+        // between the two boxes of one object.
+        let mut spans = vec![(10.004, 10.004), (20.0, 20.0), (10.0, 10.004)];
+        let edge = edge_in_gap(&mut spans, 10.002, 0.0001, Edge::Lower);
+        assert!(edge < 10.0 - 0.0001, "{edge}");
+
+        let mut spans = vec![(-10.0, -10.0), (-20.0, -20.0), (-10.004, -10.0)];
+        let edge = edge_in_gap(&mut spans, -10.002, 0.0001, Edge::Upper);
+        assert!(edge > -10.0 + 0.0001, "{edge}");
+    }
+
+    /// Boxes 5 mm wide every 2.5 mm, each `bbox` reaching 2 mm beyond its
+    /// vertex box on every x/y side, as a declared `geographicalExtent`
+    /// does: the gaps between `bbox` edges alone are wide enough, but their
+    /// midpoints fall inside the bands. Untied with the bands, no edge lies
+    /// within a quantum of a band, and the vertex boxes select exactly the
+    /// objects the `bbox`es do.
+    #[test]
+    fn untied_edges_never_sit_between_an_objects_vertex_box_and_its_bbox() {
+        let (n, step, width, reach, q) = (40, 0.0025, 0.005, 0.002, 0.0001);
+        let mut boxes = Vec::new();
+        for r in 0..n {
+            for c in 0..n {
+                let (x, y) = (c as f64 * step, r as f64 * step);
+                boxes.push([x, y, 0.0, x + width, y + width, 1.0]);
+            }
+        }
+        let extent = n as f64 * step + width;
+        let rows = RowBoxes {
+            root_total: boxes.len() as u64,
+            roots: vec![true; boxes.len()],
+            boxes,
+            dataset: [0.0, 0.0, 0.0, extent, extent, 1.0],
+        };
+        let vertex: Vec<[f64; 6]> = rows
+            .boxes
+            .iter()
+            .map(|b| {
+                [
+                    b[0] + reach,
+                    b[1] + reach,
+                    b[2],
+                    b[3] - reach,
+                    b[4] - reach,
+                    b[5],
+                ]
+            })
+            .collect();
+        let mut bands = EdgeBands::default();
+        for (b, v) in rows.boxes.iter().zip(&vertex) {
+            for axis in 0..2 {
+                bands.lower[axis].push((v[axis + 3], b[axis + 3]));
+                bands.upper[axis].push((b[axis], v[axis]));
+            }
+        }
+        for (target, tag) in BBOX_TARGETS {
+            let raw = window_for_target(&rows.boxes, rows.dataset, target, tag);
+            let untied = untie_window(&rows, raw, [q, q], &bands);
+            let w = untied.window;
+            for axis in 0..2 {
+                for &(lo, hi) in &bands.lower[axis] {
+                    assert!(
+                        w[axis] < lo - q || w[axis] > hi + q,
+                        "{tag}: lower edge {} inside band [{lo}, {hi}]",
+                        w[axis]
+                    );
+                }
+                for &(lo, hi) in &bands.upper[axis] {
+                    assert!(
+                        w[axis + 3] < lo - q || w[axis + 3] > hi + q,
+                        "{tag}: upper edge {} inside band [{lo}, {hi}]",
+                        w[axis + 3]
+                    );
+                }
+            }
+            let by_vertex = vertex.iter().filter(|v| intersects(v, &w)).count() as u64;
+            assert_eq!(by_vertex, untied.objects, "{tag}");
+            assert!(untied.objects > 0, "{tag}");
+        }
+    }
+
     /// A gap no wider than twice the quantisation is skipped for the nearest
     /// wide one, and the counts follow the moved edge.
     #[test]
     fn a_gap_narrower_than_the_quantisation_moves_the_edge_to_the_nearest_wide_gap() {
         // Box maxima at 10, 10.0015 and 20: the gap between the first two is
         // narrower than 2 x 0.001.
-        let mut maxima = vec![10.0, 10.0015, 20.0];
+        let mut maxima = points(&[10.0, 10.0015, 20.0]);
         let edge = edge_in_gap(&mut maxima, 10.0015, 0.001, Edge::Lower);
         assert!(
             edge > 10.0015 + 0.001 && edge < 20.0 - 0.001 || edge < 10.0 - 0.001,
             "{edge}"
         );
         // The same gap is kept when the quantisation is finer.
-        let mut maxima = vec![10.0, 10.0015, 20.0];
+        let mut maxima = points(&[10.0, 10.0015, 20.0]);
         let edge = edge_in_gap(&mut maxima, 10.0015, 0.0001, Edge::Lower);
         assert_eq!(edge, (10.0 + 10.0015) / 2.0);
     }
@@ -1709,7 +2020,7 @@ mod tests {
             *root = i % 2 == 0;
         }
         let raw = window_for_target(&rows.boxes, rows.dataset, 0.25, "bbox-25pct");
-        let w = untie_window(&rows, raw, [0.0, 0.0]);
+        let w = untie_window(&rows, raw, [0.0, 0.0], &EdgeBands::default());
         let expected = rows
             .boxes
             .iter()
@@ -1825,10 +2136,10 @@ mod tests {
     #[test]
     fn a_hand_picked_dataset_is_matched_by_its_exact_name() {
         assert_eq!(
-            hand_picked_for("rotterdam_delfshaven"),
-            Some(("TerrainHeight", Pick::Quantile(FALLBACK_QUANTILE)))
+            hand_picked_for("vienna_102081"),
+            Some(("roofType", Pick::Eq("FLACHDACH")))
         );
-        assert_eq!(hand_picked_for("rotterdam_delfshaven_extra"), None);
+        assert_eq!(hand_picked_for("vienna_102081_extra"), None);
         assert_eq!(
             hand_picked_for("zurich_building_lod2"),
             Some(("class", Pick::Eq("BB01")))
@@ -1846,14 +2157,17 @@ mod tests {
             .iter()
             .map(|(_, column)| *column)
             .collect();
-        assert_eq!(stats, ["measuredHeight", "measuredHeight"]);
+        assert_eq!(
+            stats,
+            ["measuredHeight", "measuredHeight", "measuredHeight"]
+        );
     }
 
     #[test]
     fn a_dataset_outside_the_table_gets_no_hand_picked_entry() {
         assert_eq!(hand_picked_for("delft"), None);
         assert_eq!(
-            hand_picked_for("rotterdam"),
+            hand_picked_for("vienna"),
             None,
             "a PREFIX of a table key is a different dataset, not a variant of it"
         );

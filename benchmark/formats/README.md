@@ -38,16 +38,17 @@ by byte size and sha256 in `benchmark/scripts/fetch_benchmark.sh`, and
 downloads it rather than converting anything. Its provenance chain is the
 published source, then the normalised, compact CityJSON (`cityjson/`), then
 every other artefact; `cityjson20/` beside it holds the two derived sources,
-Tokyo and Montréal.
+Tokyo and Montréal. Helsinki is fetched from the CityJSONSeq paper's public
+data share.
 
 | id                     | Dataset             | Source                                                                                                             | `attr-filter`                                  | `attr-stats`                                   |
 | ---------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- | ---------------------------------------------- |
-| `rotterdam_delfshaven` | Rotterdam           | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json>                               | `TerrainHeight >=` its 0.75 quantile (2.45)    | `TerrainHeight`                                |
 | `vienna_102081`        | Vienna              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json>                                 | `roofType == "FLACHDACH"`                      | `measuredHeight`                               |
 | `nyc_da13_buildings`   | New York            | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json>                      | `BIN == "1000000"`                             | none (no numeric attribute)                    |
 | `zurich_building_lod2` | Zurich              | <https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json>                      | `class == "BB01"`                              | `GebaeudeStatus`                               |
 | `tokyo`                | Tokyo (Chiyoda)     | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/tokyo.city.json>       | `usage == "401"`                               | `measuredHeight`, `-9999` placeholder included |
 | `montreal`             | Montréal            | <https://pub-7aad9a74319741828dbafdbf5e2df201.r2.dev/cityparquet-paper/benchmark/cityjson20/montreal.city.json>    | `measuredHeight >=` its 0.75 quantile (15.543) | `measuredHeight`                               |
+| `helsinki`             | Helsinki            | <https://surfdrive.surf.nl/index.php/s/mmRRDvMwg7UadBY/download?path=%2F&files=Helsinki.city.json>                 | `Rakennusaine == "Puu"` (derived rule)         | `measuredHeight`                               |
 | `3dbag_n1000000`       | 3DBAG (Netherlands) | cut by `just fetch-3dbag` from <https://flatcitybuf.open3d.city/data/3dbag_subset2_all_index.fcb>, without LoD 1.2 | `b3_dak_type == "slanted"`                     | `b3_bag_bag_overlap`                           |
 
 The national dataset, `3dbag_national` (3DBAG (Netherlands, national)), is
@@ -112,7 +113,7 @@ profile, so it needs no cloud account:
 
 ```sh
 just bench-run --families network --network-profile all --network-repeat 3
-just bench-run --families network --network-profile typical --datasets rotterdam,vienna
+just bench-run --families network --network-profile typical --datasets vienna,new_york
 just bench-run --families network --network-target real --network-profile typical \
   --base-url https://other-data.open3d.city/cityparquet-paper/benchmark/v9 --key-layout bucket
 ```

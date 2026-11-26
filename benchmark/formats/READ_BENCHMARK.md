@@ -164,8 +164,8 @@ coordinator.rs`'s own module doc). This means an http-transport run still
 
 ## The corpus
 
-The format, size and bloom families use six city datasets — Rotterdam,
-Vienna, New York, Zurich, Tokyo (Chiyoda) and Montréal — and one
+The format, size and bloom families use six city datasets — Vienna, New
+York, Zurich, Tokyo (Chiyoda), Montréal and Helsinki — and one
 3DBAG slice, `3dbag_n1000000`, which every family treats as one more dataset.
 Every CityJSON input is listed with its provenance, byte size and sha256 in
 `corpus_urls.txt`; Tokyo and Montréal are derived by this project, and that
@@ -255,14 +255,15 @@ of the prepared packages; the share is of all CityObject rows:
 | `zurich_building_lod2`                                         | `class == "BB01"`          | 19.4% |
 | `vienna_102081`                                                | `roofType == "FLACHDACH"`  | 45.4% |
 | `nyc_da13_buildings`                                           | `BIN == "1000000"`         | 0.7%  |
-| `rotterdam_delfshaven`                                         | `TerrainHeight >= 2.45`    | 25.4% |
 
 NYC's only categorical attributes are identifiers, so its entry is the
-placeholder `BIN` — a legitimate low-selectivity equality. Rotterdam's string
-attributes are constant, so a numeric range is the only selective predicate it
-has; the bound is the column's own 0.75 quantile (linear interpolation, i.e.
-DuckDB's `quantile_cont`), computed from the data at derivation time rather
-than written down here.
+placeholder `BIN` — a legitimate low-selectivity equality. Montréal's
+attributes are measurements, so its entry is a numeric range; the bound is the
+column's own 0.75 quantile (linear interpolation, i.e. DuckDB's
+`quantile_cont`), computed from the data at derivation time rather than
+written down here. Helsinki has no hand-picked `attr-filter` entry: the
+derived rule below selects `Rakennusaine == "Puu"` (building material:
+wood), 28.6% of its source's CityObjects.
 
 **Derived, for any other dataset.** The string attribute column with between 2
 and 1000 distinct values whose most frequent value's share of rows lies
@@ -501,18 +502,20 @@ each cold number stands alone, one per format, one `full-read` only.
 
    The CityParquet `bbox` column also covers an object's declared
    `geographicalExtent`, which no runner reads (FlatCityBuf's R-tree holds
-   the boxes `fcb ser` computed), so on a dataset that declares one the
-   column can reach beyond the vertex box. On this corpus Zurich and
-   Montréal declare one on every object. Montréal's reaches beyond the
-   vertex box in `x`/`y` on 1,544 objects, by at most 1.5 µm. Zurich's
-   reaches beyond it on 108,396 objects, by at most its 1 mm quantisation.
-   The untied windows guarantee only that every edge lies more than one
-   quantisation step from every `bbox` edge (Caveat 21), which for Zurich is
-   the same 1 mm, so the guarantee alone does not keep a window edge out of
-   the band between an object's vertex box and its `bbox`. The coordinator's
-   check does: a window edge inside that band would make `cityjson`
-   disagree with `cityparquet`, and the run would fail. On the current
-   Zurich artefacts no window edge is closer than 3 mm to a `bbox` edge.
+   the boxes `fcb ser` computed from each feature's vertices), so on a
+   dataset that declares one the column can reach beyond the vertex box.
+   3DBAG declares one on every `Building`: on the Delft fixture it reaches
+   beyond the vertex box on more than 1,000 objects, by up to 3 cm, and on
+   a tile of the national 3DBAG by up to 1.5 mm. On this corpus Zurich and Montréal
+   declare one on every object. Montréal's reaches beyond the vertex box in
+   `x`/`y` on 1,544 objects, by at most 1.5 µm. Zurich's reaches beyond it on
+   108,396 objects, by at most its 1 mm quantisation. A window edge between
+   an object's vertex box and its `bbox` would select the object in
+   `cityparquet` and miss it everywhere else, so the windows are placed
+   where it cannot (Caveat 21): no edge lies inside the band between an
+   object's two boxes, and the vertex boxes and the `bbox` column then
+   select the same CityObjects. The coordinator's check confirms it on every
+   run.
 
 2. **Selectivity's denominator is the CityObject total, for every format.**
    The four CityObject-granular scenarios (`bbox-query`/`attr-filter`/
@@ -983,11 +986,11 @@ each cold number stands alone, one per format, one `full-read` only.
 
     | dataset                | column               | CityObjects carrying it |
     | ---------------------- | -------------------- | ----------------------- |
-    | `rotterdam_delfshaven` | `TerrainHeight`      | 853 of 853              |
     | `vienna_102081`        | `measuredHeight`     | 1,102 of 1,322          |
     | `zurich_building_lod2` | `GebaeudeStatus`     | 52,834 of 198,699       |
     | `tokyo`                | `measuredHeight`     | 38,743 of 49,915        |
     | `montreal`             | `measuredHeight`     | 31,415 of 31,415        |
+    | `helsinki`             | `measuredHeight`     | 77,249 of 77,267        |
     | `3dbag_n1000000`       | `b3_bag_bag_overlap` | 331,363 of 1,000,001    |
 
     Tokyo's column is on its `Building`s, not its 11,172
@@ -1039,7 +1042,7 @@ each cold number stands alone, one per format, one `full-read` only.
     so ids that agree in their first 50 bytes share an entry; the runner
     finds the object by its full id inside the features the index names.
     An `.fcb` written without that index (`--no-id-index`, or an `fcb`
-    built before the pinned commit) answers by a full walk and carries the
+    older than 0.8.0) answers by a full walk and carries the
     `no-attr-index` tag. `attr-filter` uses the index whenever its
     predicate column IS a member of the `attributes` map, and falls back to
     the same full walk — carrying the same `no-attr-index` tag — whenever
@@ -1073,11 +1076,17 @@ each cold number stands alone, one per format, one `full-read` only.
     whether an object counts depends on the last digit of how a format
     decodes the coordinate — a CityJSON integer times its scale against the
     Parquet double. Each `x`/`y` edge is therefore moved to the midpoint of
-    the gap between two consecutive distinct object-edge values (a lower
-    edge competes with the boxes' maxima, an upper edge with their minima);
-    the gap must exceed twice the dataset's coordinate quantisation (the
-    CityJSONSeq `transform.scale`) on that axis, and when the edge's own gap
-    is narrower the nearest wide one is used. `z` spans the dataset's range
+    a gap between the competing object edges (a lower edge competes with the
+    boxes' maxima, an upper edge with their minima). Where an object's
+    `bbox` and its vertex box differ on that edge (a declared
+    `geographicalExtent`, Caveat 1, or a degenerate ring the writer drops
+    from its stored geometry), the whole interval between the two competes,
+    read from the CityJSONSeq in the same pass that collects the feature
+    ids. The gap must exceed twice the dataset's coordinate quantisation
+    (the CityJSONSeq `transform.scale`) on that axis, and when the edge's own
+    gap is narrower the nearest wide one is used. An edge that falls inside
+    an interval leaves it on the side that includes the object, as the
+    `bbox` already did. `z` spans the dataset's range
     with a margin either side. `achieved` and `approx` describe the moved
     window.
 
@@ -1359,8 +1368,8 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     is unchanged. A JSON parser and serialiser would not do: `jq -c` (1.7.1)
     respells numbers (Tokyo's `1e-10` scale becomes `1E-10`, which shrinks
     Tokyo by 986 B), though every value survives. All six corpus sources
-    are compact as published (montreal 498,371,022 B, nyc_da13_buildings 110,083,137 B,
-    rotterdam_delfshaven 2,731,804 B, tokyo 315,968,009 B, vienna_102081
+    are compact as published (helsinki 599,944,942 B, montreal 498,371,022 B,
+    nyc_da13_buildings 110,083,137 B, tokyo 315,968,009 B, vienna_102081
     5,635,634 B, zurich_building_lod2 292,500,409 B), and so is the
     normalised source Caveat 41 derives from one of them, so on the current
     corpus the step is a no-op: each `cityjson` artefact is byte identical
@@ -1491,14 +1500,8 @@ slanted`) 5.2-5.4 ms and the `id-lookup` miss 0.31-0.32 s — every
     normalisation of Caveat 41 applies to it unchanged. A cost per object
     must therefore not be extrapolated from the slice to this dataset or
     compared between the two. The bloom, network and database families do
-    not measure it. Its FlatCityBuf file is also the one artefact not
-    written by the pinned `fcb` CLI: `fcb ser -A` runs out of memory on the
-    66 GB stream (503 GB host), so `fcb-ser-stream` (`benchmark/fcbser`)
-    writes it with the same `fcb_core` 0.7.8 writer and the same settings,
-    reading the input twice. On inputs both tools can read the two files
-    have the same size and decode to the same features in the same order
-    (`just fcbser-test`); they are not byte-identical, as two `fcb ser -A`
-    runs are not either.
+    not measure it. Its FlatCityBuf file is written by the pinned `fcb`
+    CLI with `fcb ser -A`, like every other dataset's.
 
 - **The network family's times come from a simulated network.** The
   primary over-HTTP measurement reads through `net-sim`, a local server

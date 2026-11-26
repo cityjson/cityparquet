@@ -1,0 +1,672 @@
+{
+  "dataset": "helsinki.city.json",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.010004270904784708,
+      "window": [
+        25499225.575000003,
+        6679129.9565,
+        -5.04096,
+        25501072.2705,
+        6680889.2915,
+        151.28096
+      ],
+      "approx": false,
+      "objects": 773,
+      "features": 773
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.04999547025250107,
+      "window": [
+        25498252.0365,
+        6678202.350500001,
+        -5.04096,
+        25502045.84,
+        6681817.017000001,
+        151.28096
+      ],
+      "approx": false,
+      "objects": 3863,
+      "features": 3863
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.2500032355339278,
+      "window": [
+        25496635.078500003,
+        6676662.623,
+        -5.04096,
+        25503662.703,
+        6683357.081,
+        151.28096
+      ],
+      "approx": false,
+      "objects": 19317,
+      "features": 19311
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "BID_bd33f870-d463-42bb-951d-eb5edccc4d15",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "BID_d31531bb-f3bf-4415-8f92-303e4f0e8408",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "BID_53dcafc8-c0e6-48c8-9f2a-e0b31ab73f40",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "BID_7f667f63-5420-4b1d-a460-302d6d1ff9d9-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "attr_filter": {
+    "column": "Rakennusaine",
+    "pred": {
+      "eq": "Puu"
+    },
+    "matched": 22091,
+    "share": 0.2859047199968939,
+    "hand_picked": false
+  },
+  "feature_probes": [
+    {
+      "tag": "feature-50pct",
+      "id": "BID_d31531bb-f3bf-4415-8f92-303e4f0e8408",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "feature-miss",
+      "id": "BID_7f667f63-5420-4b1d-a460-302d6d1ff9d9-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "numeric_attr": "measuredHeight",
+  "cp_object_total": 77267,
+  "cp_feature_total": 77231,
+  "swap_xy": false,
+  "quantum": [
+    0.001,
+    0.001,
+    0.001
+  ],
+  "sampling": {
+    "repeat": 25,
+    "cell_budget_s": null,
+    "min_repeat": 7
+  },
+  "isolation": {
+    "command_prefix": [
+      "systemd-run",
+      "--user",
+      "--scope",
+      "--quiet",
+      "-p",
+      "MemoryMax=64000000000",
+      "--",
+      "numactl",
+      "--all",
+      "--physcpubind=1-31,64-95",
+      "--membind=0"
+    ],
+    "pinning": {
+      "requested": "auto",
+      "node": 0,
+      "tool": "numactl",
+      "child_cores": "1-31,64-95",
+      "coordinator_core": 0,
+      "status": "applied",
+      "memory_binding": "applied",
+      "coordinator_note": null,
+      "allowed_cpus": "0-127",
+      "cores_note": null
+    },
+    "coordinator_pinning": "applied",
+    "memory_max": {
+      "requested_bytes": 64000000000,
+      "status": "applied"
+    },
+    "memory": {
+      "mem_total_bytes": 540725055488,
+      "mem_available_bytes_at_start": 517266485248,
+      "status": "recorded"
+    },
+    "max_load": {
+      "requested": "auto",
+      "threshold": 32.0,
+      "node_cores": 64,
+      "total_cores": 128,
+      "wait_s": 600,
+      "status": "applied"
+    },
+    "load": {
+      "status": "recorded per sample",
+      "waits": [],
+      "cells": [
+        {
+          "dataset": "helsinki.city.json",
+          "format": "citygml",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 17.25,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 517228113920,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 14.69,
+          "runnable_max": 34,
+          "mem_available_min_bytes": 515628605440,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 15.59,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 514178383872,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 16.36,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 512208408576,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 15.12,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 511391404032,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityjson",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 17.29,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 513475424256,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 22.0,
+          "runnable_max": 29,
+          "mem_available_min_bytes": 509638074368,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 13.89,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 507294183424,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 15.79,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 503049007104,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 17.07,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 500669267968,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityjsonseq",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 10.64,
+          "runnable_max": 32,
+          "mem_available_min_bytes": 517873463296,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 9.91,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 515555577856,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 9.55,
+          "runnable_max": 33,
+          "mem_available_min_bytes": 516391428096,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 10.06,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 517594238976,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 9.33,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 518183219200,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.64,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 518155284480,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.64,
+          "runnable_max": 32,
+          "mem_available_min_bytes": 519288971264,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.91,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 519276077056,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.91,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 519355645952,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 8.91,
+          "runnable_max": 24,
+          "mem_available_min_bytes": 519374344192,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "attr-filter",
+          "query_tag": "attr=Rakennusaine=Puu",
+          "load1_max": 8.63,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 519577169920,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 8.79,
+          "runnable_max": 31,
+          "mem_available_min_bytes": 519768502272,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.79,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 519789850624,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.97,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 519773634560,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 8.97,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 519800221696,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.97,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 519859724288,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 9.77,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 519749885952,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.69,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 519881396224,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.69,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 519666180096,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 8.63,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 519507169280,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 8.65,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 519512158208,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "attr-filter",
+          "query_tag": "attr=Rakennusaine=Puu",
+          "load1_max": 8.65,
+          "runnable_max": 25,
+          "mem_available_min_bytes": 519709753344,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "attr-stats",
+          "query_tag": "attr=measuredHeight",
+          "load1_max": 8.65,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 519782154240,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 8.92,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 519541084160,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 8.92,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 519309090816,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 9.0,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 519208800256,
+          "busy": false
+        },
+        {
+          "dataset": "helsinki.city.json",
+          "format": "cityparquet",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 9.0,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 519262437376,
+          "busy": false
+        }
+      ]
+    }
+  },
+  "whole_file_derivation": {
+    "scenarios_measured": "full-read,id-lookup",
+    "mode": "local: one check sample per cell (answer checked across formats), time and memory reused from the format's read all",
+    "formats": {
+      "citygml": {
+        "status": "derived",
+        "full_read_median_s": 28.032823,
+        "full_read_peak_rss_bytes": 16814080,
+        "cells": [
+          {
+            "cell": "citygml/count",
+            "check_time_s": 28.344666,
+            "check_peak_rss_bytes": 16658432,
+            "time_ratio_to_full_read": 1.0111242096452433
+          },
+          {
+            "cell": "citygml/bbox-query/bbox-1pct",
+            "check_time_s": 27.90695,
+            "check_peak_rss_bytes": 16601088,
+            "time_ratio_to_full_read": 0.9955097993519952
+          },
+          {
+            "cell": "citygml/bbox-query/bbox-5pct",
+            "check_time_s": 27.986247,
+            "check_peak_rss_bytes": 16556032,
+            "time_ratio_to_full_read": 0.998338519099557
+          },
+          {
+            "cell": "citygml/bbox-query/bbox-25pct",
+            "check_time_s": 28.413808,
+            "check_peak_rss_bytes": 16670720,
+            "time_ratio_to_full_read": 1.0135906754735333
+          },
+          {
+            "cell": "citygml/attr-filter/attr=Rakennusaine=Puu",
+            "check_time_s": 27.961422,
+            "check_peak_rss_bytes": 16580608,
+            "time_ratio_to_full_read": 0.9974529500650006
+          },
+          {
+            "cell": "citygml/attr-stats/attr=measuredHeight",
+            "check_time_s": 29.040757,
+            "check_peak_rss_bytes": 16691200,
+            "time_ratio_to_full_read": 1.035955494029267
+          }
+        ]
+      },
+      "cityjson": {
+        "status": "derived",
+        "full_read_median_s": 9.828326,
+        "full_read_peak_rss_bytes": 3301888000,
+        "cells": [
+          {
+            "cell": "cityjson/count",
+            "check_time_s": 9.474004,
+            "check_peak_rss_bytes": 3301851136,
+            "time_ratio_to_full_read": 0.9639488962820322
+          },
+          {
+            "cell": "cityjson/bbox-query/bbox-1pct",
+            "check_time_s": 8.971298,
+            "check_peak_rss_bytes": 3301838848,
+            "time_ratio_to_full_read": 0.9128002062609645
+          },
+          {
+            "cell": "cityjson/bbox-query/bbox-5pct",
+            "check_time_s": 9.719031,
+            "check_peak_rss_bytes": 3301199872,
+            "time_ratio_to_full_read": 0.9888795914991015
+          },
+          {
+            "cell": "cityjson/bbox-query/bbox-25pct",
+            "check_time_s": 10.65804,
+            "check_peak_rss_bytes": 3301621760,
+            "time_ratio_to_full_read": 1.0844206836443968
+          },
+          {
+            "cell": "cityjson/attr-filter/attr=Rakennusaine=Puu",
+            "check_time_s": 9.227595,
+            "check_peak_rss_bytes": 3301834752,
+            "time_ratio_to_full_read": 0.9388775870885846
+          },
+          {
+            "cell": "cityjson/attr-stats/attr=measuredHeight",
+            "check_time_s": 9.387111,
+            "check_peak_rss_bytes": 3301851136,
+            "time_ratio_to_full_read": 0.9551078179539425
+          }
+        ]
+      },
+      "cityjsonseq": {
+        "status": "derived",
+        "full_read_median_s": 7.405696,
+        "full_read_peak_rss_bytes": 543277056,
+        "cells": [
+          {
+            "cell": "cityjsonseq/count",
+            "check_time_s": 7.249,
+            "check_peak_rss_bytes": 543268864,
+            "time_ratio_to_full_read": 0.9788411514596332
+          },
+          {
+            "cell": "cityjsonseq/bbox-query/bbox-1pct",
+            "check_time_s": 7.348919,
+            "check_peak_rss_bytes": 543264768,
+            "time_ratio_to_full_read": 0.9923333336934166
+          },
+          {
+            "cell": "cityjsonseq/bbox-query/bbox-5pct",
+            "check_time_s": 7.389074,
+            "check_peak_rss_bytes": 543248384,
+            "time_ratio_to_full_read": 0.9977555114333616
+          },
+          {
+            "cell": "cityjsonseq/bbox-query/bbox-25pct",
+            "check_time_s": 7.382069,
+            "check_peak_rss_bytes": 543264768,
+            "time_ratio_to_full_read": 0.9968096178941184
+          },
+          {
+            "cell": "cityjsonseq/attr-filter/attr=Rakennusaine=Puu",
+            "check_time_s": 8.048622,
+            "check_peak_rss_bytes": 543260672,
+            "time_ratio_to_full_read": 1.0868150677532538
+          },
+          {
+            "cell": "cityjsonseq/attr-stats/attr=measuredHeight",
+            "check_time_s": 7.163986,
+            "check_peak_rss_bytes": 543260672,
+            "time_ratio_to_full_read": 0.9673616092261957
+          }
+        ]
+      }
+    }
+  }
+}

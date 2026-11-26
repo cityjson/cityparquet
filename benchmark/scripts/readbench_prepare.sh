@@ -108,7 +108,7 @@
 #   produces four artefacts and skips the fifth does not weaken that
 #   comparison, it removes the baseline from it — and under the previous
 #   corpus the skipped ones were exactly the datasets a reader recognises
-#   (3DBAG, Rotterdam, Vienna, NYC, Zurich all ship as CityJSON). Worse, the
+#   (3DBAG, Vienna, NYC, Zurich all ship as CityJSON). Worse, the
 #   published `.gml` beside a `.city.json` is usually NOT a usable substitute:
 #   of the nine on cityjson.org, six are CityGML 1.0 and two are 3.0, and this
 #   repository's reader accepts only 2.0.
@@ -152,18 +152,11 @@
 #     `--index-node-size 64` panics on every `bbox-query` with a capacity
 #     overflow. Measured, not assumed.
 #
-# `FCB_SER_STREAM` SWAPS THE WRITER, NOT THE CONFIGURATION. `fcb ser` parses
-# its whole input into memory before it writes a feature — measured at 7.2
-# times the CityJSONSeq's size — so the national 3DBAG stream (66 GB) aborts
-# it on a 503 GB host. `FCB_SER_STREAM=1` builds `benchmark/fcbser` and writes
-# the artefact with its `fcb-ser-stream` instead; any other value names a
-# prebuilt one. It drives the same `fcb_core` writer with the settings
-# above and reads the input twice instead of holding it (1.5 times the
-# input's size at peak, measured). The result is the same file up to the
-# order `fcb ser` itself does not fix: two `fcb ser -A` runs over one input
-# differ byte for byte, so the equivalence is asserted on size and decoded
-# content (`scripts/tests/fcb_ser_stream_test.sh`). Unset — the default, and
-# what every corpus dataset uses — the artefact is `fcb ser -A`'s own.
+# `fcb ser` STREAMS ITS CityJSONSeq INPUT (fcb 0.9.0): it reads the file once
+# per pass instead of holding every feature, so the national 3DBAG stream
+# (66 GB) is written by the same command as every corpus dataset. The artefact
+# is written beside OUTPUT and renamed, so a run killed mid-write leaves no
+# truncated file that the next run would take for an artefact.
 #
 # EXTERNAL TOOLS ARE GUARDED PER FORMAT, not up front: `fcb` is only required
 # when `flatcitybuf` was requested, `citygml-tools`/`cjseq`/`jq` only when the
@@ -607,15 +600,6 @@ fi
 if want flatcitybuf; then
   require_tool fcb "the FlatCityBuf artefact"
   warn_unless_pinned fcb FCB_CLI_VERSION
-  # The version alone does not identify the writer: the pinned commit and
-  # crates.io's release report the same one, and only the former indexes ids.
-  # Asked only when `fcb ser` is the writer; `fcb-ser-stream` is built from
-  # the pinned commit itself.
-  if [[ -z "${FCB_SER_STREAM:-}" ]] \
-    && ! fcb ser --help 2>/dev/null | grep -q -- '--no-id-index'; then
-    echo "warn: fcb writes no CityObject id index, so it is not the commit pinned in" \
-      "benchmark/scripts/fetch_tools.sh; FlatCityBuf id-lookup will answer by a full walk" >&2
-  fi
 fi
 
 mkdir -p "$OUTDIR"
@@ -754,7 +738,9 @@ fi
 #   9  the normalisation also removes the semantic surfaces of every geometry
 #      below LoD 2, which CityGML 2.0 cannot express.
 #  10  the FlatCityBuf artefact carries a B+-tree over every CityObject id,
-#      written by the `fcb` built from the commit `fetch_tools.sh` pins.
+#      which `fcb` 0.8.0 and later write. The pinned 0.9.0 writes the same
+#      bytes as the FlatCityBuf commit chain 10 was introduced with (7e6f8cf),
+#      so moving to it needed no bump.
 CHAIN_VERSION=10
 # The STAC `datetime` of every benchmark package: the day the benchmark
 # corpus was fixed. A fixed value, because the library otherwise falls back
@@ -1181,22 +1167,9 @@ if want flatcitybuf; then
   if file_is_valid "$FCB_OUT"; then
     echo "skip $FCB_OUT (already present)"
   else
-    if [[ -n "${FCB_SER_STREAM:-}" ]]; then
-      if [[ "$FCB_SER_STREAM" == 1 ]]; then
-        echo "-- building fcb-ser-stream (cargo build --release)"
-        ( cd "$BENCHMARK_DIR/fcbser" && cargo build --release )
-        FCB_SER_STREAM="$BENCHMARK_DIR/fcbser/target/release/fcb-ser-stream"
-      fi
-      echo "-- fcb-ser-stream $SEQ_INPUT -> $FCB_OUT"
-      # Written beside the output and renamed: the tool opens OUTPUT only
-      # after its two passes, but a kill during the final write would
-      # otherwise leave a truncated file the next run takes for an artefact.
-      "$FCB_SER_STREAM" "$SEQ_INPUT" "$FCB_OUT.partial"
-      mv "$FCB_OUT.partial" "$FCB_OUT"
-    else
-      echo "-- fcb ser $SEQ_INPUT -> $FCB_OUT"
-      fcb ser -A "$SEQ_INPUT" "$FCB_OUT"
-    fi
+    echo "-- fcb ser $SEQ_INPUT -> $FCB_OUT"
+    fcb ser -A "$SEQ_INPUT" "$FCB_OUT.partial"
+    mv "$FCB_OUT.partial" "$FCB_OUT"
   fi
   BUILT+=("$FCB_OUT")
 fi

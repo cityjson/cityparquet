@@ -401,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     carry.add_argument("--from", dest="from_chain", type=int, required=True, help="the chain version the artefacts are hosted under")
     carry.add_argument("--to", dest="to_chain", type=int, required=True, help="the chain version they are carried to")
     carry.add_argument("--artefacts", help="comma-separated artefacts to carry (default: every artefact of the dataset)")
-    carry.add_argument("datasets", nargs="+", help="dataset ids (file stems, e.g. rotterdam_delfshaven)")
+    carry.add_argument("datasets", nargs="+", help="dataset ids (file stems, e.g. vienna_102081)")
     args = parser.parse_args(argv)
     cfg = config()
     try:

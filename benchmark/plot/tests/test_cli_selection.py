@@ -7,9 +7,9 @@ from benchviz import __main__ as cli
 def test_selection_filters_real_payload(tmp_path: Path, monkeypatch):
     def fake_prep(inputs, out_path, statistic="median"):
         payload = {
-            "datasets": [{"id": "rotterdam_delfshaven"}, {"id": "other"}],
-            "read": [{"dataset": "rotterdam_delfshaven", "scenario_key": "write"}],
-            "sizes": [{"dataset": "rotterdam_delfshaven", "bytes": 12}],
+            "datasets": [{"id": "vienna_102081"}, {"id": "other"}],
+            "read": [{"dataset": "vienna_102081", "scenario_key": "write"}],
+            "sizes": [{"dataset": "vienna_102081", "bytes": 12}],
             "bloom": {"records": [], "sizes": []},
             "databases": {
                 "dataset": "3dbag_n1000",
@@ -29,12 +29,12 @@ def test_selection_filters_real_payload(tmp_path: Path, monkeypatch):
                 "--families",
                 family,
                 "--datasets",
-                "rotterdam",
+                "vienna",
             ]
         )
         cli._cmd_prep(args)
         payload = json.loads((tmp_path / "bench_data.json").read_text())
-        assert payload["datasets"] == [{"id": "rotterdam_delfshaven"}]
+        assert payload["datasets"] == [{"id": "vienna_102081"}]
         assert bool(payload["read"]) == (family == "formats")
         assert bool(payload["sizes"]) == (family == "sizes")
         assert payload["databases"]["records"] == []

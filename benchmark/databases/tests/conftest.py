@@ -74,7 +74,7 @@ def make_params(**overrides) -> Params:
 
 
 def ge_attr_filter(column: str = "TerrainHeight", bound: float = 2.45) -> AttrFilter:
-    """The numeric-bound form of the `attr-filter` predicate (Rotterdam's)."""
+    """The numeric-bound form of the `attr-filter` predicate."""
     return AttrFilter(
         column=column, op="ge", eq_value=None, ge_bound=bound,
         matched=25, share=0.25, hand_picked=True,
