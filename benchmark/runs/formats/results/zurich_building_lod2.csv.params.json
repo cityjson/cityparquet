@@ -7,7 +7,7 @@
       "achieved": 0.010000050327379604,
       "window": [
         2682405.499,
-        1247926.691,
+        1247926.6905,
         -11.4425,
         2683001.853,
         1248525.2434999999,
@@ -22,7 +22,7 @@
       "target": 0.05,
       "achieved": 0.05000025163689802,
       "window": [
-        2682115.272,
+        2682115.2715,
         1247635.362,
         -11.4425,
         2683292.0640000002,
@@ -38,7 +38,7 @@
       "target": 0.25,
       "achieved": 0.2500012581844901,
       "window": [
-        2681386.2705,
+        2681386.27,
         1246903.585,
         -11.4425,
         2684021.038,
@@ -145,8 +145,8 @@
       "status": "applied"
     },
     "memory": {
-      "mem_total_bytes": 540725084160,
-      "mem_available_bytes_at_start": 520986918912,
+      "mem_total_bytes": 540725055488,
+      "mem_available_bytes_at_start": 521175560192,
       "status": "recorded"
     },
     "max_load": {
@@ -166,69 +166,9 @@
           "format": "citygml",
           "scenario": "full-read",
           "query_tag": "",
-          "load1_max": 8.8,
-          "runnable_max": 16,
-          "mem_available_min_bytes": 520723525632,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "citygml",
-          "scenario": "count",
-          "query_tag": "",
-          "load1_max": 8.77,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520699293696,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "citygml",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-1pct",
-          "load1_max": 9.42,
-          "runnable_max": 24,
-          "mem_available_min_bytes": 520679690240,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "citygml",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-5pct",
-          "load1_max": 8.72,
-          "runnable_max": 19,
-          "mem_available_min_bytes": 520702136320,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "citygml",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-25pct",
-          "load1_max": 8.94,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520651993088,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "citygml",
-          "scenario": "attr-filter",
-          "query_tag": "attr=class=BB01",
-          "load1_max": 9.02,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 520681496576,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "citygml",
-          "scenario": "attr-stats",
-          "query_tag": "attr=GebaeudeStatus",
-          "load1_max": 9.02,
-          "runnable_max": 18,
-          "mem_available_min_bytes": 520686460928,
+          "load1_max": 9.73,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 520587636736,
           "busy": false
         },
         {
@@ -236,9 +176,9 @@
           "format": "citygml",
           "scenario": "id-lookup",
           "query_tag": "id-10pct",
-          "load1_max": 9.7,
-          "runnable_max": 17,
-          "mem_available_min_bytes": 520686510080,
+          "load1_max": 10.42,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 520477601792,
           "busy": false
         },
         {
@@ -246,9 +186,9 @@
           "format": "citygml",
           "scenario": "id-lookup",
           "query_tag": "id-50pct",
-          "load1_max": 9.55,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 520595193856,
+          "load1_max": 9.52,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 520487079936,
           "busy": false
         },
         {
@@ -256,9 +196,9 @@
           "format": "citygml",
           "scenario": "id-lookup",
           "query_tag": "id-90pct",
-          "load1_max": 9.98,
-          "runnable_max": 43,
-          "mem_available_min_bytes": 520334094336,
+          "load1_max": 10.85,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 520332488704,
           "busy": false
         },
         {
@@ -266,9 +206,9 @@
           "format": "citygml",
           "scenario": "id-lookup",
           "query_tag": "id-miss",
-          "load1_max": 18.51,
-          "runnable_max": 19,
-          "mem_available_min_bytes": 520980144128,
+          "load1_max": 10.29,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520198795264,
           "busy": false
         },
         {
@@ -276,69 +216,9 @@
           "format": "cityjson",
           "scenario": "full-read",
           "query_tag": "",
-          "load1_max": 11.32,
-          "runnable_max": 18,
-          "mem_available_min_bytes": 518804402176,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjson",
-          "scenario": "count",
-          "query_tag": "",
-          "load1_max": 8.22,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 518527803392,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjson",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-1pct",
-          "load1_max": 8.12,
-          "runnable_max": 17,
-          "mem_available_min_bytes": 519032307712,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjson",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-5pct",
-          "load1_max": 8.17,
-          "runnable_max": 27,
-          "mem_available_min_bytes": 519030341632,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjson",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-25pct",
-          "load1_max": 8.95,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 519201193984,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjson",
-          "scenario": "attr-filter",
-          "query_tag": "attr=class=BB01",
-          "load1_max": 8.82,
-          "runnable_max": 32,
-          "mem_available_min_bytes": 518373888000,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjson",
-          "scenario": "attr-stats",
-          "query_tag": "attr=GebaeudeStatus",
-          "load1_max": 9.02,
-          "runnable_max": 20,
-          "mem_available_min_bytes": 518407426048,
+          "load1_max": 9.83,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 519916638208,
           "busy": false
         },
         {
@@ -346,209 +226,149 @@
           "format": "cityjson",
           "scenario": "id-lookup",
           "query_tag": "id-10pct",
+          "load1_max": 11.42,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 519344685056,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 11.42,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 519260884992,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 10.34,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 519378739200,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 10.1,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 519143075840,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityjsonseq",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 9.41,
+          "runnable_max": 27,
+          "mem_available_min_bytes": 520258519040,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 9.27,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 519848472576,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 10.81,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 519803842560,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 11.93,
+          "runnable_max": 12,
+          "mem_available_min_bytes": 520637009920,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 10.07,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520752582656,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "flatcitybuf",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 9.11,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 521117450240,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "flatcitybuf",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 9.06,
+          "runnable_max": 22,
+          "mem_available_min_bytes": 521756872704,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 9.06,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 521848123392,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 9.22,
+          "runnable_max": 16,
+          "mem_available_min_bytes": 521725132800,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
           "load1_max": 9.22,
           "runnable_max": 15,
-          "mem_available_min_bytes": 518258970624,
+          "mem_available_min_bytes": 521737027584,
           "busy": false
         },
         {
           "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjson",
-          "scenario": "id-lookup",
-          "query_tag": "id-50pct",
-          "load1_max": 9.53,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 518170578944,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjson",
-          "scenario": "id-lookup",
-          "query_tag": "id-90pct",
-          "load1_max": 9.2,
+          "format": "flatcitybuf",
+          "scenario": "attr-filter",
+          "query_tag": "attr=class=BB01",
+          "load1_max": 9.12,
           "runnable_max": 21,
-          "mem_available_min_bytes": 518481530880,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjson",
-          "scenario": "id-lookup",
-          "query_tag": "id-miss",
-          "load1_max": 8.67,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 518580748288,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "full-read",
-          "query_tag": "",
-          "load1_max": 8.83,
-          "runnable_max": 20,
-          "mem_available_min_bytes": 518825250816,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "count",
-          "query_tag": "",
-          "load1_max": 6.6,
-          "runnable_max": 10,
-          "mem_available_min_bytes": 521875918848,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-1pct",
-          "load1_max": 8.48,
-          "runnable_max": 19,
-          "mem_available_min_bytes": 520333365248,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-5pct",
-          "load1_max": 9.65,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520287358976,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-25pct",
-          "load1_max": 9.36,
-          "runnable_max": 18,
-          "mem_available_min_bytes": 520122085376,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "attr-filter",
-          "query_tag": "attr=class=BB01",
-          "load1_max": 8.89,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 520191315968,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "attr-stats",
-          "query_tag": "attr=GebaeudeStatus",
-          "load1_max": 8.56,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 520139939840,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "id-lookup",
-          "query_tag": "id-10pct",
-          "load1_max": 7.75,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 519316918272,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "id-lookup",
-          "query_tag": "id-50pct",
-          "load1_max": 9.04,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 519095222272,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "id-lookup",
-          "query_tag": "id-90pct",
-          "load1_max": 8.39,
-          "runnable_max": 18,
-          "mem_available_min_bytes": 520058523648,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityjsonseq",
-          "scenario": "id-lookup",
-          "query_tag": "id-miss",
-          "load1_max": 7.48,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 520250044416,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "flatcitybuf",
-          "scenario": "full-read",
-          "query_tag": "",
-          "load1_max": 6.96,
-          "runnable_max": 17,
-          "mem_available_min_bytes": 520320311296,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "flatcitybuf",
-          "scenario": "count",
-          "query_tag": "",
-          "load1_max": 6.77,
-          "runnable_max": 10,
-          "mem_available_min_bytes": 520957313024,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "flatcitybuf",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-1pct",
-          "load1_max": 6.77,
-          "runnable_max": 10,
-          "mem_available_min_bytes": 521045897216,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "flatcitybuf",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-5pct",
-          "load1_max": 7.67,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 521073307648,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "flatcitybuf",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-25pct",
-          "load1_max": 7.67,
-          "runnable_max": 11,
-          "mem_available_min_bytes": 521132732416,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "flatcitybuf",
-          "scenario": "attr-filter",
-          "query_tag": "attr=class=BB01",
-          "load1_max": 7.83,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 521166913536,
+          "mem_available_min_bytes": 521664049152,
           "busy": false
         },
         {
@@ -556,9 +376,9 @@
           "format": "flatcitybuf",
           "scenario": "attr-stats",
           "query_tag": "attr=GebaeudeStatus",
-          "load1_max": 7.6,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 521040019456,
+          "load1_max": 9.05,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 521697681408,
           "busy": false
         },
         {
@@ -566,9 +386,9 @@
           "format": "flatcitybuf",
           "scenario": "id-lookup",
           "query_tag": "id-10pct",
-          "load1_max": 7.55,
+          "load1_max": 8.97,
           "runnable_max": 12,
-          "mem_available_min_bytes": 520945164288,
+          "mem_available_min_bytes": 521715257344,
           "busy": false
         },
         {
@@ -576,9 +396,9 @@
           "format": "flatcitybuf",
           "scenario": "id-lookup",
           "query_tag": "id-50pct",
-          "load1_max": 7.55,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 521035165696,
+          "load1_max": 8.97,
+          "runnable_max": 32,
+          "mem_available_min_bytes": 521549639680,
           "busy": false
         },
         {
@@ -586,49 +406,49 @@
           "format": "flatcitybuf",
           "scenario": "id-lookup",
           "query_tag": "id-90pct",
-          "load1_max": 7.49,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 520972959744,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "flatcitybuf",
-          "scenario": "id-lookup",
-          "query_tag": "id-miss",
-          "load1_max": 8.43,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520877019136,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityparquet",
-          "scenario": "full-read",
-          "query_tag": "",
-          "load1_max": 8.43,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520981463040,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityparquet",
-          "scenario": "count",
-          "query_tag": "",
-          "load1_max": 7.38,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 521147981824,
-          "busy": false
-        },
-        {
-          "dataset": "zurich_building_lod2.city.json",
-          "format": "cityparquet",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-1pct",
-          "load1_max": 7.38,
+          "load1_max": 8.82,
           "runnable_max": 16,
-          "mem_available_min_bytes": 520981164032,
+          "mem_available_min_bytes": 521528254464,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 8.96,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 521568968704,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityparquet",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 8.88,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 521588944896,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityparquet",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 8.76,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 521587032064,
+          "busy": false
+        },
+        {
+          "dataset": "zurich_building_lod2.city.json",
+          "format": "cityparquet",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-1pct",
+          "load1_max": 8.76,
+          "runnable_max": 25,
+          "mem_available_min_bytes": 521406152704,
           "busy": false
         },
         {
@@ -636,9 +456,9 @@
           "format": "cityparquet",
           "scenario": "bbox-query",
           "query_tag": "bbox-5pct",
-          "load1_max": 7.35,
-          "runnable_max": 24,
-          "mem_available_min_bytes": 521010388992,
+          "load1_max": 8.76,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 521495646208,
           "busy": false
         },
         {
@@ -646,9 +466,9 @@
           "format": "cityparquet",
           "scenario": "bbox-query",
           "query_tag": "bbox-25pct",
-          "load1_max": 7.49,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 521011703808,
+          "load1_max": 8.8,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 521480396800,
           "busy": false
         },
         {
@@ -656,9 +476,9 @@
           "format": "cityparquet",
           "scenario": "attr-filter",
           "query_tag": "attr=class=BB01",
-          "load1_max": 7.45,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 521128128512,
+          "load1_max": 8.98,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 521487351808,
           "busy": false
         },
         {
@@ -666,9 +486,9 @@
           "format": "cityparquet",
           "scenario": "attr-stats",
           "query_tag": "attr=GebaeudeStatus",
-          "load1_max": 7.49,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 521098489856,
+          "load1_max": 8.98,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 521505173504,
           "busy": false
         },
         {
@@ -676,9 +496,9 @@
           "format": "cityparquet",
           "scenario": "id-lookup",
           "query_tag": "id-10pct",
-          "load1_max": 7.49,
-          "runnable_max": 18,
-          "mem_available_min_bytes": 521005936640,
+          "load1_max": 8.98,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 521425575936,
           "busy": false
         },
         {
@@ -686,9 +506,9 @@
           "format": "cityparquet",
           "scenario": "id-lookup",
           "query_tag": "id-50pct",
-          "load1_max": 7.49,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520925130752,
+          "load1_max": 8.9,
+          "runnable_max": 21,
+          "mem_available_min_bytes": 521376034816,
           "busy": false
         },
         {
@@ -696,9 +516,9 @@
           "format": "cityparquet",
           "scenario": "id-lookup",
           "query_tag": "id-90pct",
-          "load1_max": 7.45,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 520840577024,
+          "load1_max": 9.23,
+          "runnable_max": 33,
+          "mem_available_min_bytes": 521369993216,
           "busy": false
         },
         {
@@ -706,12 +526,147 @@
           "format": "cityparquet",
           "scenario": "id-lookup",
           "query_tag": "id-miss",
-          "load1_max": 7.45,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 521008087040,
+          "load1_max": 9.23,
+          "runnable_max": 18,
+          "mem_available_min_bytes": 521476501504,
           "busy": false
         }
       ]
+    }
+  },
+  "whole_file_derivation": {
+    "scenarios_measured": "full-read,id-lookup",
+    "mode": "local: one check sample per cell (answer checked across formats), time and memory reused from the format's read all",
+    "formats": {
+      "citygml": {
+        "status": "derived",
+        "full_read_median_s": 22.047443,
+        "full_read_peak_rss_bytes": 16789504,
+        "cells": [
+          {
+            "cell": "citygml/count",
+            "check_time_s": 21.791144,
+            "check_peak_rss_bytes": 16654336,
+            "time_ratio_to_full_read": 0.9883751145200828
+          },
+          {
+            "cell": "citygml/bbox-query/bbox-1pct",
+            "check_time_s": 21.943273,
+            "check_peak_rss_bytes": 16687104,
+            "time_ratio_to_full_read": 0.9952751890548033
+          },
+          {
+            "cell": "citygml/bbox-query/bbox-5pct",
+            "check_time_s": 22.185559,
+            "check_peak_rss_bytes": 16683008,
+            "time_ratio_to_full_read": 1.006264490625965
+          },
+          {
+            "cell": "citygml/bbox-query/bbox-25pct",
+            "check_time_s": 22.079075,
+            "check_peak_rss_bytes": 16650240,
+            "time_ratio_to_full_read": 1.0014347241990829
+          },
+          {
+            "cell": "citygml/attr-filter/attr=class=BB01",
+            "check_time_s": 22.0485,
+            "check_peak_rss_bytes": 16617472,
+            "time_ratio_to_full_read": 1.0000479420674768
+          },
+          {
+            "cell": "citygml/attr-stats/attr=GebaeudeStatus",
+            "check_time_s": 23.803354,
+            "check_peak_rss_bytes": 16486400,
+            "time_ratio_to_full_read": 1.0796423875548742
+          }
+        ]
+      },
+      "cityjson": {
+        "status": "derived",
+        "full_read_median_s": 5.233938,
+        "full_read_peak_rss_bytes": 1391484928,
+        "cells": [
+          {
+            "cell": "cityjson/count",
+            "check_time_s": 4.94435,
+            "check_peak_rss_bytes": 1391431680,
+            "time_ratio_to_full_read": 0.9446711061537221
+          },
+          {
+            "cell": "cityjson/bbox-query/bbox-1pct",
+            "check_time_s": 5.593498,
+            "check_peak_rss_bytes": 1391427584,
+            "time_ratio_to_full_read": 1.0686977950445726
+          },
+          {
+            "cell": "cityjson/bbox-query/bbox-5pct",
+            "check_time_s": 5.669205,
+            "check_peak_rss_bytes": 1391427584,
+            "time_ratio_to_full_read": 1.0831624295129212
+          },
+          {
+            "cell": "cityjson/bbox-query/bbox-25pct",
+            "check_time_s": 5.52123,
+            "check_peak_rss_bytes": 1391435776,
+            "time_ratio_to_full_read": 1.054890218416802
+          },
+          {
+            "cell": "cityjson/attr-filter/attr=class=BB01",
+            "check_time_s": 5.080053,
+            "check_peak_rss_bytes": 1391431680,
+            "time_ratio_to_full_read": 0.9705986200065801
+          },
+          {
+            "cell": "cityjson/attr-stats/attr=GebaeudeStatus",
+            "check_time_s": 4.943797,
+            "check_peak_rss_bytes": 1391431680,
+            "time_ratio_to_full_read": 0.9445654495716227
+          }
+        ]
+      },
+      "cityjsonseq": {
+        "status": "derived",
+        "full_read_median_s": 4.630993,
+        "full_read_peak_rss_bytes": 274845696,
+        "cells": [
+          {
+            "cell": "cityjsonseq/count",
+            "check_time_s": 4.516686,
+            "check_peak_rss_bytes": 274825216,
+            "time_ratio_to_full_read": 0.9753169568600082
+          },
+          {
+            "cell": "cityjsonseq/bbox-query/bbox-1pct",
+            "check_time_s": 4.989407,
+            "check_peak_rss_bytes": 274837504,
+            "time_ratio_to_full_read": 1.0773946322095498
+          },
+          {
+            "cell": "cityjsonseq/bbox-query/bbox-5pct",
+            "check_time_s": 4.71926,
+            "check_peak_rss_bytes": 274817024,
+            "time_ratio_to_full_read": 1.019060059041333
+          },
+          {
+            "cell": "cityjsonseq/bbox-query/bbox-25pct",
+            "check_time_s": 4.736135,
+            "check_peak_rss_bytes": 274845696,
+            "time_ratio_to_full_read": 1.022703985948586
+          },
+          {
+            "cell": "cityjsonseq/attr-filter/attr=class=BB01",
+            "check_time_s": 4.578622,
+            "check_peak_rss_bytes": 274825216,
+            "time_ratio_to_full_read": 0.9886911943075708
+          },
+          {
+            "cell": "cityjsonseq/attr-stats/attr=GebaeudeStatus",
+            "check_time_s": 4.581797,
+            "check_peak_rss_bytes": 274837504,
+            "time_ratio_to_full_read": 0.9893767924071576
+          }
+        ]
+      }
     }
   }
 }

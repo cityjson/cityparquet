@@ -145,8 +145,8 @@
       "status": "applied"
     },
     "memory": {
-      "mem_total_bytes": 540725084160,
-      "mem_available_bytes_at_start": 522825920512,
+      "mem_total_bytes": 540725055488,
+      "mem_available_bytes_at_start": 518785622016,
       "status": "recorded"
     },
     "max_load": {
@@ -166,99 +166,39 @@
           "format": "citygml",
           "scenario": "full-read",
           "query_tag": "",
-          "load1_max": 6.8,
-          "runnable_max": 8,
-          "mem_available_min_bytes": 522768904192,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "citygml",
-          "scenario": "count",
-          "query_tag": "",
-          "load1_max": 6.57,
-          "runnable_max": 8,
-          "mem_available_min_bytes": 522654822400,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "citygml",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-1pct",
-          "load1_max": 9.71,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 520670707712,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "citygml",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-5pct",
-          "load1_max": 19.78,
-          "runnable_max": 20,
-          "mem_available_min_bytes": 518968553472,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "citygml",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-25pct",
-          "load1_max": 10.39,
-          "runnable_max": 25,
-          "mem_available_min_bytes": 519246802944,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "citygml",
-          "scenario": "attr-filter",
-          "query_tag": "attr=b3_dak_type=slanted",
-          "load1_max": 10.38,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 519143534592,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "citygml",
-          "scenario": "attr-stats",
-          "query_tag": "attr=b3_bag_bag_overlap",
-          "load1_max": 10.0,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 518974595072,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "citygml",
-          "scenario": "id-lookup",
-          "query_tag": "id-10pct",
-          "load1_max": 10.33,
-          "runnable_max": 23,
-          "mem_available_min_bytes": 518916177920,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "citygml",
-          "scenario": "id-lookup",
-          "query_tag": "id-50pct",
-          "load1_max": 11.38,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 518804815872,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "citygml",
-          "scenario": "id-lookup",
-          "query_tag": "id-90pct",
-          "load1_max": 10.29,
+          "load1_max": 17.99,
           "runnable_max": 22,
-          "mem_available_min_bytes": 518664400896,
+          "mem_available_min_bytes": 518785622016,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 49.07,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 519280300032,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 10.29,
+          "runnable_max": 28,
+          "mem_available_min_bytes": 520357433344,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "citygml",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 10.89,
+          "runnable_max": 13,
+          "mem_available_min_bytes": 520476336128,
           "busy": false
         },
         {
@@ -266,9 +206,9 @@
           "format": "citygml",
           "scenario": "id-lookup",
           "query_tag": "id-miss",
-          "load1_max": 11.24,
-          "runnable_max": 31,
-          "mem_available_min_bytes": 518421946368,
+          "load1_max": 41.24,
+          "runnable_max": 42,
+          "mem_available_min_bytes": 514143850496,
           "busy": false
         },
         {
@@ -276,69 +216,9 @@
           "format": "cityjson",
           "scenario": "full-read",
           "query_tag": "",
-          "load1_max": 11.61,
-          "runnable_max": 19,
-          "mem_available_min_bytes": 517831163904,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjson",
-          "scenario": "count",
-          "query_tag": "",
-          "load1_max": 9.49,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 517862289408,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjson",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-1pct",
-          "load1_max": 12.35,
-          "runnable_max": 16,
-          "mem_available_min_bytes": 517775192064,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjson",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-5pct",
-          "load1_max": 9.9,
-          "runnable_max": 21,
-          "mem_available_min_bytes": 520280244224,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjson",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-25pct",
-          "load1_max": 11.91,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520142606336,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjson",
-          "scenario": "attr-filter",
-          "query_tag": "attr=b3_dak_type=slanted",
-          "load1_max": 8.92,
-          "runnable_max": 19,
-          "mem_available_min_bytes": 520226975744,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjson",
-          "scenario": "attr-stats",
-          "query_tag": "attr=b3_bag_bag_overlap",
-          "load1_max": 8.24,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520061313024,
+          "load1_max": 47.34,
+          "runnable_max": 60,
+          "mem_available_min_bytes": 507066740736,
           "busy": false
         },
         {
@@ -346,9 +226,9 @@
           "format": "cityjson",
           "scenario": "id-lookup",
           "query_tag": "id-10pct",
-          "load1_max": 10.3,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 520159535104,
+          "load1_max": 46.94,
+          "runnable_max": 46,
+          "mem_available_min_bytes": 505320792064,
           "busy": false
         },
         {
@@ -356,269 +236,209 @@
           "format": "cityjson",
           "scenario": "id-lookup",
           "query_tag": "id-50pct",
-          "load1_max": 8.48,
+          "load1_max": 42.27,
+          "runnable_max": 37,
+          "mem_available_min_bytes": 505651507200,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 20.01,
+          "runnable_max": 34,
+          "mem_available_min_bytes": 514568429568,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjson",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 20.91,
+          "runnable_max": 37,
+          "mem_available_min_bytes": 514064039936,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 21.18,
+          "runnable_max": 40,
+          "mem_available_min_bytes": 513435054080,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 17.38,
+          "runnable_max": 33,
+          "mem_available_min_bytes": 514202062848,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 19.63,
+          "runnable_max": 30,
+          "mem_available_min_bytes": 515234398208,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 17.51,
+          "runnable_max": 23,
+          "mem_available_min_bytes": 517173530624,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityjsonseq",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 20.74,
+          "runnable_max": 33,
+          "mem_available_min_bytes": 514717323264,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "full-read",
+          "query_tag": "",
+          "load1_max": 17.87,
           "runnable_max": 26,
-          "mem_available_min_bytes": 520132866048,
+          "mem_available_min_bytes": 517441638400,
           "busy": false
         },
         {
           "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjson",
-          "scenario": "id-lookup",
-          "query_tag": "id-90pct",
-          "load1_max": 10.4,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 520140972032,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjson",
-          "scenario": "id-lookup",
-          "query_tag": "id-miss",
-          "load1_max": 8.43,
-          "runnable_max": 16,
-          "mem_available_min_bytes": 520201232384,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
-          "scenario": "full-read",
-          "query_tag": "",
-          "load1_max": 8.73,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 520302120960,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
+          "format": "flatcitybuf",
           "scenario": "count",
           "query_tag": "",
-          "load1_max": 8.84,
-          "runnable_max": 16,
-          "mem_available_min_bytes": 520616517632,
+          "load1_max": 15.27,
+          "runnable_max": 23,
+          "mem_available_min_bytes": 518483300352,
           "busy": false
         },
         {
           "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
+          "format": "flatcitybuf",
           "scenario": "bbox-query",
           "query_tag": "bbox-1pct",
-          "load1_max": 9.23,
+          "load1_max": 15.41,
+          "runnable_max": 24,
+          "mem_available_min_bytes": 518249848832,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-5pct",
+          "load1_max": 16.1,
+          "runnable_max": 28,
+          "mem_available_min_bytes": 518222000128,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "bbox-query",
+          "query_tag": "bbox-25pct",
+          "load1_max": 16.73,
           "runnable_max": 29,
-          "mem_available_min_bytes": 520643219456,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-5pct",
-          "load1_max": 11.29,
-          "runnable_max": 25,
-          "mem_available_min_bytes": 520614481920,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-25pct",
-          "load1_max": 11.52,
-          "runnable_max": 16,
-          "mem_available_min_bytes": 520662474752,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
-          "scenario": "attr-filter",
-          "query_tag": "attr=b3_dak_type=slanted",
-          "load1_max": 9.23,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 520559935488,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
-          "scenario": "attr-stats",
-          "query_tag": "attr=b3_bag_bag_overlap",
-          "load1_max": 9.88,
-          "runnable_max": 31,
-          "mem_available_min_bytes": 520751206400,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
-          "scenario": "id-lookup",
-          "query_tag": "id-10pct",
-          "load1_max": 8.39,
-          "runnable_max": 19,
-          "mem_available_min_bytes": 520332140544,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
-          "scenario": "id-lookup",
-          "query_tag": "id-50pct",
-          "load1_max": 7.91,
-          "runnable_max": 16,
-          "mem_available_min_bytes": 520477085696,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
-          "scenario": "id-lookup",
-          "query_tag": "id-90pct",
-          "load1_max": 8.22,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 520607469568,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityjsonseq",
-          "scenario": "id-lookup",
-          "query_tag": "id-miss",
-          "load1_max": 9.02,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 520522108928,
+          "mem_available_min_bytes": 517268242432,
           "busy": false
         },
         {
           "dataset": "3dbag_n1000000.city.jsonl",
           "format": "flatcitybuf",
+          "scenario": "attr-filter",
+          "query_tag": "attr=b3_dak_type=slanted",
+          "load1_max": 17.71,
+          "runnable_max": 27,
+          "mem_available_min_bytes": 516829626368,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "attr-stats",
+          "query_tag": "attr=b3_bag_bag_overlap",
+          "load1_max": 18.01,
+          "runnable_max": 41,
+          "mem_available_min_bytes": 517276942336,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-10pct",
+          "load1_max": 16.63,
+          "runnable_max": 28,
+          "mem_available_min_bytes": 518287478784,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-50pct",
+          "load1_max": 17.27,
+          "runnable_max": 30,
+          "mem_available_min_bytes": 517953265664,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-90pct",
+          "load1_max": 18.65,
+          "runnable_max": 27,
+          "mem_available_min_bytes": 517571940352,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "flatcitybuf",
+          "scenario": "id-lookup",
+          "query_tag": "id-miss",
+          "load1_max": 19.31,
+          "runnable_max": 35,
+          "mem_available_min_bytes": 517428924416,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
           "scenario": "full-read",
           "query_tag": "",
-          "load1_max": 10.55,
+          "load1_max": 18.97,
+          "runnable_max": 32,
+          "mem_available_min_bytes": 517459357696,
+          "busy": false
+        },
+        {
+          "dataset": "3dbag_n1000000.city.jsonl",
+          "format": "cityparquet",
+          "scenario": "count",
+          "query_tag": "",
+          "load1_max": 17.26,
           "runnable_max": 21,
-          "mem_available_min_bytes": 520687108096,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "flatcitybuf",
-          "scenario": "count",
-          "query_tag": "",
-          "load1_max": 8.8,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 520666894336,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "flatcitybuf",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-1pct",
-          "load1_max": 8.8,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 520767946752,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "flatcitybuf",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-5pct",
-          "load1_max": 8.8,
-          "runnable_max": 17,
-          "mem_available_min_bytes": 520682856448,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "flatcitybuf",
-          "scenario": "bbox-query",
-          "query_tag": "bbox-25pct",
-          "load1_max": 9.34,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520647585792,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "flatcitybuf",
-          "scenario": "attr-filter",
-          "query_tag": "attr=b3_dak_type=slanted",
-          "load1_max": 9.07,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 520622407680,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "flatcitybuf",
-          "scenario": "attr-stats",
-          "query_tag": "attr=b3_bag_bag_overlap",
-          "load1_max": 8.21,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520595943424,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "flatcitybuf",
-          "scenario": "id-lookup",
-          "query_tag": "id-10pct",
-          "load1_max": 8.13,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520539025408,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "flatcitybuf",
-          "scenario": "id-lookup",
-          "query_tag": "id-50pct",
-          "load1_max": 8.31,
-          "runnable_max": 19,
-          "mem_available_min_bytes": 520646131712,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "flatcitybuf",
-          "scenario": "id-lookup",
-          "query_tag": "id-90pct",
-          "load1_max": 9.04,
-          "runnable_max": 27,
-          "mem_available_min_bytes": 520651276288,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "flatcitybuf",
-          "scenario": "id-lookup",
-          "query_tag": "id-miss",
-          "load1_max": 9.11,
-          "runnable_max": 12,
-          "mem_available_min_bytes": 520664764416,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityparquet",
-          "scenario": "full-read",
-          "query_tag": "",
-          "load1_max": 11.01,
-          "runnable_max": 11,
-          "mem_available_min_bytes": 520689315840,
-          "busy": false
-        },
-        {
-          "dataset": "3dbag_n1000000.city.jsonl",
-          "format": "cityparquet",
-          "scenario": "count",
-          "query_tag": "",
-          "load1_max": 8.33,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520671076352,
+          "mem_available_min_bytes": 519207350272,
           "busy": false
         },
         {
@@ -626,9 +446,9 @@
           "format": "cityparquet",
           "scenario": "bbox-query",
           "query_tag": "bbox-1pct",
-          "load1_max": 8.75,
-          "runnable_max": 27,
-          "mem_available_min_bytes": 520511836160,
+          "load1_max": 17.26,
+          "runnable_max": 35,
+          "mem_available_min_bytes": 518802513920,
           "busy": false
         },
         {
@@ -636,9 +456,9 @@
           "format": "cityparquet",
           "scenario": "bbox-query",
           "query_tag": "bbox-5pct",
-          "load1_max": 8.75,
-          "runnable_max": 18,
-          "mem_available_min_bytes": 520493047808,
+          "load1_max": 18.7,
+          "runnable_max": 38,
+          "mem_available_min_bytes": 517310439424,
           "busy": false
         },
         {
@@ -646,9 +466,9 @@
           "format": "cityparquet",
           "scenario": "bbox-query",
           "query_tag": "bbox-25pct",
-          "load1_max": 8.98,
-          "runnable_max": 17,
-          "mem_available_min_bytes": 520613027840,
+          "load1_max": 18.56,
+          "runnable_max": 30,
+          "mem_available_min_bytes": 516999770112,
           "busy": false
         },
         {
@@ -656,9 +476,9 @@
           "format": "cityparquet",
           "scenario": "attr-filter",
           "query_tag": "attr=b3_dak_type=slanted",
-          "load1_max": 8.21,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 520358719488,
+          "load1_max": 17.25,
+          "runnable_max": 23,
+          "mem_available_min_bytes": 517941719040,
           "busy": false
         },
         {
@@ -666,9 +486,9 @@
           "format": "cityparquet",
           "scenario": "attr-stats",
           "query_tag": "attr=b3_bag_bag_overlap",
-          "load1_max": 8.11,
-          "runnable_max": 16,
-          "mem_available_min_bytes": 520418983936,
+          "load1_max": 17.15,
+          "runnable_max": 40,
+          "mem_available_min_bytes": 518120611840,
           "busy": false
         },
         {
@@ -676,9 +496,9 @@
           "format": "cityparquet",
           "scenario": "id-lookup",
           "query_tag": "id-10pct",
-          "load1_max": 8.11,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520291840000,
+          "load1_max": 17.15,
+          "runnable_max": 44,
+          "mem_available_min_bytes": 516425175040,
           "busy": false
         },
         {
@@ -686,9 +506,9 @@
           "format": "cityparquet",
           "scenario": "id-lookup",
           "query_tag": "id-50pct",
-          "load1_max": 8.18,
-          "runnable_max": 17,
-          "mem_available_min_bytes": 520067424256,
+          "load1_max": 17.54,
+          "runnable_max": 26,
+          "mem_available_min_bytes": 515655561216,
           "busy": false
         },
         {
@@ -696,9 +516,9 @@
           "format": "cityparquet",
           "scenario": "id-lookup",
           "query_tag": "id-90pct",
-          "load1_max": 8.18,
-          "runnable_max": 13,
-          "mem_available_min_bytes": 519859306496,
+          "load1_max": 17.54,
+          "runnable_max": 25,
+          "mem_available_min_bytes": 515360038912,
           "busy": false
         },
         {
@@ -706,12 +526,147 @@
           "format": "cityparquet",
           "scenario": "id-lookup",
           "query_tag": "id-miss",
-          "load1_max": 8.16,
-          "runnable_max": 19,
-          "mem_available_min_bytes": 519904059392,
+          "load1_max": 17.42,
+          "runnable_max": 31,
+          "mem_available_min_bytes": 515389018112,
           "busy": false
         }
       ]
+    }
+  },
+  "whole_file_derivation": {
+    "scenarios_measured": "full-read,id-lookup",
+    "mode": "local: one check sample per cell (answer checked across formats), time and memory reused from the format's read all",
+    "formats": {
+      "citygml": {
+        "status": "derived",
+        "full_read_median_s": 155.957895,
+        "full_read_peak_rss_bytes": 16850944,
+        "cells": [
+          {
+            "cell": "citygml/count",
+            "check_time_s": 154.711591,
+            "check_peak_rss_bytes": 16576512,
+            "time_ratio_to_full_read": 0.992008714916292
+          },
+          {
+            "cell": "citygml/bbox-query/bbox-1pct",
+            "check_time_s": 155.787569,
+            "check_peak_rss_bytes": 16687104,
+            "time_ratio_to_full_read": 0.9989078718970911
+          },
+          {
+            "cell": "citygml/bbox-query/bbox-5pct",
+            "check_time_s": 158.162015,
+            "check_peak_rss_bytes": 16752640,
+            "time_ratio_to_full_read": 1.0141327888530427
+          },
+          {
+            "cell": "citygml/bbox-query/bbox-25pct",
+            "check_time_s": 156.004972,
+            "check_peak_rss_bytes": 16723968,
+            "time_ratio_to_full_read": 1.0003018571134215
+          },
+          {
+            "cell": "citygml/attr-filter/attr=b3_dak_type=slanted",
+            "check_time_s": 153.504991,
+            "check_peak_rss_bytes": 16662528,
+            "time_ratio_to_full_read": 0.9842720113656316
+          },
+          {
+            "cell": "citygml/attr-stats/attr=b3_bag_bag_overlap",
+            "check_time_s": 160.52997,
+            "check_peak_rss_bytes": 16556032,
+            "time_ratio_to_full_read": 1.029316085601181
+          }
+        ]
+      },
+      "cityjson": {
+        "status": "derived",
+        "full_read_median_s": 43.133433,
+        "full_read_peak_rss_bytes": 13824249856,
+        "cells": [
+          {
+            "cell": "cityjson/count",
+            "check_time_s": 38.526891,
+            "check_peak_rss_bytes": 13821964288,
+            "time_ratio_to_full_read": 0.8932025187978894
+          },
+          {
+            "cell": "cityjson/bbox-query/bbox-1pct",
+            "check_time_s": 43.60878,
+            "check_peak_rss_bytes": 13821571072,
+            "time_ratio_to_full_read": 1.0110203841182779
+          },
+          {
+            "cell": "cityjson/bbox-query/bbox-5pct",
+            "check_time_s": 50.007125,
+            "check_peak_rss_bytes": 13818765312,
+            "time_ratio_to_full_read": 1.1593587971539387
+          },
+          {
+            "cell": "cityjson/bbox-query/bbox-25pct",
+            "check_time_s": 47.241261,
+            "check_peak_rss_bytes": 13819633664,
+            "time_ratio_to_full_read": 1.0952353595411708
+          },
+          {
+            "cell": "cityjson/attr-filter/attr=b3_dak_type=slanted",
+            "check_time_s": 39.260491,
+            "check_peak_rss_bytes": 13819158528,
+            "time_ratio_to_full_read": 0.9102102074740956
+          },
+          {
+            "cell": "cityjson/attr-stats/attr=b3_bag_bag_overlap",
+            "check_time_s": 40.405881,
+            "check_peak_rss_bytes": 13823160320,
+            "time_ratio_to_full_read": 0.9367647829005403
+          }
+        ]
+      },
+      "cityjsonseq": {
+        "status": "derived",
+        "full_read_median_s": 25.989691,
+        "full_read_peak_rss_bytes": 140660736,
+        "cells": [
+          {
+            "cell": "cityjsonseq/count",
+            "check_time_s": 26.460701,
+            "check_peak_rss_bytes": 140607488,
+            "time_ratio_to_full_read": 1.0181229549824198
+          },
+          {
+            "cell": "cityjsonseq/bbox-query/bbox-1pct",
+            "check_time_s": 25.57733,
+            "check_peak_rss_bytes": 140615680,
+            "time_ratio_to_full_read": 0.9841336705388302
+          },
+          {
+            "cell": "cityjsonseq/bbox-query/bbox-5pct",
+            "check_time_s": 26.704409,
+            "check_peak_rss_bytes": 139833344,
+            "time_ratio_to_full_read": 1.0275000576189997
+          },
+          {
+            "cell": "cityjsonseq/bbox-query/bbox-25pct",
+            "check_time_s": 25.557148,
+            "check_peak_rss_bytes": 140599296,
+            "time_ratio_to_full_read": 0.983357131872018
+          },
+          {
+            "cell": "cityjsonseq/attr-filter/attr=b3_dak_type=slanted",
+            "check_time_s": 27.73828,
+            "check_peak_rss_bytes": 140599296,
+            "time_ratio_to_full_read": 1.067280099636429
+          },
+          {
+            "cell": "cityjsonseq/attr-stats/attr=b3_bag_bag_overlap",
+            "check_time_s": 24.094728,
+            "check_peak_rss_bytes": 140603392,
+            "time_ratio_to_full_read": 0.927087898043882
+          }
+        ]
+      }
     }
   }
 }

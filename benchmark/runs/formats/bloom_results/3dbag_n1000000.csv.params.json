@@ -133,8 +133,8 @@
       "status": "applied"
     },
     "memory": {
-      "mem_total_bytes": 540725084160,
-      "mem_available_bytes_at_start": 520970866688,
+      "mem_total_bytes": 540725055488,
+      "mem_available_bytes_at_start": 521935757312,
       "status": "recorded"
     },
     "max_load": {
@@ -154,9 +154,9 @@
           "format": "cityparquet",
           "scenario": "id-lookup",
           "query_tag": "id-50pct",
-          "load1_max": 7.41,
-          "runnable_max": 18,
-          "mem_available_min_bytes": 520412188672,
+          "load1_max": 10.52,
+          "runnable_max": 20,
+          "mem_available_min_bytes": 519148650496,
           "busy": false
         },
         {
@@ -164,9 +164,9 @@
           "format": "cityparquet",
           "scenario": "id-lookup",
           "query_tag": "id-miss",
-          "load1_max": 7.41,
-          "runnable_max": 14,
-          "mem_available_min_bytes": 520416661504,
+          "load1_max": 10.4,
+          "runnable_max": 17,
+          "mem_available_min_bytes": 519237840896,
           "busy": false
         },
         {
@@ -174,9 +174,9 @@
           "format": "cityparquet",
           "scenario": "feature-lookup",
           "query_tag": "feature-50pct",
-          "load1_max": 7.41,
-          "runnable_max": 19,
-          "mem_available_min_bytes": 520302235648,
+          "load1_max": 10.4,
+          "runnable_max": 27,
+          "mem_available_min_bytes": 519026548736,
           "busy": false
         },
         {
@@ -184,9 +184,9 @@
           "format": "cityparquet",
           "scenario": "feature-lookup",
           "query_tag": "feature-miss",
-          "load1_max": 7.29,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520321236992,
+          "load1_max": 10.44,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 519213973504,
           "busy": false
         },
         {
@@ -194,9 +194,9 @@
           "format": "cityparquet",
           "scenario": "attr-lookup",
           "query_tag": "attr-identificatie-50pct;value-substituted",
-          "load1_max": 7.29,
-          "runnable_max": 17,
-          "mem_available_min_bytes": 520345628672,
+          "load1_max": 10.44,
+          "runnable_max": 15,
+          "mem_available_min_bytes": 519212396544,
           "busy": false
         },
         {
@@ -204,9 +204,9 @@
           "format": "cityparquet",
           "scenario": "attr-lookup",
           "query_tag": "attr-identificatie-miss",
-          "load1_max": 7.29,
-          "runnable_max": 11,
-          "mem_available_min_bytes": 520545386496,
+          "load1_max": 10.44,
+          "runnable_max": 19,
+          "mem_available_min_bytes": 519376011264,
           "busy": false
         },
         {
@@ -214,9 +214,9 @@
           "format": "cityparquet+nobloom",
           "scenario": "id-lookup",
           "query_tag": "id-50pct",
-          "load1_max": 7.18,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520495124480,
+          "load1_max": 10.44,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 519352184832,
           "busy": false
         },
         {
@@ -224,9 +224,9 @@
           "format": "cityparquet+nobloom",
           "scenario": "id-lookup",
           "query_tag": "id-miss",
-          "load1_max": 7.25,
+          "load1_max": 10.32,
           "runnable_max": 13,
-          "mem_available_min_bytes": 520618196992,
+          "mem_available_min_bytes": 519353004032,
           "busy": false
         },
         {
@@ -234,9 +234,9 @@
           "format": "cityparquet+nobloom",
           "scenario": "feature-lookup",
           "query_tag": "feature-50pct",
-          "load1_max": 7.25,
-          "runnable_max": 22,
-          "mem_available_min_bytes": 520471810048,
+          "load1_max": 10.06,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 519350837248,
           "busy": false
         },
         {
@@ -244,9 +244,9 @@
           "format": "cityparquet+nobloom",
           "scenario": "feature-lookup",
           "query_tag": "feature-miss",
-          "load1_max": 7.23,
-          "runnable_max": 27,
-          "mem_available_min_bytes": 520437514240,
+          "load1_max": 10.05,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 519429345280,
           "busy": false
         },
         {
@@ -254,9 +254,9 @@
           "format": "cityparquet+nobloom",
           "scenario": "attr-lookup",
           "query_tag": "attr-identificatie-50pct;value-substituted",
-          "load1_max": 7.45,
-          "runnable_max": 18,
-          "mem_available_min_bytes": 520612179968,
+          "load1_max": 9.89,
+          "runnable_max": 32,
+          "mem_available_min_bytes": 519490584576,
           "busy": false
         },
         {
@@ -264,9 +264,9 @@
           "format": "cityparquet+nobloom",
           "scenario": "attr-lookup",
           "query_tag": "attr-identificatie-miss",
-          "load1_max": 7.45,
-          "runnable_max": 15,
-          "mem_available_min_bytes": 520742252544,
+          "load1_max": 9.9,
+          "runnable_max": 14,
+          "mem_available_min_bytes": 519539609600,
           "busy": false
         }
       ]

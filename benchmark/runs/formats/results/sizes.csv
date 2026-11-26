@@ -4,6 +4,9 @@ rotterdam_delfshaven,cityjson,2731804,2.731804
 rotterdam_delfshaven,cityjsonseq,2822644,2.822644
 rotterdam_delfshaven,flatcitybuf,3017520,3.017520
 rotterdam_delfshaven,cityparquet,714089,0.714089
+3dbag_national,cityjsonseq,58088911024,58088.911024
+3dbag_national,flatcitybuf,66469190362,66469.190362
+3dbag_national,cityparquet,14378593378,14378.593378
 vienna_102081,citygml,21064612,21.064612
 vienna_102081,cityjson,4731370,4.731370
 vienna_102081,cityjsonseq,4449108,4.449108
@@ -29,6 +32,11 @@ montreal,cityjson,498371022,498.371022
 montreal,cityjsonseq,372320945,372.320945
 montreal,flatcitybuf,366240400,366.240400
 montreal,cityparquet,158972459,158.972459
+helsinki,citygml,2032703164,2032.703164
+helsinki,cityjson,599944942,599.944942
+helsinki,cityjsonseq,432470424,432.470424
+helsinki,flatcitybuf,420006492,420.006492
+helsinki,cityparquet,107161941,107.161941
 3dbag_n1000000,citygml,10799751428,10799.751428
 3dbag_n1000000,cityjson,2725471271,2725.471271
 3dbag_n1000000,cityjsonseq,2374117501,2374.117501

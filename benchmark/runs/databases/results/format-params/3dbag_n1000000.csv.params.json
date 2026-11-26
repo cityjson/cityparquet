@@ -124,7 +124,7 @@
       "status": "not applied: --numa-node off",
       "memory_binding": "not applied: --numa-node off",
       "coordinator_note": null,
-      "allowed_cpus": "0-31,64-95",
+      "allowed_cpus": "32-63,96-127",
       "cores_note": null
     },
     "coordinator_pinning": "not applied: --numa-node off",
@@ -133,8 +133,8 @@
       "status": "not requested"
     },
     "memory": {
-      "mem_total_bytes": 540725084160,
-      "mem_available_bytes_at_start": 520079429632,
+      "mem_total_bytes": 540725055488,
+      "mem_available_bytes_at_start": 517864235008,
       "status": "recorded"
     },
     "max_load": {
@@ -154,9 +154,9 @@
           "format": "cityparquet",
           "scenario": "count",
           "query_tag": "",
-          "load1_max": 9.33,
-          "runnable_max": 10,
-          "mem_available_min_bytes": 520075300864,
+          "load1_max": 8.68,
+          "runnable_max": 11,
+          "mem_available_min_bytes": 517849272320,
           "busy": false
         }
       ]

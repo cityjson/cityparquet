@@ -1,9 +1,9 @@
 # Measurement host
 
-Captured by benchmark/scripts/machine_record.sh at 2026-10-27T15:09:02Z.
+Captured by benchmark/scripts/machine_record.sh at 2026-11-24T00:56:31Z.
 
 ```
-Linux 6.8.0-142-generic x86_64
+Linux 6.8.0-147-generic x86_64
 Architecture:                            x86_64
 CPU op-mode(s):                          32-bit, 64-bit
 Address sizes:                           48 bits physical, 48 bits virtual
@@ -20,10 +20,10 @@ Socket(s):                               2
 Stepping:                                0
 Frequency boost:                         enabled
                total        used        free      shared  buff/cache   available
-Mem:     540725084160 19692003328 257002700800   959737856 270570115072 521033080832
+Mem:     540725055488 19276943360 22276038656  2023231488 505206697984 521448112128
 rustc 1.93.1 (01f6ddf75 2026-02-11)
 cargo 1.93.1 (083ac5135 2025-12-15)
-git e695262f0e1cc550fffcdcdea23ca44ce074b64d
+git abae184fb5d4e516e87badcaf520873cf3108b06
 ```
 
 ## Isolation
@@ -32,29 +32,29 @@ What benchmark/README.md, "Running on a shared host", applies, read at the
 start of the run. Each result CSV's `.params.json` records what was applied to
 that run under `isolation`.
 
-| Fact              | Value                                                                                                      |
-| ----------------- | ---------------------------------------------------------------------------------------------------------- |
-| numactl           | found                                                                                                      |
-| taskset           | found                                                                                                      |
-| Allowed CPUs      | 0-127 (Cpus_allowed_list of /proc/self/status)                                                             |
-| NUMA node         | 0 (cores 0-31,64-95; those in the allowed CPUs are usable: coordinator on the first, children on the rest) |
-| Pinning command   | numactl --all --physcpubind=<usable node 0 cores minus the first> --membind=0                              |
-| Memory limit      | requested MemoryMax=64000000000 (decimal bytes, 64 GB) via systemd-run --user --scope                      |
-| cgroup delegation | user@1020.service delegates: memory                                                                        |
-| CPU governor      | schedutil                                                                                                  |
-| SMT               | 1 (/sys/devices/system/cpu/smt/active: 1 = on)                                                             |
-| Kernel            | Linux 6.8.0-142-generic                                                                                    |
-| Other users' CPU  | 881.8% (summed ps pcpu)                                                                                    |
-| MemTotal          | 540725084160 bytes                                                                                         |
-| MemAvailable      | 521040080896 bytes (at start)                                                                              |
+| Fact              | Value                                                                                                        |
+| ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| numactl           | found                                                                                                        |
+| taskset           | found                                                                                                        |
+| Allowed CPUs      | 0-127 (Cpus_allowed_list of /proc/self/status)                                                               |
+| NUMA node         | 1 (cores 32-63,96-127; those in the allowed CPUs are usable: coordinator on the first, children on the rest) |
+| Pinning command   | numactl --all --physcpubind=<usable node 1 cores minus the first> --membind=1                                |
+| Memory limit      | requested MemoryMax=64000000000 (decimal bytes, 64 GB) via systemd-run --user --scope                        |
+| cgroup delegation | user@1020.service delegates: memory                                                                          |
+| CPU governor      | schedutil                                                                                                    |
+| SMT               | 1 (/sys/devices/system/cpu/smt/active: 1 = on)                                                               |
+| Kernel            | Linux 6.8.0-147-generic                                                                                      |
+| Other users' CPU  | 887.6% (summed ps pcpu)                                                                                      |
+| MemTotal          | 540725055488 bytes                                                                                           |
+| MemAvailable      | 521446572032 bytes (at start)                                                                                |
 
 ## Tool versions
 
 | Tool               | Version                                                                              |
 | ------------------ | ------------------------------------------------------------------------------------ |
-| cityparquet-rs     | 68c158cbc96bbf1f2f485970e71902a54405f261 (last commit touching lib/cityparquet-rs)   |
+| cityparquet-rs     | fb7e0b0adce3893eefab49658b9fe12963a792b9 (last commit touching lib/cityparquet-rs)   |
 | cjseq              | cjseq 0.3.1                                                                          |
-| fcb CLI            | fcb 0.7.8                                                                            |
+| fcb CLI            | fcb 0.9.0                                                                            |
 | fcb_core           | 0.7.6 (readbench Cargo.lock pin)                                                     |
 | citygml-tools      | not found                                                                            |
 | DuckDB             | v1.3.2 (Ossivalis) 0b83e5d2f6                                                        |
