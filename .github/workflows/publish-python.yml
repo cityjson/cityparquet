@@ -9,9 +9,9 @@ name: Publish Python
 #
 #   1. bumps `[package] version` in lib/cityparquet-py/Cargo.toml (maturin gives
 #      it to the wheel) and refuses a version already tagged or on PyPI;
-#   2. runs the Python gate, builds an abi3 wheel (CPython 3.11 and later) for
-#      five targets and an sdist, and installs each one and runs the test suite
-#      against it, on its own runner;
+#   2. runs the Python gate, builds an abi3 wheel (CPython 3.11 and later) and
+#      a free-threaded CPython 3.14t wheel for five targets and an sdist, and
+#      installs each one and runs the test suite against it, on its own runner;
 #   3. only once all of that passes, uploads exactly those files to PyPI, then
 #      pushes a `release: py-vX.Y.Z` commit and `py-vX.Y.Z` tag to main and
 #      merges the commit back into develop.
@@ -124,8 +124,11 @@ jobs:
     needs: prepare
     uses: ./.github/workflows/python.yml
 
-  # One abi3 wheel per target, each built and tested on a runner native to it,
-  # so the wheel that is tested is the wheel that is uploaded.
+  # One abi3 wheel and one free-threaded wheel per target, each built and
+  # tested on a runner native to it, so the wheel that is tested is the wheel
+  # that is uploaded. abi3 cannot serve a free-threaded CPython, so 3.14t has a
+  # wheel of its own; maturin builds it version-specific though the crate asks
+  # for abi3.
   wheels:
     name: wheel ${{ matrix.target }}
     needs: prepare
@@ -192,6 +195,32 @@ jobs:
           python -m venv "${RUNNER_TEMP}/venv"
           if [ "${RUNNER_OS}" = "Windows" ]; then bin="${RUNNER_TEMP}/venv/Scripts"; else bin="${RUNNER_TEMP}/venv/bin"; fi
           "${bin}/python" -m pip install --quiet pytest lib/cityparquet-py/dist/*.whl
+          "${bin}/python" -m pytest lib/cityparquet-py/tests -v
+
+      - uses: actions/setup-python@v7.1.0
+        id: free-threaded
+        with:
+          python-version: "3.14t"
+
+      # In the manylinux container the runner's Python is not there; maturin
+      # finds the image's own 3.14t by name.
+      - name: Build the free-threaded wheel
+        uses: PyO3/maturin-action@v1.51.0
+        with:
+          working-directory: lib/cityparquet-py
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'off' }}
+          rust-toolchain: ${{ needs.prepare.outputs.toolchain }}
+          args: --release --locked --out dist --interpreter ${{ matrix.manylinux && 'python3.14t' || steps.free-threaded.outputs.python-path }}
+
+      - name: Test the free-threaded wheel
+        env:
+          PYTHON: ${{ steps.free-threaded.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "${PYTHON}" -m venv "${RUNNER_TEMP}/venv-free-threaded"
+          if [ "${RUNNER_OS}" = "Windows" ]; then bin="${RUNNER_TEMP}/venv-free-threaded/Scripts"; else bin="${RUNNER_TEMP}/venv-free-threaded/bin"; fi
+          "${bin}/python" -m pip install --quiet pytest lib/cityparquet-py/dist/*-cp314t-*.whl
           "${bin}/python" -m pytest lib/cityparquet-py/tests -v
 
       - uses: actions/upload-artifact@v7.0.2
@@ -279,7 +308,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -l dist
-          test "$(ls dist/*.whl | wc -l)" -eq 5
+          test "$(ls dist/*.whl | wc -l)" -eq 10
           test "$(ls dist/*.tar.gz | wc -l)" -eq 1
           pipx run twine check --strict dist/*
 
@@ -326,7 +355,7 @@ jobs:
           pip install cityparquet==${VERSION}
           \`\`\`
 
-          Wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows (x86_64), for CPython 3.11 and later, and the sdist are attached below.
+          Wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows (x86_64), for CPython 3.11 and later and for free-threaded CPython 3.14t, and the sdist are attached below.
           EOF
 
       - uses: actions/upload-artifact@v7.0.2
@@ -342,7 +371,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           if [ "${DRY_RUN}" = "true" ]; then
-            echo "Dry run: cityparquet ${VERSION} was gated, built for five targets and as an sdist, and tested. Nothing was uploaded or pushed." >> "$GITHUB_STEP_SUMMARY"
+            echo "Dry run: cityparquet ${VERSION} was gated, built for five targets (abi3 and 3.14t) and as an sdist, and tested. Nothing was uploaded or pushed." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Published cityparquet ${VERSION} to PyPI; tagged py-v${VERSION}." >> "$GITHUB_STEP_SUMMARY"
           fi
