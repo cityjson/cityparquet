@@ -24,8 +24,9 @@ pip install cityparquet
 ```
 
 PyPI carries wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and
-Windows (x86_64), each serving CPython 3.11 and later. Elsewhere pip builds the
-sdist, which needs [Rust](https://rustup.rs/).
+Windows (x86_64), each serving CPython 3.11 and later, and the same five for
+free-threaded CPython 3.14t. Elsewhere pip builds the sdist, which needs
+[Rust](https://rustup.rs/).
 
 The bindings have no Python dependencies. The reading examples below use the
 tools you choose to read with:
